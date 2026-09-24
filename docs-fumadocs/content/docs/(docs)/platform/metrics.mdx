@@ -1,24 +1,24 @@
 ---
 title: Metrics
 icon: Target
-description: Define success criteria and the metrics to track while evaluating voice agents.
+description: Define success criteria and the metrics to track while evaluating production agents.
 ---
 
 # Metrics
 
-Metrics in EfficientAI are the way to describe success criteria and the list of metrics you want to track while evaluating your voice agents.
+Metrics in EfficientAI are the way to describe success criteria and the list of metrics you want to track while evaluating your production agents.
 
 ![Metrics homepage](/screenshots/Metrics/Metrics_homepage.png)
 
 ## What metrics are
 
-Metrics are the scoring rules applied to completed runs. They define what "good" means for your agent, and let you compare changes in prompts, providers, and configurations with consistent criteria.
+Metrics are the scoring rules applied to completed runs. They define what "good" means for your production agent, and let you compare changes in prompts, providers, and configurations with consistent criteria.
 
 EfficientAI supports four metric families:
 
 | Family | Measures | Examples |
 |---|---|---|
-| LLM-evaluated conversation | Whether the agent behaved correctly in dialogue | Instruction following, professionalism |
+| LLM-evaluated conversation | Whether the production agent behaved correctly in dialogue | Instruction following, professionalism |
 | Acoustic | Raw signal quality of audio | Jitter, shimmer, pitch variance |
 | AI voice quality | Perceived naturalness and consistency | MOS-style scores, consistency signals |
 | Custom | Product-specific requirements | `boolean`, `enum`, `number_range`, `text`, `rating` |

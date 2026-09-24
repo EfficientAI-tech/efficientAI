@@ -282,7 +282,10 @@ There is **no** `POST …/observability/live/events` ingest for Pipecat — live
 | Connection error on bot start | Sandbox: use **https** sandbox base URL, not unreachable `localhost` |
 | `POST …/sessions` **404** | Wrong `EFFICIENTAI_API_BASE` or old deployment |
 | `Transport 'webrtc' is disabled` | `pip install pipecat-ai[webrtc]` |
+| `Transport 'livekit' is disabled` | `uv pip install "pipecat-ai[livekit]>=1.4.0"`; set `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`; add `"livekit"` to `transport_params` in `bot.py`; restart the runner and confirm **livekit** appears under enabled transports in the startup banner. Do not pass `-t webrtc` if you need LiveKit from the dev UI. Run a room: [LiveKit dev server](https://docs.livekit.io/home/self-hosting/local/) or a cloud project. |
 | No traces in UI | API key + workspace; **Refresh**; same env as login |
+| Pipecat **WebSocket** works but nothing in **Calls** | Dev runner uses `transport=websocket`. Observability → Calls **hides** websocket traces (playground custom WS). Use **WebRTC** in the Pipecat dev UI for Calls hub, or `GET /api/v1/observability/traces/by-call-short-id/{id}` to verify the session. |
+| Pipecat **Telephony** / Twilio error (`Missing transport params for 'twilio'`) | Our example `bot.py` only defines `webrtc` + `websocket`. Telephony in the dev UI needs matching `transport_params` (Twilio/Telnyx/etc.)—use **WebRTC** for trace testing unless you are wiring real PSTN. |
 | Traces in wrong workspace | Workspace ID in `.env` must match UI; reinstall SDK if OTLP lacked workspace header |
 | `correlated: false` on ingest | Missing Call ID on spans or headers |
 | Call ID in logs but empty trace | `enable_tracing=True`; install `efficientai[otel]` |

@@ -290,8 +290,9 @@ export default function TestInsights() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Calls</h1>
-          <p className="mt-2 text-sm text-gray-600">
-            Telephony and OTLP voice sessions with recordings, transcripts, and traces.
+          <p className="mt-2 text-sm text-gray-600 max-w-2xl">
+            One list for production webhook calls and pipeline traces. Webhook rows show provider telephony;
+            pipeline rows show OTLP timing (WebRTC) or phone-eval turn timing—open a row to see what applies.
           </p>
         </div>
         <Button
@@ -440,7 +441,7 @@ export default function TestInsights() {
             {!isListLoading && !hasWorkspaceCalls && !listError && (
               <div className="p-12 text-center text-sm text-gray-600">
                 <p className="mb-1 font-medium text-gray-900">No calls yet</p>
-                <p>Enable OTLP tracing or connect telephony to see calls here.</p>
+                <p>Connect a voice agent with pipeline tracing or a production webhook to see calls here.</p>
               </div>
             )}
 
@@ -635,7 +636,7 @@ export default function TestInsights() {
 
           <ConfirmModal
             title="Delete call"
-            description="Permanently removes this telephony call record from observability."
+            description="Permanently removes this webhook call record from observability."
             isOpen={Boolean(deleteObsCallId)}
             isLoading={deleteObsMutation.isPending}
             onCancel={() => setDeleteObsCallId(null)}
@@ -644,7 +645,7 @@ export default function TestInsights() {
 
           <ConfirmModal
             title="Delete call trace"
-            description="Permanently removes this OTLP trace session and its span data from observability."
+            description="Permanently removes this pipeline trace and its timing data from observability."
             isOpen={Boolean(deleteTraceId)}
             isLoading={deleteTraceMutation.isPending}
             onCancel={() => setDeleteTraceId(null)}

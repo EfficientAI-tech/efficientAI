@@ -110,7 +110,7 @@ export function DocsShell({
         tree={sidebarTree}
         {...options}
         sidebar={{
-          defaultOpenLevel: 1,
+          defaultOpenLevel: mode === 'api' ? 0 : 1,
         }}
         tabMode="navbar"
         nav={{

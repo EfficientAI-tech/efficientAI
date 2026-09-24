@@ -1,0 +1,13 @@
+{
+  "title": "AI Providers",
+  "description": "Provider and model credentials endpoints.",
+  "pages": [
+    "listAIProviders",
+    "createAIProvider",
+    "get_aiprovider_api_v1_aiproviders__aiprovider_id__get",
+    "deleteAIProvider",
+    "updateAIProvider",
+    "setDefaultAIProvider",
+    "testAIProvider"
+  ]
+}

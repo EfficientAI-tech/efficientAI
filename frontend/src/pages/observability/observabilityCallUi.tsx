@@ -102,13 +102,13 @@ export function CallSourceBadge({ source }: { source: 'telephony' | 'otlp' }) {
   if (source === 'telephony') {
     return (
       <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border bg-indigo-50 text-indigo-800 border-indigo-200">
-        Telephony
+        Webhook call
       </span>
     )
   }
   return (
     <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border bg-violet-50 text-violet-800 border-violet-200">
-      OTLP trace
+      Pipeline trace
     </span>
   )
 }

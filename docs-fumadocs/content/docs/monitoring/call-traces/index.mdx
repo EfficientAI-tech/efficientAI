@@ -39,26 +39,32 @@ Dollar cost from OTLP spans (cost comes from provider `call_data`). Enterprise-s
 
 ## UI surfaces
 
-**Canonical route:** `/observability/calls` (sidebar: **Calls**)
+**Route:** **Observability → Calls** (`/observability/calls`)
 
-| Surface | Route | Detail view | Metrics source |
-| --- | --- | --- | --- |
-| **Calls hub — Traces tab** | `/observability/calls` | Pipeline trace drawer | EfficientAI computes p50 / p90 |
-| **Calls hub — Calls tab** | `/observability/calls` | Webhook call drawer | Provider `call_data` (Vapi / Retell / etc.) |
-| **Playground → Test Agent** | `/playground` | Test agent result + Pipeline tab | Evaluator + OTLP |
-| **Playground → Voice AI** | `/playground` | Call recording detail | Provider `call_data` |
+One list mixes **Pipeline trace** and **Webhook call** rows (see the **Source** column). **Platform** shows transport (for example WebRTC, phone) or provider (Vapi, Retell, Vobiz).
 
-**Deep links on Calls hub:**
+**Phone** pipeline rows (PSTN evaluation) usually show **turn-level response timing** only unless OTLP spans are also ingested. Full waterfall, pipeline stages, and in-drawer transcript come from **WebRTC + OTLP**; use the linked **evaluation result** for recording and dialogue on phone eval runs.
+
+| Where | Detail view | Metrics source |
+| --- | --- | --- |
+| **Pipeline trace** row | Pipeline trace drawer | EfficientAI p50 / p90 / p95 when spans are ingested |
+| **Webhook call** row | Webhook call drawer | Provider `call_data` |
+| **Playground → Test Agent** | Result → **Call details** → **Pipeline** | Evaluator + in-process OTLP (not listed in Calls hub) |
+| **Playground → Voice AI** | Call recording detail | Provider `call_data` |
+
+**Deep links:**
 
 | Query param | Opens |
 | --- | --- |
-| `?trace={uuid}` | OTLP trace drawer |
+| `?trace={uuid}` | Pipeline trace drawer |
 | `?obs={call_short_id}` | Webhook call drawer |
 | `?result={evaluator_result_id}` | Evaluator call drawer |
 
-:::caution Where to look in the UI
-**Calls → Traces** — deployed agent pipeline traces and phone evaluation traces. **Calls → Calls** — production webhook ingest. **Playground** test runs — result page → **Call details** → **Pipeline**. Overview: [Traces and Logs](/docs/platform/traces-and-logs/).
-:::
+User guide: [Traces and Logs](/docs/platform/traces-and-logs/).
+
+![Calls hub](/screenshots/Calls/Calls_traces_tab.png)
+
+![Pipeline trace detail](/screenshots/Calls/Calls_trace_detail.png)
 
 ---
 

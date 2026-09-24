@@ -54,6 +54,7 @@ from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from pipecat.services.fireworks.llm import FireworksLLMService
 from pipecat.services.llm_service import FunctionCallParams, LLMService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
+from pipecat.transports.livekit.transport import LiveKitParams
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
 from pipecat.workers.llm import LLMWorker, LLMWorkerActivationArgs, tool
 from pipecat.workers.runner import WorkerRunner
@@ -92,6 +93,7 @@ transport_params = {
         add_wav_header=False,
         serializer=ProtobufFrameSerializer(),
     ),
+    "livekit": lambda: LiveKitParams(audio_in_enabled=True, audio_out_enabled=True),
 }
 
 
@@ -402,9 +404,14 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         worker,
     )
 
-    @transport.event_handler("on_client_connected")
-    async def on_client_connected(transport, client):
-        logger.info("Client connected — activating greeter")
+    greeter_activated = False
+
+    async def activate_greeter(reason: str) -> None:
+        nonlocal greeter_activated
+        if greeter_activated:
+            return
+        greeter_activated = True
+        logger.info("Activating greeter ({})", reason)
         await worker.activate_worker(
             GREETER_NAME,
             args=LLMWorkerActivationArgs(
@@ -420,13 +427,30 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
             ),
         )
 
+    @transport.event_handler("on_client_connected")
+    async def on_client_connected(transport, client):
+        await activate_greeter("on_client_connected")
+
+    @transport.event_handler("on_first_participant_joined")
+    async def on_first_participant_joined(transport, participant_id):
+        await activate_greeter(f"on_first_participant_joined:{participant_id}")
+
+    @transport.event_handler("on_audio_track_subscribed")
+    async def on_audio_track_subscribed(transport, participant_id):
+        await activate_greeter(f"on_audio_track_subscribed:{participant_id}")
+
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
         logger.info("Client disconnected")
         await runner.cancel()
         await close_trace_session(trace_ctx)
 
-    await runner.run()
+    try:
+        await runner.run()
+    finally:
+        # end_conversation can finish the bot before the dev UI closes the socket;
+        # always flush OTLP and close the EfficientAI session row.
+        await close_trace_session(trace_ctx)
 
 
 async def bot(runner_args: RunnerArguments):

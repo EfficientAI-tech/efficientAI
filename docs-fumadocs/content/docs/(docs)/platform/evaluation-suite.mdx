@@ -9,7 +9,7 @@ description: What an evaluation suite is, how combinations expand, and how to co
 ## What an evaluation suite is
 
 An **evaluation suite** (called **Evaluator Suite** in some UI and API surfaces) groups one
-agent, one or more personas, and multiple scenarios into run combinations. Every
+production agent, one or more personas, and multiple scenarios into run combinations. Every
 persona × scenario pair becomes a test combination, and each combination can be run once or
 many times.
 
@@ -42,7 +42,7 @@ inbound flows.
 
 ### What you configure
 
-- One agent
+- One production agent
 - One or more personas
 - One or more scenarios
 - Run count and metric set
@@ -50,7 +50,7 @@ inbound flows.
 ### Execution behavior
 
 - **Outbound and web calls:** all combinations run in batches.
-- **Inbound calls:** activate one suite per agent and rotate scenarios, since the agent receives
+- **Inbound calls:** activate one suite per production agent and rotate scenarios, since the production agent receives
   rather than places the call.
 
 See also: [How It Works](/docs/platform/) for how suites sit between your definitions and your results.

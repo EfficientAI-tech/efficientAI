@@ -444,6 +444,8 @@ async def list_calls(
     "/calls-hub",
     response_model=Dict[str, Any],
     dependencies=[Depends(require_capability(CALLS_VIEW))],
+    operation_id="listObservabilityCallsHub",
+    summary="Merged telephony calls and OTLP traces feed",
 )
 async def list_calls_hub(
     skip: int = Query(0, ge=0),

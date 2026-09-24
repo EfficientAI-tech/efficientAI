@@ -1,0 +1,28 @@
+{
+  "title": "Observability",
+  "description": "Call logs, traces, and observability endpoints.",
+  "pages": [
+    "ingest_retell_webhook_api_v1_observability_calls_webhook_retell__api_key__post",
+    "ingest_call_via_webhook_url_api_v1_observability_calls_webhook__api_key__post",
+    "list_calls_api_v1_observability_calls_get",
+    "listObservabilityCallsHub",
+    "get_call_api_v1_observability_calls__call_short_id__get",
+    "delete_call_api_v1_observability_calls__call_short_id__delete",
+    "stream_call_live_events_api_v1_observability_calls__call_short_id__live_events_get",
+    "stream_observability_call_audio_api_v1_observability_calls__call_short_id__audio_get",
+    "evaluate_call_api_v1_observability_calls__call_short_id__evaluate_post",
+    "listObservabilityTraces",
+    "ingestObservabilityTracesOtlp",
+    "getObservabilityTraceIngestStaging",
+    "createObservabilityTraceSession",
+    "closeObservabilityTraceSession",
+    "backfillObservabilityTraces",
+    "ingestObservabilityTracesJson",
+    "getObservabilityTracesSetup",
+    "getObservabilityTraceForEvaluatorResult",
+    "getObservabilityTraceByCallShortId",
+    "getObservabilityTraceSpans",
+    "getObservabilityTrace",
+    "deleteObservabilityTrace"
+  ]
+}
