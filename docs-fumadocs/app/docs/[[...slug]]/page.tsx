@@ -58,7 +58,7 @@ export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
     !markdownPath && !isEnterprisePage ? readDocPageMarkdown(page.slugs) : null;
   const showToc = !isEnterprisePage;
   const toc = showToc ? pageData.toc : undefined;
-  const full = isEnterprisePage || Boolean(pageData.full);
+  const full = isEnterprisePage ? false : Boolean(pageData.full);
 
   return (
     <DocsPage
@@ -81,21 +81,23 @@ export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
       }
     >
       <DocsBody className={isEnterprisePage ? 'enterprise-doc' : undefined}>
-        {markdownPath || pageMarkdown ? (
-          <div className="not-prose mb-4 flex justify-end">
-            <CopyPageMarkdown mdPath={markdownPath ?? undefined} markdown={pageMarkdown} />
-          </div>
-        ) : null}
-        <MDX
-          components={getMDXComponents({
-            // this allows you to link to other pages with relative file paths
-            a: (props) => <DocsRelativeLink {...props} resolver={createRelativeLink(source, page)} />,
-            OpenAPIPage: async (props) => (
-              <OpenAPIPage {...(await openapi.preloadOpenAPIPage(page))} {...props} />
-            ),
-          })}
-        />
-        {!isEnterprisePage ? <CommunityContactFooter /> : null}
+        <div className={isEnterprisePage ? 'enterprise-doc-shell' : undefined}>
+          {markdownPath || pageMarkdown ? (
+            <div className="not-prose mb-4 flex justify-end">
+              <CopyPageMarkdown mdPath={markdownPath ?? undefined} markdown={pageMarkdown} />
+            </div>
+          ) : null}
+          <MDX
+            components={getMDXComponents({
+              // this allows you to link to other pages with relative file paths
+              a: (props) => <DocsRelativeLink {...props} resolver={createRelativeLink(source, page)} />,
+              OpenAPIPage: async (props) => (
+                <OpenAPIPage {...(await openapi.preloadOpenAPIPage(page))} {...props} />
+              ),
+            })}
+          />
+          {!isEnterprisePage ? <CommunityContactFooter /> : null}
+        </div>
       </DocsBody>
     </DocsPage>
   );

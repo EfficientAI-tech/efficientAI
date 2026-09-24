@@ -8,6 +8,7 @@ import { IntegrationProviderNav } from './integration-provider-nav';
 import { MdxPre } from './mdx-pre';
 import { MdxHeading } from './mdx-heading';
 import { ScreenshotPlaceholder } from './screenshot-placeholder';
+import { EnterpriseComparison, EnterpriseGatedFeatures } from './enterprise-comparison';
 
 function DocsBodyLink({ className, ...props }: ComponentPropsWithoutRef<'a'>) {
   const mergedClassName = ['font-medium', className].filter(Boolean).join(' ');
@@ -35,6 +36,8 @@ export function getMDXComponents(components?: MDXComponents) {
     ChangelogReleases,
     IntegrationProviderNav,
     ScreenshotPlaceholder,
+    EnterpriseComparison,
+    EnterpriseGatedFeatures,
     ...components,
   } satisfies MDXComponents;
 }

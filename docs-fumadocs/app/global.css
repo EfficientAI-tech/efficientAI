@@ -529,6 +529,54 @@ body::before {
   display: none !important;
 }
 
+/* Enterprise tab: no left nav — use a single centered column (avoid empty sidebar grid track). */
+.docs-mode-enterprise #nd-page {
+  grid-column: 1 / -1;
+  justify-self: center;
+  width: 100%;
+  max-width: min(100%, 72rem);
+  margin-inline: auto;
+}
+
+.docs-mode-enterprise #nd-page main {
+  padding-inline: clamp(1.25rem, 4vw, 2.5rem);
+}
+
+.docs-mode-enterprise .enterprise-doc-shell {
+  width: 100%;
+  max-width: 56rem;
+  margin-inline: auto;
+}
+
+.docs-mode-enterprise .enterprise-doc .prose {
+  max-width: 44rem;
+  margin-inline: auto;
+}
+
+.docs-mode-enterprise .enterprise-doc .prose > :first-child {
+  margin-top: 0;
+}
+
+.docs-mode-enterprise .enterprise-doc .prose h1 {
+  text-align: center;
+}
+
+.docs-mode-enterprise .enterprise-doc .prose h1 + blockquote,
+.docs-mode-enterprise .enterprise-doc .prose h1 + p {
+  text-align: center;
+}
+
+.docs-mode-enterprise .enterprise-doc .prose h2,
+.docs-mode-enterprise .enterprise-doc .prose h3 {
+  text-align: left;
+}
+
+.docs-mode-enterprise .enterprise-comparison,
+.docs-mode-enterprise .enterprise-gated {
+  max-width: 56rem;
+  margin-inline: auto;
+}
+
 .docs-no-toc #nd-toc {
   display: none !important;
 }
@@ -591,4 +639,37 @@ body::before {
 
 #nd-page .enterprise-doc .prose thead tr {
   background: color-mix(in oklab, var(--enterprise-accent) 16%, transparent);
+}
+
+/* Enterprise comparison matrix (MDX component) */
+#nd-page .enterprise-comparison {
+  --enterprise-accent: color-mix(in oklab, var(--color-docs-warm) 72%, #f59e0b);
+}
+
+#nd-page .enterprise-comparison-enterprise-col {
+  border-color: color-mix(in oklab, var(--enterprise-accent) 42%, var(--color-fd-border));
+  background: color-mix(in oklab, var(--enterprise-accent) 14%, var(--color-fd-card));
+  color: color-mix(in oklab, var(--enterprise-accent) 88%, var(--color-fd-foreground));
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--enterprise-accent) 18%, transparent) inset;
+}
+
+#nd-page .enterprise-comparison-row:hover {
+  background: color-mix(in oklab, var(--color-fd-muted) 35%, transparent);
+}
+
+#nd-page .enterprise-comparison-enterprise-cell {
+  background: color-mix(in oklab, var(--enterprise-accent) 6%, transparent);
+}
+
+#nd-page .enterprise-comparison-row:hover .enterprise-comparison-enterprise-cell {
+  background: color-mix(in oklab, var(--enterprise-accent) 11%, transparent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  #nd-page .enterprise-comparison-row {
+    transition: background-color 0.15s ease;
+  }
+  #nd-page .enterprise-comparison-enterprise-cell {
+    transition: background-color 0.15s ease;
+  }
 }
