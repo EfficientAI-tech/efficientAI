@@ -5,6 +5,7 @@ import { WizardStepHeader } from './WizardStepHeader'
 interface VoicePathSelectorProps {
   value: CreateAgentPath
   onChange: (path: CreateAgentPath) => void
+  embedded?: boolean
 }
 
 const OPTIONS: {
@@ -27,13 +28,15 @@ const OPTIONS: {
   },
 ]
 
-export default function VoicePathSelector({ value, onChange }: VoicePathSelectorProps) {
+export default function VoicePathSelector({ value, onChange, embedded }: VoicePathSelectorProps) {
   return (
-    <div className="w-full max-w-2xl mx-auto space-y-6">
-      <WizardStepHeader
-        title="How is your voice agent deployed?"
-        subtitle="Telephony uses numbers and call routing; voice platform connects directly to your provider agent."
-      />
+    <div className={embedded ? 'w-full' : 'w-full max-w-2xl mx-auto space-y-6'}>
+      {!embedded ? (
+        <WizardStepHeader
+          title="How is your voice agent deployed?"
+          subtitle="Telephony uses numbers and call routing; voice platform connects directly to your provider agent."
+        />
+      ) : null}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {OPTIONS.map((option) => {
           const Icon = option.icon

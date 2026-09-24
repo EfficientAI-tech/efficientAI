@@ -9,6 +9,7 @@ export type ChatIntegrationOptionId =
 interface ChatIntegrationTypeStepProps {
   value: ChatIntegrationOptionId
   onChange: (value: ChatIntegrationOptionId) => void
+  embedded?: boolean
 }
 
 const OPTIONS: {
@@ -25,8 +26,8 @@ const OPTIONS: {
   },
   {
     id: 'provider_chat',
-    label: 'Voice platform',
-    description: 'Live text chat on Vapi, Retell, ElevenLabs, or Smallest.',
+    label: 'Provider live chat',
+    description: 'Live text on Vapi, Retell, ElevenLabs, or Smallest.',
     icon: Link2,
   },
   {
@@ -59,13 +60,19 @@ export function chatConnectionTypeFromOption(
   return id
 }
 
-export default function ChatIntegrationTypeStep({ value, onChange }: ChatIntegrationTypeStepProps) {
+export default function ChatIntegrationTypeStep({
+  value,
+  onChange,
+  embedded,
+}: ChatIntegrationTypeStepProps) {
   return (
-    <div className="w-full max-w-3xl mx-auto space-y-6">
-      <WizardStepHeader
-        title="How does production chat connect?"
-        subtitle="This drives the production leg in evaluation — simulation, live APIs, or imported transcripts later."
-      />
+    <div className={embedded ? 'w-full' : 'w-full max-w-3xl mx-auto space-y-6'}>
+      {!embedded ? (
+        <WizardStepHeader
+          title="How does production chat connect?"
+          subtitle="This drives the production leg in evaluation — simulation, live APIs, or imported transcripts later."
+        />
+      ) : null}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {OPTIONS.map((option) => {
           const Icon = option.icon
@@ -77,17 +84,17 @@ export default function ChatIntegrationTypeStep({ value, onChange }: ChatIntegra
               onClick={() => onChange(option.id)}
               className={`text-left rounded-xl border-2 p-4 transition-colors ${
                 isSelected
-                  ? 'border-primary-600 bg-primary-50 ring-1 ring-primary-200'
+                  ? 'border-primary-600 bg-primary-50'
                   : 'border-gray-200 bg-white hover:border-gray-300'
               }`}
             >
               <div className="flex items-start gap-3">
                 <div
-                  className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
+                  className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
                     isSelected ? 'bg-primary-100 text-primary-700' : 'bg-gray-100 text-gray-600'
                   }`}
                 >
-                  <Icon className="h-4 w-4" />
+                  <Icon className="h-5 w-5" />
                 </div>
                 <div className="min-w-0">
                   <span className="text-sm font-semibold text-gray-900 block">{option.label}</span>

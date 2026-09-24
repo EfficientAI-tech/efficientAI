@@ -8,9 +8,8 @@ import { AIProvider, VoiceBundle, Integration, IntegrationPlatform } from '../..
 import { resolveLLMModelsForCredential } from '../../../lib/llmModelOptions'
 import { useAgentPhoneAssignmentCheck } from './useAgentPhoneAssignmentCheck'
 import { extractPhoneConflictDetail } from './agentPhoneValidation'
-import AgentMediumStep from './create/AgentMediumStep'
-import VoicePathSelector from './create/VoicePathSelector'
-import ChatIntegrationTypeStep, {
+import CreateAgentEntryStep from './create/CreateAgentEntryStep'
+import {
   type ChatIntegrationOptionId,
   chatConnectionTypeFromOption,
   isChatIntegrationAvailable,
@@ -37,6 +36,7 @@ import {
   TELEPHONY_STEPS,
   PLATFORM_STEPS,
   CHAT_STEPS,
+  createWizardMaxStep,
 } from './create/createAgentTypes'
 import ChatConnectionStep, {
   type ChatConnectionForm,
@@ -59,7 +59,7 @@ export default function CreateAgentModal({
   onSuccess,
   showToast,
 }: CreateAgentModalProps) {
-  const [wizardPhase, setWizardPhase] = useState<CreateWizardPhase>('medium')
+  const [wizardPhase, setWizardPhase] = useState<CreateWizardPhase>('entry')
   const [agentMedium, setAgentMedium] = useState<AgentMedium | null>(null)
   const [createPath, setCreatePath] = useState<CreateAgentPath>('telephony')
   const [currentStep, setCurrentStep] = useState<CreateStepId>(1)
@@ -95,6 +95,7 @@ export default function CreateAgentModal({
       : createPath === 'chat'
         ? CHAT_STEPS
         : PLATFORM_STEPS
+  const maxStep = createWizardMaxStep(createPath)
 
   const { data: voiceBundles = [] } = useQuery<VoiceBundle[]>({
     queryKey: ['voicebundles'],
@@ -328,7 +329,7 @@ export default function CreateAgentModal({
   })
 
   const resetForm = () => {
-    setWizardPhase('medium')
+    setWizardPhase('entry')
     setAgentMedium(null)
     setChatIntegrationOption('internal_llm')
     setChatConnectionConfig(DEFAULT_CHAT_CONNECTION_CONFIG)
@@ -444,9 +445,6 @@ export default function CreateAgentModal({
 
     if (createPath === 'chat') {
       if (currentStep === 1) {
-        return isChatIntegrationAvailable(chatIntegrationOption)
-      }
-      if (currentStep === 2) {
         if (!validateChatAgentStep(formData, productionPrompt)) {
           if (!formData.name.trim()) showToast('Name is required.', 'error')
           else showToast('Production prompt is required.', 'error')
@@ -467,7 +465,7 @@ export default function CreateAgentModal({
         }
         return true
       }
-      if (currentStep === 3) {
+      if (currentStep === 2) {
         if (!validateChatConnection(chatConnection)) {
           showToast('Select main agent LLM credential and model.', 'error')
           return false
@@ -517,51 +515,51 @@ export default function CreateAgentModal({
       return
     }
 
-    setCurrentStep((step) => Math.min(step + 1, 3) as CreateStepId)
+    setCurrentStep((step) => Math.min(step + 1, maxStep) as CreateStepId)
   }
 
   const handleBack = () => {
-    if (wizardPhase === 'voice-path') {
-      setWizardPhase('medium')
-      return
-    }
     if (wizardPhase === 'steps' && currentStep === 1) {
-      if (agentMedium === 'voice') {
-        setWizardPhase('voice-path')
-      } else {
-        setWizardPhase('medium')
-        setAgentMedium(null)
-      }
+      setWizardPhase('entry')
       return
     }
     setCurrentStep((step) => Math.max(step - 1, 1) as CreateStepId)
   }
 
-  const handleContinueFromMedium = () => {
+  const handleAgentMediumChange = (medium: AgentMedium) => {
+    setAgentMedium(medium)
+    if (medium === 'chat') {
+      setCreatePath('chat')
+      return
+    }
+    if (createPath === 'chat') {
+      setCreatePath('telephony')
+    }
+  }
+
+  const handleContinueFromEntry = () => {
     if (!agentMedium) {
       showToast('Choose voice or text chat to continue.', 'error')
       return
     }
     if (agentMedium === 'voice') {
-      setWizardPhase('voice-path')
-      return
-    }
-    setCreatePath('chat')
-    setCurrentStep(1)
-    setWizardPhase('steps')
-  }
-
-  const handleContinueFromVoicePath = () => {
-    if (createPath !== 'telephony' && createPath !== 'platform') {
-      showToast('Choose telephony or voice platform.', 'error')
-      return
+      if (createPath !== 'telephony' && createPath !== 'platform') {
+        showToast('Choose telephony or voice platform.', 'error')
+        return
+      }
+    } else {
+      setCreatePath('chat')
+      if (!isChatIntegrationAvailable(chatIntegrationOption)) {
+        showToast('Choose how production chat connects.', 'error')
+        return
+      }
     }
     setCurrentStep(1)
     setWizardPhase('steps')
   }
 
   const handleCreate = () => {
-    if (currentStep !== 3 || !validateCurrentStep()) return
+    if (currentStep !== maxStep || !validateCurrentStep()) return
     if (createPath === 'chat') {
       if (!productionPrompt.trim() || !validateChatConnection(chatConnection)) {
         showToast('Production prompt and connection LLM settings are required.', 'error')
@@ -616,27 +614,21 @@ export default function CreateAgentModal({
   if (!isOpen) return null
 
   const renderStepContent = () => {
-    if (wizardPhase === 'medium') {
+    if (wizardPhase === 'entry') {
       return (
-        <AgentMediumStep
-          value={agentMedium}
-          onChange={(medium) => {
-            setAgentMedium(medium)
-          }}
+        <CreateAgentEntryStep
+          agentMedium={agentMedium}
+          onAgentMediumChange={handleAgentMediumChange}
+          voicePath={createPath === 'chat' ? 'telephony' : createPath}
+          onVoicePathChange={handleVoicePathChange}
+          chatIntegration={chatIntegrationOption}
+          onChatIntegrationChange={syncChatIntegrationOption}
         />
       )
-    }
-    if (wizardPhase === 'voice-path') {
-      return <VoicePathSelector value={createPath} onChange={handleVoicePathChange} />
     }
 
     if (createPath === 'chat') {
       if (currentStep === 1) {
-        return (
-          <ChatIntegrationTypeStep value={chatIntegrationOption} onChange={syncChatIntegrationOption} />
-        )
-      }
-      if (currentStep === 2) {
         const showPromptInAgentStep =
           chatIntegrationOption !== 'provider_chat' && chatIntegrationOption !== 'customer_api'
         return (
@@ -842,23 +834,25 @@ export default function CreateAgentModal({
       role="presentation"
     >
       <div
-        className="bg-white rounded-2xl shadow-2xl ring-1 ring-gray-200/80 w-[min(96vw,88rem)] h-[min(90vh,780px)] flex flex-col overflow-hidden"
+        className="bg-white rounded-2xl shadow-2xl ring-1 ring-gray-200/80 w-[min(92vw,70rem)] h-[min(86vh,700px)] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         aria-labelledby="create-agent-modal-title"
       >
-        <div className="flex items-center justify-between shrink-0 px-6 py-5 border-b border-gray-100">
+        <div
+          className={`flex items-center justify-between shrink-0 border-b border-gray-100 ${
+            wizardPhase === 'entry' ? 'px-5 py-3' : 'px-6 py-5'
+          }`}
+        >
           <div>
-            <h2 id="create-agent-modal-title" className="text-2xl font-bold text-gray-900 tracking-tight">
+            <h2 id="create-agent-modal-title" className="text-xl font-bold text-gray-900 tracking-tight">
               Create agent
             </h2>
             <p className="text-sm text-gray-500 mt-1">
-              {wizardPhase === 'medium'
-                ? 'What kind of agent do you want to test?'
-                : wizardPhase === 'voice-path'
-                  ? 'How is your voice agent deployed?'
-                  : `Step ${currentStep} of ${steps.length} · ${steps[currentStep - 1]?.title}`}
+              {wizardPhase === 'entry'
+                ? 'Choose agent type to get started'
+                : `Step ${currentStep} of ${steps.length} · ${steps[currentStep - 1]?.title}`}
             </p>
           </div>
           <button
@@ -871,8 +865,8 @@ export default function CreateAgentModal({
           </button>
         </div>
 
+        {wizardPhase === 'steps' ? (
         <div className="shrink-0 px-6 py-4 border-b border-gray-100 bg-gray-50/50">
-          {wizardPhase === 'steps' ? (
           <div className="flex items-center">
             {steps.map((step, index) => {
               const isComplete = currentStep > step.id
@@ -905,32 +899,39 @@ export default function CreateAgentModal({
               )
             })}
           </div>
-          ) : null}
         </div>
+        ) : null}
 
-        <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5">
+        <div className="flex-1 min-h-0 overflow-y-auto px-6 py-6">
           {renderStepContent()}
         </div>
 
-        <div className="shrink-0 px-6 py-4 border-t border-gray-100 bg-gray-50/80 flex gap-3">
+        <div className="shrink-0 px-5 py-3 border-t border-gray-100 bg-gray-50/80 flex gap-3">
           <Button type="button" variant="outline" onClick={onClose}>
             Cancel
           </Button>
-          {wizardPhase !== 'medium' && (
+          {wizardPhase !== 'entry' && (
             <Button type="button" variant="outline" onClick={handleBack}>
               Back
             </Button>
           )}
           <div className="flex-1" />
-          {wizardPhase === 'medium' ? (
-            <Button type="button" variant="primary" onClick={handleContinueFromMedium} disabled={!agentMedium}>
+          {wizardPhase === 'entry' ? (
+            <Button
+              type="button"
+              variant="primary"
+              onClick={handleContinueFromEntry}
+              disabled={
+                !agentMedium ||
+                (agentMedium === 'voice' &&
+                  createPath !== 'telephony' &&
+                  createPath !== 'platform') ||
+                (agentMedium === 'chat' && !isChatIntegrationAvailable(chatIntegrationOption))
+              }
+            >
               Continue
             </Button>
-          ) : wizardPhase === 'voice-path' ? (
-            <Button type="button" variant="primary" onClick={handleContinueFromVoicePath}>
-              Continue
-            </Button>
-          ) : currentStep < 3 ? (
+          ) : currentStep < maxStep ? (
             <Button type="button" variant="primary" onClick={handleNext}>
               Next
             </Button>

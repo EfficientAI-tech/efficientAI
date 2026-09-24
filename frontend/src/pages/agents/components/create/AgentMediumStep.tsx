@@ -5,6 +5,7 @@ import { WizardStepHeader } from './WizardStepHeader'
 interface AgentMediumStepProps {
   value: AgentMedium | null
   onChange: (medium: AgentMedium) => void
+  embedded?: boolean
 }
 
 const OPTIONS: {
@@ -27,13 +28,15 @@ const OPTIONS: {
   },
 ]
 
-export default function AgentMediumStep({ value, onChange }: AgentMediumStepProps) {
+export default function AgentMediumStep({ value, onChange, embedded }: AgentMediumStepProps) {
   return (
-    <div className="w-full max-w-2xl mx-auto space-y-6">
-      <WizardStepHeader
-        title="What kind of agent do you want to test?"
-        subtitle="Pick the medium your production agent uses. You can configure integrations and eval settings in the next steps."
-      />
+    <div className={embedded ? 'w-full' : 'w-full max-w-2xl mx-auto space-y-6'}>
+      {!embedded ? (
+        <WizardStepHeader
+          title="What kind of agent do you want to test?"
+          subtitle="Pick the medium your production agent uses. You can configure integrations and eval settings in the next steps."
+        />
+      ) : null}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {OPTIONS.map((option) => {
           const Icon = option.icon
