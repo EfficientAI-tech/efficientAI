@@ -13,6 +13,7 @@ from app.services.usage.pricing import (
     _catalog_lookup_models,
     _normalize_pricing_block,
     _normalize_rate_source,
+    _pricing_entries_from_models_json,
     compute_cost,
     RATE_SOURCE_CATALOG,
 )
@@ -101,6 +102,27 @@ def test_normalize_pricing_block_stt_audio_per_minute():
     )
     assert normalized["usage_kind"] == "stt"
     assert normalized["audio_micro_usd_per_second"] == 6_000
+
+
+def test_models_json_anthropic_2026_09_rates():
+    entries = _pricing_entries_from_models_json()
+    expected = {
+        # model: (input, output, cache_read, cache_write) in micro-USD per 1M tokens
+        "claude-opus-5": (5_000_000, 25_000_000, 500_000, 6_250_000),
+        "claude-opus-5-5": (4_000_000, 20_000_000, 200_000, 5_000_000),
+        "claude-fable-5-1": (10_000_000, 50_000_000, 250_000, 12_500_000),
+        "claude-mythos-5-1": (10_000_000, 50_000_000, 250_000, 12_500_000),
+        # predecessors keep their original cache-read price
+        "claude-fable-5": (10_000_000, 50_000_000, 1_000_000, 12_500_000),
+        "claude-mythos-5": (10_000_000, 50_000_000, 1_000_000, 12_500_000),
+    }
+    for model, (inp, out, cache_read, cache_write) in expected.items():
+        entry = entries[model]
+        assert entry["usage_kind"] == "llm", model
+        assert entry["input_micro_usd_per_million"] == inp, model
+        assert entry["output_micro_usd_per_million"] == out, model
+        assert entry["cache_read_micro_usd_per_million"] == cache_read, model
+        assert entry["cache_creation_micro_usd_per_million"] == cache_write, model
 
 
 def test_catalog_lookup_models_includes_azure_alias():
