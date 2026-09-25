@@ -10,7 +10,8 @@ dependencies = [
     # OBSERVABILITY_ENABLED is true. See prometheus-fastapi-instrumentator#370.
     "fastapi>=0.104.0,<0.137",
     "uvicorn[standard]>=0.24.0",
-    "sqlalchemy>=2.0.0",
+    # SQLAlchemy 2.1 defaults postgresql:// URLs to psycopg (v3); we ship psycopg2.
+    "sqlalchemy>=2.0.0,<2.1",
     "alembic>=1.12.0",
     "psycopg2-binary>=2.9.9",
     "pydantic[email]>=2.5.0",
