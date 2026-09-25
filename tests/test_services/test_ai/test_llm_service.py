@@ -54,6 +54,22 @@ def test_litellm_model_name_maps_known_provider_prefixes():
         == "fireworks_ai/accounts/fireworks/models/deepseek-v4-pro"
     )
     assert (
+        LLMService._litellm_model_name(
+            ModelProvider.TOGETHER, "together/Tev1-4B-experimental"
+        )
+        == "together_ai/together/Tev1-4B-experimental"
+    )
+    assert (
+        LLMService._litellm_model_name(
+            ModelProvider.TOGETHER, "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"
+        )
+        == "together_ai/meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"
+    )
+    assert (
+        LLMService._litellm_model_name(ModelProvider.TYPESAFE, "jev-1.13.0")
+        == "typesafe/jev-1.13.0"
+    )
+    assert (
         LLMService._litellm_model_name(ModelProvider.SARVAM, "sarvam-30b")
         == "sarvam/sarvam-30b"
     )

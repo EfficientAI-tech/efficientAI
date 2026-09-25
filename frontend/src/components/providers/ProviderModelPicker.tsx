@@ -52,6 +52,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   mistral: 'Mistral',
   meta: 'Meta',
   together: 'Together',
+  typesafe: 'TypeSafe',
   perplexity: 'Perplexity',
   azure: 'Azure',
   aws: 'AWS',

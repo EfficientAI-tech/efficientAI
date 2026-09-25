@@ -1,6 +1,6 @@
 """Tests for live voice pipeline LLM provider registry."""
 
-from app.services.judge_alignment.model_catalog import _LLM_CAPABLE_PROVIDERS
+from app.services.judge_alignment.model_catalog import _LLM_VOICE_CAPABLE_PROVIDERS
 from app.services.voice_agent.llm_voice_providers import (
     LLM_VOICE_PROVIDER_KEYS,
     get_llm_provider_registry,
@@ -9,7 +9,7 @@ from app.services.voice_agent.llm_voice_providers import (
 
 
 def test_voice_llm_registry_covers_configurable_providers():
-    assert LLM_VOICE_PROVIDER_KEYS == _LLM_CAPABLE_PROVIDERS
+    assert LLM_VOICE_PROVIDER_KEYS == _LLM_VOICE_CAPABLE_PROVIDERS
 
     def _fake_get_service(name: str):
         return lambda **kwargs: (name, kwargs)

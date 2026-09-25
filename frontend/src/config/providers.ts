@@ -57,6 +57,11 @@ export const MODEL_PROVIDER_CONFIG: Record<ModelProvider, ProviderMetadata> = {
     logo: '/togetherai.svg',
     description: 'Hosted open-source models via Together',
   },
+  [ModelProvider.TYPESAFE]: {
+    label: 'TypeSafe',
+    logo: '/typesafe.png',
+    description: 'Jev decision classifiers via TypeSafe',
+  },
   [ModelProvider.PERPLEXITY]: {
     label: 'Perplexity',
     logo: '/perplexity-ai.svg',
