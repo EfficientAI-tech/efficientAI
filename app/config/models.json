@@ -854,7 +854,7 @@
   "claude-opus-4-8": {
     "provider": "anthropic",
     "model_type": "llm",
-    "description": "Claude Opus 4.8 — most capable Opus-tier model; 1M context, adaptive thinking",
+    "description": "Claude Opus 4.8 — prior-generation Opus flagship; superseded by Opus 5 / Opus 5.5 for new integrations",
     "pricing": {
       "source": "litellm_import",
       "usage_kind": "llm",
@@ -864,10 +864,36 @@
       "cache_write_per_1m": 6.25
     }
   },
+  "claude-opus-5": {
+    "provider": "anthropic",
+    "model_type": "llm",
+    "description": "Claude Opus 5 — prior-generation Opus flagship, pinned for existing integrations",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 5.0,
+      "output_per_1m": 25.0,
+      "cache_read_per_1m": 0.5,
+      "cache_write_per_1m": 6.25
+    }
+  },
+  "claude-opus-5-5": {
+    "provider": "anthropic",
+    "model_type": "llm",
+    "description": "Claude Opus 5.5 — flagship hybrid-reasoning model, 1M context; 20% cheaper and ~30% faster than Opus 5",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 4.0,
+      "output_per_1m": 20.0,
+      "cache_read_per_1m": 0.2,
+      "cache_write_per_1m": 5.0
+    }
+  },
   "claude-fable-5": {
     "provider": "anthropic",
     "model_type": "llm",
-    "description": "Claude Fable 5 — Anthropic's most capable widely released model for demanding agentic work",
+    "description": "Claude Fable 5 — prior release of Fable; superseded by Fable 5.1 (lower cache-read cost)",
     "pricing": {
       "source": "litellm_import",
       "usage_kind": "llm",
@@ -877,16 +903,42 @@
       "cache_write_per_1m": 12.5
     }
   },
+  "claude-fable-5-1": {
+    "provider": "anthropic",
+    "model_type": "llm",
+    "description": "Claude Fable 5.1 — most capable widely released model for demanding agentic work; cache reads cut to 2.5% of input",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 10.0,
+      "output_per_1m": 50.0,
+      "cache_read_per_1m": 0.25,
+      "cache_write_per_1m": 12.5
+    }
+  },
   "claude-mythos-5": {
     "provider": "anthropic",
     "model_type": "llm",
-    "description": "Claude Mythos 5 — Fable 5 capabilities; limited availability via Project Glasswing",
+    "description": "Claude Mythos 5 — prior release; superseded by Mythos 5.1. Limited availability via trusted access programs",
     "pricing": {
       "source": "litellm_import",
       "usage_kind": "llm",
       "input_per_1m": 10.0,
       "output_per_1m": 50.0,
       "cache_read_per_1m": 1.0,
+      "cache_write_per_1m": 12.5
+    }
+  },
+  "claude-mythos-5-1": {
+    "provider": "anthropic",
+    "model_type": "llm",
+    "description": "Claude Mythos 5.1 — Fable 5.1 capabilities with fewer safeguards; limited availability via trusted access programs",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 10.0,
+      "output_per_1m": 50.0,
+      "cache_read_per_1m": 0.25,
       "cache_write_per_1m": 12.5
     }
   },
