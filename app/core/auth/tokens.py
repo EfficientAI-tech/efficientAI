@@ -1,9 +1,9 @@
 """
-App-signed session tokens (HS256).
+App-signed session tokens (RS256).
 
 Used by the local-password provider to issue Bearer tokens after a successful
-email/password login. Tokens are symmetrically signed with `settings.SECRET_KEY`
-so they can be verified by any API/worker process that shares the secret.
+email/password login. Tokens are asymmetrically signed with the configured
+RSA private key and verified with the public key on API/worker processes.
 
 Not used for external OIDC - that provider verifies upstream JWTs against
 the IdP's JWKS directly.
@@ -18,9 +18,14 @@ from uuid import UUID, uuid4
 from jose import JWTError, jwt
 
 from app.config import settings
+from app.core.auth.jwt_keys import (
+    SESSION_JWT_ALGORITHM,
+    session_jwt_signing_key,
+    session_jwt_verification_key,
+)
 
 ISSUER = "efficientai-local"
-ALGORITHM = "HS256"
+ALGORITHM = SESSION_JWT_ALGORITHM
 
 
 def create_access_token(
@@ -55,7 +60,11 @@ def create_access_token(
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=ttl_minutes)).timestamp()),
     }
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM), jti, ttl_seconds
+    return (
+        jwt.encode(payload, session_jwt_signing_key(), algorithm=ALGORITHM),
+        jti,
+        ttl_seconds,
+    )
 
 
 def decode_access_token(token: str) -> Dict[str, Any]:
@@ -63,7 +72,7 @@ def decode_access_token(token: str) -> Dict[str, Any]:
     try:
         return jwt.decode(
             token,
-            settings.SECRET_KEY,
+            session_jwt_verification_key(),
             algorithms=[ALGORITHM],
             issuer=ISSUER,
             options={"verify_aud": False},
@@ -77,7 +86,7 @@ def decode_access_token_allow_expired(token: str) -> Dict[str, Any]:
     """Verify signature/issuer but allow expired tokens (e.g. refresh org list)."""
     return jwt.decode(
         token,
-        settings.SECRET_KEY,
+        session_jwt_verification_key(),
         algorithms=[ALGORITHM],
         issuer=ISSUER,
         options={"verify_exp": False, "verify_aud": False},

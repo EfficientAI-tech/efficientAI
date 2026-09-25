@@ -194,6 +194,18 @@ auth:
     - local_password
     # - external_oidc     # requires EFFICIENTAI_LICENSE feature: oidc_sso
 
+  # RS256 session JWTs (required when debug: false). API: private + public PEM;
+  # workers: public PEM only. Generate: openssl genrsa -out jwt-private.pem 2048
+  # then openssl rsa -in jwt-private.pem -pubout -out jwt-public.pem
+  # jwt_private_key_pem: |
+  #   -----BEGIN PRIVATE KEY-----
+  #   ...
+  #   -----END PRIVATE KEY-----
+  # jwt_public_key_pem: |
+  #   -----BEGIN PUBLIC KEY-----
+  #   ...
+  #   -----END PUBLIC KEY-----
+
   local_password:
     # Lifetime of the Bearer tokens minted at POST /auth/login (in minutes).
     # Keep this short; clients refresh silently via refresh tokens.
