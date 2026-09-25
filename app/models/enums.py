@@ -145,6 +145,7 @@ class ModelProvider(str, enum.Enum):
     MISTRAL = "mistral"
     META = "meta"
     TOGETHER = "together"
+    TYPESAFE = "typesafe"
     PERPLEXITY = "perplexity"
     AZURE = "azure"
     AWS = "aws"

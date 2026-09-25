@@ -409,6 +409,7 @@ export enum ModelProvider {
   MISTRAL = 'mistral',
   META = 'meta',
   TOGETHER = 'together',
+  TYPESAFE = 'typesafe',
   PERPLEXITY = 'perplexity',
   AZURE = 'azure',
   AWS = 'aws',

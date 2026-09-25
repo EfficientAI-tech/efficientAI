@@ -45,6 +45,8 @@ _LITELLM_PROVIDER_PREFIX: Dict[str, str] = {
     "groq": "groq",
     "xai": "xai",
     "fireworks": "fireworks_ai",
+    "together": "together_ai",
+    "typesafe": "typesafe",
     "sarvam": "sarvam",
 }
 

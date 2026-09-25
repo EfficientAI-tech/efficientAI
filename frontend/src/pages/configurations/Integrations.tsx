@@ -36,6 +36,7 @@ const AI_INTEGRATION_PROVIDERS: ModelProvider[] = [
   ModelProvider.MISTRAL,
   ModelProvider.META,
   ModelProvider.TOGETHER,
+  ModelProvider.TYPESAFE,
   ModelProvider.PERPLEXITY,
   ModelProvider.AZURE,
   ModelProvider.AWS,
