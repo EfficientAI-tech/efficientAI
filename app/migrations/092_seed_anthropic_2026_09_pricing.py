@@ -13,6 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.services.usage.pricing import DEFAULT_RATES_EFFECTIVE_FROM, seed_pricing_rates
+from app.services.usage.pricing_cache import invalidate_all_pricing_cache
 
 description = "Seed pricing rates for Claude Opus 5 / 5.5, Fable 5.1 and Mythos 5.1"
 
@@ -31,6 +32,9 @@ def upgrade(db: Session):
         return
     seeded = seed_pricing_rates(db, effective_from=DEFAULT_RATES_EFFECTIVE_FROM)
     db.commit()
+    # seed_pricing_rates invalidates before commit; a worker may have cached a
+    # missing rate in between, so invalidate again once the rows are visible.
+    invalidate_all_pricing_cache()
     if seeded:
         print(f"Seeded {seeded} model pricing rate row(s)")
 
