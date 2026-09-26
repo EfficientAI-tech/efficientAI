@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ChevronDown, ChevronRight, Loader2, Users } from 'lucide-react'
 import ProviderLogo, { getProviderInfo } from '../../../../components/shared/ProviderLogo'
 import { apiClient } from '../../../../lib/api'
+import { itemsOf } from '../../../../lib/safeData'
 import {
   BlindTestResponseRow,
   BlindTestShareDetail,
@@ -165,7 +166,7 @@ export default function ExternalResponsesPanel({ comparison }: ExternalResponses
               Loading responses...
             </div>
           )}
-          {responseData?.items.map(row => (
+          {itemsOf<BlindTestResponseRow>(responseData).map((row) => (
             <div key={row.id} className="rounded-lg border border-gray-200 p-3">
               <div className="flex items-center justify-between text-sm mb-2">
                 <div>

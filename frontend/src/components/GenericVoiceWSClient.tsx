@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, type MutableRefObject } from 'react'
 import {
   Mic,
   MicOff,
@@ -17,6 +17,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import Button from './Button'
 import { apiClient } from '../lib/api'
+import { evaluationStatusFromRecording } from '../lib/evaluationStatus'
 import type { WSProtocolConfig, TranscriptEntry, ParsedWSMessage } from '../lib/wsProtocols'
 
 // ----- Audio helpers ---------------------------------------------------
@@ -121,7 +122,7 @@ interface WSMessageLog {
 
 type LogEntry = { timestamp: string; message: string; type: 'user' | 'bot' | 'system' }
 
-type EvalStatus = 'idle' | 'queued' | 'evaluating' | 'failed'
+type EvalStatus = 'idle' | 'queued' | 'transcribing' | 'evaluating' | 'failed' | 'completed'
 
 interface SavedSession {
   callShortId: string
@@ -167,6 +168,7 @@ export default function GenericVoiceWSClient({
   // so the primary button can show "Saved" / disable correctly. This resets
   // each time a new call is started.
   const [currentSavedId, setCurrentSavedId] = useState<string | null>(null)
+  const [traceCallShortId, setTraceCallShortId] = useState<string | null>(null)
   const navigate = useNavigate()
 
   // ---- Refs -----------------------------------------------------------
@@ -180,15 +182,19 @@ export default function GenericVoiceWSClient({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const recordedChunksRef = useRef<Blob[]>([])
   const connectingRef = useRef(false)
+  const traceSessionRef = useRef<string | null>(null)
   // Auto-save orchestration. When a session ends we want to save it only
   // once, and only after all post-disconnect async work (STT flushes + the
   // MediaRecorder's final onstop) has settled.
   const autoSaveRequestedRef = useRef(false)
   const recordingPendingRef = useRef(false)
   const msgIdRef = useRef(0)
-  const logsEndRef = useRef<HTMLDivElement | null>(null)
-  const transcriptEndRef = useRef<HTMLDivElement | null>(null)
-  const messagesEndRef = useRef<HTMLDivElement | null>(null)
+  const transcriptScrollRef = useRef<HTMLDivElement | null>(null)
+  const messagesScrollRef = useRef<HTMLDivElement | null>(null)
+  const logsScrollRef = useRef<HTMLDivElement | null>(null)
+  const transcriptStickRef = useRef(true)
+  const messagesStickRef = useRef(true)
+  const logsStickRef = useRef(true)
   const protocolRef = useRef(protocol)
   protocolRef.current = protocol
 
@@ -305,16 +311,34 @@ export default function GenericVoiceWSClient({
     }, 1500)
   }, [])
 
-  // auto-scroll panels
+  const scrollPanelIfPinned = useCallback(
+    (container: HTMLDivElement | null, stickRef: MutableRefObject<boolean>) => {
+      if (!container || !stickRef.current) return
+      container.scrollTop = container.scrollHeight
+    },
+    [],
+  )
+
+  const handlePanelScroll = useCallback(
+    (container: HTMLDivElement | null, stickRef: MutableRefObject<boolean>) => {
+      if (!container) return
+      const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight
+      stickRef.current = distanceFromBottom < 48
+    },
+    [],
+  )
+
   useEffect(() => {
-    logsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [logs])
+    scrollPanelIfPinned(transcriptScrollRef.current, transcriptStickRef)
+  }, [transcriptEntries, scrollPanelIfPinned])
+
   useEffect(() => {
-    transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [transcriptEntries])
+    scrollPanelIfPinned(messagesScrollRef.current, messagesStickRef)
+  }, [wsMessages, showAudioMsgs, scrollPanelIfPinned])
+
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [wsMessages])
+    scrollPanelIfPinned(logsScrollRef.current, logsStickRef)
+  }, [logs, scrollPanelIfPinned])
 
   // ---- Audio playback -------------------------------------------------
 
@@ -546,6 +570,11 @@ export default function GenericVoiceWSClient({
         micStreamRef.current.getTracks().forEach((t) => t.stop())
         micStreamRef.current = null
       }
+      const activeTraceId = traceSessionRef.current
+      if (activeTraceId) {
+        traceSessionRef.current = null
+        apiClient.closeSyntheticTraceSession(activeTraceId).catch(() => {})
+      }
       setIsConnected(false)
       setIsConnecting(false)
       setSessionEndedAt(new Date().toISOString())
@@ -572,6 +601,8 @@ export default function GenericVoiceWSClient({
     // Reset previous session state (keep the savedSessions list so users can
     // still see and act on sessions saved earlier in this component's lifetime)
     setCurrentSavedId(null)
+    setTraceCallShortId(null)
+    traceSessionRef.current = null
     autoSaveRequestedRef.current = false
     recordingPendingRef.current = false
     setRecordedBlob(null)
@@ -589,6 +620,30 @@ export default function GenericVoiceWSClient({
     if (agentSilenceTimerRef.current) { clearTimeout(agentSilenceTimerRef.current); agentSilenceTimerRef.current = null }
 
     try {
+      let sessionCallShortId: string | null = null
+      let traceHandshake: Record<string, unknown> | null = null
+      try {
+        const session = await apiClient.createSyntheticTraceSession({
+          transport: 'websocket',
+        })
+        sessionCallShortId = session.call_short_id
+        traceHandshake = {
+          type: 'efficientai_trace_handshake',
+          call_short_id: session.call_short_id,
+          trace_id: session.trace_id,
+          workspace_id: session.workspace_id,
+          transport: session.transport,
+          otel_correlation: session.otel_correlation,
+          efficientai_call_short_id: session.call_short_id,
+        }
+        setTraceCallShortId(session.call_short_id)
+        traceSessionRef.current = session.call_short_id
+        log(`Trace session ${session.call_short_id} — IDs attached automatically on handshake`, 'system')
+      } catch (sessionErr: any) {
+        const msg = sessionErr?.response?.data?.detail || sessionErr?.message || 'trace session failed'
+        log(`Trace session skipped: ${msg}`, 'system')
+      }
+
       // Mic
       try {
         micStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -643,6 +698,14 @@ export default function GenericVoiceWSClient({
 
       log('WebSocket upgrade successful (101)')
 
+      if (traceHandshake) {
+        ws.send(JSON.stringify(traceHandshake))
+        log('Sent efficientai_trace_handshake to agent', 'system')
+      } else if (sessionCallShortId) {
+        ws.send(JSON.stringify({ efficientai_call_short_id: sessionCallShortId }))
+        log(`Sent efficientai_call_short_id to agent`, 'system')
+      }
+
       // Send init messages
       const initMsgs = protocolRef.current.buildInitMessages?.() || []
       for (const msg of initMsgs) {
@@ -669,6 +732,10 @@ export default function GenericVoiceWSClient({
       }
       startRecording()
 
+      transcriptStickRef.current = true
+      messagesStickRef.current = true
+      logsStickRef.current = true
+
       setIsConnected(true)
       setIsConnecting(false)
       log('Ready — streaming mic audio', 'system')
@@ -681,7 +748,7 @@ export default function GenericVoiceWSClient({
       connectingRef.current = false
       setIsConnecting(false)
     }
-  }, [websocketUrl, handleWsMessage, log, startMicCapture, startRecording, cleanupConnection])
+  }, [websocketUrl, handleWsMessage, log, startMicCapture, startRecording, cleanupConnection, agentId])
 
   // Cleanup on unmount
   useEffect(() => {
@@ -724,6 +791,7 @@ export default function GenericVoiceWSClient({
         transcript_entries: transcriptEntries,
         started_at: sessionStartedAt || undefined,
         ended_at: sessionEndedAt || new Date().toISOString(),
+        call_short_id: traceCallShortId || undefined,
         audio_file: audioFile,
       })
       const newSession: SavedSession = {
@@ -753,6 +821,7 @@ export default function GenericVoiceWSClient({
     recordedBlob,
     sessionStartedAt,
     sessionEndedAt,
+    traceCallShortId,
     log,
     onSessionSaved,
   ])
@@ -805,6 +874,36 @@ export default function GenericVoiceWSClient({
       log(`Evaluation failed: ${msg}`, 'system')
     }
   }
+
+  useEffect(() => {
+    const tracking = savedSessions.filter((s) =>
+      ['queued', 'transcribing', 'evaluating'].includes(s.evalStatus),
+    )
+    if (tracking.length === 0) return
+
+    const poll = async () => {
+      for (const session of tracking) {
+        try {
+          const rec = await apiClient.getCallRecording(session.callShortId)
+          const serverStatus = evaluationStatusFromRecording(rec)
+          if (!serverStatus) continue
+          if (serverStatus === 'completed') {
+            updateSession(session.callShortId, { evalStatus: 'completed' })
+          } else if (serverStatus === 'failed') {
+            updateSession(session.callShortId, { evalStatus: 'failed' })
+          } else if (['queued', 'transcribing', 'evaluating'].includes(serverStatus)) {
+            updateSession(session.callShortId, { evalStatus: serverStatus as EvalStatus })
+          }
+        } catch {
+          /* ignore transient poll errors */
+        }
+      }
+    }
+
+    void poll()
+    const timer = window.setInterval(() => void poll(), 4000)
+    return () => window.clearInterval(timer)
+  }, [savedSessions])
 
   const handleOpenSession = (callShortId: string) => {
     navigate(`/playground/call-recordings/${callShortId}`)
@@ -909,6 +1008,11 @@ export default function GenericVoiceWSClient({
                 {sttEnabled && (
                   <span className="text-[10px] px-1.5 py-0.5 bg-green-100 text-green-700 rounded">STT ON</span>
                 )}
+                {traceCallShortId && (
+                  <span className="text-[10px] px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded font-mono">
+                    trace #{traceCallShortId}
+                  </span>
+                )}
               </>
             ) : (
               <span className="text-sm text-gray-500">{isConnecting ? 'Connecting...' : 'Disconnected'}</span>
@@ -947,7 +1051,11 @@ export default function GenericVoiceWSClient({
 
         {/* Transcript panel */}
         {activePanel === 'transcript' && (
-          <div className="h-72 overflow-y-auto bg-gray-50 rounded border border-gray-200 p-4">
+          <div
+            ref={transcriptScrollRef}
+            onScroll={(e) => handlePanelScroll(e.currentTarget, transcriptStickRef)}
+            className="h-72 overflow-y-auto overscroll-contain bg-gray-50 rounded border border-gray-200 p-4"
+          >
             {transcriptEntries.length === 0 ? (
               <p className="text-gray-400 text-center text-xs py-12">
                 No transcript yet. Connect and start speaking.
@@ -989,7 +1097,6 @@ export default function GenericVoiceWSClient({
                     </div>
                   )
                 })}
-                <div ref={transcriptEndRef} />
               </div>
             )}
           </div>
@@ -1010,7 +1117,11 @@ export default function GenericVoiceWSClient({
                 {visibleMessages.length} / {wsMessages.length} messages
               </span>
             </div>
-            <div className="h-72 overflow-y-auto bg-gray-50 rounded border border-gray-200 p-2 font-mono text-xs">
+            <div
+              ref={messagesScrollRef}
+              onScroll={(e) => handlePanelScroll(e.currentTarget, messagesStickRef)}
+              className="h-72 overflow-y-auto overscroll-contain bg-gray-50 rounded border border-gray-200 p-2 font-mono text-xs"
+            >
               {visibleMessages.length === 0 ? (
                 <p className="text-gray-400 text-center py-12">No messages yet.</p>
               ) : (
@@ -1049,7 +1160,6 @@ export default function GenericVoiceWSClient({
                       </span>
                     </div>
                   ))}
-                  <div ref={messagesEndRef} />
                 </div>
               )}
             </div>
@@ -1058,7 +1168,11 @@ export default function GenericVoiceWSClient({
 
         {/* Debug log panel */}
         {activePanel === 'log' && (
-          <div className="h-72 overflow-y-auto bg-gray-50 rounded border border-gray-200 p-3 font-mono text-xs">
+          <div
+            ref={logsScrollRef}
+            onScroll={(e) => handlePanelScroll(e.currentTarget, logsStickRef)}
+            className="h-72 overflow-y-auto overscroll-contain bg-gray-50 rounded border border-gray-200 p-3 font-mono text-xs"
+          >
             {logs.length === 0 ? (
               <p className="text-gray-400 text-center py-12">No logs yet. Connect to start.</p>
             ) : (
@@ -1078,7 +1192,6 @@ export default function GenericVoiceWSClient({
                     {entry.message}
                   </div>
                 ))}
-                <div ref={logsEndRef} />
               </>
             )}
           </div>
@@ -1154,15 +1267,15 @@ export default function GenericVoiceWSClient({
                             just saved
                           </span>
                         )}
-                        {s.evalStatus === 'queued' && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
-                            eval queued
-                          </span>
-                        )}
-                        {s.evalStatus === 'evaluating' && (
+                        {(s.evalStatus === 'queued' || s.evalStatus === 'transcribing' || s.evalStatus === 'evaluating') && (
                           <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium inline-flex items-center gap-1">
                             <Loader className="h-2.5 w-2.5 animate-spin" />
-                            queuing
+                            eval {s.evalStatus === 'evaluating' ? 'evaluating' : s.evalStatus === 'transcribing' ? 'analyzing audio' : 'queued'}
+                          </span>
+                        )}
+                        {s.evalStatus === 'completed' && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-100 text-green-700 font-medium">
+                            eval done
                           </span>
                         )}
                         {s.evalStatus === 'failed' && (
@@ -1189,7 +1302,7 @@ export default function GenericVoiceWSClient({
                     </div>
 
                     <div className="flex items-center gap-2 flex-shrink-0">
-                      {s.evalStatus !== 'queued' && (
+                      {!['queued', 'transcribing', 'evaluating'].includes(s.evalStatus) && (
                         <Button
                           variant="outline"
                           size="sm"

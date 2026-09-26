@@ -48,7 +48,7 @@ RUN mkdir -p src/efficientai && touch src/efficientai/__init__.py
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=cache,target=/root/.cache/pip \
-    uv pip install --system -e .
+    uv pip install --system -e ".[otel]"
 
 # Security: fail build if compromised litellm .pth file is present (CVE: supply chain attack on litellm 1.82.8)
 RUN if find /usr/local/lib/ -name "litellm_init.pth" 2>/dev/null | grep -q .; then \
@@ -67,7 +67,7 @@ COPY src/ ./src/
 COPY app/ ./app/
 COPY scripts/ ./scripts/
 
-RUN uv pip install --system -e .
+RUN uv pip install --system -e ".[otel]"
 
 # Create uploads directory
 RUN mkdir -p /app/uploads

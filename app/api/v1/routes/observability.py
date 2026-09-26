@@ -5,11 +5,12 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
-from app.dependencies import get_api_key, get_db, get_organization_id, get_workspace_id
+from app.core.auth.capabilities import CALLS_VIEW
+from app.dependencies import get_api_key, get_db, get_organization_id, get_workspace_id, require_capability
 from app.models.database import (
     Agent, APIKey, CallRecording, CallRecordingStatus, CallRecordingSource,
     Evaluator, EvaluatorResult, EvaluatorResultStatus, Scenario, Workspace,
@@ -439,6 +440,52 @@ async def list_calls(
     ]
 
 
+@router.get(
+    "/calls-hub",
+    response_model=Dict[str, Any],
+    dependencies=[Depends(require_capability(CALLS_VIEW))],
+    operation_id="listObservabilityCallsHub",
+    summary="Merged telephony calls and OTLP traces feed",
+)
+async def list_calls_hub(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(15, ge=1, le=100),
+    status: Optional[str] = Query(None, description="Trace status filter: open, closed, or omit for all"),
+    search: Optional[str] = Query(None),
+    event: str = Query("all", description="Telephony event filter"),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Merged telephony + OTLP trace feed for the Calls page (server-side pagination)."""
+    from app.services.observability.calls_hub import list_calls_hub_page
+
+    del api_key
+
+    items, summary, filtered_total = list_calls_hub_page(
+        db,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        skip=skip,
+        limit=limit,
+        trace_status=status,
+        search=search,
+        event_filter=event,
+        serialize_obs_call=_serialize_call_recording,
+    )
+    page = (skip // limit) + 1 if limit else 1
+    page_count = max(1, (filtered_total + limit - 1) // limit)
+    return {
+        "items": items,
+        "total": filtered_total,
+        "page": page,
+        "page_size": limit,
+        "page_count": page_count,
+        "summary": summary,
+    }
+
+
 @router.get("/calls/{call_short_id}", response_model=Dict[str, Any])
 async def get_call(
     call_short_id: str,
@@ -468,25 +515,6 @@ async def get_call(
     from app.services.live_entity_storage import hydrate_call_recordings
 
     hydrate_call_recordings([call_recording])
-
-    # region agent log
-    from app.utils.debug_agent_log import agent_debug_log
-
-    call_data_dbg = call_recording.call_data if isinstance(call_recording.call_data, dict) else {}
-    agent_debug_log(
-        "observability.py:get_call",
-        "call detail fetched",
-        {
-            "call_short_id": call_short_id,
-            "call_event": call_recording.call_event,
-            "live_transcript_count": len(call_data_dbg.get("live_transcript") or []),
-            "messages_count": len(call_data_dbg.get("messages") or []),
-            "has_recording_s3_key": bool(call_data_dbg.get("recording_s3_key")),
-            "has_recording_url": bool(call_data_dbg.get("recording_url")),
-        },
-        "H5",
-    )
-    # endregion
 
     agent = None
     if call_recording.agent_id:
@@ -558,6 +586,7 @@ async def stream_call_live_events(
 @router.get("/calls/{call_short_id}/audio")
 async def stream_observability_call_audio(
     call_short_id: str,
+    proxy: bool = Query(False),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
@@ -592,27 +621,18 @@ async def stream_observability_call_audio(
         except ExotelInvalidContentError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
+        if proxy:
+            from app.services.storage.audio_delivery import stream_audio_from_provider_url
+
+            return stream_audio_from_provider_url(
+                str(recording_url),
+                filename=f"call_{call_short_id}",
+            )
         return RedirectResponse(recording_url)
 
     s3_key = call_data.get("recording_s3_key")
     if not s3_key:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No recording available")
-
-    # region agent log
-    from app.utils.debug_agent_log import agent_debug_log
-
-    agent_debug_log(
-        "observability.py:stream_observability_call_audio",
-        "serving observability audio",
-        {
-            "call_short_id": call_short_id,
-            "has_recording_s3_key": True,
-            "has_recording_url": bool(recording_url),
-        },
-        "H6",
-        run_id="post-fix",
-    )
-    # endregion
 
     from app.services.storage.s3_service import s3_service
 
@@ -866,7 +886,7 @@ async def evaluate_call(
     }
 
 
-from app.core.auth.capabilities import REPORTS_GENERATE, REPORTS_VIEW
+from app.core.auth.capabilities import CALLS_DELETE, REPORTS_GENERATE, REPORTS_VIEW
 from app.core.auth.workspace_route_capabilities import apply_workspace_route_capabilities
 
 apply_workspace_route_capabilities(
@@ -874,5 +894,7 @@ apply_workspace_route_capabilities(
     view_capability=REPORTS_VIEW,
     manage_capability=REPORTS_GENERATE,
     run_capability=REPORTS_GENERATE,
+    delete_capability=CALLS_DELETE,
+    skip_paths={"/calls-hub"},
 )
 

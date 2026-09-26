@@ -31,6 +31,7 @@ from . import dispatch_cron_jobs
 from . import evaluate_alerts
 from . import refresh_fx_rates
 from . import run_cron_evaluator_job
+from . import trace_tasks
 from app.workers.concurrency import eval_dispatch
 from app.workers.concurrency import fair_dispatch
 from app.workers.concurrency import fair_diarization_dispatch

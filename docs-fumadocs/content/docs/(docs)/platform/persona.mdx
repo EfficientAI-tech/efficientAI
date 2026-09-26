@@ -6,15 +6,8 @@ description: What a persona is, why voice mapping is pinned, and how to configur
 
 # Persona
 
-## What a persona is
-
-A **persona** is the simulated caller on the other end of the line. It combines caller behavior
-instructions with a concrete voice identity, so the agent under test hears a realistic and —
-crucially — repeatable caller on every run.
-
-A persona controls speaking style and intent, response timing and turn behavior, and the LLM
-settings used to drive the simulation. Pair it with a [scenario](/docs/platform/scenario/) to
-say *why* this caller is calling.
+Personas in EAI are essentially the personality you give to EfficientAI test agents—the voice,
+tone, and pace of the caller.
 
 ## Why the voice mapping is pinned
 
@@ -60,7 +53,7 @@ See also: [How It Works](/docs/platform/) for how personas combine with scenario
 Then complete:
 
 - Persona name
-- Target agent mapping (the persona is tied to a specific agent)
+- Target production agent mapping (the persona is tied to a specific production agent)
 - Optional **Generate agent prompt** for a faster first draft
 
 ![Persona prompt generation](/screenshots/Persona/Persona_prompt.png)

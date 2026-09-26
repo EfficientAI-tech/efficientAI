@@ -473,10 +473,9 @@ def _recover_missing_audio_for_result(result, db, refresh_call_data: bool = True
     if platform == "elevenlabs" and decrypted_key:
         headers = {"xi-api-key": decrypted_key}
     elif platform == "vapi" and decrypted_key:
-        from app.services.voice_providers.vapi_recording import is_presigned_storage_url
+        from app.services.voice_providers.vapi_recording import vapi_proxy_request_headers
 
-        if not is_presigned_storage_url(audio_url):
-            headers = {"Authorization": f"Bearer {decrypted_key}"}
+        headers = vapi_proxy_request_headers(audio_url, decrypted_key)
     try:
         response = _http.get(audio_url, headers=headers, timeout=120)
     except Exception as download_err:

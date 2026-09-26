@@ -40,6 +40,13 @@ function getBlobStorageShortLabel(provider?: string | null): string {
   return 'Cloud'
 }
 
+const AUDIO_EXTENSIONS = new Set(['wav', 'mp3', 'flac', 'm4a', 'ogg', 'aac', 'webm'])
+
+function isPlayableAudioFile(filename: string): boolean {
+  const ext = filename.split('.').pop()?.toLowerCase() ?? ''
+  return AUDIO_EXTENSIONS.has(ext)
+}
+
 export default function DataSources() {
   const queryClient = useQueryClient()
   const [showUploadModal, setShowUploadModal] = useState(false)
@@ -324,7 +331,7 @@ export default function DataSources() {
               }`}
             >
               <Home className="h-4 w-4" />
-              <span>Organization Root</span>
+              <span>Storage root</span>
             </button>
             {breadcrumbSegments.map((segment, index) => {
               const pathUpTo = breadcrumbSegments.slice(0, index + 1).join('/') + '/'
@@ -347,7 +354,7 @@ export default function DataSources() {
 
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl font-semibold">
-              {currentPath ? `/${currentPath.replace(/\/$/, '')}` : 'Organization Root'}
+              {currentPath ? `/${currentPath.replace(/\/$/, '')}` : 'audio & traces'}
             </h2>
             {currentPath && (
               <Button
@@ -444,22 +451,24 @@ export default function DataSources() {
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm">
                         <div className="flex items-center gap-2">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handlePlayAudio(file)}
-                            isLoading={loadingAudio === file.key}
-                            leftIcon={
-                              loadingAudio === file.key ? undefined :
-                              playingFileKey === file.key && isPlaying ? 
-                                <Pause className="h-4 w-4" /> : 
-                                <Play className="h-4 w-4" />
-                            }
-                            className={`${playingFileKey === file.key && isPlaying ? 'text-green-600 hover:text-green-700 bg-green-50' : 'text-blue-600 hover:text-blue-700'}`}
-                            title={playingFileKey === file.key && isPlaying ? 'Pause' : 'Play'}
-                          >
-                            {playingFileKey === file.key && isPlaying ? 'Pause' : 'Play'}
-                          </Button>
+                          {isPlayableAudioFile(file.filename) && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handlePlayAudio(file)}
+                              isLoading={loadingAudio === file.key}
+                              leftIcon={
+                                loadingAudio === file.key ? undefined :
+                                playingFileKey === file.key && isPlaying ? 
+                                  <Pause className="h-4 w-4" /> : 
+                                  <Play className="h-4 w-4" />
+                              }
+                              className={`${playingFileKey === file.key && isPlaying ? 'text-green-600 hover:text-green-700 bg-green-50' : 'text-blue-600 hover:text-blue-700'}`}
+                              title={playingFileKey === file.key && isPlaying ? 'Pause' : 'Play'}
+                            >
+                              {playingFileKey === file.key && isPlaying ? 'Pause' : 'Play'}
+                            </Button>
+                          )}
                           <Button
                             variant="ghost"
                             size="sm"
@@ -498,14 +507,9 @@ export default function DataSources() {
               <Database className="h-12 w-12 mx-auto mb-3 text-gray-300" />
               <p>This folder is empty</p>
               {!currentPath && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowUploadModal(true)}
-                  className="mt-3"
-                >
-                  Upload your first file
-                </Button>
+                <p className="text-sm text-gray-400 mt-2">
+                  Open the <span className="font-medium">audio</span> folder to upload files.
+                </p>
               )}
             </div>
           )}

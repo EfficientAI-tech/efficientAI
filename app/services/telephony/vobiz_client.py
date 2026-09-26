@@ -253,8 +253,11 @@ class VobizClient:
         hangup_url: Optional[str] = None,
         answer_method: str = "POST",
         hangup_method: str = "POST",
+        sip_headers: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Create an outbound voice call."""
+        from efficientai.integrations.efficientai_traces.correlation import format_plivo_sip_headers
+
         from_ = normalize_e164(from_)
         to_ = normalize_e164(to_)
         payload: Dict[str, Any] = {
@@ -266,6 +269,8 @@ class VobizClient:
         if hangup_url:
             payload["hangup_url"] = hangup_url
             payload["hangup_method"] = hangup_method
+        if sip_headers:
+            payload["sipHeaders"] = format_plivo_sip_headers(sip_headers)
 
         try:
             response = self._request("POST", self._call_endpoint(), json=payload)

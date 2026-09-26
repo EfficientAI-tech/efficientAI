@@ -15,7 +15,6 @@ import Button from './Button'
 import VoiceOrb, { VoiceOrbSpeaker } from './VoiceOrb'
 import { useAgentStore } from '../store/agentStore'
 import { apiClient, apiBaseUrl } from '../lib/api'
-import { csrfHeaders } from '../lib/authSession'
 
 interface VoiceAgentProps {
   personaId?: string
@@ -50,7 +49,7 @@ export default function VoiceAgent({
   agentDisplayName,
   connectDisabled = false,
   connectDisabledReason,
-  runEvaluation = false,
+  runEvaluation = true,
   userTranscriptLabel = 'You',
   botTranscriptLabel = 'Agent',
 }: VoiceAgentProps) {
@@ -111,6 +110,7 @@ export default function VoiceAgent({
   const micStreamRef = useRef<MediaStream | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const recordedChunksRef = useRef<Blob[]>([])
+  const traceSessionRef = useRef<string | null>(null)
 
   const appendTranscript = (entry: TranscriptEntry) => {
     setTranscriptEntries((prev) => [...prev, entry])
@@ -259,6 +259,14 @@ export default function VoiceAgent({
   const setupTrackListeners = () => {
     if (!pcClientRef.current) return
 
+    // Pipecat also emits RTVIEvent.Error; without a listener Node throws on bare "error" events.
+    pcClientRef.current.on(RTVIEvent.Error, (rtviError) => {
+      if (rtviError === undefined || rtviError === null) return
+      const errorMessage = formatErrorMessage(rtviError)
+      if (!errorMessage || errorMessage === 'Unknown error') return
+      log(`RTVI error: ${errorMessage}`, 'system')
+    })
+
     // Listen for new tracks starting
     pcClientRef.current.on(RTVIEvent.TrackStarted, (track, participant) => {
       // Only handle non-local (bot) tracks
@@ -328,18 +336,30 @@ export default function VoiceAgent({
         }
       }
 
-      // Resolve credentials. The backend `/connect` and websocket endpoints
-      // accept either a Bearer access token (email/password / SSO login) or
-      // an API key (legacy / machine access). We pass whichever the user has.
-      const accessToken = apiClient.getAccessToken()
-      const apiKey = localStorage.getItem('apiKey')
-      if (!accessToken && !apiKey && !apiClient.isCookieSessionEnabled()) {
+      const cookieSession = apiClient.isCookieSessionEnabled()
+      const accessToken =
+        apiClient.getAccessToken() ||
+        (!cookieSession ? localStorage.getItem('accessToken') : null)
+      const apiKey = cookieSession ? null : localStorage.getItem('apiKey')
+      if (!accessToken && !apiKey && !cookieSession) {
         throw new Error('Not authenticated. Please log in first.')
       }
 
-      if (!customEndpoint && apiKey && !apiClient.isCookieSessionEnabled()) {
-        document.cookie = `api_key=${apiKey}; path=/; SameSite=Lax`
-        log('Auth credentials set for /connect', 'system')
+      if (!customEndpoint) {
+        if (!cookieSession) {
+          if (accessToken) {
+            document.cookie = `access_token=${accessToken}; path=/; SameSite=Lax`
+          }
+          if (apiKey) {
+            document.cookie = `api_key=${apiKey}; path=/; SameSite=Lax`
+          }
+        }
+        log(
+          cookieSession
+            ? 'Using cookie session for /connect'
+            : 'Auth credentials set for /connect',
+          'system',
+        )
       } else {
         log('Using custom endpoint, skipping backend API cookie flow', 'system')
       }
@@ -348,6 +368,24 @@ export default function VoiceAgent({
       setTranscriptEntries([])
       setSessionStartedAt(new Date().toISOString())
       setSessionEndedAt(null)
+      traceSessionRef.current = null
+
+      let traceCallShortId: string | null = null
+      if (!customEndpoint && (accessToken || apiKey || cookieSession)) {
+        try {
+          const session = await apiClient.createSyntheticTraceSession({
+            transport: 'websocket',
+            ...(effectiveAgentId ? { agent_id: effectiveAgentId } : {}),
+          })
+          traceCallShortId = session.call_short_id
+          traceSessionRef.current = session.call_short_id
+          log(`Trace session ${session.call_short_id}`, 'system')
+        } catch (sessionErr: any) {
+          const msg =
+            sessionErr?.response?.data?.detail || sessionErr?.message || 'trace session failed'
+          log(`Trace session skipped: ${msg}`, 'system')
+        }
+      }
 
       try {
         micStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -380,6 +418,11 @@ export default function VoiceAgent({
             setSessionEndedAt(new Date().toISOString())
             stopRecording()
             log('Client disconnected', 'system')
+            const traceId = traceSessionRef.current
+            if (traceId) {
+              traceSessionRef.current = null
+              apiClient.closeSyntheticTraceSession(traceId).catch(() => undefined)
+            }
           },
           onBotReady: (data) => {
             log(`Bot ready: ${JSON.stringify(data)}`, 'system')
@@ -437,6 +480,12 @@ export default function VoiceAgent({
       if (!customEndpoint && scenarioId) params.append('scenario_id', scenarioId)
       if (!customEndpoint && runEvaluation) params.append('run_evaluation', 'true')
       if (!customEndpoint && billingSurface) params.append('ui_surface', billingSurface)
+      if (!customEndpoint && traceCallShortId) params.append('call_short_id', traceCallShortId)
+
+      const connectQuery: Record<string, string> = {}
+      params.forEach((value, key) => {
+        connectQuery[key] = value
+      })
 
       if (!customEndpoint && params.toString()) {
         endpointUrl += `?${params.toString()}`
@@ -447,16 +496,21 @@ export default function VoiceAgent({
         ? 'websocket'
         : 'http'
 
+      const useCookieSessionConnect =
+        !customEndpoint && cookieSession && !accessToken && !apiKey
+
       if (endpointProtocol === 'websocket') {
         log('Using direct connect() for websocket URL...', 'system')
         await pcClient.connect({ wsUrl: endpointUrl })
         log('✅ WebSocket transport connected', 'system')
+      } else if (useCookieSessionConnect) {
+        log('Using authenticated /connect (cookie session)...', 'system')
+        const { ws_url } = await apiClient.getVoiceAgentConnection(connectQuery)
+        await pcClient.connect({ wsUrl: ws_url })
+        log('✅ Connection established via cookie session!', 'system')
       } else {
         log('Using startBotAndConnect() - this will handle RTVI protocol handshake...', 'system')
-        // Pass credentials via headers in addition to cookies so /connect
-        // works even when the API is on a different origin (e.g. dev mode
-        // with frontend on :3000 and API on :8000 where cookies aren't shared).
-        const authHeaders = new Headers({ 'Content-Type': 'application/json' })
+        const authHeaders = new Headers()
         if (!customEndpoint) {
           if (accessToken) {
             authHeaders.set('Authorization', `Bearer ${accessToken}`)
@@ -464,24 +518,10 @@ export default function VoiceAgent({
           if (apiKey) {
             authHeaders.set('X-API-Key', apiKey)
           }
-          for (const [name, value] of Object.entries(csrfHeaders())) {
-            authHeaders.set(name, value)
-          }
         }
-        // Pipecat uses raw fetch (not axios); cookie sessions need credentials + CSRF header.
-        const connectEndpoint =
-          !customEndpoint && apiClient.isCookieSessionEnabled()
-            ? new Request(endpointUrl, {
-                method: 'POST',
-                credentials: 'include',
-                mode: 'cors',
-                headers: authHeaders,
-                body: JSON.stringify({}),
-              })
-            : endpointUrl
         await pcClient.startBotAndConnect({
-          endpoint: connectEndpoint,
-          ...(!customEndpoint && connectEndpoint instanceof Request ? {} : { headers: authHeaders }),
+          endpoint: endpointUrl,
+          headers: authHeaders,
         })
         log('✅ Connection established and RTVI handshake complete!', 'system')
       }
@@ -692,7 +732,7 @@ export default function VoiceAgent({
                 isLoading={isConnecting}
                 leftIcon={isConnecting ? <Loader className="h-4 w-4 animate-spin" /> : <Mic className="h-4 w-4" />}
                 disabled={isConnecting || connectDisabled}
-                title={connectDisabled ? connectDisabledReason : undefined}
+            title={connectDisabled ? connectDisabledReason : undefined}
               >
                 Connect
               </Button>

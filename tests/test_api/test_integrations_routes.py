@@ -124,3 +124,53 @@ def test_preview_integration_agent_prompt_empty(authenticated_client, monkeypatc
     )
 
     assert response.status_code == 422
+
+
+def test_list_integration_voice_agents_success(authenticated_client, monkeypatch, make_integration):
+    integration = make_integration(platform="elevenlabs")
+    catalog_module = importlib.import_module("app.services.voice_providers.voice_agent_catalog")
+
+    class _Result:
+        agents = [{"id": "agent-1", "name": "Support Bot"}]
+        platform = "elevenlabs"
+        cached = False
+        truncated = False
+        list_supported = True
+        message = None
+
+    monkeypatch.setattr(
+        catalog_module,
+        "list_integration_voice_agents",
+        lambda _integration, refresh=False, search=None: _Result(),
+    )
+
+    response = authenticated_client.get(f"/api/v1/integrations/{integration.id}/voice-agents")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["platform"] == "elevenlabs"
+    assert body["agents"] == [{"id": "agent-1", "name": "Support Bot"}]
+    assert body["list_supported"] is True
+
+
+def test_list_integration_voice_agents_not_found(authenticated_client):
+    response = authenticated_client.get(
+        "/api/v1/integrations/11111111-1111-1111-1111-111111111111/voice-agents",
+    )
+
+    assert response.status_code == 404
+
+
+def test_list_integration_voice_agents_provider_error(authenticated_client, monkeypatch, make_integration):
+    integration = make_integration(platform="vapi")
+    catalog_module = importlib.import_module("app.services.voice_providers.voice_agent_catalog")
+
+    def _raise(_integration, refresh=False, search=None):
+        raise ValueError("Provider unavailable")
+
+    monkeypatch.setattr(catalog_module, "list_integration_voice_agents", _raise)
+
+    response = authenticated_client.get(f"/api/v1/integrations/{integration.id}/voice-agents")
+
+    assert response.status_code == 502
+    assert "Provider unavailable" in response.json()["detail"]

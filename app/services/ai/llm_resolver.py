@@ -21,6 +21,8 @@ from app.services.ai.llm_gateway import (
     routing_context_from_ai_provider,
 )
 from app.services.credentials import resolve_ai_provider, resolve_integration
+from app.services.ai.model_config_service import model_config_service
+from app.services.usage.enabled_models import filter_models_by_credential
 
 
 _DEFAULT_MODELS: dict[ModelProvider, str] = {
@@ -28,6 +30,7 @@ _DEFAULT_MODELS: dict[ModelProvider, str] = {
     ModelProvider.ANTHROPIC: "claude-sonnet-4.6",
     ModelProvider.GOOGLE: "gemini-2.5-flash",
     ModelProvider.SARVAM: "sarvam-30b",
+    ModelProvider.FIREWORKS: "gpt-oss-20b",
 }
 
 _AUTO_DETECT_PRIORITY = (
@@ -53,8 +56,30 @@ def _provider_enum(provider: str) -> ModelProvider:
         )
 
 
-def _default_model_for(provider: ModelProvider) -> str:
-    return _DEFAULT_MODELS.get(provider, "gpt-5-mini")
+def _default_model_for(
+    provider: ModelProvider,
+    ai_prov: Optional[AIProvider] = None,
+) -> str:
+    preset = _DEFAULT_MODELS.get(provider)
+    if preset:
+        return preset
+
+    catalog = model_config_service.get_models_by_type(provider, "llm")
+    if ai_prov is not None:
+        catalog = filter_models_by_credential(ai_prov, catalog)
+    if catalog:
+        return catalog[0]
+
+    if provider == ModelProvider.OPENAI:
+        return "gpt-5-mini"
+
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"No default LLM model available for {provider.value}. "
+            "Select a model explicitly or configure one in AI Providers."
+        ),
+    )
 
 
 def _provider_enum_from_integration_platform(platform: str) -> Optional[ModelProvider]:
@@ -73,10 +98,8 @@ def _resolved_model_for_row(
     _, effective = resolve_effective_routing(organization_id, db, ctx)
     if effective != "direct" and ctx.gateway_model:
         return ctx.gateway_model
-    try:
-        return _default_model_for(ModelProvider(ai_prov.provider.lower()))
-    except ValueError:
-        return "gpt-5-mini"
+    provider_enum = _provider_enum(ai_prov.provider)
+    return _default_model_for(provider_enum, ai_prov)
 
 
 def _resolved_model_for_integration(
