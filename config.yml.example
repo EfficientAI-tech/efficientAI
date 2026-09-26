@@ -50,6 +50,7 @@ security:
   # hsts_enabled: true
   # hsts_max_age: 31536000
   # hsts_include_subdomains: true
+  # omit_server_header: true   # default true — hides uvicorn Server header (Docker uses --no-server-header)
   # csp_policy: "default-src 'self'; ..."  # optional override (defaults include Vapi/Daily, Retell/LiveKit, ElevenLabs)
 
 # HTTP rate limits: off by default (self-host). EfficientAI SaaS sets enforce: true.

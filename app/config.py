@@ -131,6 +131,7 @@ class Settings(BaseSettings):
     SECURITY_HSTS_ENABLED: bool = False
     SECURITY_HSTS_MAX_AGE: int = 31536000
     SECURITY_HSTS_INCLUDE_SUBDOMAINS: bool = True
+    SECURITY_OMIT_SERVER_HEADER: bool = True
 
     # Authentication
     AUTH_PROVIDERS: Annotated[List[str], NoDecode] = ["api_key"]
@@ -188,6 +189,7 @@ class Settings(BaseSettings):
         "default-src 'self'; "
         f"script-src 'self' {_CSP_DAILY_SCRIPT_SRC}; "
         "style-src 'self' https://fonts.googleapis.com; "
+        "style-src-elem 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "style-src-attr 'unsafe-inline'; "
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data: blob: https:; "
@@ -1024,6 +1026,8 @@ def load_config_from_file(config_path: str) -> None:
             settings.SECURITY_HSTS_INCLUDE_SUBDOMAINS = bool(
                 security_config["hsts_include_subdomains"]
             )
+        if "omit_server_header" in security_config:
+            settings.SECURITY_OMIT_SERVER_HEADER = bool(security_config["omit_server_header"])
 
     if "rate_limits" in config_data:
         rate_cfg = config_data["rate_limits"]
