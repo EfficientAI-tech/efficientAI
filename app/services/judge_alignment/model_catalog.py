@@ -43,6 +43,7 @@ _LLM_CAPABLE_PROVIDERS = {
     ModelProvider.MISTRAL.value,
     ModelProvider.META.value,
     ModelProvider.TOGETHER.value,
+    ModelProvider.TYPESAFE.value,
     ModelProvider.PERPLEXITY.value,
     ModelProvider.AZURE.value,
     ModelProvider.AWS.value,
@@ -50,6 +51,15 @@ _LLM_CAPABLE_PROVIDERS = {
     ModelProvider.CUSTOM.value,
     ModelProvider.SARVAM.value,
 }
+
+# Judge/evaluator LLM providers that are not wired into live voice pipelines.
+_LLM_JUDGE_ONLY_PROVIDERS = frozenset(
+    {
+        ModelProvider.TYPESAFE.value,
+    }
+)
+
+_LLM_VOICE_CAPABLE_PROVIDERS = _LLM_CAPABLE_PROVIDERS - _LLM_JUDGE_ONLY_PROVIDERS
 
 # Voice-platform integrations that also expose LLM models (credentials
 # live in the Integration table rather than AIProvider).
@@ -70,6 +80,7 @@ def _provider_label(provider_value: str) -> str:
         "mistral": "Mistral",
         "meta": "Meta",
         "together": "Together",
+        "typesafe": "TypeSafe",
         "perplexity": "Perplexity",
         "azure": "Azure",
         "aws": "AWS",
