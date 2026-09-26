@@ -61,13 +61,20 @@ def test_build_rebalance_plan_filters_by_shard_and_slice():
                         "app.db_sharding.rebalance._configured_shard_ids",
                         return_value={"data-shard-01", "data-shard-02"},
                     ):
-                        plan = build_rebalance_plan(
-                            catalog_db,
-                            call_import_id,
-                            from_shard_id="data-shard-01",
-                            to_shard_id="data-shard-02",
-                            slice_ids=[1],
-                        )
+                        shard_db = MagicMock()
+                        factory = MagicMock(return_value=shard_db)
+                        with patch(
+                            "app.db_sharding.rebalance.db_pool_manager.shard_session_factory",
+                            return_value=factory,
+                        ):
+                            plan = build_rebalance_plan(
+                                catalog_db,
+                                call_import_id,
+                                from_shard_id="data-shard-01",
+                                to_shard_id="data-shard-02",
+                                slice_ids=[1],
+                            )
+                        shard_db.close.assert_called_once()
 
     assert plan.from_shard_id == "data-shard-01"
     assert plan.to_shard_id == "data-shard-02"

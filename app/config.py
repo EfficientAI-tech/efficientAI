@@ -482,17 +482,15 @@ def validate_auth_configuration() -> None:
     providers = {p.strip().lower() for p in (settings.AUTH_PROVIDERS or [])}
 
     if not settings.DEBUG:
-        frontend = (settings.FRONTEND_BASE_URL or "").strip()
-        if not frontend.startswith(("http://", "https://")):
-            raise RuntimeError(
-                "FRONTEND_BASE_URL must be set to a valid http(s) URL in non-debug deployments "
-                "(app.frontend_base_url in config.yml or FRONTEND_BASE_URL env)."
-            )
         trusted = [h.strip() for h in (settings.TRUSTED_HOSTS or []) if h and str(h).strip()]
         if not trusted:
             raise RuntimeError(
                 "TRUSTED_HOSTS must be non-empty in non-debug deployments "
-                "(set app.frontend_base_url and/or security.trusted_hosts)."
+                "(set app.frontend_base_url, security.public_base_url, and/or security.trusted_hosts)."
+            )
+        if "*" in trusted:
+            raise RuntimeError(
+                "TRUSTED_HOSTS must not contain '*' in non-debug deployments."
             )
 
     if "external_oidc" not in providers:
@@ -510,6 +508,15 @@ def validate_auth_configuration() -> None:
         raise RuntimeError(
             f"external_oidc is enabled but required settings are missing: {', '.join(missing)}"
         )
+
+    if not settings.DEBUG:
+        frontend = (settings.FRONTEND_BASE_URL or "").strip()
+        if not frontend.startswith(("http://", "https://")):
+            raise RuntimeError(
+                "FRONTEND_BASE_URL must be set to a valid http(s) URL in non-debug deployments "
+                "when external_oidc is enabled (app.frontend_base_url in config.yml or "
+                "FRONTEND_BASE_URL env)."
+            )
 
 
 def apply_service_mode(mode: str) -> None:
