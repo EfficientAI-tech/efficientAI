@@ -148,8 +148,6 @@ class Settings(BaseSettings):
     AUTH_OIDC_JWKS_URI: Optional[str] = None
     AUTH_OIDC_ORG_CLAIM_PATH: List[str] = []
     AUTH_OIDC_DEFAULT_ORG_NAME: Optional[str] = None
-    AUTH_JWT_PRIVATE_KEY_PEM: str = ""
-    AUTH_JWT_PUBLIC_KEY_PEM: str = ""
 
     # Frontend
     FRONTEND_DIR: str = "./frontend/dist"
@@ -463,7 +461,6 @@ _PLACEHOLDER_SECRETS = frozenset({
 
 def validate_auth_configuration() -> None:
     """Fail fast when auth or session signing is misconfigured."""
-    from app.core.auth.jwt_keys import validate_session_jwt_key_configuration
     from app.core.license import has_auth_feature
     from app.core.security_settings import finalize_security_settings
 
@@ -495,9 +492,6 @@ def validate_auth_configuration() -> None:
                 "TRUSTED_HOSTS must be non-empty in non-debug deployments "
                 "(set app.frontend_base_url and/or security.trusted_hosts)."
             )
-
-    if "local_password" in providers or "platform_admin" in providers:
-        validate_session_jwt_key_configuration()
 
     if "external_oidc" not in providers:
         return
@@ -816,11 +810,6 @@ def load_config_from_file(config_path: str) -> None:
         auth_config = config_data["auth"]
         if "providers" in auth_config:
             settings.AUTH_PROVIDERS = auth_config["providers"]
-
-        if "jwt_private_key_pem" in auth_config:
-            settings.AUTH_JWT_PRIVATE_KEY_PEM = str(auth_config["jwt_private_key_pem"] or "")
-        if "jwt_public_key_pem" in auth_config:
-            settings.AUTH_JWT_PUBLIC_KEY_PEM = str(auth_config["jwt_public_key_pem"] or "")
 
         local_config = auth_config.get("local_password", {})
         if isinstance(local_config, dict):

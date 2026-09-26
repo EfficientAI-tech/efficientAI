@@ -12,11 +12,6 @@ from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.core.auth.jwt_keys import (
-    SESSION_JWT_ALGORITHM,
-    session_jwt_signing_key,
-    session_jwt_verification_key,
-)
 from app.core.auth.cookies import read_platform_access_cookie
 from app.core.auth.token_revocation import is_access_jti_revoked, revoke_access_jti
 from app.database import get_db
@@ -24,7 +19,7 @@ from app.models.database import PlatformAdmin
 
 PLATFORM_ISSUER = "efficientai-platform"
 PLATFORM_SCOPE = "platform_admin"
-ALGORITHM = SESSION_JWT_ALGORITHM
+ALGORITHM = "HS256"
 
 
 @dataclass(frozen=True)
@@ -51,14 +46,14 @@ def create_platform_access_token(
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=ttl_minutes)).timestamp()),
     }
-    token = jwt.encode(payload, session_jwt_signing_key(), algorithm=ALGORITHM)
+    token = jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
     return token, ttl_seconds
 
 
 def decode_platform_access_token(token: str) -> Dict[str, Any]:
     return jwt.decode(
         token,
-        session_jwt_verification_key(),
+        settings.SECRET_KEY,
         algorithms=[ALGORITHM],
         issuer=PLATFORM_ISSUER,
         options={"verify_aud": False},

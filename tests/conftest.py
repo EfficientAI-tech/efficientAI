@@ -68,19 +68,6 @@ def mock_flexprice_locally(monkeypatch, request):
 
 
 @pytest.fixture(autouse=True)
-def ensure_rs256_session_jwt_keys_for_tests():
-    from app.core.auth import jwt_keys
-
-    jwt_keys._signing_key_pem = None
-    jwt_keys._verification_key_pem = None
-    jwt_keys._ephemeral_generated = False
-    from app.core.auth.jwt_keys import ensure_session_jwt_keys
-
-    ensure_session_jwt_keys()
-    yield
-
-
-@pytest.fixture(autouse=True)
 def isolate_service_mode_for_app_factory(monkeypatch):
     """Prevent local SERVICE_MODE / media URL config from breaking create_app tests."""
     from app.config import settings
