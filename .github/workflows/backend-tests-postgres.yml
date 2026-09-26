@@ -31,8 +31,8 @@ jobs:
           --health-retries 10
 
     env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/efficientai_test
-      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/efficientai_test
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/efficientai_test
+      TEST_DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/efficientai_test
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: efficientai_test
@@ -78,11 +78,11 @@ jobs:
       PGPORT: 5432
       PGUSER: postgres
       PGPASSWORD: postgres
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/efficientai_catalog
-      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/efficientai_test
-      CATALOG_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/efficientai_catalog
-      SHARD_DATABASE_URL_01: postgresql://postgres:postgres@localhost:5432/efficientai_data_01
-      SHARD_DATABASE_URL_02: postgresql://postgres:postgres@localhost:5432/efficientai_data_02
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/efficientai_catalog
+      TEST_DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/efficientai_test
+      CATALOG_DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/efficientai_catalog
+      SHARD_DATABASE_URL_01: postgresql+psycopg2://postgres:postgres@localhost:5432/efficientai_data_01
+      SHARD_DATABASE_URL_02: postgresql+psycopg2://postgres:postgres@localhost:5432/efficientai_data_02
       SHARDING_INTEGRATION_TEST: "1"
       REDIS_URL: redis://localhost:6379/0
       EFFICIENTAI_PYTEST: "1"

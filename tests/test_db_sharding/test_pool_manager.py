@@ -1,7 +1,7 @@
 import pytest
 from sqlalchemy import create_engine, text
 
-from app.db_sharding.pool_manager import DatabasePoolManager
+from app.db_sharding.pool_manager import DatabasePoolManager, postgresql_engine_url
 
 
 @pytest.fixture
@@ -76,3 +76,11 @@ def test_sharding_two_shards_dedupe_migrations(manager, monkeypatch):
         assert shard_id in ("data-shard-01", "data-shard-02")
     finally:
         session.close()
+
+
+def test_postgresql_engine_url_uses_psycopg2_and_keeps_password():
+    parsed = postgresql_engine_url(
+        "postgresql://efficientai:password@localhost:5432/efficientai"
+    )
+    assert parsed.drivername == "postgresql+psycopg2"
+    assert parsed.password == "password"

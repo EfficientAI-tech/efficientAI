@@ -69,7 +69,6 @@ def decode_access_token(token: str) -> Dict[str, Any]:
             options={"verify_aud": False},
         )
     except JWTError:
-        # Re-raise so caller can distinguish from other errors.
         raise
 
 
