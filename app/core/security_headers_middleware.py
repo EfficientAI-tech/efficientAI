@@ -30,6 +30,13 @@ def _apply_cache_control(request: Request, response: Response) -> None:
     response.headers["Expires"] = "0"
 
 
+def _apply_server_header(response: Response) -> None:
+    if not settings.SECURITY_OMIT_SERVER_HEADER:
+        return
+    if "server" in response.headers:
+        del response.headers["server"]
+
+
 def _apply_csp(response: Response) -> None:
     if not settings.CSP_ENABLED:
         return
@@ -52,6 +59,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         _apply_cache_control(request, response)
         _apply_csp(response)
+        _apply_server_header(response)
         if settings.SECURITY_HSTS_ENABLED:
             max_age = max(0, int(settings.SECURITY_HSTS_MAX_AGE))
             if max_age > 0:
