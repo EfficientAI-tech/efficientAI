@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from sqlalchemy import create_engine
-from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.engine import Engine, URL, make_url
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db_sharding.router import ShardRouter
@@ -118,7 +118,11 @@ class DatabasePoolManager:
         max_overflow = int(getattr(settings, "DB_MAX_OVERFLOW", 20))
 
         def make_engine(url: str) -> Engine:
-            return create_engine(url, **_create_engine_kwargs(url, pool_size, max_overflow))
+            engine_url = postgresql_engine_url(url)
+            return create_engine(
+                engine_url,
+                **_create_engine_kwargs(engine_url, pool_size, max_overflow),
+            )
 
         enabled = bool(getattr(settings, "DB_SHARDING_ENABLED", False))
         database_url = settings.DATABASE_URL
@@ -150,9 +154,10 @@ class DatabasePoolManager:
         )
         self._shard_entries = shard_entries
         for entry in shard_entries:
+            shard_url = postgresql_engine_url(entry.url)
             eng = create_engine(
-                entry.url,
-                **_create_engine_kwargs(entry.url, shard_pool_size, shard_max_overflow),
+                shard_url,
+                **_create_engine_kwargs(shard_url, shard_pool_size, shard_max_overflow),
             )
             self._shard_engines[entry.id] = eng
             self._shard_session_factories[entry.id] = sessionmaker(
@@ -166,9 +171,20 @@ class DatabasePoolManager:
         self._initialized = True
 
 
-def _create_engine_kwargs(url: str, pool_size: int, max_overflow: int) -> dict:
+def postgresql_engine_url(url: str | URL) -> URL:
+    """SQLAlchemy 2 defaults bare postgresql:// to psycopg3; we ship psycopg2-binary."""
+    parsed = make_url(url) if isinstance(url, str) else url
+    drivername = parsed.drivername or ""
+    base = drivername.split("+", 1)[0]
+    if base in ("postgresql", "postgres") and "+" not in drivername:
+        return parsed.set(drivername="postgresql+psycopg2")
+    return parsed
+
+
+def _create_engine_kwargs(url: str | URL, pool_size: int, max_overflow: int) -> dict:
     """Dialect-appropriate kwargs (SQLite tests use SingletonThreadPool)."""
-    dialect_name = make_url(url).get_backend_name()
+    parsed = make_url(url) if isinstance(url, str) else url
+    dialect_name = parsed.get_backend_name()
     if dialect_name == "sqlite":
         return {"pool_pre_ping": True}
     return {

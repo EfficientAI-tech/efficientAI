@@ -10,21 +10,10 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import create_engine
-from sqlalchemy.engine import make_url
+
+from app.db_sharding.pool_manager import postgresql_engine_url
 
 pytestmark = pytest.mark.integration
-
-
-def _postgresql_psycopg2_url(url: str) -> str:
-    """CI/local URLs use postgresql://; SQLAlchemy 2 defaults to psycopg3 (not installed)."""
-    parsed = make_url(url)
-    drivername = parsed.drivername or ""
-    base = drivername.split("+", 1)[0]
-    if base in ("postgresql", "postgres") and "+" not in drivername:
-        return parsed.set(drivername="postgresql+psycopg2").render_as_string(
-            hide_password=False
-        )
-    return url
 
 
 def _require_env(name: str) -> str:
@@ -39,9 +28,9 @@ def sharding_postgres_env():
     if os.getenv("SHARDING_INTEGRATION_TEST") != "1":
         pytest.skip("SHARDING_INTEGRATION_TEST is not enabled")
 
-    catalog_url = _postgresql_psycopg2_url(_require_env("CATALOG_DATABASE_URL"))
-    shard_01 = _postgresql_psycopg2_url(_require_env("SHARD_DATABASE_URL_01"))
-    shard_02 = _postgresql_psycopg2_url(_require_env("SHARD_DATABASE_URL_02"))
+    catalog_url = _require_env("CATALOG_DATABASE_URL")
+    shard_01 = _require_env("SHARD_DATABASE_URL_01")
+    shard_02 = _require_env("SHARD_DATABASE_URL_02")
 
     from app.database import Base
     from app.db_sharding.pool_manager import db_pool_manager
@@ -50,7 +39,7 @@ def sharding_postgres_env():
     import app.models.database  # noqa: F401
 
     for url in (catalog_url, shard_01, shard_02):
-        engine = create_engine(url, pool_pre_ping=True)
+        engine = create_engine(postgresql_engine_url(url), pool_pre_ping=True)
         Base.metadata.create_all(bind=engine)
         engine.dispose()
 

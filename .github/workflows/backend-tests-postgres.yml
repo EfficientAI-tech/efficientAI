@@ -31,8 +31,8 @@ jobs:
           --health-retries 10
 
     env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/efficientai_test
-      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/efficientai_test
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/efficientai_test
+      TEST_DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/efficientai_test
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: efficientai_test
