@@ -64,7 +64,9 @@ def build_csp_policy_with_extras() -> str:
     return (
         "default-src 'self'; "
         f"script-src {script_src}; "
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "style-src 'self' https://fonts.googleapis.com; "
+        "style-src-elem 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "style-src-attr 'unsafe-inline'; "
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data: blob: https:; "
         f"connect-src {connect_src}; "

@@ -131,6 +131,7 @@ class Settings(BaseSettings):
     SECURITY_HSTS_ENABLED: bool = False
     SECURITY_HSTS_MAX_AGE: int = 31536000
     SECURITY_HSTS_INCLUDE_SUBDOMAINS: bool = True
+    SECURITY_OMIT_SERVER_HEADER: bool = True
 
     # Call traces / OTLP observability (Phase 2 scaling)
     TRACES_ASYNC_INGEST_ENABLED: bool = True
@@ -218,7 +219,9 @@ class Settings(BaseSettings):
     CSP_POLICY: str = (
         "default-src 'self'; "
         f"script-src 'self' {_CSP_DAILY_SCRIPT_SRC}; "
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "style-src 'self' https://fonts.googleapis.com; "
+        "style-src-elem 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "style-src-attr 'unsafe-inline'; "
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data: blob: https:; "
         f"connect-src 'self' wss: ws: {_CSP_VOICE_CONNECT_SRC} {_CSP_STORAGE_CONNECT_SRC}; "
@@ -492,6 +495,9 @@ _PLACEHOLDER_SECRETS = frozenset({
 def validate_auth_configuration() -> None:
     """Fail fast when auth or session signing is misconfigured."""
     from app.core.license import has_auth_feature
+    from app.core.security_settings import finalize_security_settings
+
+    finalize_security_settings()
 
     secret = (settings.SECRET_KEY or "").strip()
     if not settings.DEBUG and (
@@ -505,6 +511,19 @@ def validate_auth_configuration() -> None:
         )
 
     providers = {p.strip().lower() for p in (settings.AUTH_PROVIDERS or [])}
+
+    if not settings.DEBUG:
+        trusted = [h.strip() for h in (settings.TRUSTED_HOSTS or []) if h and str(h).strip()]
+        if not trusted:
+            raise RuntimeError(
+                "TRUSTED_HOSTS must be non-empty in non-debug deployments "
+                "(set app.frontend_base_url, security.public_base_url, and/or security.trusted_hosts)."
+            )
+        if "*" in trusted:
+            raise RuntimeError(
+                "TRUSTED_HOSTS must not contain '*' in non-debug deployments."
+            )
+
     if "external_oidc" not in providers:
         return
     # Listing external_oidc in providers alone does not activate SSO — the
@@ -526,7 +545,8 @@ def validate_auth_configuration() -> None:
         if not frontend.startswith(("http://", "https://")):
             raise RuntimeError(
                 "FRONTEND_BASE_URL must be set to a valid http(s) URL in non-debug deployments "
-                "(app.frontend_base_url in config.yml or FRONTEND_BASE_URL env)."
+                "when external_oidc is enabled (app.frontend_base_url in config.yml or "
+                "FRONTEND_BASE_URL env)."
             )
 
 
@@ -1084,6 +1104,8 @@ def load_config_from_file(config_path: str) -> None:
             settings.SECURITY_HSTS_INCLUDE_SUBDOMAINS = bool(
                 security_config["hsts_include_subdomains"]
             )
+        if "omit_server_header" in security_config:
+            settings.SECURITY_OMIT_SERVER_HEADER = bool(security_config["omit_server_header"])
 
     if "rate_limits" in config_data:
         rate_cfg = config_data["rate_limits"]

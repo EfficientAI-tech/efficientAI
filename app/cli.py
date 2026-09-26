@@ -312,7 +312,9 @@ def start(config: str, host: Optional[str], port: Optional[int], build_frontend:
     
     # Start the server
     import uvicorn
-    
+
+    from app.core.uvicorn_runtime import uvicorn_run_extra_kwargs
+
     click.echo(f"🚀 Starting EfficientAI server...")
     click.echo(f"   Host: {settings.HOST}")
     click.echo(f"   Port: {settings.PORT}")
@@ -329,6 +331,7 @@ def start(config: str, host: Optional[str], port: Optional[int], build_frontend:
             host=settings.HOST,
             port=settings.PORT,
             reload=reload,
+            **uvicorn_run_extra_kwargs(),
         )
     finally:
         # Clean up watcher on exit
@@ -548,12 +551,15 @@ def telephony_worker(config: str, host: Optional[str], port: Optional[int]):
 
     import uvicorn
 
+    from app.core.uvicorn_runtime import uvicorn_run_extra_kwargs
+
     click.echo(f"🎙️  Starting EfficientAI media server on {bind_host}:{bind_port}")
     uvicorn.run(
         app,
         host=bind_host,
         port=bind_port,
         reload=False,
+        **uvicorn_run_extra_kwargs(),
     )
 
 
@@ -1166,11 +1172,14 @@ def start_all(
         click.echo("\n📝 All services are running. Press Ctrl+C to stop.\n")
         
         # Run uvicorn in the main process (allows reload to work)
+        from app.core.uvicorn_runtime import uvicorn_run_extra_kwargs
+
         uvicorn.run(
             "app.main:app",
             host=settings.HOST,
             port=settings.PORT,
             reload=reload,
+            **uvicorn_run_extra_kwargs(),
         )
     except KeyboardInterrupt:
         pass

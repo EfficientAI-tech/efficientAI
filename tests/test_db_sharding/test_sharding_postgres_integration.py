@@ -11,6 +11,8 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import create_engine
 
+from app.db_sharding.pool_manager import postgresql_engine_url
+
 pytestmark = pytest.mark.integration
 
 
@@ -37,7 +39,7 @@ def sharding_postgres_env():
     import app.models.database  # noqa: F401
 
     for url in (catalog_url, shard_01, shard_02):
-        engine = create_engine(url, pool_pre_ping=True)
+        engine = create_engine(postgresql_engine_url(url), pool_pre_ping=True)
         Base.metadata.create_all(bind=engine)
         engine.dispose()
 

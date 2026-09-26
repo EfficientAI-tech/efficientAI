@@ -36,10 +36,12 @@ def security_client(tmp_path):
         yield client
 
 
-def test_health_includes_baseline_security_headers(security_client):
+def test_health_includes_baseline_security_headers(security_client, monkeypatch):
+    monkeypatch.setattr(settings, "SECURITY_OMIT_SERVER_HEADER", True)
     response = security_client.get("/health")
 
     assert response.status_code == 200
+    assert "server" not in {k.lower() for k in response.headers.keys()}
     assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert response.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
     assert response.headers["X-Frame-Options"] == "SAMEORIGIN"
@@ -75,6 +77,21 @@ def test_csp_enforcing_header_when_report_only_disabled(security_client, monkeyp
 
     assert "Content-Security-Policy" in response.headers
     assert "Content-Security-Policy-Report-Only" not in response.headers
+
+
+def test_csp_style_src_does_not_allow_unsafe_inline(security_client, monkeypatch):
+    monkeypatch.setattr(settings, "CSP_ENABLED", True)
+    monkeypatch.setattr(settings, "CSP_REPORT_ONLY", False)
+
+    response = security_client.get("/health")
+    policy = response.headers["Content-Security-Policy"]
+
+    assert "style-src-attr 'unsafe-inline'" in policy
+    assert "style-src-elem" in policy
+    style_src_part = policy.split("style-src ")[1].split(";")[0]
+    assert "unsafe-inline" not in style_src_part
+    style_elem_part = policy.split("style-src-elem ")[1].split(";")[0]
+    assert "'unsafe-inline'" in style_elem_part
 
 
 def test_csp_allows_voice_provider_connect_src(security_client, monkeypatch):
