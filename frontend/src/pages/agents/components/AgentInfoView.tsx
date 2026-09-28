@@ -15,9 +15,7 @@ import {
   MessagesSquare,
 } from 'lucide-react'
 import { isChatMedium } from '../../../lib/agentMedium'
-import { chatEvalModeLabel, connectionTypeLabel } from './create/chatAgentFormUtils'
-import { useMutation } from '@tanstack/react-query'
-import { apiClient } from '../../../lib/api'
+import { connectionTypeLabel } from './create/chatAgentFormUtils'
 import { CallTypeBadge } from '../../evaluators/components/evaluatorUi'
 import ParamSlider from './ParamSlider'
 import {
@@ -127,14 +125,6 @@ export default function AgentInfoView({
     : 'Production'
 
   const providerPromptText = agent.provider_prompt ? stripCodeFences(agent.provider_prompt) : ''
-
-  const chatImportSetupMutation = useMutation({
-    mutationFn: () => apiClient.setupChatImportForAgent(agent.id),
-    onSuccess: (data) => {
-      const params = new URLSearchParams({ upload: '1', schema_id: data.schema_id })
-      navigate(`/chat-imports?${params.toString()}`)
-    },
-  })
 
   if (activeTab === 'overview') {
     const isChatAgent = isChatMedium(agent.call_medium)
@@ -246,24 +236,12 @@ export default function AgentInfoView({
                     <OverviewStatCard
                       icon={Globe}
                       label="Eval mode"
-                      value={chatEvalModeLabel(agent.chat_eval_mode)}
+                      value="Pre-prod simulation"
                       accent="emerald"
                     />
                   </>
                 )}
               </div>
-              {isChatAgent && (agent.chat_eval_mode || 'pre_prod_sim') === 'post_prod_import' ? (
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => chatImportSetupMutation.mutate()}
-                    isLoading={chatImportSetupMutation.isPending}
-                  >
-                    Open chat import setup
-                  </Button>
-                </div>
-              ) : null}
             </OverviewSection>
 
             <div className={`grid grid-cols-1 ${isChatAgent ? '' : 'lg:grid-cols-2'} gap-5`}>

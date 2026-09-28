@@ -1,5 +1,6 @@
-import { Bot, Link2, Webhook, MessageCircle } from 'lucide-react'
+import { Bot } from 'lucide-react'
 import type { ChatConnectionType } from './ChatConnectionStep'
+import { CHAT_PREPROD_CONNECTION_TYPE, CHAT_PREPROD_ENABLED } from './chatPreprodScope'
 import { WizardStepHeader } from './WizardStepHeader'
 
 export type ChatIntegrationOptionId =
@@ -24,27 +25,12 @@ const OPTIONS: {
     description: 'Pre-prod simulation with your system prompt and EfficientAI LLMs.',
     icon: Bot,
   },
-  {
-    id: 'provider_chat',
-    label: 'Provider live chat',
-    description: 'Live text on Vapi, Retell, ElevenLabs, or Smallest.',
-    icon: Link2,
-  },
-  {
-    id: 'customer_api',
-    label: 'HTTP API',
-    description: 'Your own chat endpoint for production replies.',
-    icon: Webhook,
-  },
-  {
-    id: 'messaging_channels',
-    label: 'Messaging',
-    description: 'WhatsApp or SMS with webhook or carrier send for post-prod eval.',
-    icon: MessageCircle,
-  },
 ]
 
 export function isChatIntegrationAvailable(id: ChatIntegrationOptionId): boolean {
+  if (CHAT_PREPROD_ENABLED) {
+    return id === CHAT_PREPROD_CONNECTION_TYPE
+  }
   return (
     id === 'internal_llm' ||
     id === 'provider_chat' ||
@@ -70,7 +56,7 @@ export default function ChatIntegrationTypeStep({
       {!embedded ? (
         <WizardStepHeader
           title="How does production chat connect?"
-          subtitle="This drives the production leg in evaluation — simulation, live APIs, or imported transcripts later."
+          subtitle="Pre-prod uses Platform LLM simulation with your production prompt."
         />
       ) : null}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

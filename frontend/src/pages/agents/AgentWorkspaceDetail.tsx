@@ -247,13 +247,12 @@ export default function AgentWorkspaceDetail({
         payload.phone_number = null
         payload.telephony_phone_number_id = null
         payload.provider_prompt = data.provider_prompt?.trim() || null
-        payload.voice_ai_integration_id = data.voice_ai_integration_id?.trim() || null
-        payload.voice_ai_agent_id = data.voice_ai_agent_id?.trim() || null
+        payload.voice_ai_integration_id = null
+        payload.voice_ai_agent_id = null
+        payload.chat_connection_type = 'internal_llm'
+        payload.chat_eval_mode = 'pre_prod_sim'
 
-        const connType = (agent?.chat_connection_type || 'internal_llm') as ChatConnectionForm['connectionType']
-        payload.chat_connection_type = connType
-
-        if (connType === 'internal_llm' && chatConnection.mainLlmProvider) {
+        if (chatConnection.mainLlmProvider) {
           payload.main_llm_provider = chatConnection.mainLlmProvider
           payload.main_llm_model = chatConnection.mainLlmModel
           if (chatConnection.mainLlmCredentialId) {
@@ -261,19 +260,16 @@ export default function AgentWorkspaceDetail({
           }
         }
 
-        const configPayload = buildChatConnectionConfigPayload(connType, chatConnectionConfig)
-        if (configPayload) {
-          payload.chat_connection_config = configPayload
-        }
-
-        const needsTest =
-          chatConnection.useSeparateTestLlm || connType !== 'internal_llm'
-        if (needsTest && chatConnection.testLlmProvider) {
+        if (chatConnection.useSeparateTestLlm && chatConnection.testLlmProvider) {
           payload.test_llm_provider = chatConnection.testLlmProvider
           payload.test_llm_model = chatConnection.testLlmModel
           if (chatConnection.testLlmCredentialId) {
             payload.test_llm_credential_id = chatConnection.testLlmCredentialId
           }
+        } else {
+          payload.test_llm_provider = null
+          payload.test_llm_model = null
+          payload.test_llm_credential_id = null
         }
       } else {
         payload.voice_bundle_id = data.voice_bundle_id?.trim() || null

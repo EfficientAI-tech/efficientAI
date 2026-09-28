@@ -117,19 +117,11 @@ export default function ChatConnectionStep({
         <p className="text-sm font-medium text-gray-900">Evaluation models</p>
       ) : null}
 
-      {!compact && onChatEvalModeChange ? (
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Eval mode</label>
-          <select
-            className={MODERN_SELECT_CLASS}
-            value={chatEvalMode}
-            onChange={(e) => onChatEvalModeChange(e.target.value as ChatEvalMode)}
-          >
-            <option value="pre_prod_sim">Pre-prod simulation</option>
-            <option value="post_prod_live">Post-prod live (platform / API / webhook)</option>
-            <option value="post_prod_import">Post-prod import only</option>
-          </select>
-        </div>
+      {!compact ? (
+        <p className="text-xs text-gray-600 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+          Eval mode: <span className="font-medium text-gray-900">Pre-prod simulation</span> — two LLMs
+          run a text conversation before metrics are scored.
+        </p>
       ) : null}
 
       {showMainLlm ? (

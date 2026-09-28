@@ -51,7 +51,7 @@ export default function CreateAgentEntryStep({
         <section className="space-y-3 pt-2 border-t border-gray-100">
           <h3 className="text-sm font-medium text-gray-900">Chat connection</h3>
           <p className="text-sm text-gray-600 leading-relaxed">
-            How production chat is reached during evaluation — simulation, provider APIs, or your own endpoint.
+            Pre-prod evaluation simulates your production chat agent with Platform LLM and a simulated customer.
           </p>
           <ChatIntegrationTypeStep
             embedded

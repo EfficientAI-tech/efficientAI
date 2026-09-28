@@ -64,13 +64,11 @@ def _stored_chat_connection_config(config):
 
 
 def _chat_eval_mode_for_create(agent: AgentCreate, is_chat_agent: bool):
-    from app.models.enums import ChatEvalModeEnum
+    from app.services.agents.chat_preprod_scope import preprod_chat_eval_mode_value
 
     if not is_chat_agent:
         return None
-    if agent.chat_eval_mode:
-        return agent.chat_eval_mode.value
-    return ChatEvalModeEnum.PRE_PROD_SIM.value
+    return preprod_chat_eval_mode_value()
 
 
 def _first_message_response(first_message: TestAgentFirstMessage) -> TestAgentFirstMessageResponse:
@@ -628,6 +626,11 @@ async def create_agent(
 
     is_chat_agent = agent.call_medium == CallMediumEnumSchema.CHAT
 
+    if is_chat_agent:
+        from app.services.agents.chat_preprod_scope import apply_preprod_chat_create
+
+        apply_preprod_chat_create(agent)
+
     if agent.voice_bundle_id:
         voice_bundle = db.query(VoiceBundle).filter(
             and_(
@@ -992,6 +995,10 @@ async def update_agent(
             if hasattr(update_data["chat_eval_mode"], "value")
             else update_data["chat_eval_mode"]
         )
+
+    from app.services.agents.chat_preprod_scope import apply_preprod_chat_update
+
+    apply_preprod_chat_update(update_data, db_call_medium=db_agent.call_medium)
 
     if "test_agent_template" in update_data:
         template_input = agent_update.test_agent_template
