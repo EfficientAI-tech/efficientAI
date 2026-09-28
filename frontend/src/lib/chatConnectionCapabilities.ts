@@ -24,7 +24,7 @@ export const CHAT_CONNECTION_CAPABILITIES: ChatConnectionCapability[] = [
     id: 'internal_llm',
     label: 'LLM',
     description:
-      'Production prompt on platform LLMs; test LLM plays the other side (like voice test agents).',
+      'Production prompt on your LLM; EfficientAI test agent plays the customer (like voice evals).',
     pattern: 'llm_to_llm',
     offeredInCreateWizard: true,
   },
@@ -32,7 +32,7 @@ export const CHAT_CONNECTION_CAPABILITIES: ChatConnectionCapability[] = [
     id: 'provider_chat',
     label: 'Existing platform',
     description:
-      'Not LLM-to-LLM for the agent: each turn hits the provider text chat API (Vapi, Retell, ElevenLabs, or Smallest). The customer side is still an LLM.',
+      'Each production turn hits your platform text chat API (Vapi, Retell, ElevenLabs, or Smallest). Customer side is the EfficientAI test agent.',
     pattern: 'live_production_plus_customer_llm',
     offeredInCreateWizard: true,
   },
@@ -40,7 +40,7 @@ export const CHAT_CONNECTION_CAPABILITIES: ChatConnectionCapability[] = [
     id: 'customer_api',
     label: 'HTTP API',
     description:
-      'Not LLM-to-LLM for the agent: your HTTP endpoint answers each turn. The customer side is an LLM.',
+      'Your HTTP endpoint answers each production turn. Customer side is the EfficientAI test agent.',
     pattern: 'live_production_plus_customer_llm',
     offeredInCreateWizard: true,
   },
@@ -48,7 +48,7 @@ export const CHAT_CONNECTION_CAPABILITIES: ChatConnectionCapability[] = [
     id: 'messaging_channels',
     label: 'Messaging',
     description:
-      'Not LLM-to-LLM for the agent: WhatsApp/SMS or webhooks for production replies. The customer side is an LLM.',
+      'WhatsApp/SMS or webhooks for production replies. Customer side is the EfficientAI test agent.',
     pattern: 'live_production_plus_customer_llm',
     offeredInCreateWizard: true,
   },
@@ -76,5 +76,5 @@ export function createWizardChatConnections(): ChatConnectionCapability[] {
 }
 
 export function patternLabel(pattern: ChatEvalPattern): string {
-  return pattern === 'llm_to_llm' ? 'LLM-to-LLM' : 'Live production + test LLM'
+  return pattern === 'llm_to_llm' ? 'LLM-to-LLM' : 'Live production + test agent'
 }

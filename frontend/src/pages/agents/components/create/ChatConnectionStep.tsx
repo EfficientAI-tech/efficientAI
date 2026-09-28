@@ -33,11 +33,14 @@ interface ChatConnectionStepProps {
 }
 
 export function validateChatConnection(value: ChatConnectionForm): boolean {
-  const testOk = Boolean(value.testLlmProvider && value.testLlmModel.trim())
-  if (value.connectionType === 'internal_llm') {
-    return Boolean(value.mainLlmProvider && value.mainLlmModel.trim() && testOk)
+  if (value.connectionType !== 'internal_llm') {
+    return true
   }
-  return testOk
+  return Boolean(value.mainLlmProvider && value.mainLlmModel.trim())
+}
+
+export function chatConnectionValidationMessage(_value: ChatConnectionForm): string {
+  return 'Select API credential and model for the chat agent.'
 }
 
 function LlmCredentialModelFields({
@@ -133,71 +136,31 @@ export default function ChatConnectionStep({
   })
 
   const activeProviders = aiProviders.filter((p: AIProvider) => p.is_active)
-  const isLlmConnection = value.connectionType === 'internal_llm'
 
   useEffect(() => {
     if (activeProviders.length !== 1) return
+    if (value.connectionType !== 'internal_llm') return
     const p = activeProviders[0]
-    const patch: Partial<ChatConnectionForm> = {}
-    if (!value.mainLlmCredentialId && isLlmConnection) {
-      patch.mainLlmCredentialId = p.id
-      patch.mainLlmProvider = p.provider
+    if (!value.mainLlmCredentialId) {
+      onChange({ mainLlmCredentialId: p.id, mainLlmProvider: p.provider })
     }
-    if (!value.testLlmCredentialId) {
-      patch.testLlmCredentialId = p.id
-      patch.testLlmProvider = p.provider
-    }
-    if (Object.keys(patch).length) onChange(patch)
-  }, [activeProviders, isLlmConnection, value.mainLlmCredentialId, value.testLlmCredentialId, onChange])
+  }, [activeProviders, value.connectionType, value.mainLlmCredentialId, onChange])
+
+  if (value.connectionType !== 'internal_llm') {
+    return null
+  }
 
   return (
     <div className="w-full space-y-4">
-      {isLlmConnection ? (
-        <p className="text-sm text-gray-600 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 leading-relaxed">
-          LLM-to-LLM: the <span className="font-medium text-gray-900">production prompt</span> runs on
-          production LLM; the <span className="font-medium text-gray-900">test agent</span> uses the test
-          agent LLM (same roles as voice evals).
-        </p>
-      ) : (
-        <p className="text-sm text-gray-600 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
-          Production replies come from your{' '}
-          {value.connectionType === 'customer_api'
-            ? 'HTTP API'
-            : value.connectionType === 'provider_chat'
-              ? 'existing platform'
-              : 'messaging channel'}
-          . Choose the test agent LLM that plays the customer in evals.
-        </p>
-      )}
-
-      {isLlmConnection ? (
-        <LlmCredentialModelFields
-          title="Production LLM"
-          hint="Runs your production prompt each turn."
-          credentialId={value.mainLlmCredentialId}
-          model={value.mainLlmModel}
-          activeProviders={activeProviders}
-          onCredentialChange={(id, provider) =>
-            onChange({ mainLlmCredentialId: id, mainLlmProvider: provider, mainLlmModel: '' })
-          }
-          onModelChange={(m) => onChange({ mainLlmModel: m })}
-        />
-      ) : null}
-
       <LlmCredentialModelFields
-        title="Test agent LLM"
-        hint={
-          isLlmConnection
-            ? 'Simulates the customer / user side in evals.'
-            : 'Required — simulates the customer side while production uses your live connection.'
-        }
-        credentialId={value.testLlmCredentialId}
-        model={value.testLlmModel}
+        title="Chat Agent"
+        credentialId={value.mainLlmCredentialId}
+        model={value.mainLlmModel}
         activeProviders={activeProviders}
         onCredentialChange={(id, provider) =>
-          onChange({ testLlmCredentialId: id, testLlmProvider: provider, testLlmModel: '' })
+          onChange({ mainLlmCredentialId: id, mainLlmProvider: provider, mainLlmModel: '' })
         }
-        onModelChange={(m) => onChange({ testLlmModel: m })}
+        onModelChange={(m) => onChange({ mainLlmModel: m })}
       />
     </div>
   )

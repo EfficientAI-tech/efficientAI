@@ -79,6 +79,7 @@ export function ChatProviderPromptBlock({
       return apiClient.previewIntegrationAgentPrompt(
         formData.voice_ai_integration_id,
         formData.voice_ai_agent_id.trim(),
+        { agentChannel: 'chat' },
       )
     },
     onSuccess: (data: { provider_prompt?: string }) => {
@@ -135,9 +136,7 @@ export function validateChatConnectionDetails(
   const requirePrompt = options?.requireProductionPrompt ?? true
   if (integrationType === 'provider_chat') {
     const linked = Boolean(
-      selectedPlatform &&
-        formData.voice_ai_integration_id?.trim() &&
-        formData.voice_ai_agent_id?.trim(),
+      formData.voice_ai_integration_id?.trim() && formData.voice_ai_agent_id?.trim(),
     )
     return linked && (!requirePrompt || Boolean(productionPrompt.trim()))
   }

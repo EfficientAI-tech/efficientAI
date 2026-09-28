@@ -33,7 +33,6 @@ import { getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../.
 import VoiceBundleDetailCard from './VoiceBundleDetailCard'
 import AgentPromptVisualization from './AgentPromptVisualization'
 import Button from '../../../components/Button'
-import type { AgentTalkMode } from './AgentTalkSidebar'
 import { agentProviderPromptTag } from './agentFlowchartUtils'
 import TestAgentSubTabNav, { type TestAgentSubTab } from './TestAgentSubTabNav'
 import {
@@ -62,7 +61,8 @@ interface AgentInfoViewProps {
   activeTab: AgentDetailTab
   onSyncProviderPrompt?: () => void
   isSyncingPrompt?: boolean
-  onTalk?: (mode: AgentTalkMode) => void
+  /** Live web call to production voice platform (Retell/Vapi) — voice agents only. */
+  onTalkToProduction?: () => void
   onEditVoiceBundle?: (bundleId: string) => void
 }
 
@@ -109,7 +109,7 @@ export default function AgentInfoView({
   activeTab,
   onSyncProviderPrompt,
   isSyncingPrompt,
-  onTalk,
+  onTalkToProduction,
   onEditVoiceBundle,
 }: AgentInfoViewProps) {
   const navigate = useNavigate()
@@ -139,10 +139,7 @@ export default function AgentInfoView({
     const hasVoiceAiIntegration = Boolean(voiceAiIntegrationId && voiceIntegration)
     const hasVoiceAiAgentId = Boolean(voiceAiAgentId)
     const voiceAiConfigured = hasVoiceAiIntegration && hasVoiceAiAgentId
-    const chatTestLlmConfigured = Boolean(
-      (agent.test_llm_provider && agent.test_llm_model) ||
-        (agent.main_llm_provider && agent.main_llm_model),
-    )
+    const chatTestLlmConfigured = Boolean(linkedBundle && linkedBundle.is_active !== false)
     const chatTestPromptConfigured = Boolean(
       (agent.test_agent_template && isTemplateFilled(templateFromApi(agent.test_agent_template))) ||
         (agent.description && agent.description.trim().split(/\s+/).length >= 10),
@@ -153,7 +150,9 @@ export default function AgentInfoView({
     const chatProductionConfigured =
       chatConn === 'provider_chat'
         ? voiceAiConfigured && Boolean(providerPromptText)
-        : Boolean(providerPromptText)
+        : chatConn === 'internal_llm'
+          ? Boolean(providerPromptText && agent.main_llm_model)
+          : Boolean(providerPromptText)
 
     const voiceBundleLabel = linkedBundle
       ? linkedBundle.name
@@ -307,7 +306,7 @@ export default function AgentInfoView({
               title="Test agent (EfficientAI)"
               description={
                 isChatAgent
-                  ? 'Test agent prompt and LLM for simulated customer turns.'
+                  ? 'Test agent template — simulated customer in evals.'
                   : 'Internal voice stack for playground and evaluator runs.'
               }
             >
@@ -325,18 +324,10 @@ export default function AgentInfoView({
                   }
                 />
                 {isChatAgent ? (
-                  <>
-                    <OverviewDetailRow
-                      label="Test agent LLM"
-                      value={agent.test_llm_model || agent.main_llm_model || OVERVIEW_NOT_CONFIGURED}
-                    />
-                    <OverviewDetailRow
-                      label="Test prompt"
-                      value={
-                        chatTestPromptConfigured ? 'Configured' : OVERVIEW_NOT_CONFIGURED
-                      }
-                    />
-                  </>
+                  <OverviewDetailRow
+                    label="Test prompt"
+                    value={chatTestPromptConfigured ? 'Configured' : OVERVIEW_NOT_CONFIGURED}
+                  />
                 ) : (
                   <OverviewDetailRow label="Voice bundle" value={voiceBundleLabel} />
                 )}
@@ -392,7 +383,6 @@ export default function AgentInfoView({
 
   if (activeTab === 'test_agent') {
     const isChatAgent = isChatMedium(agent.call_medium)
-    const canTalk = !!agent.voice_bundle_id
 
     if (isChatAgent) {
       const template = agent.test_agent_template ? templateFromApi(agent.test_agent_template) : null
@@ -400,8 +390,38 @@ export default function AgentInfoView({
         (template && assembleTestAgentPrompt(template.sections)) ||
         agent.description?.trim() ||
         ''
+      const chatTestConfigured = Boolean(linkedBundle && linkedBundle.is_active !== false)
       return (
         <div className="space-y-4">
+          <TestAgentSubTabNav value={testAgentSubTab} onChange={setTestAgentSubTab} />
+
+          {testAgentSubTab === 'configuration' && (
+            <>
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">Test Agent Configuration</h3>
+                <p className="text-sm text-gray-500 mt-0.5">
+                  Voice stack LLM for the simulated customer in chat evals (production uses Retell/Vapi).
+                </p>
+              </div>
+              <VoiceBundleDetailCard
+                bundle={linkedBundle}
+                paramTuningMode="readonly"
+                pipelineScope="chat_llm"
+                onEdit={
+                  linkedBundle && onEditVoiceBundle ? () => onEditVoiceBundle(linkedBundle.id) : undefined
+                }
+                onManageInVoiceBundles={() => navigate('/voicebundles')}
+              />
+              {!chatTestConfigured ? (
+                <p className="text-sm text-amber-700">
+                  Link a test voice bundle in Edit → Test Agent (same bundle as voice evals).
+                </p>
+              ) : null}
+            </>
+          )}
+
+          {testAgentSubTab === 'prompt' && (
+            <>
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div>
               <h3 className="text-base font-semibold text-gray-900">Test Agent Prompt</h3>
@@ -433,12 +453,8 @@ export default function AgentInfoView({
               partialNameLabel="Test agent prompt"
             />
           )}
-          <OverviewSection title="Test agent LLM" description="Model for the EfficientAI test agent leg.">
-            <OverviewDetailRow
-              label="Model"
-              value={agent.test_llm_model || agent.main_llm_model || OVERVIEW_NOT_CONFIGURED}
-            />
-          </OverviewSection>
+            </>
+          )}
         </div>
       )
     }
@@ -452,7 +468,7 @@ export default function AgentInfoView({
             <div>
               <h3 className="text-base font-semibold text-gray-900">Test Agent Configuration</h3>
               <p className="text-sm text-gray-500 mt-0.5">
-                Voice stack for EfficientAI test caller, evaluator runs, and playground.
+                Voice stack for EfficientAI test caller and evaluator runs.
               </p>
             </div>
 
@@ -476,21 +492,7 @@ export default function AgentInfoView({
                   First-message behavior and caller system prompt for test runs.
                 </p>
               </div>
-              <div className="flex items-center gap-2">
-                {onTalk && (
-                  <Button
-                    type="button"
-                    variant="primary"
-                    onClick={() => onTalk('test_agent')}
-                    disabled={!canTalk}
-                    leftIcon={<Phone className="h-4 w-4" />}
-                    title={canTalk ? 'Talk to test agent' : 'Configure a voice bundle first'}
-                  >
-                    Talk
-                  </Button>
-                )}
-                <PromptViewToggle view={testPromptView} onChange={setTestPromptView} />
-              </div>
+              <PromptViewToggle view={testPromptView} onChange={setTestPromptView} />
             </div>
 
             {testPromptView === 'text' ? (
@@ -587,17 +589,17 @@ export default function AgentInfoView({
                 : 'Production prompt used to evaluate and generate the test agent.'}
           </p>
         </div>
-        {onTalk && hasPlatformLink && (
+        {!isChatProductionTab && onTalkToProduction && hasPlatformLink ? (
           <Button
             type="button"
             variant="primary"
-            onClick={() => onTalk('voice_ai_agent')}
+            onClick={onTalkToProduction}
             leftIcon={<Phone className="h-4 w-4" />}
-            title="Talk to voice AI agent"
+            title="Talk to production voice agent (Retell, Vapi, …)"
           >
             Talk
           </Button>
-        )}
+        ) : null}
       </div>
 
       {hasPlatformLink && (

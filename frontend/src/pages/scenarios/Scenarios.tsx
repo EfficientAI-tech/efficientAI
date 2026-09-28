@@ -698,7 +698,7 @@ export default function Scenarios() {
         <div className="flex flex-col lg:flex-row gap-4 min-h-[calc(100vh-11rem)]">
           <ScenariosAgentSidebar
             agents={agentsWithScenarios}
-            selectedAgentId={selectedNavAgentId || 'unlinked'}
+            selectedAgentId={selectedNavAgentId || agentsWithScenarios[0]?.id || ''}
             scenarioCountByAgent={scenarioCountByAgent}
             unlinkedCount={unlinkedScenarioCount}
             onSelectAgent={setSelectedNavAgentId}
@@ -706,7 +706,6 @@ export default function Scenarios() {
           <ScenariosListPanel
             agentLabel={selectedAgentLabel}
             scenarios={visibleScenarios}
-            onCreateScenario={openCreateModal}
             onEditScenario={handleEdit}
             onDeleteScenario={handleDelete}
             onViewScenario={handleViewScenario}

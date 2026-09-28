@@ -36,10 +36,7 @@ export default function ScenariosAgentSidebar({
     return byMedium.filter((agent) => agent.name.toLowerCase().includes(q))
   }, [agents, search, mediumFilter])
 
-  const showUnlinked =
-    unlinkedCount > 0 ||
-    search.trim().length === 0 ||
-    'unlinked'.includes(search.trim().toLowerCase())
+  const showUnlinked = unlinkedCount > 0
 
   return (
     <aside className="w-full lg:w-72 shrink-0 rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden flex flex-col max-h-[70vh] lg:max-h-[calc(100vh-11rem)]">

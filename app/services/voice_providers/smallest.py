@@ -407,7 +407,12 @@ class SmallestVoiceProvider(BaseVoiceProvider):
             "raw_data": data,
         }
 
-    def extract_agent_prompt(self, agent_id: str) -> Optional[str]:
+    def extract_agent_prompt(
+        self,
+        agent_id: str,
+        *,
+        agent_channel: Optional[str] = None,
+    ) -> Optional[str]:
         def _extract_from_paths(payload: Dict[str, Any], paths: List[tuple[str, ...]]) -> Optional[str]:
             for path in paths:
                 node: Any = payload

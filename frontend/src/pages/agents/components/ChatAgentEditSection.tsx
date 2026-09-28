@@ -60,17 +60,11 @@ export default function ChatAgentEditSection({
 
   if (mode === 'test') {
     return (
-      <div className="space-y-6 max-w-3xl">
-        <p className="text-sm text-gray-600">
-          EfficientAI test agent — simulates the customer in evaluator runs (same role as the voice
-          test agent + voice bundle).
-        </p>
-        <ChatConnectionStep
-          value={chatConnection}
-          onChange={onChatConnectionChange}
-          variant="compact"
-        />
-      </div>
+      <p className="text-sm text-gray-600 max-w-3xl">
+        Configure the <span className="font-medium text-gray-800">simulated customer</span> (bundle LLM +
+        template). Your Retell agent is on the <span className="font-medium text-gray-800">Chat Agent</span>{' '}
+        tab — nothing here changes production.
+      </p>
     )
   }
 
@@ -127,6 +121,14 @@ export default function ChatAgentEditSection({
           onProductionPromptChange={onProviderPromptChange}
           onPromptFetched={() => {}}
           showToast={showToast}
+        />
+      ) : null}
+
+      {integrationType === 'internal_llm' ? (
+        <ChatConnectionStep
+          value={chatConnection}
+          onChange={onChatConnectionChange}
+          variant="compact"
         />
       ) : null}
 

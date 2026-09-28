@@ -38,12 +38,16 @@ import {
   DEFAULT_CREATE_AGENT_FORM,
   TELEPHONY_STEPS,
   PLATFORM_STEPS,
-  CHAT_STEPS,
+  chatWizardMaxStep,
+  chatWizardNeedsLlmStep,
+  chatWizardSteps,
   createWizardMaxStep,
+  defaultVoiceBundleIdForChat,
 } from './create/createAgentTypes'
 import { NATIVE_PROVIDER_TEXT_CHAT_PLATFORMS } from '../../../lib/chatConnectionCapabilities'
 import ChatConnectionStep, {
   type ChatConnectionForm,
+  chatConnectionValidationMessage,
   validateChatConnection,
 } from './create/ChatConnectionStep'
 import { applyGeneratedTemplate } from './TestAgentTemplateEditor'
@@ -95,9 +99,12 @@ export default function CreateAgentModal({
     createPath === 'telephony'
       ? TELEPHONY_STEPS
       : createPath === 'chat'
-        ? CHAT_STEPS
+        ? chatWizardSteps(chatIntegrationOption)
         : PLATFORM_STEPS
-  const maxStep = createWizardMaxStep(createPath)
+  const maxStep =
+    createPath === 'chat'
+      ? chatWizardMaxStep(chatIntegrationOption)
+      : createWizardMaxStep(createPath)
 
   const { data: voiceBundles = [] } = useQuery<VoiceBundle[]>({
     queryKey: ['voicebundles'],
@@ -208,7 +215,13 @@ export default function CreateAgentModal({
       if (!integrationId || !agentId) {
         throw new Error('Integration and Agent ID are required')
       }
-      return apiClient.previewIntegrationAgentPrompt(integrationId, agentId)
+      const agentChannel =
+        formData.call_medium === 'chat' && chatIntegrationOption === 'provider_chat'
+          ? 'chat'
+          : undefined
+      return apiClient.previewIntegrationAgentPrompt(integrationId, agentId, {
+        agentChannel,
+      })
     },
     onSuccess: (data) => {
       setProductionPrompt(data.provider_prompt)
@@ -240,7 +253,7 @@ export default function CreateAgentModal({
               : 'phone_call',
         silence_hangup_secs: data.silence_hangup_secs ?? 15,
       }
-      if (createPath !== 'chat' && data.voice_bundle_id?.trim()) {
+      if (data.voice_bundle_id?.trim()) {
         payload.voice_bundle_id = data.voice_bundle_id.trim()
       }
 
@@ -276,13 +289,6 @@ export default function CreateAgentModal({
               payload.main_llm_credential_id = chatConnection.mainLlmCredentialId
             }
           }
-          if (chatConnection.testLlmProvider && chatConnection.testLlmModel.trim()) {
-            payload.test_llm_provider = chatConnection.testLlmProvider
-            payload.test_llm_model = chatConnection.testLlmModel
-            if (chatConnection.testLlmCredentialId) {
-              payload.test_llm_credential_id = chatConnection.testLlmCredentialId
-            }
-          }
         }
         if (chatIntegrationOption === 'customer_api') {
           payload.chat_connection_config = {
@@ -306,15 +312,9 @@ export default function CreateAgentModal({
           payload.voice_ai_integration_id = formData.voice_ai_integration_id.trim()
           payload.voice_ai_agent_id = formData.voice_ai_agent_id.trim()
         }
-        if (
-          chatIntegrationOption !== 'internal_llm' &&
-          chatConnection.testLlmProvider
-        ) {
-          payload.test_llm_provider = chatConnection.testLlmProvider
-          payload.test_llm_model = chatConnection.testLlmModel
-          if (chatConnection.testLlmCredentialId) {
-            payload.test_llm_credential_id = chatConnection.testLlmCredentialId
-          }
+        if (!payload.voice_bundle_id) {
+          const autoBundle = defaultVoiceBundleIdForChat(voiceBundles)
+          if (autoBundle) payload.voice_bundle_id = autoBundle
         }
       }
 
@@ -387,6 +387,9 @@ export default function CreateAgentModal({
       connectionType: connType,
       useSeparateTestLlm: connType !== 'internal_llm' ? true : prev.useSeparateTestLlm,
     }))
+    if (!chatWizardNeedsLlmStep(option) && currentStep > 2) {
+      setCurrentStep(2)
+    }
     if (option !== 'provider_chat') {
       setChatProviderPlatform(null)
       setFormData((prev) => ({
@@ -499,13 +502,8 @@ export default function CreateAgentModal({
         return true
       }
       if (currentStep === 3) {
-        if (!validateChatConnection(chatConnection)) {
-          showToast(
-            chatIntegrationOption === 'internal_llm'
-              ? 'Select production and test agent LLM credentials and models.'
-              : 'Select test agent LLM credential and model.',
-            'error',
-          )
+        if (chatIntegrationOption === 'internal_llm' && !validateChatConnection(chatConnection)) {
+          showToast(chatConnectionValidationMessage(chatConnection), 'error')
           return false
         }
         return true
@@ -629,13 +627,8 @@ export default function CreateAgentModal({
         showToast('Production and test agent prompts are required.', 'error')
         return
       }
-      if (!validateChatConnection(chatConnection)) {
-        showToast(
-          chatIntegrationOption === 'internal_llm'
-            ? 'Select production and test agent LLM credentials and models.'
-            : 'Select test agent LLM credential and model.',
-          'error',
-        )
+      if (chatIntegrationOption === 'internal_llm' && !validateChatConnection(chatConnection)) {
+        showToast(chatConnectionValidationMessage(chatConnection), 'error')
         return
       }
       createMutation.mutate(formData)
@@ -802,7 +795,6 @@ export default function CreateAgentModal({
               onAiModelChange={setAiModel}
               selectableModels={selectableModels}
               gatewayDirectModel={gatewayDirectModel}
-              aiProvider={aiProvider}
               onGenerateTestPrompt={() => generateTestPromptMutation.mutate()}
               isGenerating={generateTestPromptMutation.isPending}
               canGenerate={Boolean(formData.name.trim() && productionPrompt.trim())}
@@ -810,12 +802,17 @@ export default function CreateAgentModal({
           </div>
         )
       }
-      return (
-        <ChatConnectionStep
-          value={chatConnection}
-          onChange={(patch) => setChatConnection((prev) => ({ ...prev, ...patch }))}
-        />
-      )
+      if (currentStep === 3 && chatIntegrationOption === 'internal_llm') {
+        return (
+          <div className="space-y-6 max-w-4xl mx-auto">
+            <ChatConnectionStep
+              value={chatConnection}
+              onChange={(patch) => setChatConnection((prev) => ({ ...prev, ...patch }))}
+            />
+          </div>
+        )
+      }
+      return null
     }
 
     if (createPath === 'telephony') {
@@ -855,7 +852,6 @@ export default function CreateAgentModal({
             onAiModelChange={setAiModel}
             selectableModels={selectableModels}
             gatewayDirectModel={gatewayDirectModel}
-            aiProvider={aiProvider}
             onGenerateTestPrompt={() => generateTestPromptMutation.mutate()}
             isGenerating={generateTestPromptMutation.isPending}
             canGenerate={Boolean(formData.name.trim() && productionPrompt.trim())}
@@ -914,7 +910,6 @@ export default function CreateAgentModal({
           onAiModelChange={setAiModel}
           selectableModels={selectableModels}
           gatewayDirectModel={gatewayDirectModel}
-          aiProvider={aiProvider}
           onGenerateTestPrompt={() => generateTestPromptMutation.mutate()}
           isGenerating={generateTestPromptMutation.isPending}
           canGenerate={Boolean(formData.name.trim() && productionPrompt.trim())}

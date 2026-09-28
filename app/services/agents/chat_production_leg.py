@@ -35,17 +35,33 @@ def _agent_messages(system_prompt: str, transcript: list[dict[str, str]]) -> lis
 
 
 def normalized_chat_eval_mode(agent: Agent) -> str:
-    raw = getattr(agent, "chat_eval_mode", None) or ChatEvalModeEnum.PRE_PROD_SIM.value
-    return str(raw).lower()
+    """Use stored mode, or connection-type default (platform/API = live, internal LLM = sim)."""
+    from app.services.agents.chat_preprod_scope import (
+        POST_PROD_LIVE_EVAL_MODE,
+        default_chat_eval_mode_for_connection,
+    )
+
+    conn = normalized_chat_connection_type(agent)
+    raw = getattr(agent, "chat_eval_mode", None)
+    if raw is None or not str(raw).strip():
+        return default_chat_eval_mode_for_connection(conn)
+    mode = str(raw).lower()
+    if (
+        mode == ChatEvalModeEnum.PRE_PROD_SIM.value
+        and default_chat_eval_mode_for_connection(conn) == POST_PROD_LIVE_EVAL_MODE.value
+    ):
+        return POST_PROD_LIVE_EVAL_MODE.value
+    return mode
 
 
 def uses_live_production_leg(agent: Agent) -> bool:
+    conn = normalized_chat_connection_type(agent)
+    if conn == ChatConnectionTypeEnum.PROVIDER_CHAT.value:
+        return True
     mode = normalized_chat_eval_mode(agent)
     if mode != ChatEvalModeEnum.POST_PROD_LIVE.value:
         return False
-    conn = normalized_chat_connection_type(agent)
     return conn in (
-        ChatConnectionTypeEnum.PROVIDER_CHAT.value,
         ChatConnectionTypeEnum.CUSTOMER_API.value,
         ChatConnectionTypeEnum.MESSAGING_CHANNELS.value,
     )
@@ -80,7 +96,7 @@ def generate_production_chat_reply(
         meta["production_leg"] = "customer_api"
         return reply, meta
 
-    if conn == ChatConnectionTypeEnum.PROVIDER_CHAT.value and mode == ChatEvalModeEnum.POST_PROD_LIVE.value:
+    if conn == ChatConnectionTypeEnum.PROVIDER_CHAT.value:
         if not agent.voice_ai_integration_id:
             raise ValueError("Provider chat requires voice_ai_integration_id")
         integration = (
@@ -147,21 +163,46 @@ def generate_production_chat_reply(
                     meta["production_leg"] = "messaging_webhook"
                     return reply, meta
 
+    if conn == ChatConnectionTypeEnum.PROVIDER_CHAT.value:
+        raise ValueError(
+            "Platform chat agents use the live Vapi/Retell API for production turns only; "
+            "LLM prompt simulation is not used. Check integration, assistant id, and platform chat setup."
+        )
+
+    if (
+        is_chat_agent(agent)
+        and agent.voice_ai_integration_id
+        and (agent.voice_ai_agent_id or "").strip()
+    ):
+        raise ValueError(
+            "This agent has a voice platform integration and assistant id but eval used "
+            f"LLM production simulation (connection={conn}). Set chat connection to platform "
+            "chat, save the agent, and restart Celery workers so code changes load."
+        )
+
     from app.services.testing.llm_to_llm_evaluator_simulation import _build_agent_system_prompt
 
     main_llm = resolve_simulation_llm(db, agent=agent, organization_id=organization_id, leg="main")
     agent_system = _build_agent_system_prompt(agent)
     messages = _agent_messages(agent_system, transcript)
-    result = llm_service.generate_response(
-        messages=messages,
-        llm_provider=main_llm.provider,
-        llm_model=main_llm.model,
-        organization_id=organization_id,
-        db=db,
-        llm_config=main_llm.llm_config,
-        credential_id=main_llm.credential_id,
-        task_defaults={"temperature": 0.7, "max_tokens": 400},
-    )
+    try:
+        result = llm_service.generate_response(
+            messages=messages,
+            llm_provider=main_llm.provider,
+            llm_model=main_llm.model,
+            organization_id=organization_id,
+            db=db,
+            llm_config=main_llm.llm_config,
+            credential_id=main_llm.credential_id,
+            task_defaults={"temperature": 0.7, "max_tokens": 400},
+        )
+    except RuntimeError as exc:
+        raise RuntimeError(
+            "Production-side LLM simulation failed. For Retell/Vapi chat agents, production "
+            f"should use the platform API (connection=provider_chat), not org LLM "
+            f"({main_llm.source}). Save integration + chat agent ID, restart Celery workers, "
+            f"then re-run. Detail: {exc}"
+        ) from exc
     text = (result.get("text") or "").strip()
     if not text:
         raise ValueError("Production LLM returned an empty message")
@@ -169,6 +210,4 @@ def generate_production_chat_reply(
     meta["main_llm_source"] = main_llm.source
     if is_chat_agent(agent) and conn == ChatConnectionTypeEnum.MESSAGING_CHANNELS.value:
         meta["production_leg"] = "messaging_llm_sim"
-    if conn == ChatConnectionTypeEnum.PROVIDER_CHAT.value:
-        meta["production_leg"] = "provider_prompt_llm_sim"
     return text, meta

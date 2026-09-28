@@ -109,7 +109,18 @@ def _vapi_chat_turn(
             body["assistantId"] = assistant_id
 
         chat_resp = client.post(f"{base}/chat", headers=headers, json=body)
-        chat_resp.raise_for_status()
+        try:
+            chat_resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 402:
+                raise ValueError(
+                    "Vapi Chat API returned 402 Payment Required. "
+                    "Vapi bills chat (POST /chat) separately from voice phone calls — "
+                    "check chat credits/plan in the Vapi dashboard and use a chat-capable assistant ID."
+                ) from exc
+            raise _provider_http_error(
+                exc, platform=IntegrationPlatform.VAPI.value, operation="chat"
+            ) from exc
         chat_data = chat_resp.json()
         chat_id = chat_data.get("id")
         if isinstance(chat_id, str):

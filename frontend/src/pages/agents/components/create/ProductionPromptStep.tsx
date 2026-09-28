@@ -28,7 +28,6 @@ interface ProductionPromptStepProps {
   onAiModelChange: (value: string) => void
   selectableModels: string[]
   gatewayDirectModel: string | null
-  aiProvider: string
   onGenerateTestPrompt: () => void
   isGenerating: boolean
   canGenerate: boolean
@@ -56,7 +55,6 @@ export default function ProductionPromptStep({
   onAiModelChange,
   selectableModels,
   gatewayDirectModel,
-  aiProvider,
   onGenerateTestPrompt,
   isGenerating,
   canGenerate,
@@ -148,9 +146,12 @@ export default function ProductionPromptStep({
             <select
               value={aiModel}
               onChange={(e) => onAiModelChange(e.target.value)}
-              disabled={!aiProvider || !!gatewayDirectModel}
+              disabled={!aiCredentialId || !!gatewayDirectModel}
               className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white disabled:bg-gray-100"
             >
+              {!aiCredentialId ? (
+                <option value="">Auto-detect with provider</option>
+              ) : null}
               {gatewayDirectModel ? (
                 <option value="">{gatewayDirectModel}</option>
               ) : (

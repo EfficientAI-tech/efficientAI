@@ -211,7 +211,12 @@ class ElevenLabsVoiceProvider(BaseVoiceProvider):
             logger.error(f"[ElevenLabsProvider] Error getting conversation: {e}", exc_info=True)
             raise ValueError(f"Failed to retrieve ElevenLabs conversation: {str(e)}")
 
-    def extract_agent_prompt(self, agent_id: str) -> Optional[str]:
+    def extract_agent_prompt(
+        self,
+        agent_id: str,
+        *,
+        agent_channel: Optional[str] = None,
+    ) -> Optional[str]:
         """Extract the system prompt from an ElevenLabs Conversational AI agent."""
         try:
             data = self.get_agent(agent_id)

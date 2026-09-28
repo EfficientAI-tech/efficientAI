@@ -8,6 +8,15 @@ export const CANONICAL_TEST_PROMPT_SECTIONS = [
 
 export type TestPromptSectionKey = (typeof CANONICAL_TEST_PROMPT_SECTIONS)[number]['key']
 
+/** Short hints for chat eval — each section shapes the simulated customer LLM, not Retell. */
+export const CHAT_TEST_SECTION_HINTS: Record<TestPromptSectionKey, string> = {
+  complementary_goal: 'What the customer is trying to accomplish in this scenario.',
+  talking_style: 'How the customer writes in chat (tone, length, formality).',
+  questions_to_ask: 'Questions the customer might send to the production agent.',
+  information_to_relay: 'Facts the customer should share when relevant (name, order #, etc.).',
+  constraints: 'What the customer must not do (e.g. pretend to be staff, share fake PII).',
+}
+
 export type ProductionFirstMessageMode =
   | 'assistant_speaks_first'
   | 'assistant_waits_for_user'

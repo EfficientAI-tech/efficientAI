@@ -81,6 +81,43 @@ def test_retell_extract_llm_after_empty_flow(monkeypatch):
     assert provider.extract_agent_prompt("agent_1") == "From retell LLM"
 
 
+def test_retell_extract_uses_chat_agent_api_for_chat_channel():
+    class _FlowAPI:
+        def retrieve(self, **kwargs):
+            return {"global_prompt": "Chat global prompt from flow."}
+
+    class _ChatAgentAPI:
+        def retrieve(self, agent_id):
+            assert agent_id == "chat_agent_1"
+            return {
+                "agent_id": agent_id,
+                "channel": "chat",
+                "response_engine": {
+                    "type": "conversation-flow",
+                    "conversation_flow_id": "flow_chat",
+                    "version": 1,
+                },
+            }
+
+    class _VoiceAgentAPI:
+        def retrieve(self, agent_id):
+            raise ValueError("voice agent not found")
+
+    class _FakeClient:
+        agent = _VoiceAgentAPI()
+        chat_agent = _ChatAgentAPI()
+        conversation_flow = _FlowAPI()
+        llm = None
+
+    provider = RetellVoiceProvider.__new__(RetellVoiceProvider)
+    provider.client = _FakeClient()
+
+    assert (
+        provider.extract_agent_prompt("chat_agent_1", agent_channel="chat")
+        == "Chat global prompt from flow."
+    )
+
+
 def test_retell_extract_flow_nodes_when_global_empty():
     flow = {
         "global_prompt": "",

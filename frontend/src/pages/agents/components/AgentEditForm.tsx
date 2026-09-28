@@ -197,9 +197,13 @@ export default function AgentEditForm({
       if (!formData.provider_prompt?.trim()) {
         throw new Error('Production prompt is required')
       }
+      const agentName = formData.name?.trim()
+      if (!agentName) {
+        throw new Error('Agent name is required before generating a test prompt')
+      }
       return apiClient.generateTestPromptFromProduction({
         production_prompt: formData.provider_prompt,
-        agent_name: formData.name,
+        agent_name: agentName,
         language: formData.language,
         call_type: formData.call_type,
         additional_context: setupAdditionalContext.trim() || undefined,
@@ -548,7 +552,7 @@ export default function AgentEditForm({
                 title="Test agent (EfficientAI)"
                 description={
                   isChatAgent
-                    ? 'Test agent template and LLM on the Test Agent tab.'
+                    ? 'Test agent template on the Test Agent tab.'
                     : 'Configure voice stack on the Test Agent tab.'
                 }
               >
@@ -559,16 +563,7 @@ export default function AgentEditForm({
                   />
                   {!isChatAgent ? (
                     <OverviewDetailRow label="Voice bundle" value={voiceBundleLabel} />
-                  ) : (
-                    <OverviewDetailRow
-                      label="Test agent LLM"
-                      value={
-                        chatConnection?.testLlmModel ||
-                        chatConnection?.mainLlmModel ||
-                        OVERVIEW_NOT_CONFIGURED
-                      }
-                    />
-                  )}
+                  ) : null}
                 </dl>
               </OverviewSection>
 
@@ -623,8 +618,75 @@ export default function AgentEditForm({
             onSelectPlatform={onChatEditPlatformChange!}
             showToast={showToast}
           />
+          <div className="border border-gray-200 rounded-lg p-4 bg-white space-y-3">
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Customer LLM (voice bundle)</label>
+              <p className="text-xs text-gray-500 mt-1">
+                Pick which bundle&apos;s LLM plays the customer. Use <span className="font-medium">Save</span>{' '}
+                (top right) to store your choice on this agent. Model and temperature are edited in{' '}
+                <span className="font-medium">Voice Bundles</span> — they apply to every agent using that bundle.
+              </p>
+            </div>
+            <select
+              value={formData.voice_bundle_id}
+              onChange={(e) => onChange({ ...formData, voice_bundle_id: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white"
+            >
+              <option value="">Select a voice bundle</option>
+              {voiceBundles
+                .filter((vb) => vb.is_active)
+                .map((vb) => (
+                  <option key={vb.id} value={vb.id}>
+                    {vb.name} — {vb.llm_provider || '?'} / {vb.llm_model || '?'}
+                  </option>
+                ))}
+            </select>
+            {linkedVoiceBundle ? (
+              <div className="rounded-lg border border-purple-100 bg-purple-50/40 px-3 py-2.5 text-sm text-gray-800">
+                <span className="font-medium">{linkedVoiceBundle.name}</span>
+                <span className="text-gray-600">
+                  {' '}
+                  · {linkedVoiceBundle.llm_provider} / {linkedVoiceBundle.llm_model}
+                </span>
+                <div className="flex flex-wrap gap-2 mt-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const returnPath = agentId
+                        ? `/agents/${agentId}?tab=test_agent`
+                        : '/agents'
+                      navigate(
+                        `/voicebundles?edit=${linkedVoiceBundle.id}&return=${encodeURIComponent(returnPath)}`,
+                      )
+                    }}
+                  >
+                    Edit bundle LLM
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => navigate('/voicebundles')}
+                  >
+                    Voice Bundles
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+          </div>
           <div className="border border-gray-200 rounded-lg p-4 bg-white space-y-4">
-            <label className="block text-sm font-medium text-gray-700">Test agent template</label>
+            {linkedVoiceBundle && hasStructuredTemplate ? (
+              <p className="text-sm text-green-800 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+                Ready for chat evals after you click <span className="font-medium">Save</span> above. Retell =
+                production; <span className="font-medium">{linkedVoiceBundle.llm_model}</span> = simulated customer.
+              </p>
+            ) : null}
+            <label className="block text-sm font-medium text-gray-700">Simulated customer template</label>
+            <p className="text-xs text-gray-500 -mt-2">
+              Optional to tweak per agent; scenario + persona still drive each eval run.
+            </p>
             <TestAgentTemplateEditor
               template={formData.test_agent_template}
               onChange={(test_agent_template) =>
@@ -637,6 +699,7 @@ export default function AgentEditForm({
               legacyDescription={formData.description}
               showLegacy={showLegacyPrompt}
               variant="workspace"
+              simulationMedium="chat"
             />
           </div>
         </div>
@@ -772,6 +835,9 @@ export default function AgentEditForm({
                         disabled={!aiCredentialId || !!gatewayDirectModel}
                         className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white disabled:bg-gray-100"
                       >
+                        {!aiCredentialId ? (
+                          <option value="">Auto-detect with provider</option>
+                        ) : null}
                         {gatewayDirectModel ? (
                           <option value="">{gatewayDirectModel}</option>
                         ) : (

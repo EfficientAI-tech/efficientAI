@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
-from app.models.database import Integration, Organization
+from app.models.database import AIProvider, Integration, Organization
 from app.models.enums import IntegrationPlatform, ModelProvider
 from app.services.ai import llm_resolver
 
@@ -83,6 +83,32 @@ def test_get_llm_provider_and_model_auto_detects_sarvam_integration(
 
     assert provider_enum == ModelProvider.SARVAM
     assert model_str == "sarvam-30b"
+
+
+def test_auto_detect_default_together_uses_enabled_models(db_session, org_id):
+    _ensure_org(db_session, org_id)
+    row = AIProvider(
+        id=uuid4(),
+        organization_id=org_id,
+        provider=ModelProvider.TOGETHER.value,
+        name="Together default",
+        api_key="enc-key",
+        is_active=True,
+        is_default=True,
+        enabled_models=["meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"],
+    )
+    db_session.add(row)
+    db_session.commit()
+
+    provider_enum, model_str = llm_resolver.get_llm_provider_and_model(
+        org_id,
+        db_session,
+        provider=None,
+        model=None,
+    )
+
+    assert provider_enum == ModelProvider.TOGETHER
+    assert model_str == "meta-llama/Llama-3.2-3B-Instruct-Turbo"
 
 
 def test_get_llm_provider_and_model_raises_when_sarvam_integration_missing(

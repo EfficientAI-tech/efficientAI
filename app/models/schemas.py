@@ -311,14 +311,6 @@ class AgentCreate(BaseModel):
                     raise ValueError("Messaging chat requires a production prompt.")
             else:
                 raise ValueError(f"Unsupported chat connection type '{conn.value}'.")
-            test_ok = bool(
-                (self.test_llm_provider and (self.test_llm_model or "").strip())
-                or (self.main_llm_provider and (self.main_llm_model or "").strip())
-            )
-            if not test_ok:
-                raise ValueError(
-                    "Chat agents require test LLM settings (or main LLM used for the simulated customer)."
-                )
             return self
         if not self.voice_bundle_id:
             raise ValueError("voice_bundle_id is required for voice agents")
@@ -393,6 +385,7 @@ class AgentUpdate(BaseModel):
 class PreviewIntegrationAgentPromptRequest(BaseModel):
     """Fetch a provider agent prompt before an EfficientAI agent exists."""
     voice_ai_agent_id: str = Field(..., min_length=1)
+    agent_channel: Optional[Literal["voice", "chat"]] = None
 
 
 

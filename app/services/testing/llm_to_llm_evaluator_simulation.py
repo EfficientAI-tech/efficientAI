@@ -105,17 +105,23 @@ def _generate_turn(
     db: Session,
     llm_config: Optional[dict],
     credential_id: Optional[UUID],
+    leg_label: str = "simulation",
 ) -> str:
-    result = llm_service.generate_response(
-        messages=messages,
-        llm_provider=llm_provider,
-        llm_model=llm_model,
-        organization_id=organization_id,
-        db=db,
-        llm_config=llm_config,
-        task_defaults={"temperature": 0.7, "max_tokens": 300},
-        credential_id=credential_id,
-    )
+    try:
+        result = llm_service.generate_response(
+            messages=messages,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+            organization_id=organization_id,
+            db=db,
+            llm_config=llm_config,
+            task_defaults={"temperature": 0.7, "max_tokens": 300},
+            credential_id=credential_id,
+        )
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"{leg_label} failed ({llm_provider.value}/{llm_model}): {exc}"
+        ) from exc
     text = (result.get("text") or "").strip()
     if not text:
         raise ValueError("LLM returned an empty simulation response")
@@ -211,6 +217,10 @@ def run_llm_to_llm_evaluator_simulation(
                 db=db,
                 llm_config=test_llm.llm_config,
                 credential_id=test_llm.credential_id,
+                leg_label=(
+                    "Simulated customer (test voice bundle LLM) — link a test bundle on the agent "
+                    "or set Test Agent LLM override"
+                ),
             )
         transcript.append({"speaker": "Speaker 1", "text": caller_text})
         exchanges += 1

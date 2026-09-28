@@ -22,7 +22,18 @@ from app.services.ai.llm_gateway import (
 )
 from app.services.credentials import resolve_ai_provider, resolve_integration
 from app.services.ai.model_config_service import model_config_service
-from app.services.usage.enabled_models import filter_models_by_credential
+from app.services.usage.enabled_models import (
+    effective_enabled_models_for_credential,
+    filter_models_by_credential,
+)
+from app.services.ai.together_models import (
+    TOGETHER_SERVERLESS_DEFAULT_MODEL,
+    normalize_together_model_name,
+)
+from app.services.voice_agent.llm_voice_providers import (
+    LLM_VOICE_PROVIDER_KEYS,
+    default_llm_model,
+)
 
 
 _DEFAULT_MODELS: dict[ModelProvider, str] = {
@@ -31,6 +42,10 @@ _DEFAULT_MODELS: dict[ModelProvider, str] = {
     ModelProvider.GOOGLE: "gemini-2.5-flash",
     ModelProvider.SARVAM: "sarvam-30b",
     ModelProvider.FIREWORKS: "gpt-oss-20b",
+    ModelProvider.TOGETHER: TOGETHER_SERVERLESS_DEFAULT_MODEL,
+    ModelProvider.META: TOGETHER_SERVERLESS_DEFAULT_MODEL,
+    ModelProvider.OPENROUTER: "openai/gpt-4o-2024-11-20",
+    ModelProvider.XAI: "grok-3-beta",
 }
 
 _AUTO_DETECT_PRIORITY = (
@@ -60,6 +75,11 @@ def _default_model_for(
     provider: ModelProvider,
     ai_prov: Optional[AIProvider] = None,
 ) -> str:
+    if ai_prov is not None:
+        allowlist = effective_enabled_models_for_credential(ai_prov)
+        if allowlist:
+            return _maybe_normalize_together_model(provider, allowlist[0])
+
     preset = _DEFAULT_MODELS.get(provider)
     if preset:
         return preset
@@ -69,6 +89,9 @@ def _default_model_for(
         catalog = filter_models_by_credential(ai_prov, catalog)
     if catalog:
         return catalog[0]
+
+    if provider.value in LLM_VOICE_PROVIDER_KEYS:
+        return default_llm_model(provider.value)
 
     if provider == ModelProvider.OPENAI:
         return "gpt-5-mini"
@@ -86,6 +109,12 @@ def _provider_enum_from_integration_platform(platform: str) -> Optional[ModelPro
     return _INTEGRATION_LLM_PLATFORMS.get((platform or "").lower())
 
 
+def _maybe_normalize_together_model(provider: ModelProvider, model: str) -> str:
+    if provider in (ModelProvider.TOGETHER, ModelProvider.META):
+        return normalize_together_model_name(model)
+    return model
+
+
 def _resolved_model_for_row(
     organization_id: UUID,
     db: Session,
@@ -93,13 +122,16 @@ def _resolved_model_for_row(
     explicit_model: Optional[str],
 ) -> str:
     if explicit_model:
-        return explicit_model
+        provider_enum = _provider_enum(ai_prov.provider)
+        return _maybe_normalize_together_model(provider_enum, explicit_model)
     ctx = routing_context_from_ai_provider(ai_prov)
     _, effective = resolve_effective_routing(organization_id, db, ctx)
-    if effective != "direct" and ctx.gateway_model:
-        return ctx.gateway_model
     provider_enum = _provider_enum(ai_prov.provider)
-    return _default_model_for(provider_enum, ai_prov)
+    if effective != "direct" and ctx.gateway_model:
+        return _maybe_normalize_together_model(provider_enum, ctx.gateway_model)
+    return _maybe_normalize_together_model(
+        provider_enum, _default_model_for(provider_enum, ai_prov)
+    )
 
 
 def _resolved_model_for_integration(

@@ -12,7 +12,7 @@ import { agentProductionTabLabel, isChatMedium } from '../../lib/agentMedium'
 import { CallTypeBadge } from '../evaluators/components/evaluatorUi'
 import type { AgentDetailTab } from './components/AgentInfoView'
 import AgentEditForm from './components/AgentEditForm'
-import AgentTalkSidebar, { type AgentTalkMode } from './components/AgentTalkSidebar'
+import AgentTalkSidebar from './components/AgentTalkSidebar'
 import { Save, X } from 'lucide-react'
 import { extractPhoneConflictDetail } from './components/agentPhoneValidation'
 import {
@@ -22,7 +22,10 @@ import {
   templateFromApi,
 } from './components/agentTestSetupConstants'
 import type { ChatConnectionForm } from './components/create/ChatConnectionStep'
-import { validateChatConnection } from './components/create/ChatConnectionStep'
+import {
+  chatConnectionValidationMessage,
+  validateChatConnection,
+} from './components/create/ChatConnectionStep'
 import type { ChatConnectionConfigForm } from './components/create/ChatConnectionDetailsStep'
 import {
   DEFAULT_CHAT_CONNECTION_CONFIG,
@@ -121,8 +124,6 @@ export default function AgentWorkspaceDetail({
   )
 
   const [isEditMode, setIsEditMode] = useState(false)
-  const [talkSidebarOpen, setTalkSidebarOpen] = useState(false)
-  const [talkMode, setTalkMode] = useState<AgentTalkMode>('test_agent')
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [blockingConversations, setBlockingConversations] = useState<TestAgentConversation[]>([])
   const [showSavePromptModal, setShowSavePromptModal] = useState(false)
@@ -159,6 +160,7 @@ export default function AgentWorkspaceDetail({
   const [chatConnectionConfig, setChatConnectionConfig] =
     useState<ChatConnectionConfigForm>(DEFAULT_CHAT_CONNECTION_CONFIG)
   const [chatEditPlatform, setChatEditPlatform] = useState<IntegrationPlatform | null>(null)
+  const [talkSidebarOpen, setTalkSidebarOpen] = useState(false)
 
   useEffect(() => {
     setIsEditMode(false)
@@ -211,6 +213,16 @@ export default function AgentWorkspaceDetail({
     }
   }, [agent, isEditMode, syncChatStateFromAgent])
 
+  useEffect(() => {
+    if (!agent || !isChatMedium(agent.call_medium)) return
+    const integrationId = (isEditMode ? formData.voice_ai_integration_id : agent.voice_ai_integration_id) || ''
+    if (!integrationId) return
+    const integ = integrations.find((i) => i.id === integrationId)
+    if (integ?.platform) {
+      setChatEditPlatform(integ.platform as IntegrationPlatform)
+    }
+  }, [agent, integrations, isEditMode, formData.voice_ai_integration_id])
+
   const updateMutation = useMutation({
     mutationFn: (data: FormData) => {
       const payload: Record<string, unknown> = {
@@ -235,7 +247,7 @@ export default function AgentWorkspaceDetail({
       }
 
       if (data.call_medium === 'chat') {
-        payload.voice_bundle_id = null
+        payload.voice_bundle_id = data.voice_bundle_id?.trim() || null
         payload.phone_number = null
         payload.telephony_phone_number_id = null
         payload.provider_prompt = data.provider_prompt?.trim() || null
@@ -271,13 +283,6 @@ export default function AgentWorkspaceDetail({
           payload.chat_connection_config = configPayload
         }
 
-        if (chatConnection.testLlmProvider && chatConnection.testLlmModel.trim()) {
-          payload.test_llm_provider = chatConnection.testLlmProvider
-          payload.test_llm_model = chatConnection.testLlmModel
-          if (chatConnection.testLlmCredentialId) {
-            payload.test_llm_credential_id = chatConnection.testLlmCredentialId
-          }
-        }
       } else {
         payload.voice_bundle_id = data.voice_bundle_id?.trim() || null
         payload.voice_ai_integration_id = data.voice_ai_integration_id?.trim() || null
@@ -290,6 +295,7 @@ export default function AgentWorkspaceDetail({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['agent', agentRouteId] })
       queryClient.invalidateQueries({ queryKey: ['agents'] })
+      queryClient.invalidateQueries({ queryKey: ['voicebundles'] })
       queryClient.invalidateQueries({ queryKey: ['telephony-numbers'] })
       setIsEditMode(false)
       showToast('Agent updated successfully!', 'success')
@@ -395,13 +401,20 @@ export default function AgentWorkspaceDetail({
           formData,
           chatConnectionConfig,
           formData.provider_prompt,
+          chatEditPlatform,
         )
       ) {
         showToast('Complete connection details.', 'error')
         return
       }
-      if (!validateChatConnection({ ...chatConnection, connectionType: connType })) {
-        showToast('Select evaluation LLM credential and model.', 'error')
+      if (
+        connType === 'internal_llm' &&
+        !validateChatConnection({ ...chatConnection, connectionType: connType })
+      ) {
+        showToast(
+          chatConnectionValidationMessage({ ...chatConnection, connectionType: connType }),
+          'error',
+        )
         return
       }
     }
@@ -460,11 +473,6 @@ export default function AgentWorkspaceDetail({
       content: savePromptContent.trim(),
       tags: tags.length > 0 ? tags : undefined,
     })
-  }
-
-  const openTalkSidebar = (mode: AgentTalkMode) => {
-    setTalkMode(mode)
-    setTalkSidebarOpen(true)
   }
 
   const handleEditVoiceBundle = (bundleId: string) => {
@@ -573,7 +581,9 @@ export default function AgentWorkspaceDetail({
               activeTab={activeTab}
               onSyncProviderPrompt={() => syncPromptMutation.mutate()}
               isSyncingPrompt={syncPromptMutation.isPending}
-              onTalk={openTalkSidebar}
+              onTalkToProduction={
+                isChatAgent ? undefined : () => setTalkSidebarOpen(true)
+              }
               onEditVoiceBundle={handleEditVoiceBundle}
             />
           ) : (
@@ -708,7 +718,7 @@ export default function AgentWorkspaceDetail({
       {!isChatAgent ? (
         <AgentTalkSidebar
           isOpen={talkSidebarOpen}
-          mode={talkMode}
+          mode="voice_ai_agent"
           agent={agent}
           integrations={integrations}
           onClose={() => setTalkSidebarOpen(false)}

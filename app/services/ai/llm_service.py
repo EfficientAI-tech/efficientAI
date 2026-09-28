@@ -46,7 +46,49 @@ _LITELLM_PROVIDER_PREFIX: Dict[str, str] = {
     "xai": "xai",
     "fireworks": "fireworks_ai",
     "sarvam": "sarvam",
+    "together": "together_ai",
+    "meta": "together_ai",
+    "openrouter": "openrouter",
 }
+
+
+def _strip_litellm_provider_prefix(model: str, *, provider_value: str, litellm_prefix: str) -> str:
+    """Drop a leading provider segment when the model id was stored fully qualified."""
+    text = (model or "").strip()
+    if not text or "/" not in text:
+        return text
+    heads = {
+        provider_value.lower(),
+        litellm_prefix.lower(),
+        "together",
+        "together_ai",
+    }
+    lower = text.lower()
+    for head in sorted(heads, key=len, reverse=True):
+        if not head:
+            continue
+        marker = f"{head}/"
+        if lower.startswith(marker):
+            return text[len(marker) :]
+    return text
+
+
+def canonical_litellm_model_id(model_str: str) -> str:
+    """Normalize provider prefixes on the final model string passed to LiteLLM."""
+    from app.services.ai.together_models import normalize_together_model_name
+
+    text = (model_str or "").strip()
+    if not text:
+        return text
+    lower = text.lower()
+    if lower.startswith("together/") or lower.startswith("together_ai/"):
+        prefix = "together_ai"
+        body = text.split("/", 1)[1]
+        return f"{prefix}/{normalize_together_model_name(body)}"
+    if lower.startswith("meta-llama/"):
+        return normalize_together_model_name(text)
+    return text
+
 
 # Matches the model-name half of the Gemini 2.5 family: ``gemini-2.5-pro``,
 # ``gemini-2.5-flash``, ``gemini-2.5-flash-lite``, plus the ``-stt`` /
@@ -358,8 +400,15 @@ class LLMService:
     @staticmethod
     def _litellm_model_name(provider: ModelProvider, model: str) -> str:
         """Build the ``provider/model`` string that LiteLLM expects."""
+        from app.services.ai.together_models import normalize_together_model_name
+
         provider_value = provider.value if hasattr(provider, "value") else str(provider)
         prefix = _LITELLM_PROVIDER_PREFIX.get(provider_value.lower(), provider_value.lower())
+        model = _strip_litellm_provider_prefix(
+            model, provider_value=provider_value, litellm_prefix=prefix
+        )
+        if provider_value.lower() in ("together", "meta"):
+            model = normalize_together_model_name(model)
         if provider_value.lower() == "azure":
             model = _azure_deployment_name(model)
         if provider_value.lower() == "fireworks" and not model.startswith("accounts/"):
@@ -425,10 +474,12 @@ class LLMService:
         _, effective_routing = resolve_effective_routing(
             organization_id, db, credential_ctx
         )
-        model_str = resolve_litellm_model(
-            workload_model_str=workload_model_str,
-            gateway_active=effective_routing != "direct",
-            credential=credential_ctx,
+        model_str = canonical_litellm_model_id(
+            resolve_litellm_model(
+                workload_model_str=workload_model_str,
+                gateway_active=effective_routing != "direct",
+                credential=credential_ctx,
+            )
         )
 
         call_kwargs: Dict[str, Any] = {
@@ -479,6 +530,7 @@ class LLMService:
             if azure_v1_routing:
                 model_str = f"openai/{_azure_deployment_name(llm_model)}"
                 call_kwargs["model"] = model_str
+        call_kwargs["model"] = canonical_litellm_model_id(call_kwargs["model"])
         if remaining_config:
             call_kwargs.update(remaining_config)
 

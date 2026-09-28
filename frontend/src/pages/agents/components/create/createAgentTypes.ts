@@ -1,5 +1,6 @@
 import type { TestAgentTemplateDraft } from '../agentTestSetupConstants'
 import { defaultTestAgentTemplate } from '../agentTestSetupConstants'
+import type { ChatIntegrationOptionId } from './ChatIntegrationTypeStep'
 
 export type CreateAgentPath = 'telephony' | 'platform' | 'chat'
 
@@ -52,8 +53,31 @@ export const PLATFORM_STEPS = [
 export const CHAT_STEPS = [
   { id: 1, title: 'Connect', description: 'Name, chat connection, and provider' },
   { id: 2, title: 'Prompts', description: 'Production prompt and test agent template' },
-  { id: 3, title: 'LLM setup', description: 'Production and test agent models' },
+  { id: 3, title: 'Chat agent LLM', description: 'API credential and model (production leg)' },
 ] as const
+
+export const CHAT_STEPS_TWO_STEP = CHAT_STEPS.filter((s) => s.id !== 3)
+
+export function chatWizardNeedsLlmStep(integration: ChatIntegrationOptionId): boolean {
+  return integration === 'internal_llm'
+}
+
+export function chatWizardSteps(integration: ChatIntegrationOptionId) {
+  if (chatWizardNeedsLlmStep(integration)) return CHAT_STEPS
+  return CHAT_STEPS_TWO_STEP
+}
+
+export function chatWizardMaxStep(integration: ChatIntegrationOptionId): CreateStepId {
+  return chatWizardNeedsLlmStep(integration) ? 3 : 2
+}
+
+/** Chat create: link first active bundle for eval customer LLM (no wizard step). */
+export function defaultVoiceBundleIdForChat(
+  bundles: { id: string; is_active?: boolean }[],
+): string {
+  const active = bundles.filter((b) => b.is_active !== false)
+  return active[0]?.id ?? ''
+}
 
 export function createWizardMaxStep(_path: CreateAgentPath): CreateStepId {
   return 3

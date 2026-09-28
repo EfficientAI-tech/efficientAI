@@ -386,6 +386,20 @@ async def generate_test_prompt(
         )
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+    except RuntimeError as e:
+        detail = str(e)
+        lower = detail.lower()
+        if "non-serverless" in lower or "model_not_available" in lower:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "The selected Together model is not available on serverless inference. "
+                    "Choose another AI provider/model in the generator dropdown, or update "
+                    "your default AI provider under Settings → AI Providers."
+                ),
+            ) from e
+        logger.error(f"[Agents] Test prompt generation failed: {repr(e)}")
+        raise HTTPException(500, f"AI generation failed: {detail}") from e
     except Exception as e:
         logger.error(f"[Agents] Test prompt generation failed: {repr(e)}")
         raise HTTPException(500, f"AI generation failed: {str(e)}") from e

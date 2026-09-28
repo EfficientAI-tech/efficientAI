@@ -1940,10 +1940,14 @@ class ApiClient {
   async previewIntegrationAgentPrompt(
     integrationId: string,
     voiceAiAgentId: string,
+    options?: { agentChannel?: 'voice' | 'chat' },
   ): Promise<{ provider_prompt: string }> {
     const response = await this.client.post(
       `/api/v1/integrations/${integrationId}/preview-agent-prompt`,
-      { voice_ai_agent_id: voiceAiAgentId },
+      {
+        voice_ai_agent_id: voiceAiAgentId,
+        ...(options?.agentChannel ? { agent_channel: options.agentChannel } : {}),
+      },
     )
     return response.data
   }

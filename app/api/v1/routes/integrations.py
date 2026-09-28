@@ -467,7 +467,11 @@ async def preview_integration_agent_prompt(
     try:
         from app.services.voice_providers.prompt_sync import fetch_provider_prompt
 
-        prompt = fetch_provider_prompt(integration, body.voice_ai_agent_id)
+        prompt = fetch_provider_prompt(
+            integration,
+            body.voice_ai_agent_id,
+            agent_channel=body.agent_channel,
+        )
     except Exception as e:
         raise HTTPException(
             status_code=502,
@@ -483,8 +487,10 @@ async def preview_integration_agent_prompt(
         if platform_val == "retell":
             detail = (
                 "Retell returned no importable prompt. For conversation-flow agents, set "
-                "Global prompt on the flow (chat and voice). For Retell LLM agents, set "
-                "General prompt (and state prompts if used). Custom LLM agents cannot import a prompt."
+                "Global prompt on the flow (chat and voice) and publish the agent. For chat "
+                "agents, use the chat agent ID from Retell and ensure Global prompt is saved on "
+                "the linked conversation flow. For Retell LLM agents, set General prompt (and "
+                "state prompts if used). Custom LLM agents cannot import a prompt."
             )
         else:
             detail = (

@@ -205,13 +205,21 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
         else:
             logger.error(f"[RunEvaluator {evaluator.evaluator_id}] Agent missing required configuration")
             result.status = EvaluatorResultStatus.FAILED.value
-            has_main_llm = agent_has_chat_simulation_config(agent)
+            sim_ok = agent_has_chat_simulation_config(agent)
+            chat_detail = ""
+            if call_medium == "chat":
+                from app.services.agents.chat_connection import validate_chat_connection_for_agent
+
+                err = validate_chat_connection_for_agent(agent)
+                if err:
+                    chat_detail = f" {err}"
             result.error_message = (
                 "Agent missing required configuration for this run. "
-                f"call_medium={call_medium}, main_llm_connection={has_main_llm}, "
-                f"voice_bundle={has_voice_bundle}, voice_ai_integration={has_voice_ai_integration}. "
-                "Chat agents need call_medium=chat with main LLM on the connection layer "
-                "(or restart Celery workers after upgrading). Voice agents need a voice bundle or integration."
+                f"call_medium={call_medium}, chat_simulation_ready={sim_ok}, "
+                f"voice_bundle={has_voice_bundle}, voice_ai_integration={has_voice_ai_integration}."
+                f"{chat_detail} "
+                "For LLM chat agents set Chat Agent LLM; for platform chat set integration and agent ID "
+                "and production prompt. Restart Celery workers after deploying API changes."
             )
             result.call_event = "configuration_error"
             db.commit()

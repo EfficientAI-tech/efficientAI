@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from app.models.database import Agent
-from app.models.enums import ChatConnectionTypeEnum
+from app.models.enums import CallMediumEnum, ChatConnectionTypeEnum
 
 
 def coerce_chat_connection_type(raw: Any) -> str:
@@ -35,9 +35,45 @@ def coerce_chat_connection_type(raw: Any) -> str:
     return lower
 
 
+def _is_chat_medium(agent: Agent) -> bool:
+    raw = getattr(agent, "call_medium", None)
+    if raw is None:
+        return False
+    if hasattr(raw, "value") and not isinstance(raw, str):
+        raw = raw.value
+    return str(raw).lower() == CallMediumEnum.CHAT.value
+
+
+def _has_platform_chat_link(agent: Agent) -> bool:
+    return bool(
+        agent.voice_ai_integration_id and (agent.voice_ai_agent_id or "").strip()
+    )
+
+
 def normalized_chat_connection_type(agent: Agent) -> str:
+    """Resolve connection type, inferring platform/API/messaging when DB defaulted to internal_llm."""
     raw = getattr(agent, "chat_connection_type", None)
-    return coerce_chat_connection_type(raw)
+    conn = coerce_chat_connection_type(raw)
+    if not _is_chat_medium(agent):
+        return conn
+
+    cfg = chat_connection_config(agent)
+    has_platform = _has_platform_chat_link(agent)
+    has_api = bool((cfg.get("api_base_url") or "").strip())
+    channel = (cfg.get("messaging_channel") or "").strip().lower()
+    has_messaging = channel in ("whatsapp", "sms")
+
+    if conn == ChatConnectionTypeEnum.CUSTOMER_API.value and has_api:
+        return conn
+    if has_platform and conn != ChatConnectionTypeEnum.CUSTOMER_API.value:
+        return ChatConnectionTypeEnum.PROVIDER_CHAT.value
+    if conn != ChatConnectionTypeEnum.INTERNAL_LLM.value:
+        return conn
+    if has_api:
+        return ChatConnectionTypeEnum.CUSTOMER_API.value
+    if has_messaging:
+        return ChatConnectionTypeEnum.MESSAGING_CHANNELS.value
+    return conn
 
 
 def chat_connection_config(agent: Agent) -> dict[str, Any]:
@@ -58,22 +94,6 @@ def agent_has_test_llm_config(agent: Agent) -> bool:
 def validate_chat_connection_for_agent(agent: Agent) -> Optional[str]:
     """Return error message if chat agent cannot run simulation, else None."""
     conn = normalized_chat_connection_type(agent)
-    if not agent_has_test_llm_config(agent):
-        return "Chat agent requires test LLM credentials for the test agent leg."
-
-    if conn == ChatConnectionTypeEnum.INTERNAL_LLM.value:
-        main_provider = (getattr(agent, "main_llm_provider", None) or "").strip()
-        main_model = (getattr(agent, "main_llm_model", None) or "").strip()
-        test_provider = (getattr(agent, "test_llm_provider", None) or "").strip()
-        test_model = (getattr(agent, "test_llm_model", None) or "").strip()
-        if (main_provider and main_model) or (test_provider and test_model):
-            return None
-        if agent.voice_bundle_id:
-            return None
-        return (
-            "Platform LLM chat agents require LLM credentials "
-            "(test LLM or agent leg)."
-        )
 
     if conn == ChatConnectionTypeEnum.PROVIDER_CHAT.value:
         if not agent.voice_ai_integration_id or not (agent.voice_ai_agent_id or "").strip():
@@ -95,5 +115,14 @@ def validate_chat_connection_for_agent(agent: Agent) -> Optional[str]:
         if channel not in ("whatsapp", "sms"):
             return "Messaging agents require messaging_channel (whatsapp or sms)."
         return None
+
+    if conn == ChatConnectionTypeEnum.INTERNAL_LLM.value:
+        main_provider = (getattr(agent, "main_llm_provider", None) or "").strip()
+        main_model = (getattr(agent, "main_llm_model", None) or "").strip()
+        if main_provider and main_model:
+            return None
+        if agent.voice_bundle_id:
+            return None
+        return "LLM chat agents require chat agent LLM credentials (main LLM)."
 
     return f"Unsupported chat connection type: {conn}"

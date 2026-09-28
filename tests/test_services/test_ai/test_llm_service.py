@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 
 from app.models.enums import ModelProvider
-from app.services.ai.llm_service import LLMService
+from app.services.ai.llm_service import LLMService, canonical_litellm_model_id
 
 llm_module = importlib.import_module("app.services.ai.llm_service")
 
@@ -44,6 +44,14 @@ def _reset_llm_gateway_settings():
     ) = original
 
 
+def test_canonical_litellm_model_id_rewrites_together_prefix():
+    assert (
+        canonical_litellm_model_id("together/meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo")
+        == "together_ai/meta-llama/Llama-3.2-3B-Instruct-Turbo"
+    )
+    assert canonical_litellm_model_id("openai/gpt-4o") == "openai/gpt-4o"
+
+
 def test_litellm_model_name_maps_known_provider_prefixes():
     assert LLMService._litellm_model_name(ModelProvider.OPENAI, "gpt-4o") == "openai/gpt-4o"
     assert LLMService._litellm_model_name(ModelProvider.GOOGLE, "gemini-1.5-pro") == "gemini/gemini-1.5-pro"
@@ -64,6 +72,19 @@ def test_litellm_model_name_maps_known_provider_prefixes():
     assert (
         LLMService._litellm_model_name(ModelProvider.AZURE, "azure-openai-gpt4")
         == "azure/gpt-4"
+    )
+    assert (
+        LLMService._litellm_model_name(
+            ModelProvider.TOGETHER, "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"
+        )
+        == "together_ai/meta-llama/Llama-3.2-3B-Instruct-Turbo"
+    )
+    assert (
+        LLMService._litellm_model_name(
+            ModelProvider.TOGETHER,
+            "together/meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+        )
+        == "together_ai/meta-llama/Llama-3.2-3B-Instruct-Turbo"
     )
 
 
