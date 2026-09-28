@@ -5,7 +5,7 @@ export type CreateAgentPath = 'telephony' | 'platform' | 'chat'
 
 export type AgentMedium = 'voice' | 'chat'
 
-export type CreateWizardPhase = 'entry' | 'steps'
+export type CreateWizardPhase = 'entry_medium' | 'entry_integration' | 'steps'
 
 export interface CreateAgentFormData {
   name: string
@@ -50,12 +50,13 @@ export const PLATFORM_STEPS = [
 ] as const
 
 export const CHAT_STEPS = [
-  { id: 1, title: 'Agent', description: 'Name, connection, and prompt' },
-  { id: 2, title: 'Testing', description: 'Test LLM (Platform LLM)' },
+  { id: 1, title: 'Connect', description: 'Name, chat connection, and provider' },
+  { id: 2, title: 'Prompts', description: 'Production prompt and test agent template' },
+  { id: 3, title: 'LLM setup', description: 'Production and test agent models' },
 ] as const
 
-export function createWizardMaxStep(path: CreateAgentPath): CreateStepId {
-  return path === 'chat' ? 2 : 3
+export function createWizardMaxStep(_path: CreateAgentPath): CreateStepId {
+  return 3
 }
 
 export type CreateStepId = 1 | 2 | 3

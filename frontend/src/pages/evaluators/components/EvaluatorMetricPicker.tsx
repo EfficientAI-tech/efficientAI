@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Layers } from 'lucide-react'
 import { apiClient } from '../../../lib/api'
 import {
-  getTopLevelMetrics,
+  getTopLevelMetricsForAgentMedium,
   isCategorizationParent,
   getEnabledChildren,
   normalizeSelectedMetricIds,
@@ -16,12 +16,14 @@ interface Props {
   onChange: (ids: string[]) => void
   /** Let the parent scroll (e.g. modal wizard) instead of a nested list scrollbar. */
   fluidHeight?: boolean
+  agentMedium?: 'voice' | 'chat'
 }
 
 export default function EvaluatorMetricPicker({
   selectedMetricIds,
   onChange,
   fluidHeight = false,
+  agentMedium = 'voice',
 }: Props) {
   const { data: metrics = [] } = useQuery({
     queryKey: ['metrics', 'agent'],
@@ -29,7 +31,7 @@ export default function EvaluatorMetricPicker({
   })
 
   const metricRows = metrics as MetricRow[]
-  const enabledParents = getTopLevelMetrics(metricRows)
+  const enabledParents = getTopLevelMetricsForAgentMedium(metricRows, agentMedium)
   const disabledCount = metricRows.filter((m) => m.enabled === false).length
   const normalizedSelected = normalizeSelectedMetricIds(selectedMetricIds, metricRows)
 
@@ -40,7 +42,9 @@ export default function EvaluatorMetricPicker({
   return (
     <div className="space-y-3">
       <p className="text-sm text-gray-600">
-        Optional — leave empty to score against all enabled agent metrics. Categorization metrics select as one unit (all sub-labels included).
+        Optional — leave empty to score against all enabled agent metrics
+        {agentMedium === 'chat' ? ' (voice-only audio metrics are hidden for chat agents)' : ''}.
+        Categorization metrics select as one unit.
       </p>
       <div
         className={`border border-gray-200 rounded-xl p-3 pr-4 space-y-2 bg-gray-50/30 ${

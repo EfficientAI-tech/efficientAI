@@ -33,11 +33,93 @@ interface ChatConnectionStepProps {
 }
 
 export function validateChatConnection(value: ChatConnectionForm): boolean {
+  const testOk = Boolean(value.testLlmProvider && value.testLlmModel.trim())
   if (value.connectionType === 'internal_llm') {
-    return Boolean(value.testLlmProvider && value.testLlmModel.trim())
+    return Boolean(value.mainLlmProvider && value.mainLlmModel.trim() && testOk)
   }
+  return testOk
+}
 
-  return Boolean(value.testLlmProvider && value.testLlmModel.trim())
+function LlmCredentialModelFields({
+  title,
+  hint,
+  credentialId,
+  model,
+  onCredentialChange,
+  onModelChange,
+  activeProviders,
+}: {
+  title: string
+  hint?: string
+  credentialId: string
+  model: string
+  onCredentialChange: (credentialId: string, provider: string) => void
+  onModelChange: (model: string) => void
+  activeProviders: AIProvider[]
+}) {
+  const credential = useMemo(
+    () => activeProviders.find((p) => p.id === credentialId),
+    [activeProviders, credentialId],
+  )
+  const providerEnum = (credential?.provider || '') as ModelProvider
+  const { data: modelOptions } = useQuery({
+    queryKey: ['model-options', providerEnum, title],
+    queryFn: () => apiClient.getModelOptions(providerEnum),
+    enabled: !!providerEnum,
+  })
+  const resolution = credential
+    ? resolveLLMModelsForCredential(credential, modelOptions?.llm || [])
+    : { mode: 'catalog' as const, models: modelOptions?.llm || [] }
+  const selectable = resolution.mode === 'catalog' ? resolution.models : []
+
+  useEffect(() => {
+    if (selectable.length && !selectable.includes(model)) {
+      onModelChange(selectable[0])
+    }
+  }, [selectable, model, onModelChange])
+
+  return (
+    <div className="border border-gray-200 rounded-lg p-3 space-y-2.5 bg-white">
+      <div>
+        <h4 className="text-xs font-semibold text-gray-900">{title}</h4>
+        {hint ? <p className="text-xs text-gray-500 mt-0.5">{hint}</p> : null}
+      </div>
+      <div>
+        <label className="block text-xs font-medium text-gray-600 mb-1">Credential</label>
+        <select
+          className={MODERN_SELECT_CLASS}
+          value={credentialId}
+          onChange={(e) => {
+            const row = activeProviders.find((p) => p.id === e.target.value)
+            onCredentialChange(e.target.value, row?.provider || '')
+          }}
+        >
+          <option value="">Select API credential</option>
+          {activeProviders.map((p: AIProvider) => (
+            <option key={p.id} value={p.id}>
+              {p.name || p.provider} ({p.provider})
+            </option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label className="block text-xs font-medium text-gray-600 mb-1">Model</label>
+        <select
+          className={MODERN_SELECT_CLASS}
+          value={model}
+          onChange={(e) => onModelChange(e.target.value)}
+          disabled={!selectable.length}
+        >
+          <option value="">Select model</option>
+          {selectable.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
+      </div>
+    </div>
+  )
 }
 
 export default function ChatConnectionStep({
@@ -51,96 +133,30 @@ export default function ChatConnectionStep({
   })
 
   const activeProviders = aiProviders.filter((p: AIProvider) => p.is_active)
-
-  const mainCredential = useMemo(
-    () => activeProviders.find((p) => p.id === value.mainLlmCredentialId),
-    [activeProviders, value.mainLlmCredentialId],
-  )
-  const mainProviderEnum = (mainCredential?.provider || value.mainLlmProvider || '') as ModelProvider
-
-  const { data: mainModelOptions } = useQuery({
-    queryKey: ['model-options', mainProviderEnum],
-    queryFn: () => apiClient.getModelOptions(mainProviderEnum),
-    enabled: !!mainProviderEnum,
-  })
-
-  const mainResolution = mainCredential
-    ? resolveLLMModelsForCredential(mainCredential, mainModelOptions?.llm || [])
-    : { mode: 'catalog' as const, models: mainModelOptions?.llm || [] }
-  const mainSelectable =
-    mainResolution.mode === 'catalog' ? mainResolution.models : []
+  const isLlmConnection = value.connectionType === 'internal_llm'
 
   useEffect(() => {
-    if (value.connectionType !== 'internal_llm' || !value.useSeparateTestLlm) return
-    if (!value.mainLlmCredentialId && activeProviders.length === 1) {
-      const p = activeProviders[0]
-      onChange({
-        mainLlmCredentialId: p.id,
-        mainLlmProvider: p.provider,
-      })
+    if (activeProviders.length !== 1) return
+    const p = activeProviders[0]
+    const patch: Partial<ChatConnectionForm> = {}
+    if (!value.mainLlmCredentialId && isLlmConnection) {
+      patch.mainLlmCredentialId = p.id
+      patch.mainLlmProvider = p.provider
     }
-  }, [
-    activeProviders,
-    value.connectionType,
-    value.useSeparateTestLlm,
-    value.mainLlmCredentialId,
-    onChange,
-  ])
-
-  useEffect(() => {
-    if (value.connectionType !== 'internal_llm' || !value.useSeparateTestLlm) return
-    if (mainSelectable.length && !mainSelectable.includes(value.mainLlmModel)) {
-      onChange({ mainLlmModel: mainSelectable[0] })
+    if (!value.testLlmCredentialId) {
+      patch.testLlmCredentialId = p.id
+      patch.testLlmProvider = p.provider
     }
-  }, [
-    mainSelectable,
-    value.connectionType,
-    value.useSeparateTestLlm,
-    value.mainLlmModel,
-    onChange,
-  ])
-
-  const testCredential = useMemo(
-    () => activeProviders.find((p) => p.id === value.testLlmCredentialId),
-    [activeProviders, value.testLlmCredentialId],
-  )
-  const testProviderEnum = (testCredential?.provider || value.testLlmProvider || '') as ModelProvider
-  const { data: testModelOptions } = useQuery({
-    queryKey: ['model-options', testProviderEnum, 'test'],
-    queryFn: () => apiClient.getModelOptions(testProviderEnum),
-    enabled:
-      (value.connectionType === 'internal_llm' || value.useSeparateTestLlm) && !!testProviderEnum,
-  })
-  const testResolution = testCredential
-    ? resolveLLMModelsForCredential(testCredential, testModelOptions?.llm || [])
-    : { mode: 'catalog' as const, models: testModelOptions?.llm || [] }
-  const testSelectable = testResolution.mode === 'catalog' ? testResolution.models : []
-
-  const isPlatformLlm = value.connectionType === 'internal_llm'
-
-  useEffect(() => {
-    if (!value.testLlmCredentialId && activeProviders.length === 1) {
-      const p = activeProviders[0]
-      onChange({
-        testLlmCredentialId: p.id,
-        testLlmProvider: p.provider,
-      })
-    }
-  }, [activeProviders, value.testLlmCredentialId, onChange])
-
-  useEffect(() => {
-    if (testSelectable.length && !testSelectable.includes(value.testLlmModel)) {
-      onChange({ testLlmModel: testSelectable[0] })
-    }
-  }, [testSelectable, value.testLlmModel, onChange])
+    if (Object.keys(patch).length) onChange(patch)
+  }, [activeProviders, isLlmConnection, value.mainLlmCredentialId, value.testLlmCredentialId, onChange])
 
   return (
     <div className="w-full space-y-4">
-      {isPlatformLlm ? (
+      {isLlmConnection ? (
         <p className="text-sm text-gray-600 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 leading-relaxed">
-          <span className="font-medium text-gray-900">Your agent</span> is the production prompt from
-          the previous step — EfficientAI runs it on Platform LLM. Pick the credential and model for the{' '}
-          <span className="font-medium text-gray-900">test agent</span> (same role as in voice evals).
+          LLM-to-LLM: the <span className="font-medium text-gray-900">production prompt</span> runs on
+          production LLM; the <span className="font-medium text-gray-900">test agent</span> uses the test
+          agent LLM (same roles as voice evals).
         </p>
       ) : (
         <p className="text-sm text-gray-600 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
@@ -148,124 +164,41 @@ export default function ChatConnectionStep({
           {value.connectionType === 'customer_api'
             ? 'HTTP API'
             : value.connectionType === 'provider_chat'
-              ? 'provider live chat'
+              ? 'existing platform'
               : 'messaging channel'}
-          . Select the test LLM below.
+          . Choose the test agent LLM that plays the customer in evals.
         </p>
       )}
 
-      {isPlatformLlm || value.useSeparateTestLlm ? (
-        <div className="border border-gray-200 rounded-lg p-3 space-y-2.5 bg-white">
-          <h4 className="text-xs font-semibold text-gray-900">
-            Test LLM
-          </h4>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Credential</label>
-            <select
-              className={MODERN_SELECT_CLASS}
-              value={value.testLlmCredentialId}
-              onChange={(e) => {
-                const row = activeProviders.find((p) => p.id === e.target.value)
-                onChange({
-                  testLlmCredentialId: e.target.value,
-                  testLlmProvider: row?.provider || '',
-                  testLlmModel: '',
-                })
-              }}
-            >
-              <option value="">Select API credential</option>
-              {activeProviders.map((p: AIProvider) => (
-                <option key={p.id} value={p.id}>
-                  {p.name || p.provider} ({p.provider})
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Model</label>
-            <select
-              className={MODERN_SELECT_CLASS}
-              value={value.testLlmModel}
-              onChange={(e) => onChange({ testLlmModel: e.target.value })}
-              disabled={!testSelectable.length}
-            >
-              <option value="">Select model</option>
-              {testSelectable.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
+      {isLlmConnection ? (
+        <LlmCredentialModelFields
+          title="Production LLM"
+          hint="Runs your production prompt each turn."
+          credentialId={value.mainLlmCredentialId}
+          model={value.mainLlmModel}
+          activeProviders={activeProviders}
+          onCredentialChange={(id, provider) =>
+            onChange({ mainLlmCredentialId: id, mainLlmProvider: provider, mainLlmModel: '' })
+          }
+          onModelChange={(m) => onChange({ mainLlmModel: m })}
+        />
       ) : null}
 
-      {isPlatformLlm ? (
-        <label className="flex items-center gap-2 text-sm text-gray-700">
-          <input
-            type="checkbox"
-            checked={value.useSeparateTestLlm}
-            onChange={(e) => onChange({ useSeparateTestLlm: e.target.checked })}
-          />
-          Use a different Platform LLM for your agent leg (advanced)
-        </label>
-      ) : (
-        <label className="flex items-center gap-2 text-sm text-gray-700">
-          <input
-            type="checkbox"
-            checked={value.useSeparateTestLlm}
-            onChange={(e) => onChange({ useSeparateTestLlm: e.target.checked })}
-          />
-          Test LLM (required)
-        </label>
-      )}
-
-      {isPlatformLlm && value.useSeparateTestLlm ? (
-        <div className="border border-gray-200 rounded-lg p-3 space-y-2.5 bg-white">
-          <h4 className="text-xs font-semibold text-gray-900">Agent leg LLM</h4>
-          <p className="text-xs text-gray-500">
-            Optional override. Defaults to the same credential and model as the test LLM.
-          </p>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Credential</label>
-            <select
-              className={MODERN_SELECT_CLASS}
-              value={value.mainLlmCredentialId}
-              onChange={(e) => {
-                const row = activeProviders.find((p) => p.id === e.target.value)
-                onChange({
-                  mainLlmCredentialId: e.target.value,
-                  mainLlmProvider: row?.provider || '',
-                  mainLlmModel: '',
-                })
-              }}
-            >
-              <option value="">Same as test LLM</option>
-              {activeProviders.map((p: AIProvider) => (
-                <option key={p.id} value={p.id}>
-                  {p.name || p.provider} ({p.provider})
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Model</label>
-            <select
-              className={MODERN_SELECT_CLASS}
-              value={value.mainLlmModel}
-              onChange={(e) => onChange({ mainLlmModel: e.target.value })}
-              disabled={!mainSelectable.length}
-            >
-              <option value="">Select model</option>
-              {mainSelectable.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-      ) : null}
+      <LlmCredentialModelFields
+        title="Test agent LLM"
+        hint={
+          isLlmConnection
+            ? 'Simulates the customer / user side in evals.'
+            : 'Required — simulates the customer side while production uses your live connection.'
+        }
+        credentialId={value.testLlmCredentialId}
+        model={value.testLlmModel}
+        activeProviders={activeProviders}
+        onCredentialChange={(id, provider) =>
+          onChange({ testLlmCredentialId: id, testLlmProvider: provider, testLlmModel: '' })
+        }
+        onModelChange={(m) => onChange({ testLlmModel: m })}
+      />
     </div>
   )
 }

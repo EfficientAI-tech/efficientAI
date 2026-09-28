@@ -31,7 +31,11 @@ import { isChatMedium } from '../../../lib/agentMedium'
 import { filterPersonasByMedium } from '../../../lib/personaMedium'
 import EvaluatorMetricsDisplay from '../components/EvaluatorMetricsDisplay'
 import { MODERN_INPUT_CLASS, MODERN_SELECT_CLASS, StatCard } from '../components/evaluatorUi'
-import { normalizeSelectedMetricIds, type MetricRow } from '../components/metricSelectionUtils'
+import {
+  normalizeSelectedMetricIds,
+  stripVoiceOnlyMetricIds,
+  type MetricRow,
+} from '../components/metricSelectionUtils'
 import {
   formatSuiteCombinationSummary,
   formatSuiteDisplayName,
@@ -224,10 +228,14 @@ export default function EvaluatorDetail() {
   })
 
   const handleSave = () => {
+    if (!suite) return
     const rows = metrics as MetricRow[]
-    const normalized = editMetricIds.length > 0
+    let normalized = editMetricIds.length > 0
       ? normalizeSelectedMetricIds(editMetricIds, rows)
       : []
+    if (isChatEvaluatorSuite(suite) && normalized.length > 0) {
+      normalized = stripVoiceOnlyMetricIds(normalized, rows)
+    }
     updateMutation.mutate({
       name: editName.trim() || undefined,
       metric_ids: normalized.length > 0 ? normalized : null,
@@ -515,7 +523,11 @@ export default function EvaluatorDetail() {
             <div className="space-y-6 border-t border-gray-100 pt-6">
               <div>
                 <h3 className="text-sm font-semibold text-gray-900 mb-3">Metrics</h3>
-                <EvaluatorMetricPicker selectedMetricIds={editMetricIds} onChange={setEditMetricIds} />
+                <EvaluatorMetricPicker
+                  selectedMetricIds={editMetricIds}
+                  onChange={setEditMetricIds}
+                  agentMedium={isChatAgent ? 'chat' : 'voice'}
+                />
               </div>
               <EvaluatorLlmPicker
                 llmProvider={editLlmProvider}

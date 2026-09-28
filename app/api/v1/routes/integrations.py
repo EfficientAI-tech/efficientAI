@@ -475,10 +475,22 @@ async def preview_integration_agent_prompt(
         )
 
     if not isinstance(prompt, str) or not prompt.strip():
-        raise HTTPException(
-            status_code=422,
-            detail="Provider returned no prompt. Verify the external agent has a system prompt configured.",
-        )
+        platform_val = (
+            integration.platform.value
+            if hasattr(integration.platform, "value")
+            else str(integration.platform)
+        ).lower()
+        if platform_val == "retell":
+            detail = (
+                "Retell returned no importable prompt. For conversation-flow agents, set "
+                "Global prompt on the flow (chat and voice). For Retell LLM agents, set "
+                "General prompt (and state prompts if used). Custom LLM agents cannot import a prompt."
+            )
+        else:
+            detail = (
+                "Provider returned no prompt. Verify the external agent has a system prompt configured."
+            )
+        raise HTTPException(status_code=422, detail=detail)
 
     return PreviewIntegrationAgentPromptResponse(provider_prompt=prompt)
 

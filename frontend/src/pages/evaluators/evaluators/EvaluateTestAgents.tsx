@@ -259,7 +259,7 @@ export default function EvaluateTestAgents() {
           />
           {stats.chat > 0 ? (
             <StatCard
-              label="Text chat"
+              label="Chat"
               value={stats.chat}
               accentClass="text-violet-700"
               iconBgClass="bg-violet-50"

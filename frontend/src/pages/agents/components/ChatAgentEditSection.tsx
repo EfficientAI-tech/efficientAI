@@ -8,10 +8,17 @@ import { connectionTypeLabel } from './create/chatAgentFormUtils'
 import type { CreateAgentFormData } from './create/createAgentTypes'
 import { defaultTestAgentTemplate } from './agentTestSetupConstants'
 import { Integration, IntegrationPlatform } from '../../../types/api'
+import PlatformConnectStep from './create/PlatformConnectStep'
+import { ChatProviderPromptBlock } from './create/ChatConnectionDetailsStep'
+import { NATIVE_PROVIDER_TEXT_CHAT_PLATFORMS } from '../../../lib/chatConnectionCapabilities'
 
 interface ChatAgentEditSectionProps {
+  mode: 'production' | 'test'
   connectionType: string
-  formData: Pick<CreateAgentFormData, 'voice_ai_integration_id' | 'voice_ai_agent_id'>
+  formData: Pick<
+    CreateAgentFormData,
+    'voice_ai_integration_id' | 'voice_ai_agent_id' | 'name' | 'language' | 'call_type'
+  >
   onFormChange: (patch: Partial<CreateAgentFormData>) => void
   providerPrompt: string
   onProviderPromptChange: (value: string) => void
@@ -34,6 +41,7 @@ function integrationOptionFromType(type: string): ChatIntegrationOptionId {
 }
 
 export default function ChatAgentEditSection({
+  mode,
   connectionType,
   formData,
   onFormChange,
@@ -50,31 +58,58 @@ export default function ChatAgentEditSection({
 }: ChatAgentEditSectionProps) {
   const integrationType = integrationOptionFromType(connectionType)
 
+  if (mode === 'test') {
+    return (
+      <div className="space-y-6 max-w-3xl">
+        <p className="text-sm text-gray-600">
+          EfficientAI test agent — simulates the customer in evaluator runs (same role as the voice
+          test agent + voice bundle).
+        </p>
+        <ChatConnectionStep
+          value={chatConnection}
+          onChange={onChatConnectionChange}
+          variant="compact"
+        />
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-6 max-w-3xl">
       <p className="text-sm text-gray-600">
-        Connection: <span className="font-medium text-gray-900">{connectionTypeLabel(connectionType)}</span>
+        Production agent under test —{' '}
+        <span className="font-medium text-gray-900">{connectionTypeLabel(connectionType)}</span>
       </p>
 
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Production prompt</label>
-        <textarea
-          className={`${MODERN_INPUT_CLASS} min-h-[200px] font-mono text-xs`}
-          value={providerPrompt}
-          onChange={(e) => onProviderPromptChange(e.target.value)}
+      {integrationType === 'provider_chat' ? (
+        <PlatformConnectStep
+          showNameField={false}
+          integrations={integrations}
+          agentName={formData.name}
+          onAgentNameChange={() => {}}
+          selectedPlatform={selectedPlatform}
+          onSelectPlatform={onSelectPlatform}
+          voiceAiIntegrationId={formData.voice_ai_integration_id}
+          voiceAiAgentId={formData.voice_ai_agent_id}
+          onIntegrationChange={(id) => onFormChange({ voice_ai_integration_id: id })}
+          onAgentIdChange={(id) => onFormChange({ voice_ai_agent_id: id })}
+          introTitle="Existing platform integration"
+          introSubtitle="External chat agent on Vapi, Retell, ElevenLabs, or Smallest."
+          platformOptions={NATIVE_PROVIDER_TEXT_CHAT_PLATFORMS}
+          remoteAgentKind="chat"
         />
-      </div>
+      ) : null}
 
-      {integrationType !== 'internal_llm' ? (
+      {integrationType !== 'internal_llm' && integrationType !== 'provider_chat' ? (
         <ChatConnectionDetailsStep
           integrationType={integrationType}
           formData={{
-            name: '',
+            name: formData.name || '',
             phone_number: '',
-            language: 'en',
+            language: formData.language || 'en',
             description: '',
             test_agent_template: defaultTestAgentTemplate(),
-            call_type: 'outbound',
+            call_type: formData.call_type || 'outbound',
             call_medium: 'chat',
             telephony_phone_number_id: '',
             voice_bundle_id: '',
@@ -95,11 +130,40 @@ export default function ChatAgentEditSection({
         />
       ) : null}
 
-      <ChatConnectionStep
-        value={chatConnection}
-        onChange={onChatConnectionChange}
-        variant="compact"
-      />
+      {integrationType === 'provider_chat' ? (
+        <ChatProviderPromptBlock
+          formData={{
+            name: formData.name || '',
+            phone_number: '',
+            language: formData.language || 'en',
+            description: '',
+            test_agent_template: defaultTestAgentTemplate(),
+            call_type: formData.call_type || 'outbound',
+            call_medium: 'chat',
+            telephony_phone_number_id: '',
+            voice_bundle_id: '',
+            voice_ai_integration_id: formData.voice_ai_integration_id,
+            voice_ai_agent_id: formData.voice_ai_agent_id,
+            silence_hangup_secs: 15,
+          }}
+          productionPrompt={providerPrompt}
+          onProductionPromptChange={onProviderPromptChange}
+          onPromptFetched={() => {}}
+          showToast={showToast}
+        />
+      ) : (
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Production prompt</label>
+          <p className="text-xs text-gray-500 mb-2">
+            System instructions for the agent under test.
+          </p>
+          <textarea
+            className={`${MODERN_INPUT_CLASS} min-h-[200px] font-mono text-xs`}
+            value={providerPrompt}
+            onChange={(e) => onProviderPromptChange(e.target.value)}
+          />
+        </div>
+      )}
     </div>
   )
 }

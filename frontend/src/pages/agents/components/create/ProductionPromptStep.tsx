@@ -1,4 +1,4 @@
-import { Sparkles, Loader2 } from 'lucide-react'
+import { Sparkles, Loader2, RefreshCw } from 'lucide-react'
 import { AIProvider } from '../../../../types/api'
 import { formatGatewayCredentialLabel } from '../../../../lib/llmModelOptions'
 import TestAgentTemplateEditor from '../TestAgentTemplateEditor'
@@ -32,6 +32,11 @@ interface ProductionPromptStepProps {
   onGenerateTestPrompt: () => void
   isGenerating: boolean
   canGenerate: boolean
+  importFromProvider?: {
+    onClick: () => void
+    isPending: boolean
+    disabled?: boolean
+  }
 }
 
 export default function ProductionPromptStep({
@@ -55,6 +60,7 @@ export default function ProductionPromptStep({
   onGenerateTestPrompt,
   isGenerating,
   canGenerate,
+  importFromProvider,
 }: ProductionPromptStepProps) {
   const assembledPrompt = assembleTestAgentPrompt(testAgentTemplate.sections)
   const wordCount = assembledPrompt.trim().split(/\s+/).filter(Boolean).length
@@ -65,10 +71,23 @@ export default function ProductionPromptStep({
   return (
     <div className="space-y-4">
       <div>
-        <div className="flex items-center justify-between mb-2">
-          <label className="block text-sm font-medium text-gray-700">
-            Production Agent Prompt *
-          </label>
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <label className="block text-sm font-medium text-gray-700">Production prompt *</label>
+          {importFromProvider ? (
+            <button
+              type="button"
+              disabled={importFromProvider.isPending || importFromProvider.disabled}
+              onClick={importFromProvider.onClick}
+              className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-800 hover:bg-gray-50 disabled:opacity-50"
+            >
+              {importFromProvider.isPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3.5 w-3.5" />
+              )}
+              Import from provider
+            </button>
+          ) : null}
         </div>
         {isFetchingProductionPrompt ? (
           <div className="flex items-center gap-2 text-sm text-gray-500 py-8 justify-center border border-gray-200 rounded-lg bg-gray-50">

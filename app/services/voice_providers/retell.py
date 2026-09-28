@@ -38,6 +38,112 @@ def _retell_agent_list_page(raw: Any) -> tuple[List[Any], bool, Optional[str]]:
     )
 
 
+def _retell_sdk_to_dict(raw: Any) -> Optional[dict[str, Any]]:
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    if hasattr(raw, "model_dump"):
+        try:
+            dumped = raw.model_dump()
+            if isinstance(dumped, dict):
+                return dumped
+        except Exception:
+            pass
+    if hasattr(raw, "dict"):
+        try:
+            dumped = raw.dict()
+            if isinstance(dumped, dict):
+                return dumped
+        except Exception:
+            pass
+    return None
+
+
+def _retell_nonempty_prompt(*candidates: Any) -> Optional[str]:
+    for item in candidates:
+        if isinstance(item, str) and item.strip():
+            return item.strip()
+    return None
+
+
+def _retell_prompt_from_llm_payload(llm: dict[str, Any]) -> Optional[str]:
+    general = _retell_nonempty_prompt(llm.get("general_prompt"))
+    state_parts: list[str] = []
+    states = llm.get("states")
+    if isinstance(states, list):
+        for state in states:
+            if not isinstance(state, dict):
+                continue
+            part = _retell_nonempty_prompt(state.get("state_prompt"))
+            if part:
+                state_parts.append(part)
+    if general and state_parts:
+        return f"{general}\n\n" + "\n\n".join(state_parts)
+    if general:
+        return general
+    if state_parts:
+        return "\n\n".join(state_parts)
+    return _retell_nonempty_prompt(
+        llm.get("system_prompt"),
+        llm.get("prompt"),
+    )
+
+
+def _retell_normalize_engine_type(raw: Any) -> str:
+    return str(raw or "").strip().lower().replace("_", "-")
+
+
+def _retell_agent_direct_prompt(agent: dict[str, Any]) -> Optional[str]:
+    return _retell_nonempty_prompt(
+        agent.get("general_prompt"),
+        agent.get("global_prompt"),
+        agent.get("system_prompt"),
+        agent.get("prompt"),
+    )
+
+
+def _retell_prompt_from_flow_nodes(flow: dict[str, Any]) -> Optional[str]:
+    nodes = flow.get("nodes")
+    if not isinstance(nodes, list):
+        return None
+    chunks: list[str] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        instruction = node.get("instruction")
+        if isinstance(instruction, str):
+            part = _retell_nonempty_prompt(instruction)
+            if part:
+                chunks.append(part)
+                continue
+        if isinstance(instruction, dict):
+            part = _retell_nonempty_prompt(
+                instruction.get("prompt"),
+                instruction.get("text"),
+            )
+            if part:
+                chunks.append(part)
+                continue
+        part = _retell_nonempty_prompt(
+            node.get("global_prompt"),
+            node.get("prompt"),
+            node.get("text"),
+        )
+        if part:
+            chunks.append(part)
+    if not chunks:
+        return None
+    return "\n\n".join(chunks)
+
+
+def _retell_prompt_from_conversation_flow(flow: dict[str, Any]) -> Optional[str]:
+    prompt = _retell_nonempty_prompt(flow.get("global_prompt"))
+    if prompt:
+        return prompt
+    return _retell_prompt_from_flow_nodes(flow)
+
+
 class RetellVoiceProvider(BaseVoiceProvider):
     """Retell AI voice provider implementation."""
     
@@ -309,83 +415,95 @@ class RetellVoiceProvider(BaseVoiceProvider):
         except Exception as e:
             raise ValueError(f"Failed to retrieve Retell call metrics: {str(e)}")
 
-    def extract_agent_prompt(self, agent_id: str) -> Optional[str]:
-        """Extract the system prompt from a Retell agent.
+    def _retrieve_conversation_flow(self, flow_id: str, version: Any) -> Optional[dict[str, Any]]:
+        retrieve_kwargs: dict[str, Any] = {"conversation_flow_id": flow_id}
+        if version is not None:
+            retrieve_kwargs["version"] = version
+        try:
+            flow_response = self.client.conversation_flow.retrieve(**retrieve_kwargs)
+            return _retell_sdk_to_dict(flow_response) or {}
+        except Exception as first_err:
+            if version is not None:
+                try:
+                    flow_response = self.client.conversation_flow.retrieve(
+                        conversation_flow_id=flow_id,
+                    )
+                    return _retell_sdk_to_dict(flow_response) or {}
+                except Exception:
+                    pass
+            logger.warning(
+                "[RetellProvider] conversation_flow.retrieve failed for {}: {}",
+                flow_id,
+                first_err,
+            )
+            return None
 
-        Handles all three response engine types:
-        - retell-llm: fetch LLM by llm_id, read general_prompt
-        - conversation-flow: fetch flow by conversation_flow_id, read global_prompt
+    def extract_agent_prompt(self, agent_id: str) -> Optional[str]:
+        """Extract the system prompt from a Retell agent (voice or chat channel).
+
+        - conversation-flow: global_prompt on the flow (+ node instruction prompts)
+        - retell-llm: general_prompt and optional state_prompt entries
         - custom-llm: no extractable prompt (websocket-based)
         """
         try:
-            agent_response = self.client.agent.retrieve(agent_id=agent_id)
+            agent = self.get_agent(agent_id)
+            direct = _retell_agent_direct_prompt(agent)
+            if direct:
+                return direct
 
-            response_engine = getattr(agent_response, "response_engine", None)
-            if response_engine is None:
-                logger.warning("[RetellProvider] No response_engine on agent")
+            response_engine = _retell_sdk_to_dict(agent.get("response_engine"))
+            if not response_engine:
+                logger.warning("[RetellProvider] No response_engine on agent {}", agent_id)
                 return None
 
-            engine_type = getattr(response_engine, "type", None)
-            if isinstance(response_engine, dict):
-                engine_type = response_engine.get("type")
+            engine_type = _retell_normalize_engine_type(response_engine.get("type"))
+            logger.debug("[RetellProvider] agent {} response_engine type={}", agent_id, engine_type)
 
-            logger.debug(f"[RetellProvider] response_engine type={engine_type}")
-
-            # --- retell-llm: fetch the LLM and read general_prompt ---
-            llm_id = getattr(response_engine, "llm_id", None)
-            if isinstance(response_engine, dict):
-                llm_id = response_engine.get("llm_id", llm_id)  
-
-            if llm_id:
-                logger.debug(f"[RetellProvider] Fetching LLM {llm_id}")
-                llm_response = self.client.llm.retrieve(llm_id=llm_id)
-
-                prompt = getattr(llm_response, "general_prompt", None)
-                if isinstance(llm_response, dict):
-                    prompt = llm_response.get("general_prompt", prompt)
-                if prompt:
-                    return prompt
-
-                if hasattr(llm_response, "model_dump"):
-                    prompt = llm_response.model_dump().get("general_prompt")
-                    if prompt:
-                        return prompt
-
-                logger.warning(f"[RetellProvider] LLM {llm_id} returned no general_prompt")
-                return None
-
-            # --- conversation-flow: fetch the flow and read global_prompt ---
-            flow_id = getattr(response_engine, "conversation_flow_id", None)
-            if isinstance(response_engine, dict):
-                flow_id = response_engine.get("conversation_flow_id", flow_id)
+            flow_id = (
+                response_engine.get("conversation_flow_id")
+                or response_engine.get("conversation_flow")
+                or agent.get("conversation_flow_id")
+                or ""
+            )
+            flow_id = str(flow_id).strip()
+            llm_id = str(response_engine.get("llm_id") or "").strip()
 
             if flow_id:
-                logger.debug(f"[RetellProvider] Fetching conversation flow {flow_id}")
-                flow_response = self.client.conversation_flow.retrieve(
-                    conversation_flow_id=flow_id
-                )
-
-                prompt = getattr(flow_response, "global_prompt", None)
-                if isinstance(flow_response, dict):
-                    prompt = flow_response.get("global_prompt", prompt)
-                if prompt:
-                    return prompt
-
-                if hasattr(flow_response, "model_dump"):
-                    prompt = flow_response.model_dump().get("global_prompt")
+                logger.debug("[RetellProvider] Fetching conversation flow {}", flow_id)
+                version = response_engine.get("version")
+                flow = self._retrieve_conversation_flow(flow_id, version)
+                if flow:
+                    prompt = _retell_prompt_from_conversation_flow(flow)
                     if prompt:
                         return prompt
+                logger.warning(
+                    "[RetellProvider] Conversation flow {} returned no global_prompt or node prompts",
+                    flow_id,
+                )
 
-                logger.warning(f"[RetellProvider] Conversation flow {flow_id} returned no global_prompt")
-                return None
+            if llm_id:
+                logger.debug("[RetellProvider] Fetching LLM {}", llm_id)
+                llm_response = self.client.llm.retrieve(llm_id=llm_id)
+                llm = _retell_sdk_to_dict(llm_response) or {}
+                prompt = _retell_prompt_from_llm_payload(llm)
+                if prompt:
+                    return prompt
+                logger.warning("[RetellProvider] LLM {} returned no general/state prompt", llm_id)
 
-            # --- custom-llm or unknown: try system_prompt fallback ---
-            if isinstance(response_engine, dict):
-                return response_engine.get("system_prompt")
-            return getattr(response_engine, "system_prompt", None)
+            prompt = _retell_nonempty_prompt(
+                response_engine.get("general_prompt"),
+                response_engine.get("global_prompt"),
+                response_engine.get("system_prompt"),
+            )
+            if prompt:
+                return prompt
+
+            if engine_type == "custom-llm":
+                logger.warning("[RetellProvider] custom-llm agents have no importable prompt")
+            return None
 
         except Exception as e:
-            logger.warning(f"[RetellProvider] Failed to extract agent prompt: {e}")
+            logger.warning("[RetellProvider] Failed to extract agent prompt for {}: {}", agent_id, e)
             return None
 
     def update_agent_prompt(self, agent_id: str, system_prompt: str, **kwargs) -> Dict[str, Any]:

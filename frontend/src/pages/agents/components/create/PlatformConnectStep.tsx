@@ -36,10 +36,10 @@ export default function PlatformConnectStep({
   platformOptions,
   remoteAgentKind = 'voice',
 }: PlatformConnectStepProps) {
-  const title = introTitle ?? (showNameField ? undefined : 'Connect voice platform')
+  const title = introTitle ?? (showNameField ? undefined : 'Existing platform integration')
   const subtitle =
     introSubtitle ??
-    'Choose a platform, connect your integration, and select the external agent to evaluate.'
+    'Choose Vapi, Retell, ElevenLabs, or Smallest — connect your integration and pick the agent.'
 
   return (
     <div className="space-y-5 max-w-4xl mx-auto">

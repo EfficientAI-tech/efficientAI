@@ -9,7 +9,11 @@ import { ChevronLeft, ChevronRight, Info, X, Check } from 'lucide-react'
 import EvaluatorMetricPicker from './EvaluatorMetricPicker'
 import EvaluatorLlmPicker from './EvaluatorLlmPicker'
 import { MODERN_INPUT_CLASS, MODERN_SELECT_CLASS } from './evaluatorUi'
-import { normalizeSelectedMetricIds, type MetricRow } from './metricSelectionUtils'
+import {
+  normalizeSelectedMetricIds,
+  stripVoiceOnlyMetricIds,
+  type MetricRow,
+} from './metricSelectionUtils'
 import {
   filterAgentsByMedium,
   formatAgentMediumLabel,
@@ -174,10 +178,13 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
 
   const handleSubmit = () => {
     const metricRows = metrics as MetricRow[]
-    const normalizedMetrics =
+    let normalizedMetrics =
       selectedMetricIds.length > 0
         ? normalizeSelectedMetricIds(selectedMetricIds, metricRows)
         : []
+    if (isChatFlow && normalizedMetrics.length > 0) {
+      normalizedMetrics = stripVoiceOnlyMetricIds(normalizedMetrics, metricRows)
+    }
     onSubmit({
       name: suiteName.trim() || undefined,
       agent_id: modalAgentId,
@@ -254,6 +261,7 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
                   selectedMetricIds={selectedMetricIds}
                   onChange={setSelectedMetricIds}
                   fluidHeight
+                  agentMedium={isChatFlow ? 'chat' : 'voice'}
                 />
               </div>
             </>
@@ -290,7 +298,7 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
                   </select>
                   {agentsForMedium.length === 0 ? (
                     <p className="mt-1.5 text-xs text-amber-700">
-                      No {isChatFlow ? 'text chat' : 'voice'} agents yet. Create one under Agents
+                      No {isChatFlow ? 'chat' : 'voice'} agents yet. Create one under Agents
                       first.
                     </p>
                   ) : null}

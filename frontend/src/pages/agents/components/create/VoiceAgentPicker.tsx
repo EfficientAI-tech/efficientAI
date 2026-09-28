@@ -70,7 +70,7 @@ export default function VoiceAgentPicker({
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
         <label className="block text-xs font-medium text-gray-600">
-          {agentKind === 'chat' ? 'Chat agent *' : 'Agent *'}
+          {agentKind === 'chat' ? 'Chat Agent *' : 'Agent *'}
         </label>
         {showPicker ? (
           <button

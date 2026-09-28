@@ -8,6 +8,40 @@ from typing import Any, Optional
 import websockets.sync.client
 
 
+def _extract_agent_text_from_event(event: dict[str, Any]) -> Optional[str]:
+    etype = str(event.get("type") or "")
+    if etype in ("agent_response", "agent_response_event"):
+        payload = event.get("agent_response_event") or event
+        text = payload.get("agent_response") or payload.get("text")
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+    if etype == "agent_response_correction":
+        payload = event.get("agent_response_correction_event") or event
+        corrected = payload.get("corrected_agent_response")
+        if isinstance(corrected, str) and corrected.strip():
+            return corrected.strip()
+    if etype == "agent_chat_response_part":
+        part = event.get("text_response_part") or event.get("agent_chat_response_part") or event
+        if isinstance(part, dict):
+            text = part.get("text")
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+        text = event.get("text")
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+    return None
+
+
+def _handle_ping(ws: Any, event: dict[str, Any]) -> None:
+    ping_event = event.get("ping_event")
+    if not isinstance(ping_event, dict):
+        return
+    event_id = ping_event.get("event_id")
+    if event_id is None:
+        return
+    ws.send(json.dumps({"type": "pong", "event_id": event_id}))
+
+
 def elevenlabs_convai_reply(
     api_key: str,
     agent_id: str,
@@ -22,6 +56,10 @@ def elevenlabs_convai_reply(
     uri = f"wss://api.elevenlabs.io/v1/convai/conversation?{query}"
     headers = {"xi-api-key": api_key}
 
+    user_text = (user_text or "").strip()
+    if not user_text:
+        raise ValueError("ElevenLabs convai requires a non-empty user message")
+
     reply_parts: list[str] = []
     new_conversation_id = conversation_id
 
@@ -30,17 +68,19 @@ def elevenlabs_convai_reply(
         additional_headers=headers,
         open_timeout=timeout,
         close_timeout=5,
+        ping_interval=None,
     ) as ws:
         init = {
             "type": "conversation_initiation_client_data",
-            "conversation_config_override": {"conversation": {"text_only": True}},
+            "conversation_config_override": {
+                "conversation": {"text_only": True},
+            },
         }
         ws.send(json.dumps(init))
+        ws.send(json.dumps({"type": "user_message", "text": user_text}))
 
-        deadline = timeout
-        user_sent = False
         while True:
-            raw = ws.recv(timeout=deadline)
+            raw = ws.recv(timeout=timeout)
             if isinstance(raw, bytes):
                 raw = raw.decode("utf-8", errors="replace")
             try:
@@ -51,6 +91,10 @@ def elevenlabs_convai_reply(
                 continue
 
             etype = str(event.get("type") or "")
+            if etype == "ping":
+                _handle_ping(ws, event)
+                continue
+
             if etype == "conversation_initiation_metadata":
                 meta = event.get("conversation_initiation_metadata_event") or event.get(
                     "conversation_initiation_metadata"
@@ -59,29 +103,24 @@ def elevenlabs_convai_reply(
                     cid = meta.get("conversation_id")
                     if isinstance(cid, str) and cid.strip():
                         new_conversation_id = cid.strip()
-
-            if not user_sent and user_text.strip():
-                ws.send(json.dumps({"type": "user_message", "text": user_text.strip()}))
-                user_sent = True
                 continue
 
-            if etype in ("agent_response", "agent_response_event"):
-                payload = event.get("agent_response_event") or event
-                text = payload.get("agent_response") or payload.get("text")
-                if isinstance(text, str) and text.strip():
-                    reply_parts.append(text.strip())
-            elif etype == "agent_chat_response_part":
-                part = event.get("text") or event.get("agent_chat_response_part")
-                if isinstance(part, str) and part.strip():
-                    reply_parts.append(part.strip())
-            elif etype in ("agent_response_correction",):
-                continue
-            elif etype in ("ping", "internal_tentative_agent_response"):
-                continue
-            elif etype in ("agent_response_end", "agent_chat_response_part_end"):
+            chunk = _extract_agent_text_from_event(event)
+            if chunk:
+                reply_parts.append(chunk)
+
+            if etype in ("agent_response_correction",):
+                reply_parts = [chunk] if chunk else reply_parts
+
+            if etype in (
+                "agent_response",
+                "agent_response_end",
+                "agent_chat_response_part_end",
+            ):
                 if reply_parts:
                     break
-            elif etype == "error":
+
+            if etype == "error":
                 msg = event.get("message") or event.get("error")
                 raise ValueError(f"ElevenLabs convai error: {msg or event}")
 

@@ -4,6 +4,20 @@ export function isChatMedium(medium?: string | null): boolean {
 
 export type AgentMediumFilter = 'voice' | 'chat'
 
+export function agentMediumFilterLabel(filter: AgentMediumFilter): string {
+  return filter === 'chat' ? 'Chat' : 'Voice'
+}
+
+/** Pre-prod UI: full agent kind (create wizard, tabs). */
+export function agentKindLabel(medium?: string | null): string {
+  return isChatMedium(medium) ? 'Chat Agent' : 'Voice Agent'
+}
+
+/** Production leg tab on agent detail. */
+export function agentProductionTabLabel(medium?: string | null): string {
+  return agentKindLabel(medium)
+}
+
 export function filterAgentsByMedium<T extends { call_medium?: string | null }>(
   agents: T[],
   filter: AgentMediumFilter,
@@ -15,7 +29,7 @@ export function filterAgentsByMedium<T extends { call_medium?: string | null }>(
 
 export function formatAgentMediumLabel(medium?: string | null, callType?: string | null): string {
   const m = (medium || 'phone_call').toLowerCase()
-  if (m === 'chat') return 'Text chat (LLM)'
+  if (m === 'chat') return 'Chat'
   if (m === 'web_call') return 'Web voice'
   if (callType === 'inbound') return 'Phone inbound'
   return 'Phone outbound'

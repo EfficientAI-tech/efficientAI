@@ -8,7 +8,7 @@ import { useAgentStore } from '../../store/agentStore'
 import { useToast } from '../../hooks/useToast'
 import { TestAgentConversation, VoiceBundle, Integration, IntegrationPlatform } from '../../types/api'
 import { AgentDetailHeader, AgentInfoView, DeleteAgentModal } from './components'
-import { isChatMedium } from '../../lib/agentMedium'
+import { agentProductionTabLabel, isChatMedium } from '../../lib/agentMedium'
 import { CallTypeBadge } from '../evaluators/components/evaluatorUi'
 import type { AgentDetailTab } from './components/AgentInfoView'
 import AgentEditForm from './components/AgentEditForm'
@@ -178,15 +178,6 @@ export default function AgentWorkspaceDetail({
 
   const isChatAgent = agent ? isChatMedium(agent.call_medium) : false
 
-  useEffect(() => {
-    if (!isChatAgent) return
-    if (activeTab === 'voice_ai_agent') {
-      const next = new URLSearchParams(searchParams)
-      next.delete('tab')
-      setSearchParams(next, { replace: true })
-    }
-  }, [isChatAgent, activeTab, searchParams, setSearchParams])
-
   const { data: voiceBundles = [] } = useQuery<VoiceBundle[]>({
     queryKey: ['voicebundles'],
     queryFn: () => apiClient.listVoiceBundles(),
@@ -248,6 +239,12 @@ export default function AgentWorkspaceDetail({
         payload.phone_number = null
         payload.telephony_phone_number_id = null
         payload.provider_prompt = data.provider_prompt?.trim() || null
+        payload.test_agent_template = data.test_agent_template
+        payload.description =
+          data.description?.trim() ||
+          assembleTestAgentPrompt(data.test_agent_template.sections) ||
+          data.provider_prompt?.trim() ||
+          data.name
 
         const connType = (agent?.chat_connection_type || 'internal_llm') as ChatConnectionForm['connectionType']
         payload.chat_connection_type = connType
@@ -274,18 +271,12 @@ export default function AgentWorkspaceDetail({
           payload.chat_connection_config = configPayload
         }
 
-        const needsTest =
-          chatConnection.useSeparateTestLlm || connType !== 'internal_llm'
-        if (needsTest && chatConnection.testLlmProvider) {
+        if (chatConnection.testLlmProvider && chatConnection.testLlmModel.trim()) {
           payload.test_llm_provider = chatConnection.testLlmProvider
           payload.test_llm_model = chatConnection.testLlmModel
           if (chatConnection.testLlmCredentialId) {
             payload.test_llm_credential_id = chatConnection.testLlmCredentialId
           }
-        } else if (connType === 'internal_llm' && !chatConnection.useSeparateTestLlm) {
-          payload.test_llm_provider = null
-          payload.test_llm_model = null
-          payload.test_llm_credential_id = null
         }
       } else {
         payload.voice_bundle_id = data.voice_bundle_id?.trim() || null
@@ -548,12 +539,13 @@ export default function AgentWorkspaceDetail({
               isChatAgent
                 ? [
                     { id: 'overview' as const, label: 'Overview' },
-                    { id: 'test_agent' as const, label: 'Production prompt' },
+                    { id: 'test_agent' as const, label: 'Test Agent' },
+                    { id: 'voice_ai_agent' as const, label: agentProductionTabLabel('chat') },
                   ]
                 : [
                     { id: 'overview' as const, label: 'Overview' },
                     { id: 'test_agent' as const, label: 'Test Agent' },
-                    { id: 'voice_ai_agent' as const, label: 'Voice AI Agent' },
+                    { id: 'voice_ai_agent' as const, label: agentProductionTabLabel('voice') },
                   ]
             ).map((tab) => (
               <button

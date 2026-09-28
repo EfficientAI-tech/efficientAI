@@ -103,12 +103,12 @@ export function chatEvalModeLabel(mode?: string | null): string {
 export function connectionTypeLabel(type?: string | null): string {
   switch ((type || 'internal_llm').toLowerCase()) {
     case 'provider_chat':
-      return 'Voice platform'
+      return 'Existing platform'
     case 'customer_api':
       return 'HTTP API'
     case 'messaging_channels':
       return 'Messaging'
     default:
-      return 'Platform LLM'
+      return 'LLM'
   }
 }

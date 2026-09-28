@@ -130,20 +130,22 @@ export function validateChatConnectionDetails(
   config: ChatConnectionConfigForm,
   productionPrompt: string,
   selectedPlatform?: IntegrationPlatform | null,
+  options?: { requireProductionPrompt?: boolean },
 ): boolean {
+  const requirePrompt = options?.requireProductionPrompt ?? true
   if (integrationType === 'provider_chat') {
-    return Boolean(
+    const linked = Boolean(
       selectedPlatform &&
         formData.voice_ai_integration_id?.trim() &&
-        formData.voice_ai_agent_id?.trim() &&
-        productionPrompt.trim(),
+        formData.voice_ai_agent_id?.trim(),
     )
+    return linked && (!requirePrompt || Boolean(productionPrompt.trim()))
   }
   if (integrationType === 'customer_api') {
-    return Boolean(config.apiBaseUrl.trim() && productionPrompt.trim())
+    return Boolean(config.apiBaseUrl.trim() && (!requirePrompt || productionPrompt.trim()))
   }
   if (integrationType === 'messaging_channels') {
-    return Boolean(config.messagingChannel && productionPrompt.trim())
+    return Boolean(config.messagingChannel && (!requirePrompt || productionPrompt.trim()))
   }
   return true
 }

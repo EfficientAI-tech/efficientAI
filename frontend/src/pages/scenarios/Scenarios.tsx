@@ -531,7 +531,7 @@ export default function Scenarios() {
       />
       <p className="mt-2 text-xs text-gray-500">
         {scenarioMediumFilter === 'chat'
-          ? 'Text chat agents only — scenarios for LLM / live chat evals.'
+          ? 'Chat agents only — scenarios for chat evals.'
           : 'Voice agents only — phone, web call, and platform voice.'}
       </p>
     </div>
@@ -847,7 +847,7 @@ export default function Scenarios() {
                       </select>
                       {agentsForScenarioMedium.length === 0 ? (
                         <p className="mt-1 text-xs text-amber-700">
-                          No {scenarioMediumFilter === 'chat' ? 'text chat' : 'voice'} agents yet. Create one
+                          No {scenarioMediumFilter === 'chat' ? 'chat' : 'voice'} agents yet. Create one
                           under Agents first.
                         </p>
                       ) : null}
@@ -1137,7 +1137,7 @@ export default function Scenarios() {
                     </select>
                     {agentsForScenarioMedium.length === 0 ? (
                       <p className="mt-1 text-xs text-amber-700">
-                        No {scenarioMediumFilter === 'chat' ? 'text chat' : 'voice'} agents to link.
+                        No {scenarioMediumFilter === 'chat' ? 'chat' : 'voice'} agents to link.
                       </p>
                     ) : null}
                   </div>

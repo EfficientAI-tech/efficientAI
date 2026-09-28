@@ -26,7 +26,7 @@ import {
   assembleTestAgentPrompt,
   isTemplateFilled,
 } from './agentTestSetupConstants'
-import { isChatMedium } from '../../../lib/agentMedium'
+import { agentProductionTabLabel, isChatMedium } from '../../../lib/agentMedium'
 import { CallTypeBadge } from '../../evaluators/components/evaluatorUi'
 import ChatAgentEditSection from './ChatAgentEditSection'
 import type { ChatConnectionForm } from './create/ChatConnectionStep'
@@ -543,67 +543,103 @@ export default function AgentEditForm({
           </div>
             </div>
 
-            {!isChatAgent ? (
-              <div className="space-y-5 min-w-0">
-                <OverviewSection
-                  title="Test agent (EfficientAI)"
-                  description="Configure voice stack on the Test Agent tab."
-                >
-                  <dl>
-                    <OverviewDetailRow
-                      label="Status"
-                      value={<OverviewConfigBadge configured={testAgentConfigured} />}
-                    />
+            <div className="space-y-5 min-w-0">
+              <OverviewSection
+                title="Test agent (EfficientAI)"
+                description={
+                  isChatAgent
+                    ? 'Test agent template and LLM on the Test Agent tab.'
+                    : 'Configure voice stack on the Test Agent tab.'
+                }
+              >
+                <dl>
+                  <OverviewDetailRow
+                    label="Status"
+                    value={<OverviewConfigBadge configured={testAgentConfigured} />}
+                  />
+                  {!isChatAgent ? (
                     <OverviewDetailRow label="Voice bundle" value={voiceBundleLabel} />
-                  </dl>
-                </OverviewSection>
-
-                <OverviewSection
-                  title="Voice AI agent"
-                  description="Configure integration on the Voice AI Agent tab."
-                >
-                  <dl>
+                  ) : (
                     <OverviewDetailRow
-                      label="Status"
-                      value={<OverviewConfigBadge configured={voiceAiConfigured} />}
-                    />
-                    <OverviewDetailRow label="Integration" value={voiceAiIntegrationLabel} />
-                    <OverviewDetailRow
-                      label="Provider agent ID"
+                      label="Test agent LLM"
                       value={
-                        formData.voice_ai_agent_id?.trim() ? (
-                          <span className="font-mono text-xs font-semibold text-primary-700">
-                            {formData.voice_ai_agent_id.trim()}
-                          </span>
-                        ) : (
-                          OVERVIEW_NOT_CONFIGURED
-                        )
+                        chatConnection?.testLlmModel ||
+                        chatConnection?.mainLlmModel ||
+                        OVERVIEW_NOT_CONFIGURED
                       }
                     />
-                  </dl>
-                </OverviewSection>
-              </div>
-            ) : null}
+                  )}
+                </dl>
+              </OverviewSection>
+
+              <OverviewSection
+                title={agentProductionTabLabel(formData.call_medium)}
+                description={
+                  isChatAgent
+                    ? 'Production prompt and provider on the Chat Agent tab.'
+                    : 'Configure integration on the Voice Agent tab.'
+                }
+              >
+                <dl>
+                  <OverviewDetailRow
+                    label="Status"
+                    value={<OverviewConfigBadge configured={voiceAiConfigured} />}
+                  />
+                  <OverviewDetailRow label="Integration" value={voiceAiIntegrationLabel} />
+                  <OverviewDetailRow
+                    label="Provider agent ID"
+                    value={
+                      formData.voice_ai_agent_id?.trim() ? (
+                        <span className="font-mono text-xs font-semibold text-primary-700">
+                          {formData.voice_ai_agent_id.trim()}
+                        </span>
+                      ) : (
+                        OVERVIEW_NOT_CONFIGURED
+                      )
+                    }
+                  />
+                </dl>
+              </OverviewSection>
+            </div>
           </div>
         </div>
       )}
 
-      {activeTab === 'test_agent' && isChatAgent && chatConnection && onChatConnectionChange && chatConnectionConfig && onChatConnectionConfigChange && onChatEditPlatformChange ? (
-        <ChatAgentEditSection
-          connectionType={chatConnectionType}
-          formData={formData}
-          onFormChange={(patch) => onChange({ ...formData, ...patch })}
-          providerPrompt={formData.provider_prompt}
-          onProviderPromptChange={(value) => onChange({ ...formData, provider_prompt: value })}
-          chatConnection={chatConnection}
-          onChatConnectionChange={onChatConnectionChange}
-          chatConfig={chatConnectionConfig}
-          onChatConfigChange={onChatConnectionConfigChange}
-          integrations={integrations}
-          selectedPlatform={chatEditPlatform}
-          onSelectPlatform={onChatEditPlatformChange}
-          showToast={showToast}
-        />
+      {activeTab === 'test_agent' && isChatAgent && chatConnection && onChatConnectionChange ? (
+        <div className="w-full space-y-6">
+          <ChatAgentEditSection
+            mode="test"
+            connectionType={chatConnectionType}
+            formData={formData}
+            onFormChange={(patch) => onChange({ ...formData, ...patch })}
+            providerPrompt={formData.provider_prompt}
+            onProviderPromptChange={(value) => onChange({ ...formData, provider_prompt: value })}
+            chatConnection={chatConnection}
+            onChatConnectionChange={onChatConnectionChange}
+            chatConfig={chatConnectionConfig!}
+            onChatConfigChange={onChatConnectionConfigChange!}
+            integrations={integrations}
+            selectedPlatform={chatEditPlatform ?? null}
+            onSelectPlatform={onChatEditPlatformChange!}
+            showToast={showToast}
+          />
+          <div className="border border-gray-200 rounded-lg p-4 bg-white space-y-4">
+            <label className="block text-sm font-medium text-gray-700">Test agent template</label>
+            <TestAgentTemplateEditor
+              template={formData.test_agent_template}
+              onChange={(test_agent_template) =>
+                onChange({
+                  ...formData,
+                  test_agent_template,
+                  description: assembleTestAgentPrompt(test_agent_template.sections),
+                })
+              }
+              legacyDescription={formData.description}
+              showLegacy={showLegacyPrompt}
+              variant="workspace"
+            />
+          </div>
+        </div>
       ) : null}
 
       {activeTab === 'test_agent' && !isChatAgent && (
@@ -687,12 +723,12 @@ export default function AgentEditForm({
               {showGenerateFromProductionPanel && (
                 <div className="p-3 bg-amber-50 rounded-lg border border-amber-200 space-y-3">
                   <p className="text-xs text-amber-700">
-                    Uses the production agent prompt from the Voice AI Agent tab to generate complementary
+                    Uses the production agent prompt from the Voice Agent tab to generate complementary
                     caller sections and first-message settings.
                   </p>
                   {!formData.provider_prompt?.trim() ? (
                     <p className="text-xs text-red-600">
-                      Add a production prompt on the Voice AI Agent tab first.
+                      Add a production prompt on the Voice Agent tab first.
                     </p>
                   ) : null}
                   <textarea
@@ -872,6 +908,30 @@ export default function AgentEditForm({
           )}
         </div>
       )}
+
+      {activeTab === 'voice_ai_agent' &&
+        isChatAgent &&
+        chatConnection &&
+        onChatConnectionChange &&
+        onChatConnectionConfigChange &&
+        onChatEditPlatformChange && (
+          <ChatAgentEditSection
+            mode="production"
+            connectionType={chatConnectionType}
+            formData={formData}
+            onFormChange={(patch) => onChange({ ...formData, ...patch })}
+            providerPrompt={formData.provider_prompt}
+            onProviderPromptChange={(value) => onChange({ ...formData, provider_prompt: value })}
+            chatConnection={chatConnection}
+            onChatConnectionChange={onChatConnectionChange}
+            chatConfig={chatConnectionConfig!}
+            onChatConfigChange={onChatConnectionConfigChange}
+            integrations={integrations}
+            selectedPlatform={chatEditPlatform ?? null}
+            onSelectPlatform={onChatEditPlatformChange}
+            showToast={showToast}
+          />
+        )}
 
       {activeTab === 'voice_ai_agent' && !isChatAgent && hasPlatformLink && (
         <div className="w-full space-y-4">

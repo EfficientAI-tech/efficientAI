@@ -14,7 +14,7 @@ import {
   Hash,
   MessagesSquare,
 } from 'lucide-react'
-import { isChatMedium } from '../../../lib/agentMedium'
+import { agentProductionTabLabel, isChatMedium } from '../../../lib/agentMedium'
 import { connectionTypeLabel } from './create/chatAgentFormUtils'
 import { chatConnectionCapability, patternLabel } from '../../../lib/chatConnectionCapabilities'
 import { CallTypeBadge } from '../../evaluators/components/evaluatorUi'
@@ -40,6 +40,8 @@ import {
   PRODUCTION_FIRST_MESSAGE_OPTIONS,
   callerFirstMessageHelperText,
   templateFromApi,
+  isTemplateFilled,
+  assembleTestAgentPrompt,
 } from './agentTestSetupConstants'
 
 function stripCodeFences(text: string): string {
@@ -137,6 +139,21 @@ export default function AgentInfoView({
     const hasVoiceAiIntegration = Boolean(voiceAiIntegrationId && voiceIntegration)
     const hasVoiceAiAgentId = Boolean(voiceAiAgentId)
     const voiceAiConfigured = hasVoiceAiIntegration && hasVoiceAiAgentId
+    const chatTestLlmConfigured = Boolean(
+      (agent.test_llm_provider && agent.test_llm_model) ||
+        (agent.main_llm_provider && agent.main_llm_model),
+    )
+    const chatTestPromptConfigured = Boolean(
+      (agent.test_agent_template && isTemplateFilled(templateFromApi(agent.test_agent_template))) ||
+        (agent.description && agent.description.trim().split(/\s+/).length >= 10),
+    )
+    const chatConn = isChatAgent
+      ? (agent.chat_connection_type || 'internal_llm').toLowerCase()
+      : ''
+    const chatProductionConfigured =
+      chatConn === 'provider_chat'
+        ? voiceAiConfigured && Boolean(providerPromptText)
+        : Boolean(providerPromptText)
 
     const voiceBundleLabel = linkedBundle
       ? linkedBundle.name
@@ -285,31 +302,73 @@ export default function AgentInfoView({
             </div>
           </div>
 
-          {!isChatAgent ? (
-            <div className="space-y-5 min-w-0">
-              <OverviewSection
-                title="Test agent (EfficientAI)"
-                description="Internal voice stack for playground and evaluator runs."
-              >
-                <dl>
-                  <OverviewDetailRow
-                    label="Status"
-                    value={<OverviewConfigBadge configured={testAgentConfigured} />}
-                  />
+          <div className="space-y-5 min-w-0">
+            <OverviewSection
+              title="Test agent (EfficientAI)"
+              description={
+                isChatAgent
+                  ? 'Test agent prompt and LLM for simulated customer turns.'
+                  : 'Internal voice stack for playground and evaluator runs.'
+              }
+            >
+              <dl>
+                <OverviewDetailRow
+                  label="Status"
+                  value={
+                    <OverviewConfigBadge
+                      configured={
+                        isChatAgent
+                          ? chatTestLlmConfigured && chatTestPromptConfigured
+                          : testAgentConfigured
+                      }
+                    />
+                  }
+                />
+                {isChatAgent ? (
+                  <>
+                    <OverviewDetailRow
+                      label="Test agent LLM"
+                      value={agent.test_llm_model || agent.main_llm_model || OVERVIEW_NOT_CONFIGURED}
+                    />
+                    <OverviewDetailRow
+                      label="Test prompt"
+                      value={
+                        chatTestPromptConfigured ? 'Configured' : OVERVIEW_NOT_CONFIGURED
+                      }
+                    />
+                  </>
+                ) : (
                   <OverviewDetailRow label="Voice bundle" value={voiceBundleLabel} />
-                </dl>
-              </OverviewSection>
+                )}
+              </dl>
+            </OverviewSection>
 
-              <OverviewSection
-                title="Voice AI agent"
-                description="External provider agent for side-by-side evaluation."
-              >
-                <dl>
+            <OverviewSection
+              title={agentProductionTabLabel(agent.call_medium)}
+              description={
+                isChatAgent
+                  ? 'Production agent under evaluation.'
+                  : 'Provider agent under evaluation.'
+              }
+            >
+              <dl>
+                <OverviewDetailRow
+                  label="Status"
+                  value={
+                    <OverviewConfigBadge
+                      configured={isChatAgent ? chatProductionConfigured : voiceAiConfigured}
+                    />
+                  }
+                />
+                {isChatAgent && chatConn !== 'provider_chat' ? (
                   <OverviewDetailRow
-                    label="Status"
-                    value={<OverviewConfigBadge configured={voiceAiConfigured} />}
+                    label="Connection"
+                    value={connectionTypeLabel(agent.chat_connection_type)}
                   />
+                ) : (
                   <OverviewDetailRow label="Integration" value={voiceAiIntegrationLabel} />
+                )}
+                {chatConn === 'provider_chat' || !isChatAgent ? (
                   <OverviewDetailRow
                     label="Provider agent ID"
                     value={
@@ -322,10 +381,10 @@ export default function AgentInfoView({
                       )
                     }
                   />
-                </dl>
-              </OverviewSection>
-            </div>
-          ) : null}
+                ) : null}
+              </dl>
+            </OverviewSection>
+          </div>
         </div>
       </div>
     )
@@ -336,31 +395,50 @@ export default function AgentInfoView({
     const canTalk = !!agent.voice_bundle_id
 
     if (isChatAgent) {
-      const chatPrompt = providerPromptText || agent.description?.trim() || ''
+      const template = agent.test_agent_template ? templateFromApi(agent.test_agent_template) : null
+      const testPromptText =
+        (template && assembleTestAgentPrompt(template.sections)) ||
+        agent.description?.trim() ||
+        ''
       return (
         <div className="space-y-4">
-          <div>
-            <h3 className="text-base font-semibold text-gray-900">Production prompt</h3>
-            <p className="text-sm text-gray-500 mt-0.5">
-              System instructions for the agent under test in LLM-to-LLM evaluations.
-            </p>
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div>
+              <h3 className="text-base font-semibold text-gray-900">Test Agent Prompt</h3>
+              <p className="text-sm text-gray-500 mt-0.5">
+                Instructions for the EfficientAI simulated customer in chat evals.
+              </p>
+            </div>
+            <PromptViewToggle view={testPromptView} onChange={setTestPromptView} />
           </div>
-          <section className="rounded-lg border border-gray-200 overflow-hidden bg-gray-50">
-            <div className="border-b border-gray-200 bg-white px-4 py-3">
-              <h4 className="text-sm font-semibold text-gray-900">Prompt</h4>
-            </div>
-            <div className="p-5 max-h-[60vh] overflow-y-auto">
-              {chatPrompt ? (
-                <div className={PROSE}>
-                  <ReactMarkdown>{chatPrompt}</ReactMarkdown>
-                </div>
-              ) : (
-                <p className="text-sm text-gray-400 italic">
-                  No production prompt yet. Use Edit to add one.
-                </p>
-              )}
-            </div>
-          </section>
+          {testPromptView === 'text' ? (
+            <section className="rounded-lg border border-gray-200 overflow-hidden bg-gray-50">
+              <div className="p-5 max-h-[60vh] overflow-y-auto">
+                {testPromptText ? (
+                  <div className={PROSE}>
+                    <ReactMarkdown>{testPromptText}</ReactMarkdown>
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-400 italic">
+                    No test agent template yet. Use Edit on the Test Agent tab.
+                  </p>
+                )}
+              </div>
+            </section>
+          ) : (
+            <AgentPromptVisualization
+              agentId={agent.id}
+              agentName={agent.name}
+              promptContent={testPromptText}
+              partialNameLabel="Test agent prompt"
+            />
+          )}
+          <OverviewSection title="Test agent LLM" description="Model for the EfficientAI test agent leg.">
+            <OverviewDetailRow
+              label="Model"
+              value={agent.test_llm_model || agent.main_llm_model || OVERVIEW_NOT_CONFIGURED}
+            />
+          </OverviewSection>
         </div>
       )
     }
@@ -490,19 +568,23 @@ export default function AgentInfoView({
     )
   }
 
-  if (isChatMedium(agent.call_medium)) {
-    return null
-  }
+  const isChatProductionTab = isChatMedium(agent.call_medium)
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h3 className="text-lg font-semibold text-gray-900">Voice AI Agent</h3>
+          <h3 className="text-lg font-semibold text-gray-900">
+            {agentProductionTabLabel(agent.call_medium)}
+          </h3>
           <p className="text-sm text-gray-500 mt-0.5">
-            {hasPlatformLink
-              ? 'External voice platform agent (Retell, Vapi, ElevenLabs, Smallest).'
-              : 'Production prompt used to evaluate and generate the test agent.'}
+            {isChatProductionTab
+              ? hasPlatformLink
+                ? 'External platform chat agent (Retell, Vapi, ElevenLabs, Smallest).'
+                : 'Production prompt and connection for the agent under test.'
+              : hasPlatformLink
+                ? 'External voice platform agent (Retell, Vapi, ElevenLabs, Smallest).'
+                : 'Production prompt used to evaluate and generate the test agent.'}
           </p>
         </div>
         {onTalk && hasPlatformLink && (

@@ -22,15 +22,15 @@ export type ChatConnectionCapability = {
 export const CHAT_CONNECTION_CAPABILITIES: ChatConnectionCapability[] = [
   {
     id: 'internal_llm',
-    label: 'Platform LLM',
+    label: 'LLM',
     description:
-      'Your production prompt is the agent on Platform LLM; a test LLM plays the other side (like voice test agents).',
+      'Production prompt on platform LLMs; test LLM plays the other side (like voice test agents).',
     pattern: 'llm_to_llm',
     offeredInCreateWizard: true,
   },
   {
     id: 'provider_chat',
-    label: 'Provider live chat',
+    label: 'Existing platform',
     description:
       'Not LLM-to-LLM for the agent: each turn hits the provider text chat API (Vapi, Retell, ElevenLabs, or Smallest). The customer side is still an LLM.',
     pattern: 'live_production_plus_customer_llm',

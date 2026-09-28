@@ -1,6 +1,8 @@
-import { Phone, Link2 } from 'lucide-react'
+import { Phone, Cloud } from 'lucide-react'
 import type { CreateAgentPath } from './createAgentTypes'
 import { WizardStepHeader } from './WizardStepHeader'
+import WizardIconCard from './WizardIconCard'
+import { WIZARD_EXISTING_PLATFORM_LABEL } from './wizardCopy'
 
 interface VoicePathSelectorProps {
   value: CreateAgentPath
@@ -8,74 +10,33 @@ interface VoicePathSelectorProps {
   embedded?: boolean
 }
 
-const OPTIONS: {
-  id: CreateAgentPath
-  label: string
-  description: string
-  icon: typeof Phone
-}[] = [
-  {
-    id: 'telephony',
-    label: 'Telephony',
-    description: 'Agents on phone numbers with your carrier or SIP setup.',
-    icon: Phone,
-  },
-  {
-    id: 'platform',
-    label: 'Voice platform',
-    description: 'Agents hosted on Vapi, Retell, ElevenLabs, or Smallest.',
-    icon: Link2,
-  },
+const OPTIONS: { id: CreateAgentPath; label: string; icon: typeof Phone }[] = [
+  { id: 'telephony', label: 'Telephony', icon: Phone },
+  { id: 'platform', label: WIZARD_EXISTING_PLATFORM_LABEL, icon: Cloud },
 ]
 
 export default function VoicePathSelector({ value, onChange, embedded }: VoicePathSelectorProps) {
+  const active = value === 'chat' ? 'telephony' : value
+
   return (
-    <div className={embedded ? 'w-full' : 'w-full max-w-2xl mx-auto space-y-6'}>
+    <div className={embedded ? 'w-full' : 'w-full max-w-3xl mx-auto space-y-6'}>
       {!embedded ? (
         <WizardStepHeader
-          title="How is your voice agent deployed?"
-          subtitle="Telephony uses numbers and call routing; voice platform connects directly to your provider agent."
+          title="Voice deployment"
+          subtitle="Phone numbers or an agent on Vapi, Retell, ElevenLabs, or Smallest."
         />
       ) : null}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {OPTIONS.map((option) => {
-          const Icon = option.icon
-          const isSelected = value === option.id
-          return (
-            <button
-              key={option.id}
-              type="button"
-              onClick={() => onChange(option.id)}
-              className={`text-left rounded-xl border-2 p-4 transition-colors ${
-                isSelected
-                  ? 'border-primary-600 bg-primary-50 ring-1 ring-primary-200'
-                  : 'border-gray-200 bg-white hover:border-gray-300'
-              }`}
-            >
-              <div className="flex items-start gap-3">
-                <div
-                  className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
-                    isSelected ? 'bg-primary-100 text-primary-700' : 'bg-gray-100 text-gray-600'
-                  }`}
-                >
-                  <Icon className="h-5 w-5" />
-                </div>
-                <div className="min-w-0">
-                  <span
-                    className={`text-sm font-semibold block ${
-                      isSelected ? 'text-primary-900' : 'text-gray-900'
-                    }`}
-                  >
-                    {option.label}
-                  </span>
-                  <span className="text-xs text-gray-600 mt-1 block leading-relaxed">
-                    {option.description}
-                  </span>
-                </div>
-              </div>
-            </button>
-          )
-        })}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full max-w-4xl">
+        {OPTIONS.map((option) => (
+          <WizardIconCard
+            key={option.id}
+            label={option.label}
+            icon={option.icon}
+            selected={active === option.id}
+            onSelect={() => onChange(option.id)}
+            large
+          />
+        ))}
       </div>
     </div>
   )

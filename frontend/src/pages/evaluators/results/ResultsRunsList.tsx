@@ -19,7 +19,7 @@ import {
   isEvaluatorResultInProgress,
 } from './evaluatorResultStatus'
 import { isChatEvalResult } from '../../../lib/agentMedium'
-import { EvalRunKindBadge } from '../components/evaluatorUi'
+import { evalRunTypeLabel } from '../components/evaluatorUi'
 import { formatDuration, formatTimestamp, getStatusConfig } from './resultsFormatting'
 import { itemsOf } from '../../../lib/safeData'
 
@@ -197,8 +197,8 @@ export default function ResultsRunsList({
             {(
               [
                 ['all', 'All runs'],
-                ['voice', 'Voice / WebRTC'],
-                ['chat', 'LLM chat'],
+                ['voice', 'Voice'],
+                ['chat', 'Chat'],
               ] as const
             ).map(([key, label]) => (
               <button
@@ -277,22 +277,12 @@ export default function ResultsRunsList({
                       </td>
                       <td className="px-4 py-3 font-mono text-sm text-primary-600">{result.result_id}</td>
                       <td className="px-4 py-3 text-sm text-gray-900">{result.name}</td>
-                      <td className="px-4 py-3">
-                        <EvalRunKindBadge
-                          isChat={isChatEvalResult(result)}
-                          chatConnectionType={
-                            typeof result.call_data?.chat_connection_type === 'string'
-                              ? result.call_data.chat_connection_type
-                              : null
-                          }
-                        />
+                      <td className="px-4 py-3 text-sm font-medium text-gray-700">
+                        {evalRunTypeLabel(result)}
                       </td>
                       {showAgentColumn && (
                         <td className="px-4 py-3 text-sm text-gray-600">
-                          <span>{result.agent?.name ?? '—'}</span>
-                          {result.agent?.call_medium === 'chat' ? (
-                            <span className="ml-1.5 text-xs text-violet-600">(chat)</span>
-                          ) : null}
+                          {result.agent?.name ?? '—'}
                         </td>
                       )}
                       {showPersonaColumn && (

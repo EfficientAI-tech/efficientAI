@@ -1,4 +1,4 @@
-import type { AgentMediumFilter } from '../../lib/agentMedium'
+import { agentMediumFilterLabel, type AgentMediumFilter } from '../../lib/agentMedium'
 
 interface ScenarioAgentMediumTabsProps {
   value: AgentMediumFilter
@@ -26,7 +26,7 @@ export default function ScenarioAgentMediumTabs({
               : 'border-gray-200 text-gray-600 hover:bg-gray-100'
           }`}
         >
-          {key === 'chat' ? 'Text chat (LLM)' : 'Voice'}
+          {agentMediumFilterLabel(key)}
         </button>
       ))}
     </div>

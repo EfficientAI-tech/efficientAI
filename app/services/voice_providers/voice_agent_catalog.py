@@ -48,7 +48,7 @@ def list_integration_voice_agents(
         with _cache_lock:
             cached = _cache.get(key)
             if cached and (time.time() - cached[0]) < CACHE_TTL_SECONDS:
-                return VoiceAgentListResult(**cached[1], cached=True)
+                return VoiceAgentListResult(**{**cached[1], "cached": True})
 
     provider = _build_voice_provider(integration)
     truncated = False

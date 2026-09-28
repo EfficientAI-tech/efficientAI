@@ -3,7 +3,7 @@ import { Search } from 'lucide-react'
 import { TestAgent, Integration, IntegrationPlatform } from '../../../types/api'
 import { getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../../config/providers'
 import { CallTypeBadge } from '../../evaluators/components/evaluatorUi'
-import { isChatMedium } from '../../../lib/agentMedium'
+import { agentMediumFilterLabel, isChatMedium } from '../../../lib/agentMedium'
 
 export function agentRouteId(agent: TestAgent): string {
   return agent.agent_id || agent.id
@@ -85,7 +85,7 @@ export default function AgentsListSidebar({
                   : 'border-gray-200 text-gray-600 hover:bg-gray-100'
               }`}
             >
-              {key === 'all' ? 'All' : key === 'chat' ? 'Text chat' : 'Voice'}
+              {key === 'all' ? 'All' : key === 'chat' ? agentMediumFilterLabel('chat') : agentMediumFilterLabel('voice')}
             </button>
           ))}
         </div>

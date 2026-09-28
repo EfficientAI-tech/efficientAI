@@ -742,14 +742,7 @@ export default function EvaluatorResultDetailPage({
                 Result ID: <span className="font-mono font-semibold text-primary-600">{resultData.result_id}</span>
               </p>
               <div className="mt-2">
-                <EvalRunKindBadge
-                  isChat={isChatEvalResult(resultData)}
-                  chatConnectionType={
-                    typeof resultData.call_data?.chat_connection_type === 'string'
-                      ? resultData.call_data.chat_connection_type
-                      : null
-                  }
-                />
+                <EvalRunKindBadge result={resultData} />
               </div>
             </div>
             <div className="flex items-center gap-3">
@@ -824,10 +817,10 @@ export default function EvaluatorResultDetailPage({
                   <p className="text-sm text-gray-900 capitalize">
                     {isChatEvalResult(resultData)
                       ? resultData.call_data?.chat_connection_type === 'internal_llm'
-                        ? 'LLM-to-LLM (platform LLMs)'
+                        ? 'LLM-to-LLM'
                         : resultData.call_data?.chat_connection_type
-                          ? `Live production (${String(resultData.call_data.chat_connection_type).replace(/_/g, ' ')})`
-                          : 'Text chat simulation'
+                          ? `Live chat (${String(resultData.call_data.chat_connection_type).replace(/_/g, ' ')})`
+                          : 'Chat simulation'
                       : resultData.provider_platform}
                   </p>
                 </div>

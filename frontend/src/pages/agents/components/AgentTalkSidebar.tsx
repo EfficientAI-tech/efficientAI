@@ -491,7 +491,7 @@ export default function AgentTalkSidebar({
             </div>
           ) : (
             <div className="flex-1 flex items-center justify-center p-8 text-center text-sm text-gray-500">
-              Link a Voice AI integration and provider agent ID on the Voice AI Agent tab to start a call.
+              Link an integration and provider agent ID on the Voice Agent tab to start a call.
             </div>
           )}
         </div>

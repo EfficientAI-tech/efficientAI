@@ -60,8 +60,7 @@ export default function ChatAgentStep({
         <div>
           <label className={CREATE_WIZARD_LABEL_CLASS}>Production prompt *</label>
           <p className="text-xs text-gray-500 mb-2">
-            Write for <span className="font-medium">text chat</span> (typed messages). Voice/phone prompts
-            can be pasted for LLM-to-LLM sim, but chat-oriented instructions work best.
+            Chat-oriented instructions work best; voice prompts can be adapted if needed.
           </p>
           <textarea
             className={`${CREATE_WIZARD_FIELD_CLASS} font-mono text-xs resize-y ${
