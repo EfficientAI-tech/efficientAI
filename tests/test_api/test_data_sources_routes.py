@@ -123,6 +123,27 @@ def test_blob_routes_reject_cross_tenant_keys(
     assert delete_response.status_code == 403
 
 
+def test_blob_presigned_url_allows_trace_spans_key(
+    authenticated_client, monkeypatch, org_id
+):
+    from app.api.v1.routes import data_sources as data_routes
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "BLOB_STORAGE_PROVIDER", "s3")
+    monkeypatch.setattr(settings, "TRACES_S3_PREFIX", "traces/", raising=False)
+    _patch_storage(monkeypatch, data_routes, org_id, prefix="audio/", blob_provider="s3")
+    trace_key = (
+        f"traces/organizations/{org_id}/workspaces/ws-1/traces/trace-1/spans.json"
+    )
+    encoded_key = trace_key.replace("/", "%2F")
+
+    response = authenticated_client.get(
+        f"/api/v1/data-sources/s3/files/{encoded_key}/presigned-url"
+    )
+    assert response.status_code == 200
+    assert trace_key in response.json()["url"]
+
+
 @pytest.mark.parametrize(
     "blob_provider,prefix",
     [("s3", "audio/"), ("gcs", "gcs-audio/"), ("azure", "azure-audio/")],

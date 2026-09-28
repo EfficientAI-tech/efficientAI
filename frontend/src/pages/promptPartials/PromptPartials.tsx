@@ -243,6 +243,9 @@ export default function PromptPartials() {
         model: pickerModel || undefined,
         credential_id: pickerCredentialId || undefined,
       }),
+    onMutate: () => {
+      setFlowchartError(null)
+    },
     onSuccess: () => {
       setFlowchartError(null)
       setSelectedFlowNodeId(null)

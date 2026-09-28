@@ -1,0 +1,15 @@
+{
+  "title": "Integrations",
+  "description": "Voice, telephony, and provider integration endpoints.",
+  "pages": [
+    "listIntegrations",
+    "createIntegration",
+    "setDefaultIntegration",
+    "get_integration_api_v1_integrations__integration_id__get",
+    "deleteIntegration",
+    "updateIntegration",
+    "get_integration_api_key_api_v1_integrations__integration_id__api_key_get",
+    "previewIntegrationAgentPrompt",
+    "listIntegrationVoiceAgents"
+  ]
+}

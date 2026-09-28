@@ -1,11 +1,44 @@
 ---
 title: Traces and Logs
 icon: FileSearch
+description: Per-turn pipeline timing (Listen, Think, Speak) and the Calls hub.
 ---
 
 # Traces and Logs
 
-> **Coming soon**
-> Detailed tracing and log workflow documentation is being prepared for this section.
+EfficientAI **Call Traces** show how your production voice agent behaved on each turn: **Listen** (STT),
+**Think** (LLM), and **Speak** (TTS), plus call-level latency summaries (**p50 / p90 / p95**).
 
-For now, use existing run outputs in evaluator results and call-level pages for debugging.
+Use traces when you need to answer: *Was this call slow because of speech recognition, the model, or TTS?*
+
+Your production agent sends **OpenTelemetry spans** to EfficientAI. We assign a six-digit **Call ID**,
+group spans into **turns**, and show a **waterfall** in the trace detail view.
+
+Rows labeled **Pipeline trace** in **Observability → Calls** use this pipeline view.
+**Webhook call** rows are production ingest — see [Calls](/docs/monitoring/calls/).
+
+## View traces in the app
+
+1. Open **Observability → Calls** in the workspace where the production agent runs.
+2. Open a row with source **Pipeline trace**.
+3. Use **Trace**, **Waterfall**, and **Pipeline** in the drawer.
+
+![Calls hub](/screenshots/Calls/Calls_traces_tab.png)
+
+![Trace detail](/screenshots/Calls/Calls_trace_detail.png)
+
+## Connect a Pipecat production agent
+
+1. Select the **workspace** where traces should appear.
+2. Create an **API key** under **Settings → API keys**.
+
+![Settings — API keys](/screenshots/Calls/Calls_api_keys.png)
+
+3. Configure your Pipecat project (see [Pipecat integration](/docs/monitoring/call-traces/pipecat-integration/)).
+4. Run a call, then refresh **Observability → Calls** after hang-up.
+
+## Go deeper
+
+- [Call Traces overview](/docs/monitoring/call-traces/)
+- [Latency metrics](/docs/monitoring/call-traces/latency-metrics/)
+- [Pipecat integration](/docs/monitoring/call-traces/pipecat-integration/)

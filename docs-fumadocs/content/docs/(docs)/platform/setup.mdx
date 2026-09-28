@@ -21,6 +21,8 @@ At minimum, most teams configure:
 
 ## 2) Voice bundles
 
+Select the voice bundle you want for the EAI test agent:
+
 ### The STT, LLM, and TTS pipeline
 
 A voice bundle is a pipeline built from three model layers:
@@ -29,7 +31,7 @@ A voice bundle is a pipeline built from three model layers:
 - **LLM (Language Model):** generates the reasoning and response text.
 - **TTS (Text-to-Speech):** converts the response text back to audio.
 
-Each layer is configurable, so you can hold the agent behavior constant and test it across
+Each layer is configurable, so you can hold production agent behavior constant and test it across
 different model and provider combinations — swapping only the STT provider, for example, and
 attributing the score change to that layer alone.
 

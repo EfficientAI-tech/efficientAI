@@ -12,6 +12,7 @@ import { formatStudioModelLabel } from './components/MetricsStudioRunHeader'
 import MetricsManagement from './MetricsManagement'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
+import { itemsOf } from '../../lib/safeData'
 import {
   getCallImportBatchLabel,
   getCallImportRowLabel,
@@ -97,7 +98,7 @@ export default function MetricsStudio() {
     queryKey: ['metric-studio-runs'],
     queryFn: () => apiClient.listMetricStudioRuns(),
     refetchInterval: (query) => {
-      const items = query.state.data?.items ?? []
+      const items = itemsOf(query.state.data)
       return items.some((r: any) => r.status === 'running' || r.status === 'pending')
         ? 3000
         : false
@@ -160,7 +161,11 @@ export default function MetricsStudio() {
     [playgroundRecordings, observabilityCalls],
   )
 
-  const simulatedItems = simulatedResults?.items ?? []
+  const simulatedItems = itemsOf<{
+    id: string
+    result_id?: string | null
+    name?: string | null
+  }>(simulatedResults)
 
   const selectedSources = useMemo(() => {
     const next: StudioSource[] = []
@@ -303,7 +308,7 @@ export default function MetricsStudio() {
                 className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
               >
                 <option value="">Select import batch…</option>
-                {(importsData?.items ?? []).map((imp: any) => (
+                {itemsOf(importsData).map((imp: any) => (
                   <option key={imp.id} value={imp.id}>
                     {getCallImportBatchLabel(imp)}
                   </option>
@@ -504,13 +509,13 @@ export default function MetricsStudio() {
         </div>
         {runsLoading ? (
           <div className="p-8 text-center text-sm text-gray-500">Loading runs…</div>
-        ) : (runsData?.items ?? []).length === 0 ? (
+        ) : itemsOf(runsData).length === 0 ? (
           <div className="p-8 text-center text-sm text-gray-500">
             No Studio runs yet. Configure metrics and sources above, then run an evaluation.
           </div>
         ) : (
           <div className="divide-y divide-gray-100">
-            {(runsData?.items ?? []).map((run: any) => {
+            {itemsOf(runsData).map((run: any) => {
               const progress =
                 run.total_items > 0
                   ? Math.round((run.completed_items / run.total_items) * 100)

@@ -20,6 +20,7 @@ import {
   ResponsiveContainer,
 } from 'recharts'
 import { TrendingUp, Activity, Clock, CheckCircle, Loader, BarChart3, Layers, Target, Zap } from 'lucide-react'
+import { itemsOf } from '../../lib/safeData'
 
 interface EvaluatorResult {
   id: string
@@ -82,7 +83,7 @@ export default function Observability() {
     queryKey: ['evaluator-results'],
     queryFn: () => apiClient.listEvaluatorResults({ limit: 500 }),
   })
-  const results = listResponse?.items ?? []
+  const results = itemsOf(listResponse) as EvaluatorResult[]
 
   const { data: metrics = [] } = useQuery({
     queryKey: ['metrics'],

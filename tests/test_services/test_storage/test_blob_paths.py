@@ -34,6 +34,20 @@ def test_assert_key_belongs_to_org_rejects_path_traversal():
     assert exc_info.value.status_code == 403
 
 
+def test_assert_key_belongs_to_org_accepts_extra_storage_prefix():
+    org_id = uuid4()
+    key = f"traces/organizations/{org_id}/workspaces/ws-1/traces/trace-1/spans.json"
+    assert (
+        assert_key_belongs_to_org(
+            key,
+            org_id,
+            storage_prefix="audio/",
+            extra_storage_prefixes=["traces/"],
+        )
+        == key
+    )
+
+
 def test_assert_key_belongs_to_org_decodes_percent_encoded_key():
     org_id = uuid4()
     raw_key = f"audio/organizations/{org_id}/audio/test.wav"

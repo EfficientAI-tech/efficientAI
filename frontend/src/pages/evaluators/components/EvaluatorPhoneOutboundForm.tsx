@@ -49,7 +49,10 @@ export default function EvaluatorPhoneOutboundForm({
       }),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })
-      showToast('Outbound call initiated', 'success')
+      queryClient.invalidateQueries({ queryKey: ['observability-traces'] })
+      const traceHint = data?.call_short_id ? ` Trace id ${data.call_short_id}.` : ''
+      const suffix = data?.result_id ? ` (result ${data.result_id})` : ''
+      showToast(`Outbound call initiated${suffix}.${traceHint} Export STT/LLM/TTS with this id.`, 'success')
       if (data.result_id) {
         navigate(`/results/${data.result_id}`)
       }

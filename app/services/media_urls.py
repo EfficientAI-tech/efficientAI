@@ -127,6 +127,7 @@ def build_voice_agent_ws_url(
     persona_id: Optional[str] = None,
     scenario_id: Optional[str] = None,
     run_evaluation: bool = False,
+    call_short_id: Optional[str] = None,
     ui_surface: Optional[str] = None,
     fallback_host: Optional[str] = None,
     fallback_scheme: str = "http",
@@ -150,6 +151,8 @@ def build_voice_agent_ws_url(
         query_parts.append("run_evaluation=true")
     if ui_surface:
         query_parts.append(f"ui_surface={quote(ui_surface, safe='')}")
+    if call_short_id:
+        query_parts.append(f"call_short_id={quote(call_short_id, safe='')}")
 
     path = f"{base}{settings.API_V1_PREFIX}/voice-agent/ws"
     if not query_parts:

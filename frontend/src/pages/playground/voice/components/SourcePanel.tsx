@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Loader2, Upload, FileAudio, Mic, X, Volume2 } from 'lucide-react'
 import { apiClient } from '../../../../lib/api'
+import { itemsOf } from '../../../../lib/safeData'
 import type { VoicePlaygroundSourceType } from '../../../../lib/api'
 import { useWorkspaceStore } from '../../../../store/workspaceStore'
 import ProviderLogo, { getProviderInfo } from '../../../../components/shared/ProviderLogo'
@@ -175,7 +176,13 @@ function CallImportRowsPicker({
     queryFn: () => apiClient.listCallImports({ page: 1, page_size: 50 }),
   })
 
-  const rows = data?.items || []
+  type CallImportRow = {
+    id: string
+    conversation_id: string
+    transcript?: string | null
+    call_import_filename?: string | null
+  }
+  const rows = itemsOf<CallImportRow>(data)
   const filtered = useMemo(() => {
     if (!search.trim()) return rows
     const q = search.toLowerCase()
@@ -222,7 +229,7 @@ function CallImportRowsPicker({
           className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white"
         >
           <option value="">All call imports</option>
-          {(callImportsList?.items || []).map((ci: any) => (
+          {itemsOf(callImportsList).map((ci: any) => (
             <option key={ci.id} value={ci.id}>
               {ci.original_filename || ci.id} ({ci.total_rows} rows)
             </option>

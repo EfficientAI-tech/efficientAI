@@ -55,6 +55,7 @@ async def handler(ws):
     audio_count = 0
     start = time.time()
     greeting_sent = False
+    efficientai_call_short_id = None
 
     try:
         async for raw in ws:
@@ -73,6 +74,13 @@ async def handler(ws):
                 msg = json.loads(raw)
             except (json.JSONDecodeError, TypeError):
                 print(f"    [?] Non-JSON message ({len(raw)} bytes)")
+                continue
+
+            cid = msg.get("efficientai_call_short_id")
+            if cid:
+                efficientai_call_short_id = str(cid)
+                print(f"    [trace] Received efficientai_call_short_id={efficientai_call_short_id}")
+                print("    [trace] Set EFFICIENTAI_CALL_SHORT_ID in your Pipecat process to this value.")
                 continue
 
             audio_b64 = msg.get("audio")
@@ -103,6 +111,8 @@ async def handler(ws):
         print(f"[!] Error: {e}")
     finally:
         worker_task.cancel()
+        if efficientai_call_short_id:
+            print(f"[-] Trace session id was {efficientai_call_short_id}")
         print(f"[-] Session ended — {audio_count} audio frames received in {time.time() - start:.1f}s")
 
 

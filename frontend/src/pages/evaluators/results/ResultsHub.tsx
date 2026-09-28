@@ -5,6 +5,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { apiClient } from '../../../lib/api'
+import { itemsOf } from '../../../lib/safeData'
 
 import { useLicenseStore } from '../../../store/licenseStore'
 
@@ -337,7 +338,8 @@ export default function ResultsHub() {
 
     refetchInterval: (query) => {
 
-      const hasRunning = query.state.data?.items.some((item) => item.status === 'running')
+      const scopeItems = itemsOf<{ status?: string }>(query.state.data)
+      const hasRunning = scopeItems.some((item) => item.status === 'running')
 
       return hasRunning ? 5000 : false
 
@@ -1067,7 +1069,7 @@ export default function ResultsHub() {
 
           <ClusterScopeHistory
 
-            items={clusterScopesQuery.data?.items ?? []}
+            items={itemsOf(clusterScopesQuery.data)}
 
             activeScope={clusterScope}
 

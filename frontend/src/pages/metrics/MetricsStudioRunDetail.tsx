@@ -6,8 +6,10 @@ import { getApiErrorMessage } from '../../lib/apiErrors'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import MetricsStudioRunHeader from './components/MetricsStudioRunHeader'
 import MetricsStudioSourceList from './components/MetricsStudioSourceList'
+import type { StudioRunResult } from './components/MetricsStudioScorePanel'
 import MetricsStudioScorePanel from './components/MetricsStudioScorePanel'
 import { buildChildMetricIds } from './utils/metricScoreFilters'
+import { asArray } from '../../lib/safeData'
 
 function flattenMetricNames(metrics: any[]): Record<string, string> {
   const map: Record<string, string> = {}
@@ -68,9 +70,8 @@ export default function MetricsStudioRunDetail() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['metrics'] }),
   })
 
-  const results = resultsData?.items ?? []
-  const selectedResult =
-    results.find((r: any) => r.id === selectedResultId) ?? results[0]
+  const results = asArray<StudioRunResult>(resultsData?.items)
+  const selectedResult = results.find((r) => r.id === selectedResultId) ?? results[0]
 
   const metricNameById = useMemo(
     () => flattenMetricNames([...activeMetrics, ...draftMetrics]),

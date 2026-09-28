@@ -1,0 +1,299 @@
+---
+title: Pipecat integration
+description: Connect a Pipecat voice agent to EfficientAI Call Traces (sandbox or local)
+---
+
+# Pipecat integration
+
+EfficientAI shows **per-turn STT, LLM, and TTS timing** from your Pipecat voice agent. Traces appear in the **Calls** hub under the **Traces** tab (`/observability/calls`).
+
+You **do not** install EfficientAI on your laptop for the **sandbox** path — only configure your Pipecat project and point it at the hosted API.
+
+Related: [Call Traces overview](/docs/monitoring/call-traces/) · [Latency metrics](/docs/monitoring/call-traces/latency-metrics/)
+
+---
+
+## What each piece is
+
+| Term | Meaning |
+| --- | --- |
+| **Sandbox** | Hosted app at `https://sandbox.efficientai.cloud` — integrations and demos |
+| **Local EfficientAI** | You run `eai start-all`; API at `http://localhost:8000` |
+| **`EFFICIENTAI_API_BASE`** | REST host for sessions and setup — must match where you sign in |
+| **`EFFICIENTAI_OTLP_ENDPOINT`** | OTLP HTTP ingest URL (`{base}/api/v1/observability/traces`) |
+| **`EFFICIENTAI_WORKSPACE_ID`** | Workspace UUID from the UI — all traces for that call land here |
+| **`EFFICIENTAI_API_KEY`** | Created under **Settings → API keys** |
+| **Call ID (`call_short_id`)** | Six-digit id per call (e.g. `#482931`); created by `ensure_trace_session()` |
+| **Setup API** | `GET /api/v1/observability/traces/setup` → `env_block` + snippets |
+
+Use **one workspace per environment** (sandbox workspace ≠ local dev workspace) so traces never mix.
+
+---
+
+## Choose your setup
+
+| | **Sandbox (default)** | **Local (optional)** |
+| --- | --- | --- |
+| **Who** | Teammates, pilots, demos | EfficientAI core developers |
+| **Run EfficientAI locally?** | No | Yes (`eai start-all`) |
+| **`EFFICIENTAI_API_BASE`** | `https://sandbox.efficientai.cloud` | `http://localhost:8000` |
+| **UI** | https://sandbox.efficientai.cloud | http://localhost:8000 |
+
+The rest of this page uses **sandbox** unless a section says **local**.
+
+---
+
+## Quickstart — sandbox (copy-paste)
+
+### 1. In the browser (once)
+
+1. Log in to [sandbox](https://sandbox.efficientai.cloud).
+2. Select the **workspace** where you will view traces.
+3. **Settings → API keys** → create and copy a key.
+4. Note the workspace **UUID**.
+
+### 2. Create `pipecat-agent` and get `bot.py` + `.env`
+
+```bash
+mkdir -p /path/to/work/pipecat-agent && cd /path/to/work/pipecat-agent
+uv venv && source .venv/bin/activate
+
+EXAMPLES="https://raw.githubusercontent.com/EfficientAI-tech/efficientAI/otel-traces/docs/examples"
+curl -fsSL "$EXAMPLES/pipecat_multi_agent_webrtc_tracing.py" -o bot.py   # or upstream_webrtc for Gemini
+curl -fsSL "$EXAMPLES/pipecat.env.example" -o .env
+```
+
+Fill `.env` via [setup API](#setup-endpoint) `env_block` or manually (sandbox URLs, workspace, API key, provider keys). Local clone: `cp` from `efficientAI/docs/examples/` instead of `curl`.
+
+### 3. Install
+
+```bash
+uv pip install "pipecat-ai[silero,elevenlabs,fireworks,deepgram,runner,webrtc]>=1.4.0"
+uv pip install python-dotenv loguru httpx
+uv pip install "efficientai[otel] @ git+https://github.com/EfficientAI-tech/efficientAI.git@otel-traces"
+```
+
+Local SDK: `uv pip install -e '/path/to/work/efficientAI[otel]'`.
+
+### 4. Preflight (recommended)
+
+```bash
+curl -i -X POST "https://sandbox.efficientai.cloud/api/v1/observability/traces/sessions" \
+  -H "X-API-Key: YOUR_KEY" \
+  -H "X-Workspace-Id: YOUR_WORKSPACE_UUID" \
+  -H "Content-Type: application/json" \
+  -d '{"transport":"webrtc"}'
+```
+
+### 5. Run and verify
+
+```bash
+uv run bot.py
+```
+
+**http://localhost:7860/client** → **Calls** (same workspace) → Refresh after hang-up.
+
+---
+
+## Pipecat hooks (custom `bot.py`)
+
+Example bots already include this wiring:
+
+| Step | Function | What it does |
+| --- | --- | --- |
+| 1 | `warn_deployment_trace_env()` | Logs missing env (optional) |
+| 2 | `ensure_trace_session()` | Session + Call ID (`enabled: false` on failure) |
+| 3 | `setup_pipecat_worker_tracing(trace_ctx)` | OTLP exporter |
+| 4 | `enable_tracing=tracing["enabled"]` on `PipelineWorker` | Pipecat spans |
+| 5 | `close_trace_session(trace_ctx)` on disconnect | Flush |
+
+```python
+from dotenv import load_dotenv
+from efficientai.integrations.efficientai_traces import (
+    close_trace_session,
+    ensure_trace_session,
+    resolve_trace_transport,
+    setup_pipecat_worker_tracing,
+    warn_deployment_trace_env,
+)
+
+load_dotenv(override=True)
+warn_deployment_trace_env()
+
+async def run_bot(transport, runner_args):
+    trace_ctx = await ensure_trace_session(
+        transport=resolve_trace_transport(runner_args, transport),
+    )
+    tracing = setup_pipecat_worker_tracing(trace_ctx)
+
+    worker = PipelineWorker(
+        pipeline,
+        enable_tracing=bool(tracing.get("enabled")),
+        additional_span_attributes=tracing.get("additional_span_attributes") or {},
+    )
+
+    @transport.event_handler("on_client_disconnected")
+    async def on_client_disconnected(transport, client):
+        await worker.cancel()
+        await close_trace_session(trace_ctx)
+```
+
+---
+
+## Local setup (separate from sandbox)
+
+Only use this when you run EfficientAI on the same machine as the bot.
+
+**Terminal 1 — API and workers**
+
+```bash
+eai start-all
+```
+
+Ensure **`worker-traces`** is in the logs.
+
+**Terminal 2 — Pipecat `.env`**
+
+Use a **local** workspace ID and keys from your local UI — not sandbox:
+
+```bash
+EFFICIENTAI_API_BASE=http://localhost:8000
+EFFICIENTAI_OTLP_ENDPOINT=http://localhost:8000/api/v1/observability/traces
+EFFICIENTAI_WORKSPACE_ID=<local workspace uuid>
+EFFICIENTAI_API_KEY=<local key>
+```
+
+Same bot code and `pip install` as sandbox. Open http://localhost:8000 to verify traces.
+
+---
+
+## How it works
+
+```
+1. Bot starts → ensure_trace_session() → six-digit Call ID
+2. Pipecat records spans (enable_tracing=True)
+3. SDK POSTs OTLP to EFFICIENTAI_OTLP_ENDPOINT with workspace + Call ID headers
+4. Calls hub shows latency and models per turn
+5. close_trace_session() on disconnect
+```
+
+---
+
+## Alternative integrations
+
+### `PipelineTask` (phone / older style)
+
+```python
+from efficientai.integrations.efficientai_traces import configure_pipecat_tracing
+
+task = PipelineTask(
+    pipeline,
+    **configure_pipecat_tracing(call_short_id=call_short_id),
+)
+```
+
+### Playground WebSocket handshake
+
+```python
+configure_pipecat_tracing(handshake=message)
+```
+
+EfficientAI sends `call_short_id` in the handshake — no manual session call needed.
+
+---
+
+## Example bots (EfficientAI repository)
+
+| Use case | File |
+| --- | --- |
+| Multi-agent WebRTC | `docs/examples/pipecat_multi_agent_webrtc_tracing.py` |
+| Single agent, swap STT/LLM/TTS | `docs/examples/pipecat_multi_provider_webrtc_tracing.py` |
+| Gemini Live / S2S | `docs/examples/pipecat_upstream_webrtc_tracing.py` |
+| Custom WebSocket | `docs/examples/pipecat_upstream_websocket_tracing.py` |
+| Inbound phone (SIP) | `docs/examples/pipecat_inbound_phone_tracing.py` |
+
+Template `.env`: `docs/examples/pipecat.env.example`
+
+---
+
+## API reference
+
+| Environment | Base |
+| --- | --- |
+| Sandbox | `https://sandbox.efficientai.cloud` |
+| Local | `http://localhost:8000` |
+
+### Setup endpoint
+
+```http
+GET /api/v1/observability/traces/setup
+```
+
+Headers: `X-API-Key`, `X-Workspace-Id` (same workspace you will use in the bot `.env`).
+
+Response includes:
+
+| Field | Use |
+| --- | --- |
+| `env_block` | Paste into agent `.env`, then add `EFFICIENTAI_API_KEY` |
+| `install_command` | `pip install efficientai[otel]` |
+| `docs_url` | Link back to this documentation |
+| `bot_imports_snippet` / `pipecat_example` | Starter code for `bot.py` |
+| `sessions_endpoint` / `otlp_endpoint` | Same URLs as in `.env` |
+
+Sandbox example:
+
+```bash
+curl -s "https://sandbox.efficientai.cloud/api/v1/observability/traces/setup" \
+  -H "X-API-Key: <key>" \
+  -H "X-Workspace-Id: <workspace-uuid>" | jq -r .env_block
+```
+
+### Create session (sandbox example)
+
+```bash
+curl -X POST https://sandbox.efficientai.cloud/api/v1/observability/traces/sessions \
+  -H "X-API-Key: <key>" \
+  -H "X-Workspace-Id: <workspace-uuid>" \
+  -H "Content-Type: application/json" \
+  -d '{"transport":"webrtc"}'
+```
+
+### Export spans
+
+```http
+POST /api/v1/observability/traces
+```
+
+| Header | Value |
+| --- | --- |
+| `X-API-Key` | API key |
+| `X-Workspace-Id` | Workspace uuid |
+| `X-EfficientAI-Call-Short-Id` | 6-digit call id |
+
+There is **no** `POST …/observability/live/events` ingest for Pipecat — live UI reads stored trace data.
+
+---
+
+## Troubleshooting
+
+| Symptom | Fix |
+| --- | --- |
+| Connection error on bot start | Sandbox: use **https** sandbox base URL, not unreachable `localhost` |
+| `POST …/sessions` **404** | Wrong `EFFICIENTAI_API_BASE` or old deployment |
+| `Transport 'webrtc' is disabled` | `pip install pipecat-ai[webrtc]` |
+| `Transport 'livekit' is disabled` | `uv pip install "pipecat-ai[livekit]>=1.4.0"`; set `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`; add `"livekit"` to `transport_params` in `bot.py`; restart the runner and confirm **livekit** appears under enabled transports in the startup banner. Do not pass `-t webrtc` if you need LiveKit from the dev UI. Run a room: [LiveKit dev server](https://docs.livekit.io/home/self-hosting/local/) or a cloud project. |
+| No traces in UI | API key + workspace; **Refresh**; same env as login |
+| Pipecat **WebSocket** works but nothing in **Calls** | Dev runner uses `transport=websocket`. Observability → Calls **hides** websocket traces (playground custom WS). Use **WebRTC** in the Pipecat dev UI for Calls hub, or `GET /api/v1/observability/traces/by-call-short-id/{id}` to verify the session. |
+| Pipecat **Telephony** / Twilio error (`Missing transport params for 'twilio'`) | Our example `bot.py` only defines `webrtc` + `websocket`. Telephony in the dev UI needs matching `transport_params` (Twilio/Telnyx/etc.)—use **WebRTC** for trace testing unless you are wiring real PSTN. |
+| Traces in wrong workspace | Workspace ID in `.env` must match UI; reinstall SDK if OTLP lacked workspace header |
+| `correlated: false` on ingest | Missing Call ID on spans or headers |
+| Call ID in logs but empty trace | `enable_tracing=True`; install `efficientai[otel]` |
+| Trace stays open | `close_trace_session()` on disconnect |
+| UI empty but bot “works” | You integrated against **sandbox** but `.env` still says `localhost` |
+
+---
+
+## Other transports
+
+WebSocket and phone use the same API URL and Call ID rules. See the inbound phone example in the EfficientAI repository.

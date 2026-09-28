@@ -133,6 +133,27 @@ class Settings(BaseSettings):
     SECURITY_HSTS_INCLUDE_SUBDOMAINS: bool = True
     SECURITY_OMIT_SERVER_HEADER: bool = True
 
+    # Call traces / OTLP observability (Phase 2 scaling)
+    TRACES_ASYNC_INGEST_ENABLED: bool = True
+    TRACES_RATE_LIMIT_PER_MINUTE: int = 120
+    TRACES_RATE_LIMIT_ENFORCE: bool = True
+    TRACES_MAX_BODY_BYTES: int = 4 * 1024 * 1024
+    TRACES_DERIVE_DEBOUNCE_SECONDS: int = 3
+    TRACES_IDLE_CLOSE_SECONDS: int = 120
+    TRACES_S3_PREFIX: str = "traces/"
+    TRACES_LIST_DEFAULT_DAYS: int = 90
+    TRACES_DEFER_PARSE_TO_WORKER: bool = True
+    TRACES_STAGING_RETENTION_HOURS: int = 48
+    TRACES_LIVE_TURNS_TTL_SECONDS: int = 180
+    TRACES_API_KEY_CACHE_TTL_SECONDS: int = 300
+    TRACES_S3_BATCH_ORPHAN_MINUTES: int = 15
+
+    # ClickHouse (call traces serving store)
+    CLICKHOUSE_URL: Optional[str] = None
+    CLICKHOUSE_DATABASE: str = "efficientai"
+    CLICKHOUSE_USER: str = "default"
+    CLICKHOUSE_PASSWORD: str = ""
+
     # Authentication
     AUTH_PROVIDERS: Annotated[List[str], NoDecode] = ["api_key"]
     AUTH_LOCAL_ALLOW_SIGNUP: bool = True
@@ -149,7 +170,7 @@ class Settings(BaseSettings):
     AUTH_OIDC_JWKS_URI: Optional[str] = None
     AUTH_OIDC_ORG_CLAIM_PATH: List[str] = []
     AUTH_OIDC_DEFAULT_ORG_NAME: Optional[str] = None
-
+    
     # Frontend
     FRONTEND_DIR: str = "./frontend/dist"
     FRONTEND_BASE_URL: str = ""
@@ -176,6 +197,16 @@ class Settings(BaseSettings):
         "https://*.ingest.sentry.io "
         "https://*.ingest.us.sentry.io"
     )
+    _CSP_STORAGE_CONNECT_SRC: str = (
+        "https://*.r2.cloudflarestorage.com "
+        "https://*.s3.amazonaws.com "
+        "https://*.amazonaws.com "
+        "https://*.cloudfront.net "
+        "https://storage.googleapis.com "
+        "https://*.blob.core.windows.net "
+        "https://*.digitaloceanspaces.com "
+        "https://*.backblazeb2.com"
+    )
     _CSP_FRAME_SRC: str = (
         "https://*.daily.co "
         "https://*.s3.amazonaws.com "
@@ -193,7 +224,7 @@ class Settings(BaseSettings):
         "style-src-attr 'unsafe-inline'; "
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data: blob: https:; "
-        f"connect-src 'self' wss: ws: {_CSP_VOICE_CONNECT_SRC}; "
+        f"connect-src 'self' wss: ws: {_CSP_VOICE_CONNECT_SRC} {_CSP_STORAGE_CONNECT_SRC}; "
         "media-src 'self' blob: https:; "
         f"frame-src 'self' blob: {_CSP_FRAME_SRC}; "
         "worker-src 'self' blob:; "
@@ -814,6 +845,46 @@ def load_config_from_file(config_path: str) -> None:
             settings.API_KEY_HEADER = api_config["key_header"]
         if "rate_limit_per_minute" in api_config:
             settings.RATE_LIMIT_PER_MINUTE = api_config["rate_limit_per_minute"]
+
+    if "traces" in config_data:
+        traces_config = config_data["traces"]
+        if "async_ingest_enabled" in traces_config:
+            settings.TRACES_ASYNC_INGEST_ENABLED = bool(traces_config["async_ingest_enabled"])
+        if "rate_limit_per_minute" in traces_config:
+            settings.TRACES_RATE_LIMIT_PER_MINUTE = int(traces_config["rate_limit_per_minute"])
+        if "rate_limit_enforce" in traces_config:
+            settings.TRACES_RATE_LIMIT_ENFORCE = bool(traces_config["rate_limit_enforce"])
+        if "max_body_bytes" in traces_config:
+            settings.TRACES_MAX_BODY_BYTES = int(traces_config["max_body_bytes"])
+        if "derive_debounce_seconds" in traces_config:
+            settings.TRACES_DERIVE_DEBOUNCE_SECONDS = int(traces_config["derive_debounce_seconds"])
+        if "idle_close_seconds" in traces_config:
+            settings.TRACES_IDLE_CLOSE_SECONDS = int(traces_config["idle_close_seconds"])
+        if "s3_prefix" in traces_config:
+            settings.TRACES_S3_PREFIX = traces_config["s3_prefix"]
+        if "list_default_days" in traces_config:
+            settings.TRACES_LIST_DEFAULT_DAYS = int(traces_config["list_default_days"])
+        if "defer_parse_to_worker" in traces_config:
+            settings.TRACES_DEFER_PARSE_TO_WORKER = bool(traces_config["defer_parse_to_worker"])
+        if "staging_retention_hours" in traces_config:
+            settings.TRACES_STAGING_RETENTION_HOURS = int(traces_config["staging_retention_hours"])
+        if "live_turns_ttl_seconds" in traces_config:
+            settings.TRACES_LIVE_TURNS_TTL_SECONDS = int(traces_config["live_turns_ttl_seconds"])
+        if "api_key_cache_ttl_seconds" in traces_config:
+            settings.TRACES_API_KEY_CACHE_TTL_SECONDS = int(traces_config["api_key_cache_ttl_seconds"])
+        if "s3_batch_orphan_minutes" in traces_config:
+            settings.TRACES_S3_BATCH_ORPHAN_MINUTES = int(traces_config["s3_batch_orphan_minutes"])
+
+    if "clickhouse" in config_data:
+        ch_config = config_data["clickhouse"]
+        if "url" in ch_config:
+            settings.CLICKHOUSE_URL = ch_config["url"]
+        if "database" in ch_config:
+            settings.CLICKHOUSE_DATABASE = ch_config["database"]
+        if "user" in ch_config:
+            settings.CLICKHOUSE_USER = ch_config["user"]
+        if "password" in ch_config:
+            settings.CLICKHOUSE_PASSWORD = ch_config["password"]
 
     if "auth" in config_data:
         auth_config = config_data["auth"]

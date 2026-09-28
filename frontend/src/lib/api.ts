@@ -36,6 +36,7 @@ import type {
   Role,
   Integration,
   IntegrationCreate,
+  ListIntegrationVoiceAgentsResponse,
   S3ConnectionTestResponse,
   S3ListFilesResponse,
   S3BrowseResponse,
@@ -447,9 +448,9 @@ export interface VobizOutboundCallResponse {
   to_number: string
   call_ref: string
   call_short_id?: string
-  message: string
   evaluator_result_id?: string
   result_id?: string
+  message: string
 }
 
 export interface EvaluatorSuiteCombination {
@@ -1114,7 +1115,9 @@ class ApiClient {
       ...csrfHeaders(),
     }
     const accessToken = credentials?.accessToken ?? this.inMemoryAccessToken
-    const apiKey = credentials?.apiKey ?? localStorage.getItem('apiKey')
+    const apiKey = this.cookieSessionEnabled
+      ? credentials?.apiKey ?? null
+      : credentials?.apiKey ?? localStorage.getItem('apiKey')
     if (accessToken) {
       headers.Authorization = `Bearer ${accessToken}`
     } else if (apiKey) {
@@ -1912,6 +1915,22 @@ class ApiClient {
     const response = await this.client.post(
       `/api/v1/integrations/${integrationId}/preview-agent-prompt`,
       { voice_ai_agent_id: voiceAiAgentId },
+    )
+    return response.data
+  }
+
+  async listIntegrationVoiceAgents(
+    integrationId: string,
+    options?: { refresh?: boolean; search?: string },
+  ): Promise<ListIntegrationVoiceAgentsResponse> {
+    const response = await this.client.get(
+      `/api/v1/integrations/${integrationId}/voice-agents`,
+      {
+        params: {
+          ...(options?.refresh ? { refresh: true } : {}),
+          ...(options?.search ? { search: options.search } : {}),
+        },
+      },
     )
     return response.data
   }
@@ -4079,8 +4098,20 @@ class ApiClient {
   }
 
   // Voice Agent endpoints
-  async getVoiceAgentConnection(): Promise<{ ws_url: string; endpoint: string }> {
-    const response = await this.client.post('/api/v1/voice-agent/connect')
+  async getVoiceAgentConnection(
+    query?: Record<string, string | boolean | undefined | null>,
+  ): Promise<{ ws_url: string; endpoint?: string }> {
+    const search = new URLSearchParams()
+    if (query) {
+      for (const [key, value] of Object.entries(query)) {
+        if (value !== undefined && value !== null && value !== '') {
+          search.set(key, String(value))
+        }
+      }
+    }
+    const qs = search.toString()
+    const path = `/api/v1/voice-agent/connect${qs ? `?${qs}` : ''}`
+    const response = await this.client.post(path)
     return response.data
   }
 
@@ -4121,6 +4152,29 @@ class ApiClient {
 
   async getCallRecording(callShortId: string): Promise<any> {
     const response = await this.client.get(`/api/v1/playground/call-recordings/${callShortId}`)
+    return response.data
+  }
+
+  getCallRecordingAudioStreamUrl(callShortId: string, options?: { stereo?: boolean }): string {
+    const params = new URLSearchParams({ proxy: 'true' })
+    if (options?.stereo) params.set('stereo', 'true')
+    return this.buildAuthenticatedApiUrl(
+      `/api/v1/playground/call-recordings/${callShortId}/audio?${params.toString()}`,
+    )
+  }
+
+  async getCallRecordingLogs(callShortId: string): Promise<{
+    platform: string
+    entries: Array<{
+      time?: string | null
+      level?: string | null
+      category?: string | null
+      summary?: string | null
+      raw?: Record<string, unknown>
+    }>
+    count: number
+  }> {
+    const response = await this.client.get(`/api/v1/playground/call-recordings/${callShortId}/logs`)
     return response.data
   }
 
@@ -4183,12 +4237,27 @@ class ApiClient {
     return response.data
   }
 
-  async getCallRecordingAudioUrl(callShortId: string): Promise<string> {
+  async getCallRecordingAudioUrl(callShortId: string, options?: { stereo?: boolean }): Promise<string> {
+    const params = new URLSearchParams({ proxy: 'true' })
+    if (options?.stereo) params.set('stereo', 'true')
     const response = await this.client.get(
-      `/api/v1/playground/call-recordings/${callShortId}/audio`,
+      `/api/v1/playground/call-recordings/${callShortId}/audio?${params.toString()}`,
       { responseType: 'blob' }
     )
     return URL.createObjectURL(response.data)
+  }
+
+  async getCallRecordingAudioBuffer(
+    callShortId: string,
+    options?: { stereo?: boolean },
+  ): Promise<ArrayBuffer> {
+    const params = new URLSearchParams({ proxy: 'true' })
+    if (options?.stereo) params.set('stereo', 'true')
+    const response = await this.client.get(
+      `/api/v1/playground/call-recordings/${callShortId}/audio?${params.toString()}`,
+      { responseType: 'arraybuffer' },
+    )
+    return response.data as ArrayBuffer
   }
 
   async createCustomWebsocketSession(data: {
@@ -4197,6 +4266,7 @@ class ApiClient {
     transcript_entries: Array<{ role: 'user' | 'agent'; content: string; timestamp: string }>
     started_at?: string
     ended_at?: string
+    call_short_id?: string
     audio_file?: File
   }): Promise<{
     message: string
@@ -4213,6 +4283,9 @@ class ApiClient {
     }
     if (data.ended_at) {
       formData.append('ended_at', data.ended_at)
+    }
+    if (data.call_short_id) {
+      formData.append('call_short_id', data.call_short_id)
     }
     if (data.audio_file) {
       formData.append('audio_file', data.audio_file)
@@ -4294,6 +4367,33 @@ class ApiClient {
     return response.data
   }
 
+  async listCallsHub(params?: {
+    skip?: number
+    limit?: number
+    status?: string
+    search?: string
+    event?: string
+  }): Promise<{
+    items: Array<{ kind: 'obs' | 'trace'; sort_at?: string; obs?: ObservabilityCall; trace?: Record<string, unknown> }>
+    total: number
+    page: number
+    page_size: number
+    page_count: number
+    summary: {
+      total: number
+      obs_total: number
+      obs_live: number
+      obs_ended: number
+      obs_started: number
+      obs_other: number
+      traces_open: number
+      traces_closed: number
+    }
+  }> {
+    const response = await this.client.get('/api/v1/observability/calls-hub', { params })
+    return response.data
+  }
+
   private buildAuthenticatedApiUrl(path: string): string {
     const normalizedPath = path.startsWith('/') ? path : `/${path}`
     const configuredBase = (this.client.defaults.baseURL || '').replace(/\/$/, '')
@@ -4317,6 +4417,12 @@ class ApiClient {
     return url.toString()
   }
 
+  /** SSE / EventSource cannot use axios; must send session cookies explicitly. */
+  openAuthenticatedEventSource(path: string): EventSource {
+    const url = this.buildAuthenticatedApiUrl(path)
+    return new EventSource(url, { withCredentials: true })
+  }
+
   async getObservabilityCall(callShortId: string): Promise<ObservabilityCall> {
     const response = await this.client.get(`/api/v1/observability/calls/${callShortId}`)
     return response.data
@@ -4326,6 +4432,20 @@ class ApiClient {
     return this.buildAuthenticatedApiUrl(
       `/api/v1/observability/calls/${callShortId}/live-events`,
     )
+  }
+
+  getObservabilityCallAudioStreamUrl(callShortId: string): string {
+    return this.buildAuthenticatedApiUrl(
+      `/api/v1/observability/calls/${callShortId}/audio?proxy=true`,
+    )
+  }
+
+  async getObservabilityCallAudioBuffer(callShortId: string): Promise<ArrayBuffer> {
+    const response = await this.client.get(
+      `/api/v1/observability/calls/${callShortId}/audio?proxy=true`,
+      { responseType: 'arraybuffer' },
+    )
+    return response.data as ArrayBuffer
   }
 
   async getObservabilityCallAudioUrl(callShortId: string): Promise<string> {
@@ -4995,6 +5115,120 @@ class ApiClient {
   async getEvaluatorResultMetrics(id: string): Promise<any> {
     const response = await this.client.get(`/api/v1/evaluator-results/${id}/metrics`)
     return response.data
+  }
+
+  async getSyntheticCallTraceForResult(
+    evaluatorResultId: string,
+    includeSpans = true,
+  ): Promise<any> {
+    const response = await this.client.get(
+      `/api/v1/observability/traces/results/${evaluatorResultId}`,
+      { params: { include_spans: includeSpans } },
+    )
+    return response.data
+  }
+
+  async listSyntheticCallTraces(params?: {
+    skip?: number
+    limit?: number
+    status?: string
+    cursor?: string
+  }): Promise<{ items: any[]; total: number; next_cursor?: string; has_more?: boolean }> {
+    const response = await this.client.get('/api/v1/observability/traces', { params })
+    return response.data
+  }
+
+  async deleteSyntheticCallTrace(traceId: string): Promise<{ message: string }> {
+    const response = await this.client.delete(`/api/v1/observability/traces/${traceId}`)
+    return response.data
+  }
+
+  async getSyntheticCallTraceSpans(traceId: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/observability/traces/${traceId}/spans`)
+    return response.data
+  }
+
+  async getSyntheticCallTrace(traceId: string, includeSpans = true): Promise<any> {
+    const response = await this.client.get(`/api/v1/observability/traces/${traceId}`, {
+      params: { include_spans: includeSpans },
+    })
+    return response.data
+  }
+
+  async getSyntheticCallTraceByCallShortId(callShortId: string, includeSpans = true): Promise<any> {
+    const response = await this.client.get(
+      `/api/v1/observability/traces/by-call-short-id/${callShortId}`,
+      { params: { include_spans: includeSpans } },
+    )
+    return response.data
+  }
+
+  async getSyntheticCallTraceSetup(): Promise<any> {
+    const response = await this.client.get('/api/v1/observability/traces/setup')
+    return response.data
+  }
+
+  async createSyntheticTraceSession(data: {
+    transport?: 'webrtc' | 'websocket' | 'phone' | 'custom'
+    evaluator_result_id?: string
+    agent_id?: string
+  }): Promise<{
+    trace_id: string
+    call_short_id: string
+    workspace_id: string
+    transport: string
+    status: string
+    otel_correlation: Record<string, unknown>
+  }> {
+    const response = await this.client.post('/api/v1/observability/traces/sessions', data)
+    return response.data
+  }
+
+  async closeSyntheticTraceSession(callShortId: string): Promise<{
+    trace_id: string
+    call_short_id: string
+    status: string
+  }> {
+    const response = await this.client.post(
+      `/api/v1/observability/traces/sessions/${callShortId}/close`,
+    )
+    return response.data
+  }
+
+  async ingestSyntheticTraceJson(data: {
+    call_short_id: string
+    spans: Array<{
+      name: string
+      turn_number: number
+      ttfb_ms?: number
+      attributes?: Record<string, unknown>
+    }>
+  }): Promise<{
+    accepted_spans: number
+    synthetic_call_trace_id?: string
+    correlated: boolean
+  }> {
+    const response = await this.client.post('/api/v1/observability/traces/ingest', data)
+    return response.data
+  }
+
+  async getEvaluatorResultOtelCorrelation(id: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/evaluator-results/${id}/otel-correlation`)
+    return response.data
+  }
+
+  getEvaluatorResultAudioStreamUrl(resultId: string): string {
+    return this.buildAuthenticatedApiUrl(
+      `/api/v1/evaluator-results/${resultId}/audio`,
+    )
+  }
+
+  async getEvaluatorResultAudioBuffer(resultId: string): Promise<ArrayBuffer> {
+    const response = await this.client.get(
+      `/api/v1/evaluator-results/${resultId}/audio`,
+      { responseType: 'arraybuffer' },
+    )
+    return response.data as ArrayBuffer
   }
 
   async getEvaluatorResultAudioUrl(resultId: string): Promise<string> {

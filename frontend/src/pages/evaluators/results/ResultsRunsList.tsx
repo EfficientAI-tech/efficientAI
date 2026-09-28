@@ -19,6 +19,7 @@ import {
   isEvaluatorResultInProgress,
 } from './evaluatorResultStatus'
 import { formatDuration, formatTimestamp, getStatusConfig } from './resultsFormatting'
+import { itemsOf } from '../../../lib/safeData'
 
 const PAGE_SIZE = 50
 
@@ -86,15 +87,15 @@ export default function ResultsRunsList({
         status: apiStatus,
       }),
     refetchInterval: (query) => {
-      const items = query.state.data?.items
-      if (items?.some((r) => isEvaluatorResultInProgress(displayEvaluatorResultStatus(r)))) {
+      const pollItems = itemsOf<EvaluatorResultRow>(query.state.data)
+      if (pollItems.some((r) => isEvaluatorResultInProgress(displayEvaluatorResultStatus(r)))) {
         return 3000
       }
       return false
     },
   })
 
-  const items = data?.items ?? []
+  const items = itemsOf<EvaluatorResultRow>(data)
   const total = data?.total ?? 0
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 

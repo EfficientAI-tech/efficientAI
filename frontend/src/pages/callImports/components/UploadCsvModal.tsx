@@ -11,9 +11,10 @@ import {
   X,
 } from 'lucide-react'
 import { apiClient } from '../../../lib/api'
+import { itemsOf } from '../../../lib/safeData'
 import Button from '../../../components/Button'
 import { useWorkspaceStore } from '../../../store/workspaceStore'
-import type { CallImportTag } from '../../../types/api'
+import type { CallImportSchema, CallImportTag } from '../../../types/api'
 
 interface UploadCsvModalProps {
   open: boolean
@@ -88,7 +89,7 @@ export default function UploadCsvModal({ open, onClose }: UploadCsvModalProps) {
     enabled: open,
   })
   const schemas = useMemo(
-    () => schemasResponse?.items ?? [],
+    () => itemsOf<CallImportSchema>(schemasResponse),
     [schemasResponse],
   )
 

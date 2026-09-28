@@ -9,6 +9,7 @@ Stream Observability Call Audio
 ## Parameters
 
 - `call_short_id` (path, required) `string`
+- `proxy` (query, optional) `boolean`
 - `X-Workspace-Id` (header, optional)
 - `Authorization` (header, optional)
 - `X-API-Key` (header, optional)

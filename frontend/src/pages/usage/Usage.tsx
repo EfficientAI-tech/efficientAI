@@ -25,6 +25,7 @@ import {
   PRODUCT_SECTION_HINTS,
   USAGE_SECTION_SOURCE_PREFIX,
 } from './usageProductHints'
+import { usageModelDisplayLabel, type UsageModelLabelContext } from './usageModelLabel'
 
 type DrillGroupBy =
   | 'workspace'
@@ -378,7 +379,9 @@ function rowLabel(groupBy: DrillGroupBy, row: BreakdownRow, options?: FilterOpti
       usableResourceLabel(row.resource_label) || fromFilters || 'Unscoped'
     )
   }
-  if (groupBy === 'model') return row.model || '—'
+  if (groupBy === 'model') {
+    return usageModelDisplayLabel(row.model, row)
+  }
   if (groupBy === 'product_section')
     return row.product_section_label || row.product_section || '—'
   if (row.usage_kind === 'stt') return 'STT'
@@ -564,6 +567,9 @@ export default function Usage() {
       ? null
       : usagePolicy.max_history_days ?? 7
   const [costBreakdownOpen, setCostBreakdownOpen] = useState(false)
+  const [drilledModelContext, setDrilledModelContext] = useState<
+    UsageModelLabelContext | undefined
+  >()
   const [displayCurrency, setDisplayCurrency] = useState<UsageDisplayCurrency>(() =>
     getUsageDisplayCurrency(),
   )
@@ -598,6 +604,10 @@ export default function Usage() {
       })
     }
   }, [licenseLoaded, usagePolicy.extended_history, usagePolicy.max_history_days, start, end, setSearchParams])
+
+  useEffect(() => {
+    if (!model) setDrilledModelContext(undefined)
+  }, [model])
 
   const showWorkspaceComposite =
     Boolean(workspaceId) &&
@@ -879,8 +889,21 @@ export default function Usage() {
   const productSectionLabel =
     filterOptions?.product_sections?.find((s) => s.id === productSection)?.label
 
+  const modelLabelContext = useMemo((): UsageModelLabelContext | undefined => {
+    if (!model) return undefined
+    const fromBreakdown = breakdown?.rows?.find((row) => row.model === model)
+    if (fromBreakdown) return fromBreakdown
+    if (drilledModelContext) return drilledModelContext
+    if (usageKind) return { usage_kind: usageKind }
+    return undefined
+  }, [breakdown?.rows, drilledModelContext, model, usageKind])
+
+  const modelDisplayLabel = model
+    ? usageModelDisplayLabel(model, modelLabelContext)
+    : ''
+
   const scopeSubtitle = model
-    ? model
+    ? modelDisplayLabel
     : evaluationId
       ? evaluationLabel || 'Evaluation'
       : callImportId
@@ -979,7 +1002,7 @@ export default function Usage() {
           },
         ]
       : []),
-    ...(model ? [{ label: model }] : []),
+    ...(model ? [{ label: modelDisplayLabel }] : []),
   ]
 
   const handleWorkspaceChange = (id: string) => {
@@ -1080,6 +1103,13 @@ export default function Usage() {
       return
     }
     if (groupBy === 'model' && row.model) {
+      setDrilledModelContext({
+        total_tokens: row.total_tokens,
+        audio_seconds: row.audio_seconds,
+        tts_characters: row.tts_characters,
+        call_count: row.call_count,
+        usage_kind: row.usage_kind,
+      })
       setParams({ model: row.model, usage_kind: null })
     }
   }

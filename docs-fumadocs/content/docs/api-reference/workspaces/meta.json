@@ -1,0 +1,10 @@
+{
+  "title": "Workspaces",
+  "description": "Workspace management endpoints.",
+  "pages": [
+    "list_workspaces_api_v1_workspaces_get",
+    "create_workspace_api_v1_workspaces_post",
+    "update_workspace_api_v1_workspaces__workspace_id__patch",
+    "delete_workspace_api_v1_workspaces__workspace_id__delete"
+  ]
+}

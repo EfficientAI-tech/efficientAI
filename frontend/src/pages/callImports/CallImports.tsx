@@ -24,6 +24,7 @@ import StatusBadge from '../../components/shared/StatusBadge'
 import CallImportProgressBar from './components/CallImportProgressBar'
 import UploadAudioModal from './components/UploadAudioModal'
 import UploadCsvModal from './components/UploadCsvModal'
+import { itemsOf } from '../../lib/safeData'
 
 const PAGE_SIZE = 20
 
@@ -105,7 +106,7 @@ export default function CallImports() {
     queryKey: ['call-imports', activeWorkspaceId, queryParams],
     queryFn: () => apiClient.listCallImports(queryParams),
     refetchInterval: (query) => {
-      const items = query.state.data?.items ?? []
+      const items = itemsOf<CallImport>(query.state.data)
       const hasActive = items.some(
         (i: CallImport) => i.status === 'pending' || i.status === 'processing',
       )
@@ -117,7 +118,7 @@ export default function CallImports() {
     },
   })
 
-  const items = data?.items ?? []
+  const items = itemsOf<CallImport>(data)
   const total = data?.total ?? 0
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
