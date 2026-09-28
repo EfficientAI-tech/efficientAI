@@ -401,9 +401,16 @@ eai usage sync-litellm --local --write-models
 ```
 
 **After migrations or catalog changes:**
+
+On API startup and `eai migrate`, the catalog database automatically syncs
+`model_pricing_rates` from `app/config/models.json` when new models are added or
+rates change. Disable with `USAGE_AUTO_SEED_PRICING=false`.
+
+Manual ops (optional verify/backfill):
 ```bash
 eai migrate
-eai usage seed-rates --config config.yml
+eai usage diff-rates --config config.yml
+eai usage seed-rates --config config.yml   # force upsert without waiting for diff
 eai usage recompute --config config.yml --sync
 ```
 

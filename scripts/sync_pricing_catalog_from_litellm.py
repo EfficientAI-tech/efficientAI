@@ -313,8 +313,10 @@ def _micro_pricing_to_plan(micro: Dict[str, int], *, usage_kind: str = "llm") ->
     pricing: Dict[str, Any] = {"source": "litellm_import", "usage_kind": usage_kind}
     if micro.get("input_micro_usd_per_million"):
         pricing["input_per_1m"] = _usd_per_million(micro["input_micro_usd_per_million"])
-    if micro.get("output_micro_usd_per_million"):
-        pricing["output_per_1m"] = _usd_per_million(micro["output_micro_usd_per_million"])
+    if "output_micro_usd_per_million" in micro:
+        pricing["output_per_1m"] = _usd_per_million(
+            micro["output_micro_usd_per_million"]
+        )
     if micro.get("cache_read_micro_usd_per_million"):
         pricing["cache_read_per_1m"] = _usd_per_million(
             micro["cache_read_micro_usd_per_million"]
@@ -328,6 +330,55 @@ def _micro_pricing_to_plan(micro: Dict[str, int], *, usage_kind: str = "llm") ->
             micro["reasoning_micro_usd_per_million"]
         )
     return pricing
+
+
+def _catalog_pricing_from_models_json_block(
+    pricing: Dict[str, Any], *, usage_kind: str
+) -> Optional[Dict[str, int]]:
+    """Convert a models.json plan-format pricing block to catalog micro fields."""
+    if not isinstance(pricing, dict):
+        return None
+
+    def micro(field_micro: str, field_usd: str) -> int:
+        if pricing.get(field_micro) is not None:
+            return int(pricing[field_micro])
+        usd = pricing.get(field_usd)
+        if usd is None:
+            return 0
+        return int(round(float(usd) * MICRO_USD_PER_USD))
+
+    audio_micro = int(pricing.get("audio_micro_usd_per_second") or 0)
+    if not audio_micro and pricing.get("audio_per_minute") is not None:
+        audio_micro = int(
+            round(float(pricing["audio_per_minute"]) * MICRO_USD_PER_USD / 60.0)
+        )
+
+    tts_micro = int(pricing.get("tts_micro_usd_per_million_chars") or 0)
+    if not tts_micro and pricing.get("tts_per_1m_characters") is not None:
+        tts_micro = int(round(float(pricing["tts_per_1m_characters"]) * MICRO_USD_PER_USD))
+
+    converted = {
+        "input_micro_usd_per_million": micro(
+            "input_micro_usd_per_million", "input_per_1m"
+        ),
+        "output_micro_usd_per_million": micro(
+            "output_micro_usd_per_million", "output_per_1m"
+        ),
+        "cache_read_micro_usd_per_million": micro(
+            "cache_read_micro_usd_per_million", "cache_read_per_1m"
+        ),
+        "cache_creation_micro_usd_per_million": micro(
+            "cache_creation_micro_usd_per_million", "cache_write_per_1m"
+        ),
+        "reasoning_micro_usd_per_million": micro(
+            "reasoning_micro_usd_per_million", "reasoning_per_1m"
+        ),
+        "audio_micro_usd_per_second": audio_micro,
+        "tts_micro_usd_per_million_chars": tts_micro,
+    }
+    if not any(converted.values()):
+        return None
+    return converted
 
 
 def _fireworks_catalog_name(litellm_key: str, info: Dict[str, Any]) -> Optional[str]:
@@ -527,8 +578,9 @@ def _tev1_manual_entry() -> Dict[str, Any]:
         "pricing": {
             "source": "together.ai serverless listing",
             "usage_kind": "llm",
-            "input_per_1m": 0.042,
+            "input_per_1m": 0.04,
             "output_per_1m": 0,
+            "cache_read_per_1m": 0.04,
         },
     }
 
@@ -773,25 +825,33 @@ def build_catalog(*, remote: bool = True) -> Tuple[Dict[str, Any], Dict[str, Any
         litellm_key, info = _resolve_litellm_key(
             catalog_name, provider, model_type, model_cost
         )
-        if not info:
-            meta["unresolved"].append(
-                {
-                    "model": catalog_name,
-                    "provider": provider,
-                    "model_type": model_type,
-                }
-            )
-            continue
+        pricing: Optional[Dict[str, int]] = None
+        price_source = "litellm_import"
 
-        pricing = _convert_litellm_pricing(info, usage_kind=usage_kind)
-        if not any(pricing.values()):
+        if info:
+            pricing = _convert_litellm_pricing(info, usage_kind=usage_kind)
+            if not any(pricing.values()):
+                pricing = None
+
+        if pricing is None:
+            embedded = cfg.get("pricing")
+            if isinstance(embedded, dict):
+                pricing = _catalog_pricing_from_models_json_block(
+                    embedded, usage_kind=usage_kind
+                )
+                if pricing:
+                    price_source = str(
+                        embedded.get("source") or "models.json"
+                    )
+
+        if not pricing:
             meta["unresolved"].append(
                 {
                     "model": catalog_name,
                     "provider": provider,
                     "model_type": model_type,
                     "litellm_key": litellm_key,
-                    "reason": "zero_cost",
+                    "reason": "no_litellm_match" if not info else "zero_cost",
                 }
             )
             continue
@@ -799,10 +859,14 @@ def build_catalog(*, remote: bool = True) -> Tuple[Dict[str, Any], Dict[str, Any
         catalog[catalog_name] = {
             "usage_kind": usage_kind,
             **pricing,
+            "_price_source": price_source,
             "_litellm_key": litellm_key,
-            "_litellm_proxy": catalog_name not in {litellm_key, litellm_key.split("/")[-1]},
+            "_litellm_proxy": bool(
+                litellm_key
+                and catalog_name not in {litellm_key, litellm_key.split("/")[-1]}
+            ),
         }
-        meta["resolved"][catalog_name] = litellm_key
+        meta["resolved"][catalog_name] = litellm_key or price_source
 
     _apply_manual_entries(catalog, meta, models)
     catalog["_metadata"] = meta

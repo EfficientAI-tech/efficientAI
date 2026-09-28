@@ -2090,12 +2090,13 @@
   "together/Tev1-4B-experimental": {
     "provider": "together",
     "model_type": "llm",
-    "description": "together Tev1 4B experimental via Together",
+    "description": "Tev1 4B Jev-style decision classifier on Qwen3.5 4B via Together",
     "pricing": {
-      "source": "litellm_import",
+      "source": "together.ai serverless listing",
       "usage_kind": "llm",
-      "input_per_1m": 0.042,
-      "cache_read_per_1m": 0.042
+      "input_per_1m": 0.04,
+      "output_per_1m": 0,
+      "cache_read_per_1m": 0.04
     }
   },
   "zai-org/GLM-4.5-Air-FP8": {
