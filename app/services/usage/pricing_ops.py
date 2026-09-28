@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -16,6 +17,7 @@ from app.services.usage.pricing import (
     _rates_table,
     seed_pricing_rates,
 )
+from app.services.usage.pricing_cache import invalidate_all_pricing_cache
 
 _MODELS_JSON_PATH = (
     Path(__file__).resolve().parent.parent.parent / "config" / "models.json"
@@ -135,3 +137,29 @@ def seed_rates_from_models_json(
     db: Session, *, effective_from: Optional[date] = None
 ) -> int:
     return seed_pricing_rates(db, effective_from=effective_from)
+
+
+def pricing_sync_on_startup_enabled() -> bool:
+    raw = os.environ.get("USAGE_PRICING_SYNC_ON_STARTUP", "true")
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+def sync_rates_from_models_json(
+    db: Session, *, effective_from: Optional[date] = None
+) -> Dict[str, List[str]]:
+    """Upsert only models.json rates that are missing from or differ in the DB.
+
+    Rows that exist only in the database are left alone (usage history may
+    reference them). Commits, then invalidates the pricing cache so workers
+    see the new rates immediately.
+    """
+    report = diff_models_json_vs_db(db, effective_from=effective_from)
+    added = sorted({item["model"] for item in report["only_in_models_json"]})
+    updated = sorted({item["model"] for item in report["mismatches"]})
+    if added or updated:
+        seed_pricing_rates(db, effective_from=effective_from, models=set(added) | set(updated))
+        db.commit()
+        # seed_pricing_rates invalidates before commit; a worker may have cached
+        # a stale rate in between, so invalidate again once the rows are visible.
+        invalidate_all_pricing_cache()
+    return {"added": added, "updated": updated}

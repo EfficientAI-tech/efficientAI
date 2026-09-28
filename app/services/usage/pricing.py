@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Collection, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from sqlalchemy import text
@@ -541,8 +541,16 @@ def _pricing_entries_from_models_json() -> Dict[str, Dict[str, Any]]:
     return entries
 
 
-def seed_pricing_rates(db: Session, *, effective_from: Optional[date] = None) -> int:
-    """Upsert global rates from models.json pricing blocks (seed only; DB is runtime truth)."""
+def seed_pricing_rates(
+    db: Session,
+    *,
+    effective_from: Optional[date] = None,
+    models: Optional[Collection[str]] = None,
+) -> int:
+    """Upsert global rates from models.json pricing blocks (seed only; DB is runtime truth).
+
+    ``models`` limits the upsert to those model names; ``None`` seeds every entry.
+    """
     day = effective_from or DEFAULT_RATES_EFFECTIVE_FROM
     table = _rates_table(db)
     has_currency = (
@@ -559,6 +567,8 @@ def seed_pricing_rates(db: Session, *, effective_from: Optional[date] = None) ->
     )
     inserted = 0
     for model_name, pricing in _pricing_entries_from_models_json().items():
+        if models is not None and model_name not in models:
+            continue
         usage_kind = pricing.get("usage_kind") or USAGE_KIND_LLM
         base_params = {
             "model": model_name,
