@@ -13,6 +13,8 @@ export interface AgentOption {
   id: string
   name: string
   description?: string | null
+  provider_prompt?: string | null
   language?: string
   call_type?: string
+  call_medium?: string
 }

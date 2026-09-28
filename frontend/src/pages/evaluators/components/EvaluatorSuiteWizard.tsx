@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
@@ -10,6 +10,17 @@ import EvaluatorMetricPicker from './EvaluatorMetricPicker'
 import EvaluatorLlmPicker from './EvaluatorLlmPicker'
 import { MODERN_INPUT_CLASS, MODERN_SELECT_CLASS } from './evaluatorUi'
 import { normalizeSelectedMetricIds, type MetricRow } from './metricSelectionUtils'
+import {
+  filterAgentsByMedium,
+  formatAgentMediumLabel,
+  isChatMedium,
+  type AgentMediumFilter,
+} from '../../../lib/agentMedium'
+import { filterPersonasByMedium } from '../../../lib/personaMedium'
+import ScenarioAgentMediumTabs from '../../scenarios/ScenarioAgentMediumTabs'
+
+const VOICE_SUITE_STEPS = ['Agent & personas', 'Scenarios', 'Metrics', 'Review'] as const
+const CHAT_SUITE_STEPS = ['Agent', 'Scenarios', 'Metrics', 'Review'] as const
 
 const DEFAULT_SCENARIO_NAMES = [
   'Cancel Subscription',
@@ -18,8 +29,6 @@ const DEFAULT_SCENARIO_NAMES = [
   'Make Complaint',
   'Product Inquiry',
 ]
-
-const STEPS = ['Agent & Persona', 'Scenarios', 'Metrics', 'Review']
 
 interface Props {
   open: boolean
@@ -41,6 +50,7 @@ interface Props {
 export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSubmit }: Props) {
   const { selectedAgent } = useAgentStore()
   const [step, setStep] = useState(0)
+  const [suiteMediumFilter, setSuiteMediumFilter] = useState<AgentMediumFilter>('voice')
   const [modalAgentId, setModalAgentId] = useState('')
   const [selectedPersonaIds, setSelectedPersonaIds] = useState<string[]>([])
   const [selectedScenarioIds, setSelectedScenarioIds] = useState<string[]>([])
@@ -53,7 +63,11 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
   useEffect(() => {
     if (open) {
       setStep(0)
-      setModalAgentId(selectedAgent?.id || '')
+      const preselectId = selectedAgent?.id || ''
+      setModalAgentId(preselectId)
+      setSuiteMediumFilter(
+        selectedAgent && isChatMedium(selectedAgent.call_medium) ? 'chat' : 'voice',
+      )
       setSelectedPersonaIds([])
       setSelectedScenarioIds([])
       setSelectedMetricIds([])
@@ -62,10 +76,18 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
       setSuiteName('')
       setDefaultRuns(1)
     }
-  }, [open, selectedAgent?.id])
+  }, [open, selectedAgent?.id, selectedAgent?.call_medium])
 
-  const { data: agents = [] } = useQuery({ queryKey: ['agents'], queryFn: () => apiClient.listAgents(), enabled: open })
-  const { data: personas = [] } = useQuery({ queryKey: ['personas'], queryFn: () => apiClient.listPersonas(), enabled: open })
+  const { data: agents = [] } = useQuery({
+    queryKey: ['agents'],
+    queryFn: () => apiClient.listAgents(),
+    enabled: open,
+  })
+  const { data: personas = [] } = useQuery({
+    queryKey: ['personas'],
+    queryFn: () => apiClient.listPersonas(),
+    enabled: open && suiteMediumFilter === 'voice',
+  })
   const { data: scenarios = [] } = useQuery({
     queryKey: ['scenarios', modalAgentId],
     queryFn: () => apiClient.listScenarios(0, 100, modalAgentId),
@@ -76,30 +98,57 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
     queryFn: () => apiClient.listMetrics('agent', true),
     enabled: open,
   })
-  const selectedAgentObj = agents.find((a: any) => a.id === modalAgentId)
+
+  const selectedAgentObj = (agents as any[]).find((a) => a.id === modalAgentId)
+  const isChatFlow = suiteMediumFilter === 'chat'
+
   const { data: agentVoiceBundle } = useQuery({
     queryKey: ['voicebundle', selectedAgentObj?.voice_bundle_id],
     queryFn: () => apiClient.getVoiceBundle(selectedAgentObj!.voice_bundle_id),
-    enabled: open && !!selectedAgentObj?.voice_bundle_id,
+    enabled: open && !isChatFlow && !!selectedAgentObj?.voice_bundle_id,
   })
 
   const voiceBundleTtsProvider = agentVoiceBundle?.tts_provider
     ? String(agentVoiceBundle.tts_provider).toLowerCase()
     : null
 
-  const isChatAgent = selectedAgentObj?.call_medium === 'chat'
-  const filteredPersonas =
-    isChatAgent || !voiceBundleTtsProvider
-      ? personas
-      : personas.filter((p: any) => p.tts_provider?.toLowerCase() === voiceBundleTtsProvider)
+  const agentsForMedium = useMemo(
+    () => filterAgentsByMedium(agents as { call_medium?: string | null }[], suiteMediumFilter),
+    [agents, suiteMediumFilter],
+  )
 
+  const filteredPersonas = useMemo(() => {
+    if (isChatFlow) return []
+    const voicePersonas = filterPersonasByMedium(
+      personas as { tts_provider?: string | null }[],
+      'voice',
+    )
+    if (voiceBundleTtsProvider) {
+      return voicePersonas.filter(
+        (p: { tts_provider?: string | null }) =>
+          p.tts_provider?.toLowerCase() === voiceBundleTtsProvider,
+      )
+    }
+    return voicePersonas
+  }, [isChatFlow, personas, voiceBundleTtsProvider])
+
+  const steps = isChatFlow ? CHAT_SUITE_STEPS : VOICE_SUITE_STEPS
   const filteredScenarios = scenarios.filter((s: any) => !DEFAULT_SCENARIO_NAMES.includes(s.name))
 
   const isInbound = selectedAgentObj?.call_type === 'inbound'
   const isOutboundPhone =
     selectedAgentObj?.call_medium === 'phone_call' && selectedAgentObj?.call_type !== 'inbound'
-  const totalCombinations = selectedPersonaIds.length * selectedScenarioIds.length
+  const personaCountForCombinations = isChatFlow ? 1 : selectedPersonaIds.length
+  const totalCombinations = personaCountForCombinations * selectedScenarioIds.length
   const totalRuns = totalCombinations * defaultRuns
+
+  const handleSuiteMediumFilterChange = (medium: AgentMediumFilter) => {
+    setSuiteMediumFilter(medium)
+    setModalAgentId('')
+    setSelectedPersonaIds([])
+    setSelectedScenarioIds([])
+    setStep(0)
+  }
 
   const togglePersona = (id: string) => {
     setSelectedPersonaIds((prev) =>
@@ -114,20 +163,25 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
   }
 
   const canNext = () => {
-    if (step === 0) return !!modalAgentId && selectedPersonaIds.length > 0
+    if (step === 0) {
+      if (!modalAgentId) return false
+      if (isChatFlow) return true
+      return selectedPersonaIds.length > 0
+    }
     if (step === 1) return selectedScenarioIds.length > 0
     return true
   }
 
   const handleSubmit = () => {
     const metricRows = metrics as MetricRow[]
-    const normalizedMetrics = selectedMetricIds.length > 0
-      ? normalizeSelectedMetricIds(selectedMetricIds, metricRows)
-      : []
+    const normalizedMetrics =
+      selectedMetricIds.length > 0
+        ? normalizeSelectedMetricIds(selectedMetricIds, metricRows)
+        : []
     onSubmit({
       name: suiteName.trim() || undefined,
       agent_id: modalAgentId,
-      persona_ids: selectedPersonaIds,
+      persona_ids: isChatFlow ? [] : selectedPersonaIds,
       scenario_ids: selectedScenarioIds,
       metric_ids: normalizedMetrics.length > 0 ? normalizedMetrics : undefined,
       llm_provider: llmProvider || undefined,
@@ -141,21 +195,30 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
   const modal = (
     <div className="fixed inset-0 z-[9999] overflow-y-auto">
       <div className="flex min-h-screen items-center justify-center p-4">
-        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity" onClick={onClose} />
+        <div
+          className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
+          onClick={onClose}
+        />
         <div className="relative bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col">
           <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
             <div>
               <h2 className="text-lg font-semibold text-gray-900">Create Evaluator Suite</h2>
-              <p className="text-sm text-gray-500 mt-0.5">Step {step + 1} of {STEPS.length}: {STEPS[step]}</p>
+              <p className="text-sm text-gray-500 mt-0.5">
+                Step {step + 1} of {steps.length}: {steps[step]}
+              </p>
             </div>
-            <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100">
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100"
+            >
               <X className="h-5 w-5" />
             </button>
           </div>
 
           <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/50">
             <div className="flex gap-1">
-              {STEPS.map((label, i) => (
+              {steps.map((label, i) => (
                 <div
                   key={label}
                   className={`flex-1 flex items-center justify-center gap-1.5 text-xs py-2 px-2 rounded-lg transition-colors ${
@@ -174,193 +237,257 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
             </div>
           </div>
 
-        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-          {step === 0 && (
+          {step === 2 ? (
             <>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Agent *</label>
-                <select
-                  value={modalAgentId}
-                  onChange={(e) => {
-                    setModalAgentId(e.target.value)
-                    setSelectedPersonaIds([])
-                    setSelectedScenarioIds([])
-                  }}
-                  className={MODERN_SELECT_CLASS}
-                >
-                  <option value="">Select an agent</option>
-                  {agents.map((a: any) => (
-                    <option key={a.id} value={a.id}>{a.name}</option>
-                  ))}
-                </select>
+              <div className="shrink-0 px-6 pt-5 pb-4 border-b border-gray-100 bg-white">
+                <EvaluatorLlmPicker
+                  llmProvider={llmProvider}
+                  llmModel={llmModel}
+                  onProviderChange={setLlmProvider}
+                  onModelChange={setLlmModel}
+                />
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Personas * ({selectedPersonaIds.length} selected)
-                </label>
-                {voiceBundleTtsProvider && (
-                  <div className="mb-2 flex items-start gap-2 p-2 bg-blue-50 border border-blue-200 rounded text-xs text-blue-700">
-                    <Info className="h-4 w-4 shrink-0 mt-0.5" />
-                    Showing personas matching TTS provider {voiceBundleTtsProvider}
+              <div
+                className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-6 py-5 pb-8 [scrollbar-gutter:stable]"
+              >
+                <EvaluatorMetricPicker
+                  selectedMetricIds={selectedMetricIds}
+                  onChange={setSelectedMetricIds}
+                  fluidHeight
+                />
+              </div>
+            </>
+          ) : (
+          <div
+            className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-6 py-5 pb-8 space-y-6 [scrollbar-gutter:stable]"
+          >
+            {step === 0 && (
+              <>
+                <div>
+                  <p className="text-xs font-medium text-gray-500 mb-2">Evaluator type</p>
+                  <ScenarioAgentMediumTabs
+                    value={suiteMediumFilter}
+                    onChange={handleSuiteMediumFilterChange}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Agent *</label>
+                  <select
+                    value={modalAgentId}
+                    onChange={(e) => {
+                      setModalAgentId(e.target.value)
+                      setSelectedPersonaIds([])
+                      setSelectedScenarioIds([])
+                    }}
+                    className={MODERN_SELECT_CLASS}
+                  >
+                    <option value="">Select an agent</option>
+                    {agentsForMedium.map((a: any) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name} · {formatAgentMediumLabel(a.call_medium, a.call_type)}
+                      </option>
+                    ))}
+                  </select>
+                  {agentsForMedium.length === 0 ? (
+                    <p className="mt-1.5 text-xs text-amber-700">
+                      No {isChatFlow ? 'text chat' : 'voice'} agents yet. Create one under Agents
+                      first.
+                    </p>
+                  ) : null}
+                </div>
+                {!isChatFlow ? (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Personas * ({selectedPersonaIds.length} selected)
+                    </label>
+                    {voiceBundleTtsProvider ? (
+                      <div className="mb-2 flex items-start gap-2 p-2 bg-blue-50 border border-blue-200 rounded text-xs text-blue-700">
+                        <Info className="h-4 w-4 shrink-0 mt-0.5" />
+                        Showing caller personas matching TTS provider {voiceBundleTtsProvider}
+                      </div>
+                    ) : null}
+                    <div className="space-y-2 max-h-48 overflow-y-auto border border-gray-200 rounded-xl p-3 bg-gray-50/30">
+                      {filteredPersonas.map((p: any) => (
+                        <label
+                          key={p.id}
+                          className={`flex items-start gap-3 cursor-pointer p-2.5 rounded-lg border transition-colors ${
+                            selectedPersonaIds.includes(p.id)
+                              ? 'bg-primary-50 border-primary-200'
+                              : 'border-transparent hover:bg-white hover:border-gray-200'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedPersonaIds.includes(p.id)}
+                            onChange={() => togglePersona(p.id)}
+                            className="mt-1"
+                          />
+                          <div className="min-w-0">
+                            <span className="text-sm font-medium">{p.name}</span>
+                            {p.description?.trim() ? (
+                              <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">
+                                {p.description}
+                              </p>
+                            ) : null}
+                          </div>
+                        </label>
+                      ))}
+                      {modalAgentId && filteredPersonas.length === 0 && (
+                        <p className="text-sm text-gray-500 p-2">
+                          No compatible personas. Add voice personas on the Personas page or match
+                          TTS to the agent bundle.
+                        </p>
+                      )}
+                    </div>
                   </div>
-                )}
-                <div className="space-y-2 max-h-48 overflow-y-auto border border-gray-200 rounded-xl p-3 bg-gray-50/30">
-                  {filteredPersonas.map((p: any) => (
-                    <label key={p.id} className={`flex items-start gap-3 cursor-pointer p-2.5 rounded-lg border transition-colors ${
-                      selectedPersonaIds.includes(p.id) ? 'bg-primary-50 border-primary-200' : 'border-transparent hover:bg-white hover:border-gray-200'
-                    }`}>
+                ) : null}
+              </>
+            )}
+
+            {step === 1 && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Scenarios * ({selectedScenarioIds.length} selected)
+                </label>
+                <div className="space-y-2 max-h-64 overflow-y-auto border border-gray-200 rounded-xl p-3 bg-gray-50/30">
+                  {filteredScenarios.map((s: any) => (
+                    <label
+                      key={s.id}
+                      className={`flex items-center gap-3 cursor-pointer p-2.5 rounded-lg border transition-colors ${
+                        selectedScenarioIds.includes(s.id)
+                          ? 'bg-primary-50 border-primary-200'
+                          : 'border-transparent hover:bg-white hover:border-gray-200'
+                      }`}
+                    >
                       <input
                         type="checkbox"
-                        checked={selectedPersonaIds.includes(p.id)}
-                        onChange={() => togglePersona(p.id)}
-                        className="mt-1"
+                        checked={selectedScenarioIds.includes(s.id)}
+                        onChange={() => toggleScenario(s.id)}
                       />
-                      <div className="min-w-0">
-                        <span className="text-sm font-medium">{p.name}</span>
-                        {p.description?.trim() ? (
-                          <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{p.description}</p>
-                        ) : null}
-                      </div>
+                      <span className="text-sm">{s.name}</span>
                     </label>
                   ))}
-                  {filteredPersonas.length === 0 && (
-                    <p className="text-sm text-gray-500 p-2">No compatible personas. Select an agent first.</p>
+                  {modalAgentId && filteredScenarios.length === 0 && (
+                    <p className="text-sm text-gray-500 p-2">
+                      No scenarios linked to this agent. Link scenarios on the Scenarios page, then
+                      return here.
+                    </p>
                   )}
                 </div>
               </div>
-            </>
-          )}
+            )}
 
-          {step === 1 && (
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Scenarios * ({selectedScenarioIds.length} selected)
-              </label>
-              <div className="space-y-2 max-h-64 overflow-y-auto border border-gray-200 rounded-xl p-3 bg-gray-50/30">
-                {filteredScenarios.map((s: any) => (
-                  <label key={s.id} className={`flex items-center gap-3 cursor-pointer p-2.5 rounded-lg border transition-colors ${
-                    selectedScenarioIds.includes(s.id) ? 'bg-primary-50 border-primary-200' : 'border-transparent hover:bg-white hover:border-gray-200'
-                  }`}>
-                    <input
-                      type="checkbox"
-                      checked={selectedScenarioIds.includes(s.id)}
-                      onChange={() => toggleScenario(s.id)}
-                    />
-                    <span className="text-sm">{s.name}</span>
-                  </label>
-                ))}
-                {modalAgentId && filteredScenarios.length === 0 && (
-                  <p className="text-sm text-gray-500 p-2">
-                    No scenarios linked to this agent. Link scenarios to the agent on the Scenarios page, then return here.
+            {step === 3 && (
+              <div className="space-y-4">
+                <div className="p-5 bg-gray-50 rounded-xl border border-gray-100 text-sm space-y-3">
+                  <p>
+                    <span className="font-medium">Agent:</span> {selectedAgentObj?.name || '—'}
                   </p>
-                )}
-              </div>
-            </div>
-          )}
-
-          {step === 2 && (
-            <div className="space-y-6">
-              <EvaluatorMetricPicker
-                selectedMetricIds={selectedMetricIds}
-                onChange={setSelectedMetricIds}
-              />
-              <EvaluatorLlmPicker
-                llmProvider={llmProvider}
-                llmModel={llmModel}
-                onProviderChange={setLlmProvider}
-                onModelChange={setLlmModel}
-              />
-            </div>
-          )}
-
-          {step === 3 && (
-            <div className="space-y-4">
-              <div className="p-5 bg-gray-50 rounded-xl border border-gray-100 text-sm space-y-3">
-                <p><span className="font-medium">Agent:</span> {selectedAgentObj?.name || '—'}</p>
-                <p><span className="font-medium">Personas:</span> {selectedPersonaIds.length} selected</p>
-                <ul className="list-disc list-inside text-gray-600 ml-2">
-                  {selectedPersonaIds.map((id) => (
-                    <li key={id}>{personas.find((p: any) => p.id === id)?.name || id}</li>
-                  ))}
-                </ul>
-                <p>
-                  <span className="font-medium">Combinations:</span>{' '}
-                  {selectedPersonaIds.length} persona{selectedPersonaIds.length !== 1 ? 's' : ''} ×{' '}
-                  {selectedScenarioIds.length} scenario{selectedScenarioIds.length !== 1 ? 's' : ''} ={' '}
-                  {totalCombinations}
-                </p>
-                <ul className="list-disc list-inside text-gray-600 ml-2">
-                  {selectedScenarioIds.map((id) => (
-                    <li key={id}>{filteredScenarios.find((s: any) => s.id === id)?.name || id}</li>
-                  ))}
-                </ul>
-                <p><span className="font-medium">Metrics:</span> {selectedMetricIds.length > 0 ? selectedMetricIds.length : 'All agent metrics'}</p>
-                <p>
-                  <span className="font-medium">Evaluation LLM:</span>{' '}
-                  {llmProvider ? `${llmProvider}${llmModel ? ` · ${llmModel}` : ''}` : 'Default (OpenAI gpt-4o)'}
-                </p>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Suite name</label>
-                <input
-                  type="text"
-                  value={suiteName}
-                  onChange={(e) => setSuiteName(e.target.value)}
-                  placeholder="Optional display name"
-                  className={MODERN_INPUT_CLASS}
-                />
-              </div>
-              {isOutboundPhone ||
-              selectedAgentObj?.call_medium === 'web_call' ||
-              selectedAgentObj?.call_medium === 'chat' ? (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Default runs per combination</label>
-                  <input
-                    type="number"
-                    min={1}
-                    value={defaultRuns}
-                    onChange={(e) => setDefaultRuns(Math.max(1, parseInt(e.target.value, 10) || 1))}
-                    className={`${MODERN_INPUT_CLASS} w-28`}
-                  />
-                  <div className="mt-3 rounded-lg bg-indigo-50 border border-indigo-100 px-4 py-3 text-sm text-indigo-800">
-                    Total batch runs:{' '}
-                    <strong>
-                      {totalCombinations} × {defaultRuns} = {totalRuns}
-                    </strong>
-                  </div>
+                  {!isChatFlow ? (
+                    <>
+                      <p>
+                        <span className="font-medium">Personas:</span> {selectedPersonaIds.length}{' '}
+                        selected
+                      </p>
+                      <ul className="list-disc list-inside text-gray-600 ml-2">
+                        {selectedPersonaIds.map((id) => (
+                          <li key={id}>{personas.find((p: any) => p.id === id)?.name || id}</li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : null}
+                  <p>
+                    <span className="font-medium">Combinations:</span>{' '}
+                    {isChatFlow
+                      ? `${selectedScenarioIds.length} scenario${selectedScenarioIds.length !== 1 ? 's' : ''}`
+                      : `${selectedPersonaIds.length} persona${selectedPersonaIds.length !== 1 ? 's' : ''} × ${selectedScenarioIds.length} scenario${selectedScenarioIds.length !== 1 ? 's' : ''} = ${totalCombinations}`}
+                  </p>
+                  <ul className="list-disc list-inside text-gray-600 ml-2">
+                    {selectedScenarioIds.map((id) => (
+                      <li key={id}>{filteredScenarios.find((s: any) => s.id === id)?.name || id}</li>
+                    ))}
+                  </ul>
+                  <p>
+                    <span className="font-medium">Metrics:</span>{' '}
+                    {selectedMetricIds.length > 0 ? selectedMetricIds.length : 'All agent metrics'}
+                  </p>
+                  <p>
+                    <span className="font-medium">Evaluation LLM:</span>{' '}
+                    {llmProvider
+                      ? `${llmProvider}${llmModel ? ` · ${llmModel}` : ''}`
+                      : 'Default (OpenAI gpt-4o)'}
+                  </p>
                 </div>
-              ) : isInbound ? (
-                <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-xl p-4">
-                  Inbound agent — scenarios rotate automatically when callers reach the agent. No manual test calls are placed.
-                </p>
-              ) : null}
-            </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Suite name</label>
+                  <input
+                    type="text"
+                    value={suiteName}
+                    onChange={(e) => setSuiteName(e.target.value)}
+                    placeholder="Optional display name"
+                    className={MODERN_INPUT_CLASS}
+                  />
+                </div>
+                {isOutboundPhone ||
+                selectedAgentObj?.call_medium === 'web_call' ||
+                selectedAgentObj?.call_medium === 'chat' ? (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                      Default runs per combination
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={defaultRuns}
+                      onChange={(e) => setDefaultRuns(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                      className={`${MODERN_INPUT_CLASS} w-28`}
+                    />
+                    <div className="mt-3 rounded-lg bg-indigo-50 border border-indigo-100 px-4 py-3 text-sm text-indigo-800">
+                      Total batch runs:{' '}
+                      <strong>
+                        {totalCombinations} × {defaultRuns} = {totalRuns}
+                      </strong>
+                    </div>
+                  </div>
+                ) : isInbound ? (
+                  <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-xl p-4">
+                    Inbound agent — scenarios rotate automatically when callers reach the agent. No
+                    manual test calls are placed.
+                  </p>
+                ) : null}
+              </div>
+            )}
+          </div>
           )}
-        </div>
 
-        <div className="flex items-center justify-between px-6 py-4 border-t border-gray-200 bg-gray-50 rounded-b-lg">
-          <Button
-            variant="outline"
-            onClick={() => (step === 0 ? onClose() : setStep(step - 1))}
-            leftIcon={<ChevronLeft className="h-4 w-4" />}
-          >
-            {step === 0 ? 'Cancel' : 'Back'}
-          </Button>
-          {step < STEPS.length - 1 ? (
+          <div className="flex items-center justify-between px-6 py-4 border-t border-gray-200 bg-gray-50 rounded-b-lg shrink-0">
             <Button
-              variant="primary"
-              onClick={() => setStep(step + 1)}
-              disabled={!canNext()}
-              rightIcon={<ChevronRight className="h-4 w-4" />}
+              variant="outline"
+              onClick={() => (step === 0 ? onClose() : setStep(step - 1))}
+              leftIcon={<ChevronLeft className="h-4 w-4" />}
             >
-              Next
+              {step === 0 ? 'Cancel' : 'Back'}
             </Button>
-          ) : (
-            <Button variant="primary" onClick={handleSubmit} isLoading={isSubmitting} disabled={isSubmitting}>
-              Create Suite
-            </Button>
-          )}
-        </div>
+            {step < steps.length - 1 ? (
+              <Button
+                variant="primary"
+                onClick={() => setStep(step + 1)}
+                disabled={!canNext()}
+                rightIcon={<ChevronRight className="h-4 w-4" />}
+              >
+                Next
+              </Button>
+            ) : (
+              <Button
+                variant="primary"
+                onClick={handleSubmit}
+                isLoading={isSubmitting}
+                disabled={isSubmitting}
+              >
+                Create Suite
+              </Button>
+            )}
+          </div>
         </div>
       </div>
     </div>

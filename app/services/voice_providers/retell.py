@@ -443,39 +443,69 @@ class RetellVoiceProvider(BaseVoiceProvider):
         except Exception as e:
             raise ValueError(f"Retell connection test failed: {str(e)}")
 
-    def list_agents(self, *, search: Optional[str] = None) -> List[Dict[str, str]]:
-        """List Retell agents."""
-        try:
-            collected: List[Any] = []
-            pagination_key: Optional[str] = None
-            for _ in range(50):
-                list_params: Dict[str, Any] = {"limit": 100}
-                if pagination_key:
-                    list_params["pagination_key"] = pagination_key
-                raw = self.client.agent.list(**list_params)
-                page_items, has_more, pagination_key = _retell_agent_list_page(raw)
-                collected.extend(page_items)
-                if not has_more or not pagination_key:
-                    break
+    def _list_agents_by_channel(
+        self,
+        *,
+        channel: str,
+        search: Optional[str] = None,
+    ) -> List[Dict[str, str]]:
+        """POST /v2/list-agents via SDK with filter_criteria.channel (voice | chat)."""
+        list_filter = {
+            "filter_criteria": {
+                "channel": {"type": "string", "op": "eq", "value": channel},
+            },
+        }
+        collected: List[Any] = []
+        pagination_key: Optional[str] = None
+        for _ in range(50):
+            list_params: Dict[str, Any] = {"limit": 100, **list_filter}
+            if pagination_key:
+                list_params["pagination_key"] = pagination_key
+            raw = self.client.agent.list(**list_params)
+            page_items, has_more, pagination_key = _retell_agent_list_page(raw)
+            collected.extend(page_items)
+            if not has_more or not pagination_key:
+                break
 
-            agents: List[Dict[str, str]] = []
-            needle = (search or "").strip().lower()
-            for item in collected:
-                if hasattr(item, "model_dump"):
-                    item = item.model_dump()
-                elif hasattr(item, "dict"):
-                    item = item.dict()
-                if not isinstance(item, dict):
-                    continue
-                agent_id = str(item.get("agent_id") or item.get("id") or "").strip()
-                if not agent_id:
-                    continue
-                name = str(item.get("agent_name") or item.get("name") or agent_id).strip()
-                if needle and needle not in name.lower() and needle not in agent_id.lower():
-                    continue
-                agents.append({"id": agent_id, "name": name})
-            agents.sort(key=lambda row: row["name"].lower())
-            return agents
+        agents: List[Dict[str, str]] = []
+        needle = (search or "").strip().lower()
+        for item in collected:
+            if hasattr(item, "model_dump"):
+                item = item.model_dump()
+            elif hasattr(item, "dict"):
+                item = item.dict()
+            if not isinstance(item, dict):
+                continue
+            agent_id = str(
+                item.get("agent_id") or item.get("chat_agent_id") or item.get("id") or ""
+            ).strip()
+            if not agent_id:
+                continue
+            name = str(
+                item.get("agent_name") or item.get("name") or item.get("chat_agent_name") or agent_id
+            ).strip()
+            item_channel = str(item.get("channel") or "").strip().lower()
+            if item_channel in ("voice", "chat") and item_channel != channel:
+                continue
+            if channel == "chat" and item_channel == "chat" and "chat" not in name.lower():
+                name = f"{name} · chat"
+            if needle and needle not in name.lower() and needle not in agent_id.lower():
+                continue
+            agents.append({"id": agent_id, "name": name})
+        agents.sort(key=lambda row: row["name"].lower())
+        return agents
+
+    def list_agents(self, *, search: Optional[str] = None) -> List[Dict[str, str]]:
+        """List Retell voice-channel agents (web/phone calls)."""
+        try:
+            return self._list_agents_by_channel(channel="voice", search=search)
         except Exception as e:
-            raise ValueError(f"Failed to list Retell agents: {str(e)}")
+            raise ValueError(f"Failed to list Retell agents: {str(e)}") from e
+
+    def list_chat_agents(self, *, search: Optional[str] = None) -> List[Dict[str, str]]:
+        """List Retell chat-channel agents (required for /create-chat)."""
+        try:
+            return self._list_agents_by_channel(channel="chat", search=search)
+        except Exception as e:
+            raise ValueError(f"Failed to list Retell chat agents: {str(e)}") from e
 

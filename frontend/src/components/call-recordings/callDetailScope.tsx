@@ -69,7 +69,6 @@ export function evaluatorDrawerScopeTags(
           ? [
               'Text conversation',
               agent ? `Agent: ${agent}` : 'Agent under test',
-              scope.personaName?.trim() ? `Persona: ${scope.personaName}` : 'Simulated persona',
             ]
           : [
               'Full conversation',

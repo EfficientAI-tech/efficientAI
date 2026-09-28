@@ -92,11 +92,11 @@ export function buildChatConnectionConfigPayload(
 export function chatEvalModeLabel(mode?: string | null): string {
   switch ((mode || 'pre_prod_sim').toLowerCase()) {
     case 'post_prod_live':
-      return 'Post-prod live'
+      return 'Live production connection'
     case 'post_prod_import':
-      return 'Post-prod import'
+      return 'Imported transcripts'
     default:
-      return 'Pre-prod simulation'
+      return 'LLM simulation'
   }
 }
 

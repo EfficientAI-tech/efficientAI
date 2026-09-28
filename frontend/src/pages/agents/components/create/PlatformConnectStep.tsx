@@ -15,6 +15,9 @@ interface PlatformConnectStepProps {
   showNameField?: boolean
   introTitle?: string
   introSubtitle?: string
+  /** When set, only these platforms appear (e.g. chat text APIs). */
+  platformOptions?: IntegrationPlatform[]
+  remoteAgentKind?: 'voice' | 'chat'
 }
 
 export default function PlatformConnectStep({
@@ -30,6 +33,8 @@ export default function PlatformConnectStep({
   showNameField = true,
   introTitle,
   introSubtitle,
+  platformOptions,
+  remoteAgentKind = 'voice',
 }: PlatformConnectStepProps) {
   const title = introTitle ?? (showNameField ? undefined : 'Connect voice platform')
   const subtitle =
@@ -68,6 +73,8 @@ export default function PlatformConnectStep({
         voiceAiAgentId={voiceAiAgentId}
         onIntegrationChange={onIntegrationChange}
         onAgentIdChange={onAgentIdChange}
+        platformOptions={platformOptions}
+        remoteAgentKind={remoteAgentKind}
       />
     </div>
   )

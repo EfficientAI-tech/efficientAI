@@ -6,6 +6,7 @@ import re
 from typing import Any, Optional, Sequence, TYPE_CHECKING
 
 from app.models.database import Agent, Persona, Scenario
+from app.services.testing.chat_prompt_adaptation import adapt_production_prompt_for_chat_simulation
 from app.services.testing.test_agent_template import SPOKEN_IDENTITY_GUARDRAIL
 
 if TYPE_CHECKING:
@@ -51,8 +52,8 @@ def production_prompt_for_simulation(agent: Agent) -> str:
     """Prompt for the agent-under-test leg (chat agents prefer synced provider_prompt)."""
     if is_chat_agent(agent):
         provider = (getattr(agent, "provider_prompt", None) or "").strip()
-        if provider:
-            return provider
+        base = provider if provider else get_agent_base_prompt(agent)
+        return adapt_production_prompt_for_chat_simulation(base)
     return get_agent_base_prompt(agent)
 
 
@@ -67,7 +68,14 @@ def _format_required_info(required_info: Any) -> str:
     return str(required_info)
 
 
-def scenario_goal_from_required_info(scenario: Scenario, default: str = "Complete the test call successfully") -> str:
+def scenario_goal_from_required_info(
+    scenario: Scenario,
+    *,
+    chat: bool = False,
+    default: Optional[str] = None,
+) -> str:
+    if default is None:
+        default = "Complete the test chat successfully" if chat else "Complete the test call successfully"
     if scenario.required_info and isinstance(scenario.required_info, dict):
         goal = scenario.required_info.get("goal")
         if goal:
@@ -75,7 +83,7 @@ def scenario_goal_from_required_info(scenario: Scenario, default: str = "Complet
     return default
 
 
-def format_scenario_prompt(scenario: Scenario) -> str:
+def format_scenario_prompt(scenario: Scenario, *, chat: bool = False) -> str:
     """Format scenario fields for inclusion in test_agent_simulation_prompt."""
     parts: list[str] = []
     name = (scenario.name or "").strip()
@@ -84,13 +92,14 @@ def format_scenario_prompt(scenario: Scenario) -> str:
     description = (getattr(scenario, "description", None) or "").strip()
     if description:
         parts.append(f"Description: {description}")
-    goal = scenario_goal_from_required_info(scenario)
+    goal = scenario_goal_from_required_info(scenario, chat=chat)
     if goal:
         parts.append(f"Goal: {goal}")
     required = _format_required_info(getattr(scenario, "required_info", None))
     if required:
         parts.append(f"Required information:\n{required}")
-    return "\n".join(parts) if parts else "General test call scenario"
+    fallback = "General text chat test scenario" if chat else "General test call scenario"
+    return "\n".join(parts) if parts else fallback
 
 
 def append_persona_identity_to_caller_prompt(caller_template: str, persona_name: str) -> str:
@@ -145,7 +154,7 @@ def format_persona_block(persona: Persona, persona_description: Optional[str] = 
     return "\n".join(lines) if lines else "Name: Test Caller"
 
 
-def build_persona_description_for_bridge(persona: Persona) -> str:
+def build_persona_description_for_bridge(persona: Persona, *, chat: bool = False) -> str:
     """Build bridge-style persona description string (traits summary)."""
     stored = (getattr(persona, "description", None) or "").strip()
     if stored:
@@ -153,12 +162,13 @@ def build_persona_description_for_bridge(persona: Persona) -> str:
     traits: list[str] = []
     if getattr(persona, "gender", None):
         gender_val = persona.gender.value if hasattr(persona.gender, "value") else persona.gender
-        traits.append(f"{gender_val} caller")
+        traits.append(f"{gender_val} {'user' if chat else 'caller'}")
     if getattr(persona, "tts_voice_name", None):
         traits.append(f"voice: {persona.tts_voice_name}")
     if getattr(persona, "tts_provider", None):
         traits.append(f"provider: {persona.tts_provider}")
-    description = f"A caller named {persona.name}"
+    role = "user" if chat else "caller"
+    description = f"A {role} named {persona.name}"
     if traits:
         description += " (" + ", ".join(traits) + ")"
     return description
@@ -237,10 +247,11 @@ def build_test_agent_chat_system_prompt(
     under_test_name = (agent_name or agent.name or "Chat Agent").strip()
     persona_name = (persona.name or "User").strip()
     effective_max_turns = max_turns if max_turns is not None else resolve_persona_max_turns(persona)
-    scenario_block = format_scenario_prompt(scenario)
+    scenario_block = format_scenario_prompt(scenario, chat=True)
     persona_block = format_persona_block(
         persona,
-        persona_description=persona_description or build_persona_description_for_bridge(persona),
+        persona_description=persona_description
+        or build_persona_description_for_bridge(persona, chat=True),
     )
     return f"""You are {persona_name}, a real user in a text chat with a support agent.
 
@@ -249,6 +260,8 @@ You are testing: {under_test_name}
 
 Scenario:
 {scenario_block}
+
+If the scenario text mentions callers, phone calls, or hanging up, interpret that as a chat customer and this text conversation.
 
 PERSONA
 {persona_block}

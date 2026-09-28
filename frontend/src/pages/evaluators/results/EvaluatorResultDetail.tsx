@@ -3,11 +3,12 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams, useNavigate } from 'react-router-dom'
 import { getEvaluatorResultPlaceholder } from '../../../lib/evaluatorResultQuery'
 import { apiClient } from '../../../lib/api'
-import { ArrowLeft, Clock, CheckCircle, XCircle, Loader, BarChart3, Brain, HelpCircle, Sparkles, AudioWaveform, RotateCcw, Activity, Phone } from 'lucide-react'
+import { ArrowLeft, Clock, CheckCircle, XCircle, Loader, BarChart3, Brain, HelpCircle, Sparkles, AudioWaveform, RotateCcw, Activity } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Button from '../../../components/Button'
 import { useToast } from '../../../hooks/useToast'
 import { displayEvaluatorResultStatus } from './evaluatorResultStatus'
+import { getStatusConfig } from './resultsFormatting'
 import ResultsHierarchyNav from './ResultsHierarchyNav'
 import { resolveTraceDrawerTargets } from '../../../lib/callDetailRouting'
 import TraceDetailDrawer from '../../../components/call-recordings/TraceDetailDrawer'
@@ -242,7 +243,15 @@ interface EvaluatorResultDetail {
   }
 }
 
-function EvaluationStepper({ status, isChat = false }: { status: string; isChat?: boolean }) {
+function EvaluationStepper({
+  status,
+  isChat = false,
+  chatLlmToLlm = true,
+}: {
+  status: string
+  isChat?: boolean
+  chatLlmToLlm?: boolean
+}) {
   const [dots, setDots] = useState('')
 
   useEffect(() => {
@@ -253,7 +262,11 @@ function EvaluationStepper({ status, isChat = false }: { status: string; isChat?
   const steps = isChat
     ? [
         { key: 'queued', label: 'Queued', sublabel: 'Preparing simulation' },
-        { key: 'transcribing', label: 'Simulating chat', sublabel: 'LLM-to-LLM turns' },
+        {
+          key: 'transcribing',
+          label: 'Simulating chat',
+          sublabel: chatLlmToLlm ? 'LLM-to-LLM turns' : 'Test LLM vs production',
+        },
         { key: 'evaluating', label: 'Evaluating', sublabel: 'Conversation metrics' },
       ]
     : [
@@ -267,6 +280,9 @@ function EvaluationStepper({ status, isChat = false }: { status: string; isChat?
   const statusMessages: Record<string, string> = isChat
     ? {
         queued: 'Preparing LLM chat simulation',
+        call_initiating: 'Running simulated chat turns',
+        call_connecting: 'Running simulated chat turns',
+        call_in_progress: 'Chat simulation in progress',
         transcribing: 'Running simulated chat turns',
         evaluating: 'Scoring conversation with evaluators',
       }
@@ -492,33 +508,6 @@ export default function EvaluatorResultDetailPage({
     return result?.duration_seconds ?? null
   }
 
-  const getStatusConfig = (status: string) => {
-    switch (status) {
-      case 'completed':
-        return { dot: 'bg-emerald-500', bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200', label: 'Completed', icon: <CheckCircle className="w-4 h-4 text-emerald-500" /> }
-      case 'failed':
-        return { dot: 'bg-rose-500', bg: 'bg-rose-50', text: 'text-rose-700', border: 'border-rose-200', label: 'Failed', icon: <XCircle className="w-4 h-4 text-rose-500" /> }
-      case 'queued':
-        return { dot: 'bg-slate-400', bg: 'bg-slate-50', text: 'text-slate-600', border: 'border-slate-200', label: 'Queued', icon: <Clock className="w-4 h-4 text-slate-400" /> }
-      case 'call_initiating':
-        return { dot: 'bg-amber-500', bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200', label: 'Initiating Call', icon: <Loader className="w-4 h-4 text-amber-500 animate-spin" /> }
-      case 'call_connecting':
-        return { dot: 'bg-orange-500', bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200', label: 'Connecting', icon: <Loader className="w-4 h-4 text-orange-500 animate-spin" /> }
-      case 'call_in_progress':
-        return { dot: 'bg-blue-500', bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200', label: 'In Call', icon: <Loader className="w-4 h-4 text-blue-500 animate-spin" /> }
-      case 'call_ended':
-        return { dot: 'bg-indigo-500', bg: 'bg-indigo-50', text: 'text-indigo-700', border: 'border-indigo-200', label: 'Call Ended', icon: <Phone className="w-4 h-4 text-indigo-500" /> }
-      case 'transcribing':
-        return { dot: 'bg-cyan-500', bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200', label: 'Transcribing', icon: <Loader className="w-4 h-4 text-cyan-500 animate-spin" /> }
-      case 'evaluating':
-        return { dot: 'bg-purple-500', bg: 'bg-purple-50', text: 'text-purple-700', border: 'border-purple-200', label: 'Evaluating', icon: <Loader className="w-4 h-4 text-purple-500 animate-spin" /> }
-      case 'fetching_details':
-        return { dot: 'bg-indigo-500', bg: 'bg-indigo-50', text: 'text-indigo-700', border: 'border-indigo-200', label: 'Fetching Details', icon: <Loader className="w-4 h-4 text-indigo-500 animate-spin" /> }
-      default:
-        return { dot: 'bg-gray-400', bg: 'bg-gray-50', text: 'text-gray-600', border: 'border-gray-200', label: status, icon: null }
-    }
-  }
-
   const formatMetricValue = (value: any, type: string, metricName?: string): React.ReactNode => {
     if (value === null || value === undefined) return <span className="text-gray-300">--</span>
     
@@ -674,8 +663,14 @@ export default function EvaluatorResultDetailPage({
   }
 
   const resultData = result as EvaluatorResultDetail
+  const isChatRun = isChatEvalResult(resultData)
+  const chatConnType =
+    typeof resultData.call_data?.chat_connection_type === 'string'
+      ? resultData.call_data.chat_connection_type
+      : null
+  const chatLlmToLlm = !chatConnType || chatConnType === 'internal_llm'
   const displayStatus = displayEvaluatorResultStatus(resultData)
-  const statusConfig = getStatusConfig(displayStatus)
+  const statusConfig = getStatusConfig(displayStatus, { chatSimulation: isChatRun })
   const callShortId =
     typeof resultData.call_data?.call_short_id === 'string' ? resultData.call_data.call_short_id : null
   const drawerTargets = resolveTraceDrawerTargets({
@@ -706,8 +701,6 @@ export default function EvaluatorResultDetailPage({
       : resultData.metric_scores?.successful?.value !== undefined
         ? Boolean(resultData.metric_scores?.successful?.value)
         : null
-
-  const isChatRun = isChatEvalResult(resultData)
 
   return (
     <div
@@ -749,7 +742,14 @@ export default function EvaluatorResultDetailPage({
                 Result ID: <span className="font-mono font-semibold text-primary-600">{resultData.result_id}</span>
               </p>
               <div className="mt-2">
-                <EvalRunKindBadge isChat={isChatEvalResult(resultData)} />
+                <EvalRunKindBadge
+                  isChat={isChatEvalResult(resultData)}
+                  chatConnectionType={
+                    typeof resultData.call_data?.chat_connection_type === 'string'
+                      ? resultData.call_data.chat_connection_type
+                      : null
+                  }
+                />
               </div>
             </div>
             <div className="flex items-center gap-3">
@@ -803,12 +803,11 @@ export default function EvaluatorResultDetailPage({
                     : 'N/A'}
                 </p>
               </div>
-              {resultData.persona ? (
+              {resultData.persona && !isChatRun ? (
                 <div>
                   <p className="text-xs text-gray-500 font-medium mb-1">Persona</p>
                   <p className="text-sm text-gray-900">{resultData.persona.name}</p>
-                  {!isChatRun &&
-                    (resultData.persona.tts_provider || resultData.persona.tts_voice_name) && (
+                  {(resultData.persona.tts_provider || resultData.persona.tts_voice_name) && (
                     <p className="text-xs text-gray-500 mt-0.5">
                       {[resultData.persona.tts_provider, resultData.persona.tts_voice_name]
                         .filter(Boolean)
@@ -817,13 +816,19 @@ export default function EvaluatorResultDetailPage({
                   )}
                 </div>
               ) : null}
-              {resultData.provider_platform ? (
+              {resultData.provider_platform || isChatRun ? (
                 <div>
                   <p className="text-xs text-gray-500 font-medium mb-1">
                     {isChatEvalResult(resultData) ? 'Simulation' : 'Platform'}
                   </p>
                   <p className="text-sm text-gray-900 capitalize">
-                    {isChatEvalResult(resultData) ? 'LLM chat (internal)' : resultData.provider_platform}
+                    {isChatEvalResult(resultData)
+                      ? resultData.call_data?.chat_connection_type === 'internal_llm'
+                        ? 'LLM-to-LLM (platform LLMs)'
+                        : resultData.call_data?.chat_connection_type
+                          ? `Live production (${String(resultData.call_data.chat_connection_type).replace(/_/g, ' ')})`
+                          : 'Text chat simulation'
+                      : resultData.provider_platform}
                   </p>
                 </div>
               ) : null}
@@ -875,6 +880,7 @@ export default function EvaluatorResultDetailPage({
            : reEvalInProgress || ['evaluating', 'transcribing', 'queued'].includes(displayStatus) ? (
             <EvaluationStepper
               isChat={isChatRun}
+              chatLlmToLlm={chatLlmToLlm}
               status={
               reEvalInProgress && !['queued', 'transcribing', 'evaluating'].includes(resultData.status)
                 ? 'queued'

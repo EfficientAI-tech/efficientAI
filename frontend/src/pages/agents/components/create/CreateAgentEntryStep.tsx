@@ -24,8 +24,8 @@ export default function CreateAgentEntryStep({
   return (
     <div className="w-full max-w-2xl mx-auto space-y-8 pb-2">
       <WizardStepHeader
-        title="What are you evaluating?"
-        subtitle="Start with voice or text chat, then choose how that agent runs in production."
+        title="Create agent"
+        subtitle="One flow for voice and text chat — pick a medium, then configure only what applies."
       />
 
       <section className="space-y-3">
@@ -51,7 +51,7 @@ export default function CreateAgentEntryStep({
         <section className="space-y-3 pt-2 border-t border-gray-100">
           <h3 className="text-sm font-medium text-gray-900">Chat connection</h3>
           <p className="text-sm text-gray-600 leading-relaxed">
-            Pre-prod evaluation simulates your production chat agent with Platform LLM and a simulated customer.
+            Platform LLM is full LLM-to-LLM on our models. Other options use your live stack each turn.
           </p>
           <ChatIntegrationTypeStep
             embedded

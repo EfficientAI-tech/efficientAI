@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { apiClient } from '../../../lib/api'
 import type { EvaluatorResultRow, ListEvaluatorResultsParams } from '../../../types/api'
 import ResultsHierarchyNav, { type HierarchyCrumb } from './ResultsHierarchyNav'
@@ -65,6 +65,7 @@ export default function ResultsRunsList({
   const [selectedResults, setSelectedResults] = useState<Set<string>>(new Set())
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [reEvaluatingIds, setReEvaluatingIds] = useState<Set<string>>(new Set())
+  const [runMediumFilter, setRunMediumFilter] = useState<'all' | 'voice' | 'chat'>('all')
 
   const apiStatus =
     statusFilter === 'all'
@@ -98,6 +99,12 @@ export default function ResultsRunsList({
   })
 
   const items = itemsOf<EvaluatorResultRow>(data)
+  const filteredItems = useMemo(() => {
+    if (runMediumFilter === 'all') return items
+    return items.filter((r) =>
+      runMediumFilter === 'chat' ? isChatEvalResult(r) : !isChatEvalResult(r),
+    )
+  }, [items, runMediumFilter])
   const total = data?.total ?? 0
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
@@ -186,6 +193,28 @@ export default function ResultsRunsList({
               </button>
             ))}
           </div>
+          <div className="flex gap-1 border-l border-gray-200 pl-3">
+            {(
+              [
+                ['all', 'All runs'],
+                ['voice', 'Voice / WebRTC'],
+                ['chat', 'LLM chat'],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setRunMediumFilter(key)}
+                className={`px-3 py-1.5 text-xs font-medium rounded-lg ${
+                  runMediumFilter === key
+                    ? 'bg-violet-100 text-violet-900 border border-violet-200'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           {selectedResults.size > 0 && (
             <Button variant="danger" size="sm" onClick={() => setShowDeleteModal(true)}>
               <Trash2 className="w-4 h-4 mr-1" />
@@ -196,7 +225,7 @@ export default function ResultsRunsList({
 
         {isLoading ? (
           <p className="p-8 text-center text-gray-500">Loading runs…</p>
-        ) : items.length === 0 ? (
+        ) : filteredItems.length === 0 ? (
           <p className="p-8 text-center text-gray-500">No runs match this view.</p>
         ) : (
           <div className="overflow-x-auto">
@@ -223,9 +252,10 @@ export default function ResultsRunsList({
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {items.map((result: EvaluatorResultRow) => {
+                {filteredItems.map((result: EvaluatorResultRow) => {
                   const displayStatus = displayEvaluatorResultStatus(result)
-                  const statusConfig = getStatusConfig(displayStatus)
+                  const chatSim = isChatEvalResult(result)
+                  const statusConfig = getStatusConfig(displayStatus, { chatSimulation: chatSim })
                   return (
                     <tr
                       key={result.id}
@@ -248,7 +278,14 @@ export default function ResultsRunsList({
                       <td className="px-4 py-3 font-mono text-sm text-primary-600">{result.result_id}</td>
                       <td className="px-4 py-3 text-sm text-gray-900">{result.name}</td>
                       <td className="px-4 py-3">
-                        <EvalRunKindBadge isChat={isChatEvalResult(result)} />
+                        <EvalRunKindBadge
+                          isChat={isChatEvalResult(result)}
+                          chatConnectionType={
+                            typeof result.call_data?.chat_connection_type === 'string'
+                              ? result.call_data.chat_connection_type
+                              : null
+                          }
+                        />
                       </td>
                       {showAgentColumn && (
                         <td className="px-4 py-3 text-sm text-gray-600">
@@ -259,7 +296,9 @@ export default function ResultsRunsList({
                         </td>
                       )}
                       {showPersonaColumn && (
-                        <td className="px-4 py-3 text-sm text-gray-600">{result.persona?.name ?? '—'}</td>
+                        <td className="px-4 py-3 text-sm text-gray-600">
+                          {chatSim ? '—' : (result.persona?.name ?? '—')}
+                        </td>
                       )}
                       {showScenarioColumn && (
                         <td className="px-4 py-3 text-sm text-gray-600">{result.scenario?.name ?? '—'}</td>

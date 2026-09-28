@@ -270,7 +270,7 @@ export default function ChatConnectionDetailsStep({
           />
         </div>
         <div>
-          <label className={CREATE_WIZARD_LABEL_CLASS}>Post-prod webhook URL</label>
+          <label className={CREATE_WIZARD_LABEL_CLASS}>Outbound webhook URL</label>
           <input
             className={CREATE_WIZARD_FIELD_CLASS}
             value={config.outboundWebhookUrl}

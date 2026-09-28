@@ -15,6 +15,9 @@ from app.services.evaluators.evaluator_helpers import (
     validate_agent_persona_tts,
     validate_metric_ids,
 )
+from app.services.personas.persona_simulation_medium import validate_agent_persona_simulation_medium
+from app.services.evaluators.chat_suite_persona import ensure_default_chat_eval_persona
+from app.models.enums import CallMediumEnum
 from app.models.database import (
     Agent,
     Evaluator,
@@ -48,7 +51,17 @@ def _agent_suite_count(
     )
 
 
-def _resolve_create_persona_ids(data: EvaluatorSuiteCreate) -> List[UUID]:
+def _is_chat_agent(agent: Agent) -> bool:
+    return (agent.call_medium or CallMediumEnum.PHONE_CALL.value).lower() == CallMediumEnum.CHAT.value
+
+
+def _resolve_create_persona_ids(
+    db: Session,
+    data: EvaluatorSuiteCreate,
+    agent: Agent,
+    organization_id: UUID,
+    workspace_id: UUID,
+) -> List[UUID]:
     if data.persona_ids:
         persona_ids = list(dict.fromkeys(data.persona_ids))
         if not persona_ids:
@@ -56,6 +69,8 @@ def _resolve_create_persona_ids(data: EvaluatorSuiteCreate) -> List[UUID]:
         return persona_ids
     if data.persona_id:
         return [data.persona_id]
+    if _is_chat_agent(agent):
+        return [ensure_default_chat_eval_persona(db, organization_id=organization_id, workspace_id=workspace_id)]
     raise HTTPException(status_code=400, detail="Either persona_id or persona_ids is required")
 
 
@@ -106,6 +121,7 @@ def _validate_personas_for_agent(
     personas_by_id = {p.id: p for p in personas}
     ordered = [personas_by_id[pid] for pid in persona_ids]
     for persona in ordered:
+        validate_agent_persona_simulation_medium(agent, persona)
         validate_agent_persona_tts(db, agent, persona)
     return ordered
 
@@ -332,8 +348,6 @@ def create_evaluator_suite(
     workspace_id: UUID,
     data: EvaluatorSuiteCreate,
 ) -> EvaluatorSuiteResponse:
-    persona_ids = _resolve_create_persona_ids(data)
-
     agent = db.query(Agent).filter(
         and_(
             Agent.id == data.agent_id,
@@ -343,6 +357,8 @@ def create_evaluator_suite(
     ).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
+
+    persona_ids = _resolve_create_persona_ids(db, data, agent, organization_id, workspace_id)
 
     _validate_personas_for_agent(db, agent, persona_ids, organization_id, workspace_id)
 

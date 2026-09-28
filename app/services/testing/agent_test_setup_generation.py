@@ -13,6 +13,12 @@ from sqlalchemy.orm import Session
 
 from app.models.enums import ModelProvider
 from app.services.ai.llm_service import llm_service
+from app.services.testing.scenario_generation_modality import (
+    build_scenario_generation_requirements,
+    generate_scenarios_system_prompt,
+    scenario_modality_from_call_medium,
+    ScenarioModality,
+)
 from app.services.testing.test_agent_template import (
     CANONICAL_SECTION_KEYS,
     CANONICAL_SECTION_TITLES,
@@ -24,14 +30,6 @@ from app.services.testing.test_agent_template import (
     normalize_first_message,
     normalize_sections,
     template_from_generation,
-)
-
-SCENARIO_DESCRIPTION_SECTIONS: tuple[str, ...] = (
-    "### Background (2-3 sentences)",
-    "### Caller Intent (1-2 sentences)",
-    "### Conversation Flow (4-6 numbered steps)",
-    "### Success Criteria (2-4 bullet points)",
-    "### Edge Cases to Probe (2-3 bullet points)",
 )
 
 GENERATE_TEST_PROMPT_SYSTEM = (
@@ -72,13 +70,6 @@ GENERATE_TEST_PROMPT_SYSTEM = (
     "- The template must be reusable across many personas and scenarios\n"
     "- Return only JSON, no markdown wrapper, no explanation"
 )
-
-GENERATE_SCENARIOS_SYSTEM = (
-    "You generate high-quality test scenarios for voice AI agents. "
-    "Return ONLY valid JSON array with objects: "
-    '{ "name": string, "description": string, "goal": string }.'
-)
-
 
 # Re-export for backward compatibility in tests/imports
 AgentTestPromptSection = TestAgentPromptSection
@@ -159,25 +150,6 @@ def build_test_prompt_user_message(
     return "\n".join(parts)
 
 
-def build_scenario_generation_requirements() -> str:
-    lines = [
-        "Requirements:",
-        "- Each scenario must test a different user intent or edge case.",
-        "- Keep each name short (under 80 characters).",
-        "- Each description must be 150-300 words.",
-        "- Each description MUST include all of these markdown sections:",
-    ]
-    lines.extend(f"  - {section}" for section in SCENARIO_DESCRIPTION_SECTIONS)
-    lines.extend(
-        [
-            "- Descriptions should be specific, test-oriented, and suitable for QA evaluation.",
-            "- Include a concise goal string summarizing what the caller should achieve.",
-            "- Return only JSON array, no markdown wrapper, no explanation.",
-        ]
-    )
-    return "\n".join(lines)
-
-
 def build_scenario_generation_user_message(
     *,
     test_agent_prompt: str,
@@ -185,11 +157,14 @@ def build_scenario_generation_user_message(
     scenario_count: int,
     language: Optional[str] = None,
     call_type: Optional[str] = None,
+    call_medium: Optional[str] = None,
     additional_context: Optional[str] = None,
 ) -> str:
+    modality: ScenarioModality = scenario_modality_from_call_medium(call_medium)
     parts = [
         f"Generate {scenario_count} diverse test scenarios from this test agent system prompt.",
         f"Agent Name: {agent_name}",
+        f"Channel: {'text chat' if modality == 'chat' else 'voice'}",
     ]
     if language:
         parts.append(f"Language: {language}")
@@ -198,7 +173,7 @@ def build_scenario_generation_user_message(
     parts.extend(["", f"Test Agent System Prompt:\n{test_agent_prompt.strip()}"])
     if additional_context and additional_context.strip():
         parts.extend(["", f"Additional Generation Context:\n{additional_context.strip()}"])
-    parts.extend(["", build_scenario_generation_requirements()])
+    parts.extend(["", build_scenario_generation_requirements(modality)])
     return "\n".join(parts)
 
 
@@ -289,6 +264,7 @@ def generate_scenarios_from_test_prompt(
     scenario_count: int,
     language: Optional[str],
     call_type: Optional[str],
+    call_medium: Optional[str] = None,
     additional_context: Optional[str],
     llm_provider: ModelProvider,
     llm_model: str,
@@ -303,8 +279,9 @@ def generate_scenarios_from_test_prompt(
     if scenario_count < 1 or scenario_count > 10:
         raise ValueError("Scenario count must be between 1 and 10")
 
+    modality = scenario_modality_from_call_medium(call_medium)
     messages = [
-        {"role": "system", "content": GENERATE_SCENARIOS_SYSTEM},
+        {"role": "system", "content": generate_scenarios_system_prompt(modality)},
         {
             "role": "user",
             "content": build_scenario_generation_user_message(
@@ -313,6 +290,7 @@ def generate_scenarios_from_test_prompt(
                 scenario_count=scenario_count,
                 language=language,
                 call_type=call_type,
+                call_medium=call_medium,
                 additional_context=additional_context,
             ),
         },

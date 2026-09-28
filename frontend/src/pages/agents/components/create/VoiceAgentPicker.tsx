@@ -8,6 +8,8 @@ interface VoiceAgentPickerProps {
   platformLabel: string
   value: string
   onChange: (agentId: string) => void
+  /** Retell text chat needs chat-channel agent IDs, not voice agents. */
+  agentKind?: 'voice' | 'chat'
 }
 
 export default function VoiceAgentPicker({
@@ -15,21 +17,22 @@ export default function VoiceAgentPicker({
   platformLabel,
   value,
   onChange,
+  agentKind = 'voice',
 }: VoiceAgentPickerProps) {
   const queryClient = useQueryClient()
   const [manualEntry, setManualEntry] = useState(false)
   const [isRefreshing, setIsRefreshing] = useState(false)
 
   const { data, isLoading, isError, error, isFetching } = useQuery({
-    queryKey: ['integration-voice-agents', integrationId],
-    queryFn: () => apiClient.listIntegrationVoiceAgents(integrationId),
-    enabled: Boolean(integrationId) && !manualEntry,
+    queryKey: ['integration-voice-agents', integrationId, agentKind],
+    queryFn: () => apiClient.listIntegrationVoiceAgents(integrationId, { agentKind }),
+    enabled: Boolean(integrationId),
     staleTime: 60_000,
   })
 
   useEffect(() => {
     setManualEntry(false)
-  }, [integrationId])
+  }, [integrationId, agentKind])
 
   useEffect(() => {
     if (data && !data.list_supported) {
@@ -41,8 +44,11 @@ export default function VoiceAgentPicker({
     if (!integrationId) return
     setIsRefreshing(true)
     try {
-      const fresh = await apiClient.listIntegrationVoiceAgents(integrationId, { refresh: true })
-      queryClient.setQueryData(['integration-voice-agents', integrationId], fresh)
+      const fresh = await apiClient.listIntegrationVoiceAgents(integrationId, {
+        refresh: true,
+        agentKind,
+      })
+      queryClient.setQueryData(['integration-voice-agents', integrationId, agentKind], fresh)
     } finally {
       setIsRefreshing(false)
     }
@@ -63,7 +69,9 @@ export default function VoiceAgentPicker({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
-        <label className="block text-xs font-medium text-gray-600">Agent *</label>
+        <label className="block text-xs font-medium text-gray-600">
+          {agentKind === 'chat' ? 'Chat agent *' : 'Agent *'}
+        </label>
         {showPicker ? (
           <button
             type="button"
@@ -85,8 +93,19 @@ export default function VoiceAgentPicker({
             </p>
           ) : null}
           {data?.message ? (
-            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+            <p
+              className={`text-xs rounded-md px-3 py-2 ${
+                agents.length === 0
+                  ? 'text-amber-800 bg-amber-50 border border-amber-200'
+                  : 'text-gray-600 bg-gray-50 border border-gray-200'
+              }`}
+            >
               {data.message}
+            </p>
+          ) : null}
+          {agentKind === 'chat' && agents.length > 0 && !data?.message ? (
+            <p className="text-xs text-gray-500">
+              Listed agents are Retell chat-channel only. Voice-only IDs fail at runtime.
             </p>
           ) : null}
           {data?.truncated ? (
@@ -112,10 +131,7 @@ export default function VoiceAgentPicker({
           ) : null}
           <button
             type="button"
-            onClick={() => {
-              setManualEntry(true)
-              onChange('')
-            }}
+            onClick={() => setManualEntry(true)}
             className="text-xs text-primary-700 hover:text-primary-900 underline"
           >
             Enter agent ID manually
@@ -124,8 +140,14 @@ export default function VoiceAgentPicker({
       ) : (
         <>
           {data?.message ? (
-            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+            <p className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-md px-3 py-2">
               {data.message}
+            </p>
+          ) : null}
+          {agentKind === 'chat' ? (
+            <p className="text-xs text-gray-500">
+              Paste the Retell <span className="font-medium">chat</span> agent ID (from the Retell
+              dashboard or chat agent list).
             </p>
           ) : null}
           <input

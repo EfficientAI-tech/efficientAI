@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import { isChatMedium } from '../../../lib/agentMedium'
 import { connectionTypeLabel } from './create/chatAgentFormUtils'
+import { chatConnectionCapability, patternLabel } from '../../../lib/chatConnectionCapabilities'
 import { CallTypeBadge } from '../../evaluators/components/evaluatorUi'
 import ParamSlider from './ParamSlider'
 import {
@@ -235,8 +236,13 @@ export default function AgentInfoView({
                     ) : null}
                     <OverviewStatCard
                       icon={Globe}
-                      label="Eval mode"
-                      value="Pre-prod simulation"
+                      label="Simulation"
+                      value={
+                        patternLabel(
+                          chatConnectionCapability(agent.chat_connection_type || 'internal_llm')
+                            ?.pattern ?? 'llm_to_llm',
+                        )
+                      }
                       accent="emerald"
                     />
                   </>

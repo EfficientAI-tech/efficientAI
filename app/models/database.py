@@ -600,6 +600,7 @@ class Persona(Base):
         index=True,
     )
     name = Column(String, nullable=False)
+    simulation_medium = Column(String(16), nullable=False, default="voice")
     gender = Column(String, nullable=False, default=GenderEnum.NEUTRAL.value)
     tts_provider = Column(String(100), nullable=True)
     tts_voice_id = Column(String(255), nullable=True)

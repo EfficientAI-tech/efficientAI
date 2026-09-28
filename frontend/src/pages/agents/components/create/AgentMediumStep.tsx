@@ -34,7 +34,7 @@ export default function AgentMediumStep({ value, onChange, embedded }: AgentMedi
       {!embedded ? (
         <WizardStepHeader
           title="What kind of agent do you want to test?"
-          subtitle="Pick the medium your production agent uses. You can configure integrations and eval settings in the next steps."
+          subtitle="Pick the medium your production agent uses. Connection and model settings come in the next steps."
         />
       ) : null}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

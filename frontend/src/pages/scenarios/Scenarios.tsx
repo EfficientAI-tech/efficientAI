@@ -16,13 +16,19 @@ import { resolveActiveAIProvider } from '../../lib/gatewayRouting'
 import { resolveLLMModelsForCredential } from '../../lib/llmModelOptions'
 import {
   buildScenarioEditGenerationUserPrompt,
-  SCENARIO_EDIT_GENERATION_SYSTEM_PROMPT,
+  scenarioEditGenerationSystemPrompt,
 } from './scenarioGenerationPrompts'
 import MarkdownEditor from '../../components/shared/MarkdownEditor'
 import ScenarioMarkdownView from './ScenarioMarkdownView'
 import ScenariosAgentSidebar from './ScenariosAgentSidebar'
 import ScenariosListPanel from './ScenariosListPanel'
 import type { Scenario, AgentOption } from './scenarioTypes'
+import ScenarioAgentMediumTabs from './ScenarioAgentMediumTabs'
+import {
+  filterAgentsByMedium,
+  isChatMedium,
+  type AgentMediumFilter,
+} from '../../lib/agentMedium'
 
 interface GeneratedScenarioDraft {
   id: string
@@ -75,6 +81,7 @@ export default function Scenarios() {
   // For Generate from Call
   const [callData, setCallData] = useState('')
   const [selectedNavAgentId, setSelectedNavAgentId] = useState<string>('')
+  const [scenarioMediumFilter, setScenarioMediumFilter] = useState<AgentMediumFilter>('voice')
 
   const { data: scenarios = [], isLoading } = useQuery({
     queryKey: ['scenarios'],
@@ -139,6 +146,11 @@ export default function Scenarios() {
     return map
   }, [availableAgents])
 
+  const agentsForScenarioMedium = useMemo(
+    () => filterAgentsByMedium(availableAgents, scenarioMediumFilter),
+    [availableAgents, scenarioMediumFilter],
+  )
+
   const scenarioCountByAgent = useMemo(() => {
     const counts = new Map<string, number>()
     userScenarios.forEach((scenario) => {
@@ -151,7 +163,13 @@ export default function Scenarios() {
 
   const agentsWithScenarios = useMemo(
     () =>
-      availableAgents.filter((agent) => (scenarioCountByAgent.get(agent.id) ?? 0) > 0),
+      availableAgents
+        .filter((agent) => (scenarioCountByAgent.get(agent.id) ?? 0) > 0)
+        .map((agent) => ({
+          id: agent.id,
+          name: agent.name,
+          call_medium: agent.call_medium,
+        })),
     [availableAgents, scenarioCountByAgent],
   )
 
@@ -352,9 +370,14 @@ export default function Scenarios() {
       return
     }
 
-    const agentPrompt = selectedAgent.description?.trim()
+    const chatAgent = isChatMedium(selectedAgent.call_medium)
+    const agentPrompt = (
+      chatAgent
+        ? (selectedAgent.provider_prompt || selectedAgent.description || '').trim()
+        : (selectedAgent.description || '').trim()
+    )
     if (!agentPrompt) {
-      showToast('Selected agent has no system prompt/description to generate from', 'error')
+      showToast('Selected agent has no production prompt to generate from', 'error')
       return
     }
 
@@ -366,6 +389,7 @@ export default function Scenarios() {
         scenario_count: scenarioCount,
         language: selectedAgent.language,
         call_type: selectedAgent.call_type,
+        call_medium: selectedAgent.call_medium,
         additional_context: additionalAgentPromptContext.trim() || undefined,
         provider: selectedAIProvider,
         model: selectedModel,
@@ -432,6 +456,26 @@ export default function Scenarios() {
   }
 
 
+  const agentMatchesScenarioMedium = (agentId: string, medium: AgentMediumFilter) => {
+    if (!agentId) return true
+    const agent = availableAgents.find((a) => a.id === agentId)
+    if (!agent) return false
+    return medium === 'chat' ? isChatMedium(agent.call_medium) : !isChatMedium(agent.call_medium)
+  }
+
+  const handleScenarioMediumFilterChange = (medium: AgentMediumFilter) => {
+    setScenarioMediumFilter(medium)
+    if (createMode === 'call' && medium === 'chat') {
+      setCreateMode(null)
+    }
+    if (!agentMatchesScenarioMedium(selectedAgentIdForGeneration, medium)) {
+      setSelectedAgentIdForGeneration('')
+    }
+    if (!agentMatchesScenarioMedium(formData.agent_id, medium)) {
+      setFormData((prev) => ({ ...prev, agent_id: '' }))
+    }
+  }
+
   const handleCloseMainModal = () => {
     setShowMainModal(false)
     setCreateMode(null)
@@ -444,6 +488,7 @@ export default function Scenarios() {
     setGeneratedScenarioDrafts([])
     setSavingDraftIds(new Set())
     setShowProviderDropdown(false)
+    setScenarioMediumFilter('voice')
     resetForm()
   }
 
@@ -464,12 +509,33 @@ export default function Scenarios() {
   const openCreateModal = () => {
     resetForm()
     const linkedAgentId = selectedNavAgentId !== 'unlinked' ? selectedNavAgentId : ''
+    const linkedAgent = linkedAgentId
+      ? availableAgents.find((a) => a.id === linkedAgentId)
+      : undefined
+    setScenarioMediumFilter(
+      linkedAgent && isChatMedium(linkedAgent.call_medium) ? 'chat' : 'voice',
+    )
     if (linkedAgentId) {
       setFormData((prev) => ({ ...prev, agent_id: linkedAgentId }))
       setSelectedAgentIdForGeneration(linkedAgentId)
     }
     setShowMainModal(true)
   }
+
+  const renderCreateMediumTabs = () => (
+    <div className="mb-5">
+      <p className="text-xs font-medium text-gray-500 mb-2">Agent medium</p>
+      <ScenarioAgentMediumTabs
+        value={scenarioMediumFilter}
+        onChange={handleScenarioMediumFilterChange}
+      />
+      <p className="mt-2 text-xs text-gray-500">
+        {scenarioMediumFilter === 'chat'
+          ? 'Text chat agents only — scenarios for LLM / live chat evals.'
+          : 'Voice agents only — phone, web call, and platform voice.'}
+      </p>
+    </div>
+  )
 
   const handleViewScenario = (scenario: Scenario) => {
     setSelectedScenario(scenario)
@@ -478,6 +544,10 @@ export default function Scenarios() {
 
   const handleEdit = (scenario: Scenario) => {
     setSelectedScenario(scenario)
+    const linked = scenario.agent_id
+      ? availableAgents.find((a) => a.id === scenario.agent_id)
+      : undefined
+    setScenarioMediumFilter(linked && isChatMedium(linked.call_medium) ? 'chat' : 'voice')
     setFormData({
       name: scenario.name,
       agent_id: scenario.agent_id || '',
@@ -521,13 +591,20 @@ export default function Scenarios() {
       return
     }
 
+    const editModality =
+      formData.agent_id
+        ? (isChatMedium(availableAgents.find((a) => a.id === formData.agent_id)?.call_medium)
+            ? 'chat'
+            : 'voice')
+        : scenarioMediumFilter
+
     setIsGeneratingEditDescription(true)
     try {
       const response = await apiClient.chatCompletion({
         messages: [
           {
             role: 'system',
-            content: SCENARIO_EDIT_GENERATION_SYSTEM_PROMPT,
+            content: scenarioEditGenerationSystemPrompt(editModality),
           },
           {
             role: 'user',
@@ -535,6 +612,7 @@ export default function Scenarios() {
               scenarioName: formData.name || selectedScenario.name,
               currentDescription: formData.description || selectedScenario.description || 'None',
               request: editGeneratePrompt.trim(),
+              modality: editModality,
             }),
           },
         ],
@@ -654,6 +732,7 @@ export default function Scenarios() {
               // Mode Selection
               <div className="p-6">
                 <div className="mx-auto max-w-2xl">
+                {renderCreateMediumTabs()}
                 <div className="mb-5 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3">
                   <p className="text-sm font-medium text-blue-900">Choose how you want to create this scenario</p>
                   <p className="mt-1 text-xs text-blue-700">
@@ -688,7 +767,7 @@ export default function Scenarios() {
                     </div>
                   </button>
 
-                  {/* Generate from Call */}
+                  {scenarioMediumFilter === 'voice' ? (
                   <button
                     onClick={() => setCreateMode('call')}
                     className="group relative w-full p-5 bg-gradient-to-br from-green-50 to-emerald-50 border-2 border-green-200 rounded-xl hover:border-green-400 hover:shadow-lg transition-all text-left focus:outline-none focus:ring-2 focus:ring-green-400"
@@ -708,6 +787,7 @@ export default function Scenarios() {
                       </div>
                     </div>
                   </button>
+                  ) : null}
 
                   {/* Create Custom Prompt */}
                   <button
@@ -748,6 +828,7 @@ export default function Scenarios() {
                   Back
                 </button>
                 <h4 className="text-lg font-semibold text-gray-900 mb-4">Generate from Agent Prompt</h4>
+                {renderCreateMediumTabs()}
                 <div className="space-y-4">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
@@ -758,12 +839,18 @@ export default function Scenarios() {
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                       >
                         <option value="">Select an agent</option>
-                        {availableAgents.map((agent) => (
+                        {agentsForScenarioMedium.map((agent) => (
                           <option key={agent.id} value={agent.id}>
                             {agent.name}
                           </option>
                         ))}
                       </select>
+                      {agentsForScenarioMedium.length === 0 ? (
+                        <p className="mt-1 text-xs text-amber-700">
+                          No {scenarioMediumFilter === 'chat' ? 'text chat' : 'voice'} agents yet. Create one
+                          under Agents first.
+                        </p>
+                      ) : null}
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">Number of Scenarios *</label>
@@ -873,7 +960,11 @@ export default function Scenarios() {
                       onChange={(e) => setAdditionalAgentPromptContext(e.target.value)}
                       rows={3}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                      placeholder="Add context to combine with agent system prompt (e.g., focus on edge cases, payment failures, escalation paths, compliance checks)."
+                      placeholder={
+                        scenarioMediumFilter === 'chat'
+                          ? 'Optional: edge cases, compliance, chat-specific flows (customer/user language, not phone calls).'
+                          : 'Add context to combine with agent system prompt (e.g., edge cases, payment failures, escalation paths).'
+                      }
                     />
                   </div>
 
@@ -966,6 +1057,7 @@ export default function Scenarios() {
                   Back
                 </button>
                 <h4 className="text-lg font-semibold text-gray-900 mb-4">Generate Scenario from Call</h4>
+                {renderCreateMediumTabs()}
                 <div className="space-y-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1012,6 +1104,7 @@ export default function Scenarios() {
                   Back
                 </button>
                 <h4 className="text-lg font-semibold text-gray-900 mb-4">Create Custom Scenario</h4>
+                {renderCreateMediumTabs()}
                 <form onSubmit={handleCreate} className="space-y-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -1036,12 +1129,17 @@ export default function Scenarios() {
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                     >
                       <option value="">No linked agent</option>
-                      {availableAgents.map((agent) => (
+                      {agentsForScenarioMedium.map((agent) => (
                         <option key={agent.id} value={agent.id}>
                           {agent.name}
                         </option>
                       ))}
                     </select>
+                    {agentsForScenarioMedium.length === 0 ? (
+                      <p className="mt-1 text-xs text-amber-700">
+                        No {scenarioMediumFilter === 'chat' ? 'text chat' : 'voice'} agents to link.
+                      </p>
+                    ) : null}
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -1194,6 +1292,13 @@ export default function Scenarios() {
                   />
                 </div>
                 <div>
+                  <p className="text-xs font-medium text-gray-500 mb-2">Agent medium</p>
+                  <ScenarioAgentMediumTabs
+                    value={scenarioMediumFilter}
+                    onChange={handleScenarioMediumFilterChange}
+                  />
+                </div>
+                <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
                     Linked Agent (Optional)
                   </label>
@@ -1203,7 +1308,7 @@ export default function Scenarios() {
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                   >
                     <option value="">No linked agent</option>
-                    {availableAgents.map((agent) => (
+                    {agentsForScenarioMedium.map((agent) => (
                       <option key={agent.id} value={agent.id}>
                         {agent.name}
                       </option>

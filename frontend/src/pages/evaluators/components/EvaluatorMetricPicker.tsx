@@ -14,9 +14,15 @@ import {
 interface Props {
   selectedMetricIds: string[]
   onChange: (ids: string[]) => void
+  /** Let the parent scroll (e.g. modal wizard) instead of a nested list scrollbar. */
+  fluidHeight?: boolean
 }
 
-export default function EvaluatorMetricPicker({ selectedMetricIds, onChange }: Props) {
+export default function EvaluatorMetricPicker({
+  selectedMetricIds,
+  onChange,
+  fluidHeight = false,
+}: Props) {
   const { data: metrics = [] } = useQuery({
     queryKey: ['metrics', 'agent'],
     queryFn: () => apiClient.listMetrics('agent', true),
@@ -36,7 +42,11 @@ export default function EvaluatorMetricPicker({ selectedMetricIds, onChange }: P
       <p className="text-sm text-gray-600">
         Optional — leave empty to score against all enabled agent metrics. Categorization metrics select as one unit (all sub-labels included).
       </p>
-      <div className="max-h-80 overflow-y-auto border border-gray-200 rounded-xl p-3 space-y-2 bg-gray-50/30">
+      <div
+        className={`border border-gray-200 rounded-xl p-3 pr-4 space-y-2 bg-gray-50/30 ${
+          fluidHeight ? '' : 'max-h-80 overflow-y-auto [scrollbar-gutter:stable]'
+        }`}
+      >
         {enabledParents.length === 0 ? (
           <p className="text-sm text-gray-500 p-2">
             No metrics enabled. Configure in{' '}

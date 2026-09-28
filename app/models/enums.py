@@ -80,6 +80,12 @@ class ChatEvalModeEnum(str, enum.Enum):
     POST_PROD_IMPORT = "post_prod_import"
 
 
+class SimulationMediumEnum(str, enum.Enum):
+    """Whether a persona is for voice callers or text chat (simulation_medium on personas)."""
+    VOICE = "voice"
+    TEXT = "text"
+
+
 class GenderEnum(str, enum.Enum):
     """Gender options for personas"""
     MALE = "male"

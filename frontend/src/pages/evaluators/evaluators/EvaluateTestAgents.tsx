@@ -22,7 +22,11 @@ import {
 import { useToast } from '../../../hooks/useToast'
 import { useWalkthroughSectionState } from '../../../context/WalkthroughContext'
 import WalkthroughToggleButton from '../../../components/walkthrough/WalkthroughToggleButton'
-import { formatSuitePersonaLabel } from '../components/evaluatorSuitePersonas'
+import {
+  formatSuiteDisplayName,
+  formatSuitePersonaLabel,
+  isChatEvaluatorSuite,
+} from '../components/evaluatorSuitePersonas'
 import EvaluatorSuiteWizard from '../components/EvaluatorSuiteWizard'
 import EvaluatorSmartRunModal from '../components/EvaluatorSmartRunModal'
 import { CallTypeBadge, StatCard } from '../components/evaluatorUi'
@@ -132,6 +136,10 @@ export default function EvaluateTestAgents() {
   const selectedSuites = suites.filter((s) => selectedSuiteIds.has(s.id))
   const selectedSuite = selectedSuites.length === 1 ? selectedSuites[0] : null
   const selectedIsInbound = selectedSuite?.agent_call_type === 'inbound'
+  const showPersonaColumn = useMemo(
+    () => suites.some((s) => !isChatEvaluatorSuite(s)),
+    [suites],
+  )
 
   const handleDeleteSelected = async () => {
     setIsDeleting(true)
@@ -158,7 +166,7 @@ export default function EvaluateTestAgents() {
         <div className="min-w-0">
           <h1 className="text-3xl font-bold text-gray-900">Evaluators</h1>
           <p className="mt-2 text-sm text-gray-600">
-            Configure agent + persona + scenario combinations for automated post-call evaluation
+            Run automated evaluations against your agents and scenarios
           </p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2 pr-2">
@@ -301,7 +309,7 @@ export default function EvaluateTestAgents() {
             <FlaskConical className="w-12 h-12 text-gray-400 mx-auto mb-4" />
             <h3 className="text-lg font-medium text-gray-900 mb-2">No evaluator suites yet</h3>
             <p className="text-gray-500 mb-6 max-w-md mx-auto">
-              Create a suite to pair an agent, persona, and scenarios for automated evaluation runs.
+              Create a suite, choose scenarios and metrics, then run evaluations.
             </p>
             <Button
               variant="primary"
@@ -327,7 +335,11 @@ export default function EvaluateTestAgents() {
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Agent</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Persona</th>
+                  {showPersonaColumn ? (
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Persona
+                    </th>
+                  ) : null}
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Scenarios</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Metrics</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
@@ -370,13 +382,17 @@ export default function EvaluateTestAgents() {
                           onClick={() => navigate(`/evaluate-test-agents/${suite.id}`)}
                           className="text-sm font-medium text-primary-700 hover:text-primary-800 hover:underline text-left"
                         >
-                          {suite.name || `${suite.agent_name || 'Suite'} · ${suite.persona_name || 'Persona'}`}
+                          {formatSuiteDisplayName(suite)}
                         </button>
                       </td>
                       <td className={`${cellClass} text-sm text-gray-900`}>
                         {suite.agent_name || group.agentName || '—'}
                       </td>
-                      <td className={`${cellClass} text-sm text-gray-900`}>{formatSuitePersonaLabel(suite)}</td>
+                      {showPersonaColumn ? (
+                        <td className={`${cellClass} text-sm text-gray-900`}>
+                          {formatSuitePersonaLabel(suite)}
+                        </td>
+                      ) : null}
                       <td className={cellClass}>
                         <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-100">
                           {suite.combination_count}
@@ -461,14 +477,16 @@ export default function EvaluateTestAgents() {
                           </div>
                           {collapsed && (
                             <p className="text-xs text-gray-500 mt-1 pl-8 truncate">
-                              Active: {activeSuite.name || activeSuite.persona_name || '—'}
+                              Active: {formatSuiteDisplayName(activeSuite)}
                               {activeSuite.is_active ? '' : ' (none marked active)'}
                             </p>
                           )}
                         </td>
-                        <td className="px-6 py-3 text-sm text-gray-600">
-                          {collapsed ? activeSuite.persona_name || '—' : ''}
-                        </td>
+                        {showPersonaColumn ? (
+                          <td className="px-6 py-3 text-sm text-gray-600">
+                            {collapsed ? formatSuitePersonaLabel(activeSuite) : ''}
+                          </td>
+                        ) : null}
                         <td className="px-6 py-3">
                           {collapsed && (
                             <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-100">

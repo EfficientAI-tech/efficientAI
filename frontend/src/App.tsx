@@ -192,6 +192,7 @@ function App() {
           <Route path="agents" element={<AgentsWorkspace />} />
           <Route path="agents/:id" element={<AgentsWorkspace />} />
           <Route path="personas" element={<Personas />} />
+          <Route path="customer-prompts" element={<Navigate to="/personas" replace />} />
           <Route path="scenarios" element={<Scenarios />} />
           <Route path="metrics" element={<Navigate to="/metrics-management" replace />} />
           <Route path="integrations" element={<Integrations />} />

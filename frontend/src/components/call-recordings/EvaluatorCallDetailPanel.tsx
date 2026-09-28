@@ -35,7 +35,7 @@ import {
   evaluatorDrawerScopeTags,
   type EvaluatorCallScope,
 } from './callDetailScope'
-import { isChatEvalResult } from '../../lib/agentMedium'
+import { isChatEvalResult, isTranscriptOnlyEvalResult } from '../../lib/agentMedium'
 
 type DrawerTab =
   | 'transcript'
@@ -91,8 +91,16 @@ function isUserSpeaker(speaker: string): boolean {
   )
 }
 
-function getSpeakerLabel(speaker: string, agentName?: string, personaName?: string): string {
-  if (isUserSpeaker(speaker)) return personaName?.trim() || 'Caller'
+function getSpeakerLabel(
+  speaker: string,
+  agentName?: string,
+  personaName?: string,
+  chatSimulation?: boolean,
+): string {
+  if (isUserSpeaker(speaker)) {
+    if (chatSimulation) return 'Customer'
+    return personaName?.trim() || 'Caller'
+  }
   if (['assistant', 'speaker 2', 'bot', 'agent'].includes(speaker.trim().toLowerCase())) {
     return agentName || 'Agent'
   }
@@ -217,6 +225,7 @@ export default function EvaluatorCallDetailPanel({
   })
 
   const isChatRun = Boolean(result && isChatEvalResult(result))
+  const isTranscriptOnly = Boolean(result && isTranscriptOnlyEvalResult(result))
 
   const showProviderTab = Boolean(
     result &&
@@ -258,12 +267,15 @@ export default function EvaluatorCallDetailPanel({
   )
 
   const speakerSegments = persistedSegments.length > 0 ? persistedSegments : traceSegments
-  const personaName = result?.persona?.name
+  const personaName = isChatRun ? undefined : result?.persona?.name
   const transcription =
     String(result?.transcription ?? '').trim() ||
     (speakerSegments.length > 0
       ? speakerSegments
-          .map((seg) => `${getSpeakerLabel(seg.speaker, result?.agent?.name, personaName)}: ${seg.text}`)
+          .map(
+            (seg) =>
+              `${getSpeakerLabel(seg.speaker, result?.agent?.name, personaName, isChatRun)}: ${seg.text}`,
+          )
           .join('\n')
       : '')
 
@@ -406,7 +418,7 @@ export default function EvaluatorCallDetailPanel({
 
   const callScope: EvaluatorCallScope = {
     agentName: result?.agent?.name,
-    personaName: result?.persona?.name,
+    personaName: isChatRun ? null : result?.persona?.name,
     personaTtsLine: isChatRun
       ? null
       : result?.persona?.tts_provider || result?.persona?.tts_voice_name
@@ -418,7 +430,7 @@ export default function EvaluatorCallDetailPanel({
   const tabScope = evaluatorDrawerScopeTags(tab, callScope)
   const providerBillingScope = {
     subjectLabel: result?.agent?.name,
-    personaName: result?.persona?.name,
+    personaName: isChatRun ? null : result?.persona?.name,
     personaTtsLine: callScope.personaTtsLine,
   }
 
@@ -473,7 +485,7 @@ export default function EvaluatorCallDetailPanel({
             </div>
           ) : null}
 
-          {!isChatRun ? (
+          {!isTranscriptOnly ? (
             <CallWaveformPlayer
               evaluatorResultId={audioPlayback.evaluatorResultId}
               callShortId={audioPlayback.callShortId}
@@ -533,7 +545,12 @@ export default function EvaluatorCallDetailPanel({
                           <div className={transcriptBubbleClass(isUserSpeaker(segment.speaker))}>
                             <div className={transcriptMetaClass(isUserSpeaker(segment.speaker))}>
                               <span>
-                                {getSpeakerLabel(segment.speaker, result?.agent?.name, personaName)}
+                                {getSpeakerLabel(
+                                  segment.speaker,
+                                  result?.agent?.name,
+                                  personaName,
+                                  isChatRun,
+                                )}
                               </span>
                               {timing ? (
                                 <span className="font-normal normal-case tracking-normal tabular-nums">

@@ -14,6 +14,32 @@ from app.models.database import Agent, Integration
 from app.models.enums import IntegrationPlatform
 from app.services.voice_providers import get_voice_provider
 
+_RETELL_CHAT_422_HINT = (
+    "Retell returned 422 for create-chat. Use a Retell chat agent ID "
+    "(dashboard: create or convert to chat agent), not a voice-only agent ID. "
+    "The API key must belong to the same Retell account as that agent."
+)
+
+
+def _provider_http_error(
+    exc: httpx.HTTPStatusError,
+    *,
+    platform: str,
+    operation: str,
+) -> ValueError:
+    detail = ""
+    try:
+        payload = exc.response.json()
+        if isinstance(payload, dict):
+            detail = str(payload.get("message") or payload.get("detail") or "").strip()
+    except Exception:
+        detail = (exc.response.text or "").strip()[:500]
+    base = detail or exc.response.reason_phrase or str(exc)
+    if platform == IntegrationPlatform.RETELL.value and exc.response.status_code == 422:
+        if operation == "create-chat":
+            return ValueError(f"{_RETELL_CHAT_422_HINT} Retell: {base}")
+    return ValueError(f"{platform} {operation} failed ({exc.response.status_code}): {base}")
+
 
 @dataclass
 class ProviderChatState:
@@ -130,7 +156,12 @@ def _retell_chat_turn(
                 headers=headers,
                 json={"agent_id": agent_id},
             )
-            session_resp.raise_for_status()
+            try:
+                session_resp.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise _provider_http_error(
+                    exc, platform=IntegrationPlatform.RETELL.value, operation="create-chat"
+                ) from exc
             session_data = session_resp.json()
             chat_id = session_data.get("chat_id") or session_data.get("id")
             if not isinstance(chat_id, str) or not chat_id.strip():
@@ -142,7 +173,12 @@ def _retell_chat_turn(
             headers=headers,
             json={"chat_id": state.retell_chat_id, "content": user_input},
         )
-        chat_resp.raise_for_status()
+        try:
+            chat_resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise _provider_http_error(
+                exc, platform=IntegrationPlatform.RETELL.value, operation="create-chat-completion"
+            ) from exc
         chat_data = chat_resp.json()
         reply = _extract_retell_agent_text(chat_data.get("messages"))
         if not reply:

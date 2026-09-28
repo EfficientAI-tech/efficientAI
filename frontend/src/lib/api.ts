@@ -1950,7 +1950,7 @@ class ApiClient {
 
   async listIntegrationVoiceAgents(
     integrationId: string,
-    options?: { refresh?: boolean; search?: string },
+    options?: { refresh?: boolean; search?: string; agentKind?: 'voice' | 'chat' },
   ): Promise<ListIntegrationVoiceAgentsResponse> {
     const response = await this.client.get(
       `/api/v1/integrations/${integrationId}/voice-agents`,
@@ -1958,6 +1958,7 @@ class ApiClient {
         params: {
           ...(options?.refresh ? { refresh: true } : {}),
           ...(options?.search ? { search: options.search } : {}),
+          ...(options?.agentKind ? { agent_kind: options.agentKind } : {}),
         },
       },
     )

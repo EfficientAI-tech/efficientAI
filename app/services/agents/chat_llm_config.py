@@ -109,6 +109,10 @@ def resolve_simulation_llm(
 
     if leg == "main":
         conn = normalized_chat_connection_type(agent)
+        if conn == ChatConnectionTypeEnum.INTERNAL_LLM.value and not (provider_raw and model):
+            return resolve_simulation_llm(
+                db, agent=agent, organization_id=organization_id, leg="test"
+            )
         if conn in (
             ChatConnectionTypeEnum.PROVIDER_CHAT.value,
             ChatConnectionTypeEnum.MESSAGING_CHANNELS.value,

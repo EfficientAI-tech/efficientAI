@@ -158,8 +158,12 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
                 return {"error": "Missing persona or scenario"}
 
             try:
-                result.status = EvaluatorResultStatus.CALL_INITIATING.value
-                result.call_event = "llm_simulation_started"
+                result.status = EvaluatorResultStatus.EVALUATING.value
+                result.call_event = (
+                    "chat_simulation_started"
+                    if call_medium == "chat"
+                    else "llm_text_simulation_started"
+                )
                 db.commit()
 
                 run_llm_to_llm_evaluator_simulation(

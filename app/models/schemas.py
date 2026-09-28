@@ -7,7 +7,7 @@ from datetime import date, datetime
 from uuid import UUID
 from app.models.enums import (
     EvaluationType, EvaluationStatus, EvaluatorResultStatus, RoleEnum, InvitationStatus,
-    LanguageEnum, CallTypeEnum, CallMediumEnum, ChatConnectionTypeEnum, ChatEvalModeEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
+    LanguageEnum, CallTypeEnum, CallMediumEnum, ChatConnectionTypeEnum, ChatEvalModeEnum, SimulationMediumEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
     BackgroundNoiseSourceEnum,
     IntegrationPlatform, ModelProvider, CredentialRoutingMode, GatewayInterfaceMode, VoiceBundleType, TestAgentConversationStatus,
     MetricType, MetricCategory, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
@@ -463,6 +463,7 @@ class GenerateScenariosFromPromptRequest(BaseModel):
     scenario_count: int = Field(default=5, ge=1, le=10)
     language: Optional[str] = None
     call_type: Optional[str] = None
+    call_medium: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
     credential_id: Optional[UUID] = None
@@ -609,6 +610,7 @@ class AgentResponse(BaseModel):
 class PersonaCreate(BaseModel):
     """Schema for creating a new persona (TTS provider-tied voice identity)"""
     name: str = Field(..., min_length=1, max_length=255)
+    simulation_medium: Optional[SimulationMediumEnum] = None
     gender: GenderEnum = GenderEnum.NEUTRAL
     tts_provider: Optional[str] = None
     tts_voice_id: Optional[str] = None
@@ -631,6 +633,21 @@ class PersonaCreate(BaseModel):
         from app.services.personas.persona_tts_config import validate_persona_tts_config
 
         validate_persona_tts_config(self.tts_provider, self.tts_config)
+        return self
+
+    @model_validator(mode="after")
+    def validate_simulation_medium(self):
+        from app.services.personas.persona_simulation_medium import (
+            infer_simulation_medium_from_fields,
+            validate_persona_medium_fields,
+        )
+
+        medium = infer_simulation_medium_from_fields(
+            explicit=self.simulation_medium,
+            tts_provider=self.tts_provider,
+        )
+        validate_persona_medium_fields(simulation_medium=medium, tts_provider=self.tts_provider)
+        object.__setattr__(self, "simulation_medium", medium)
         return self
 
     @model_validator(mode="after")
@@ -659,6 +676,7 @@ class PersonaCreate(BaseModel):
 class PersonaUpdate(BaseModel):
     """Schema for updating a persona"""
     name: Optional[str] = None
+    simulation_medium: Optional[SimulationMediumEnum] = None
     gender: Optional[GenderEnum] = None
     tts_provider: Optional[str] = None
     tts_voice_id: Optional[str] = None
@@ -689,6 +707,7 @@ class PersonaResponse(BaseModel):
     """Schema for persona response"""
     id: UUID
     name: str
+    simulation_medium: str = SimulationMediumEnum.VOICE.value
     gender: str
     tts_provider: Optional[str] = None
     tts_voice_id: Optional[str] = None

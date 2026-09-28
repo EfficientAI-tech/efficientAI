@@ -10,8 +10,13 @@ interface ChatAgentStepProps {
   compact?: boolean
 }
 
-export function validateChatAgentStep(formData: CreateAgentFormData, productionPrompt: string): boolean {
-  return Boolean(formData.name.trim() && productionPrompt.trim())
+export function validateChatAgentStep(
+  formData: CreateAgentFormData,
+  productionPrompt: string,
+  options?: { requireProductionPrompt?: boolean },
+): boolean {
+  const requirePrompt = options?.requireProductionPrompt ?? true
+  return Boolean(formData.name.trim() && (!requirePrompt || productionPrompt.trim()))
 }
 
 export default function ChatAgentStep({
@@ -54,13 +59,17 @@ export default function ChatAgentStep({
       {showProductionPrompt ? (
         <div>
           <label className={CREATE_WIZARD_LABEL_CLASS}>Production prompt *</label>
+          <p className="text-xs text-gray-500 mb-2">
+            Write for <span className="font-medium">text chat</span> (typed messages). Voice/phone prompts
+            can be pasted for LLM-to-LLM sim, but chat-oriented instructions work best.
+          </p>
           <textarea
             className={`${CREATE_WIZARD_FIELD_CLASS} font-mono text-xs resize-y ${
               compact ? 'min-h-[112px]' : 'min-h-[200px]'
             }`}
             value={productionPrompt}
             onChange={(e) => onProductionPromptChange(e.target.value)}
-            placeholder="You are a helpful assistant…"
+            placeholder="You are a helpful chat assistant. Greet the user and help with their request in short messages…"
             rows={compact ? 5 : 8}
           />
         </div>

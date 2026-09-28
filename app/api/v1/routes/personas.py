@@ -19,7 +19,18 @@ from app.models.database import (
     Persona, Evaluator, EvaluatorResult, TestAgentConversation, CustomTTSVoice,
     PromptOptimizationRun, CallRecording, Agent, AmbientNoiseAsset,
 )
-from app.models.enums import LanguageEnum, AccentEnum, GenderEnum, BackgroundNoiseEnum, BackgroundNoiseSourceEnum
+from app.models.enums import (
+    LanguageEnum,
+    AccentEnum,
+    GenderEnum,
+    BackgroundNoiseEnum,
+    BackgroundNoiseSourceEnum,
+    SimulationMediumEnum,
+)
+from app.services.personas.persona_simulation_medium import (
+    apply_persona_medium_defaults,
+    normalized_simulation_medium,
+)
 from app.models.schemas import (
     PersonaCreate, PersonaUpdate, PersonaResponse, PersonaCloneRequest,
     AgentPromptSourcesResponse, GeneratePersonaPromptRequest, GeneratePersonaPromptResponse,
@@ -315,15 +326,32 @@ async def create_persona(
             organization_id=organization_id,
             workspace_id=workspace_id,
         )
-        db_persona = Persona(
-            organization_id=organization_id,
-            workspace_id=workspace_id,
-            name=persona.name,
-            gender=persona.gender,
+        medium_defaults = apply_persona_medium_defaults(
+            simulation_medium=persona.simulation_medium,
             tts_provider=persona.tts_provider,
             tts_voice_id=persona.tts_voice_id,
             tts_voice_name=persona.tts_voice_name,
             is_custom=persona.is_custom,
+            background_noise_source=persona.background_noise_source,
+        )
+        sim_medium = medium_defaults["simulation_medium"]
+        if sim_medium == SimulationMediumEnum.TEXT.value:
+            ambient_fields = {
+                "background_noise_source": BackgroundNoiseSourceEnum.NONE.value,
+                "background_noise_preset": None,
+                "background_noise_volume": None,
+                "background_noise_asset_id": None,
+            }
+        db_persona = Persona(
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            name=persona.name,
+            simulation_medium=sim_medium,
+            gender=persona.gender,
+            tts_provider=medium_defaults.get("tts_provider", persona.tts_provider),
+            tts_voice_id=medium_defaults.get("tts_voice_id", persona.tts_voice_id),
+            tts_voice_name=medium_defaults.get("tts_voice_name", persona.tts_voice_name),
+            is_custom=medium_defaults.get("is_custom", persona.is_custom),
             description=persona.description,
             tts_config=_normalized_persona_tts_config(persona.tts_provider, persona.tts_config),
             llm_temperature=persona.llm_temperature,
@@ -374,16 +402,21 @@ async def create_persona(
 async def list_personas(
     skip: int = 0,
     limit: int = 100,
+    simulation_medium: Optional[str] = Query(None, description="Filter: voice or text"),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
     """List personas for the active workspace."""
     try:
-        personas = db.query(Persona).filter(
+        query = db.query(Persona).filter(
             Persona.organization_id == organization_id,
             Persona.workspace_id == workspace_id,
-        ).offset(skip).limit(limit).all()
+        )
+        if simulation_medium:
+            medium = normalized_simulation_medium(simulation_medium)
+            query = query.filter(Persona.simulation_medium == medium)
+        personas = query.offset(skip).limit(limit).all()
         valid_personas: List[Persona] = []
         for persona in personas:
             if _is_valid_persona_row(persona):

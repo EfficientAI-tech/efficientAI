@@ -1,4 +1,4 @@
-"""API tests for pre-prod LLM chat agents."""
+"""API tests for LLM chat agents (pre-prod + post-prod live connections)."""
 
 
 def _chat_prompt() -> str:
@@ -37,7 +37,7 @@ def test_create_chat_agent_preprod_internal_llm(authenticated_client, make_ai_pr
     assert body["main_llm_model"] == "gpt-4o-mini"
 
 
-def test_create_chat_agent_rejects_post_prod_eval_mode(authenticated_client, make_ai_provider):
+def test_create_chat_agent_rejects_post_prod_import(authenticated_client, make_ai_provider):
     cred = make_ai_provider(provider="openai")
     payload = {
         "name": "Import Chat Bot",
@@ -59,10 +59,10 @@ def test_create_chat_agent_rejects_post_prod_eval_mode(authenticated_client, mak
     response = authenticated_client.post("/api/v1/agents", json=payload)
 
     assert response.status_code == 400
-    assert "pre_prod_sim" in response.json()["detail"]
+    assert "import" in response.json()["detail"].lower()
 
 
-def test_create_chat_agent_rejects_customer_api_connection(authenticated_client, make_ai_provider):
+def test_create_chat_agent_customer_api_post_prod_live(authenticated_client, make_ai_provider):
     cred = make_ai_provider(provider="openai")
     payload = {
         "name": "API Chat Bot",
@@ -73,9 +73,6 @@ def test_create_chat_agent_rejects_customer_api_connection(authenticated_client,
         "call_medium": "chat",
         "chat_connection_type": "customer_api",
         "chat_connection_config": {"api_base_url": "https://example.com"},
-        "main_llm_provider": "openai",
-        "main_llm_model": "gpt-4o-mini",
-        "main_llm_credential_id": str(cred.id),
         "test_llm_provider": "openai",
         "test_llm_model": "gpt-4o-mini",
         "test_llm_credential_id": str(cred.id),
@@ -83,8 +80,10 @@ def test_create_chat_agent_rejects_customer_api_connection(authenticated_client,
 
     response = authenticated_client.post("/api/v1/agents", json=payload)
 
-    assert response.status_code == 400
-    assert "internal_llm" in response.json()["detail"]
+    assert response.status_code == 201
+    body = response.json()
+    assert body["chat_connection_type"] == "customer_api"
+    assert body["chat_eval_mode"] == "post_prod_live"
 
 
 def test_update_chat_agent_persists_llm_and_preprod_mode(authenticated_client, make_ai_provider):

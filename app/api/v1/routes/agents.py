@@ -21,7 +21,7 @@ from app.services.billing.flexprice_service import record_agent_test_setup_gener
 from app.models.database import (
     Agent, ConversationEvaluation, TestAgentConversation, VoiceBundle,
     AIProvider, Integration, IntegrationPlatform, CallMediumEnum,
-    Evaluator, EvaluatorResult, CallRecording, Scenario,
+    Evaluator, EvaluatorResult, EvaluatorSuite, CallRecording, Scenario,
 )
 from sqlalchemy import and_
 from app.models.schemas import (
@@ -64,11 +64,13 @@ def _stored_chat_connection_config(config):
 
 
 def _chat_eval_mode_for_create(agent: AgentCreate, is_chat_agent: bool):
-    from app.services.agents.chat_preprod_scope import preprod_chat_eval_mode_value
+    from app.models.enums import ChatConnectionTypeEnum
+    from app.services.agents.chat_preprod_scope import default_chat_eval_mode_for_connection
 
     if not is_chat_agent:
         return None
-    return preprod_chat_eval_mode_value()
+    conn = agent.chat_connection_type or ChatConnectionTypeEnum.INTERNAL_LLM
+    return default_chat_eval_mode_for_connection(conn)
 
 
 def _first_message_response(first_message: TestAgentFirstMessage) -> TestAgentFirstMessageResponse:
@@ -429,6 +431,7 @@ async def generate_scenarios_from_prompt(
                 scenario_count=data.scenario_count,
                 language=data.language,
                 call_type=data.call_type,
+                call_medium=data.call_medium,
                 additional_context=data.additional_context,
                 llm_provider=provider_enum,
                 llm_model=model_str,
@@ -512,6 +515,7 @@ async def generate_test_setup(
                 scenario_count=data.scenario_count,
                 language=data.language,
                 call_type=data.call_type,
+                call_medium=getattr(data, "call_medium", None),
                 additional_context=data.additional_context,
                 llm_provider=provider_enum,
                 llm_model=model_str,
@@ -559,7 +563,12 @@ def generate_unique_agent_id(db: Session) -> str:
     )
 
 
-def get_agent_dependencies(db: Session, organization_id: UUID, agent_uuid: UUID) -> dict:
+def get_agent_dependencies(
+    db: Session,
+    organization_id: UUID,
+    agent_uuid: UUID,
+    workspace_id: Optional[UUID] = None,
+) -> dict:
     """Return dependency counts that block non-force delete."""
     evaluators_count = db.query(Evaluator).filter(
         Evaluator.agent_id == agent_uuid,
@@ -586,7 +595,17 @@ def get_agent_dependencies(db: Session, organization_id: UUID, agent_uuid: UUID)
         TestAgentConversation.organization_id == organization_id,
     ).count()
 
+    suite_filters = [
+        EvaluatorSuite.agent_id == agent_uuid,
+        EvaluatorSuite.organization_id == organization_id,
+    ]
+    if workspace_id is not None:
+        suite_filters.append(EvaluatorSuite.workspace_id == workspace_id)
+    evaluator_suites_count = db.query(EvaluatorSuite).filter(*suite_filters).count()
+
     dependencies = {}
+    if evaluator_suites_count > 0:
+        dependencies["evaluator_suites"] = evaluator_suites_count
     if evaluators_count > 0:
         dependencies["evaluators"] = evaluators_count
     if evaluator_results_count > 0:
@@ -995,10 +1014,20 @@ async def update_agent(
             if hasattr(update_data["chat_eval_mode"], "value")
             else update_data["chat_eval_mode"]
         )
+    if "chat_connection_type" in update_data and update_data["chat_connection_type"] is not None:
+        from app.services.agents.chat_connection import coerce_chat_connection_type
+
+        update_data["chat_connection_type"] = coerce_chat_connection_type(
+            update_data["chat_connection_type"]
+        )
 
     from app.services.agents.chat_preprod_scope import apply_preprod_chat_update
 
-    apply_preprod_chat_update(update_data, db_call_medium=db_agent.call_medium)
+    apply_preprod_chat_update(
+        update_data,
+        db_call_medium=db_agent.call_medium,
+        db_connection_type=db_agent.chat_connection_type,
+    )
 
     if "test_agent_template" in update_data:
         template_input = agent_update.test_agent_template
@@ -1050,9 +1079,13 @@ async def update_agent(
     if effective_medium == CallMediumEnum.CHAT:
         from app.api.v1.routes.voicebundles import _validate_credential
         from app.models.enums import ChatConnectionTypeEnum
-        from app.services.agents.chat_connection import validate_chat_connection_for_agent
+        from app.services.agents.chat_connection import (
+            coerce_chat_connection_type,
+            validate_chat_connection_for_agent,
+        )
 
-        conn = db_agent.chat_connection_type or ChatConnectionTypeEnum.INTERNAL_LLM
+        db_agent.chat_connection_type = coerce_chat_connection_type(db_agent.chat_connection_type)
+        conn = db_agent.chat_connection_type
         if db_agent.main_llm_provider:
             _validate_credential(
                 db,
@@ -1069,7 +1102,7 @@ async def update_agent(
                 db_agent.test_llm_credential_id,
                 "llm",
             )
-        if conn == ChatConnectionTypeEnum.PROVIDER_CHAT and not db_agent.voice_ai_integration_id:
+        if conn == ChatConnectionTypeEnum.PROVIDER_CHAT.value and not db_agent.voice_ai_integration_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="voice_ai_integration_id is required for provider_chat agents",
@@ -1200,10 +1233,14 @@ async def delete_agent(
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
     
     agent_uuid = db_agent.id
-    dependencies = get_agent_dependencies(db, organization_id, agent_uuid)
+    dependencies = get_agent_dependencies(
+        db, organization_id, agent_uuid, workspace_id=workspace_id
+    )
 
     if dependencies and not force:
         parts = []
+        if dependencies.get("evaluator_suites"):
+            parts.append(f"{dependencies['evaluator_suites']} evaluator suite(s)")
         if dependencies.get("evaluators"):
             parts.append(f"{dependencies['evaluators']} evaluator(s)")
         if dependencies.get("evaluator_results"):
@@ -1231,22 +1268,31 @@ async def delete_agent(
             EvaluatorResult.agent_id == agent_uuid,
         ).delete(synchronize_session=False)
 
-        # 2. Evaluators (references agents)
+        # 2. Evaluators (references agents; may also reference suites)
         db.query(Evaluator).filter(
             Evaluator.agent_id == agent_uuid,
+            Evaluator.organization_id == organization_id,
         ).delete(synchronize_session=False)
 
-        # 3. Nullify call recordings (keep recordings, unlink agent)
+        # 3. Evaluator suites (references agents; evaluators may already be removed)
+        suite_delete_filters = [
+            EvaluatorSuite.agent_id == agent_uuid,
+            EvaluatorSuite.organization_id == organization_id,
+            EvaluatorSuite.workspace_id == workspace_id,
+        ]
+        db.query(EvaluatorSuite).filter(*suite_delete_filters).delete(synchronize_session=False)
+
+        # 4. Nullify call recordings (keep recordings, unlink agent)
         db.query(CallRecording).filter(
             CallRecording.agent_id == agent_uuid,
         ).update({CallRecording.agent_id: None}, synchronize_session=False)
 
-        # 4. ConversationEvaluations
+        # 5. ConversationEvaluations
         db.query(ConversationEvaluation).filter(
             ConversationEvaluation.agent_id == agent_uuid,
         ).delete(synchronize_session=False)
 
-        # 5. TestAgentConversations
+        # 6. TestAgentConversations
         db.query(TestAgentConversation).filter(
             TestAgentConversation.agent_id == agent_uuid,
         ).delete(synchronize_session=False)
@@ -1295,7 +1341,9 @@ async def get_agent_delete_impact(
     if not db_agent:
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
 
-    dependencies = get_agent_dependencies(db, organization_id, db_agent.id)
+    dependencies = get_agent_dependencies(
+        db, organization_id, db_agent.id, workspace_id=workspace_id
+    )
     return {
         "agent_id": str(db_agent.id),
         "agent_name": db_agent.name,

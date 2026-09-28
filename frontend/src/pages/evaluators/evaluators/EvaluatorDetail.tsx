@@ -27,10 +27,17 @@ import EvaluatorLlmPicker from '../components/EvaluatorLlmPicker'
 import ScenarioViewModal from '../components/ScenarioViewModal'
 import EvaluatorDetailHeader from '../components/EvaluatorDetailHeader'
 import EvaluatorTtsMismatchBanner from '../components/EvaluatorTtsMismatchBanner'
+import { isChatMedium } from '../../../lib/agentMedium'
+import { filterPersonasByMedium } from '../../../lib/personaMedium'
 import EvaluatorMetricsDisplay from '../components/EvaluatorMetricsDisplay'
 import { MODERN_INPUT_CLASS, MODERN_SELECT_CLASS, StatCard } from '../components/evaluatorUi'
 import { normalizeSelectedMetricIds, type MetricRow } from '../components/metricSelectionUtils'
-import { formatSuitePersonaLabel } from '../components/evaluatorSuitePersonas'
+import {
+  formatSuiteCombinationSummary,
+  formatSuiteDisplayName,
+  formatSuitePersonaLabel,
+  isChatEvaluatorSuite,
+} from '../components/evaluatorSuitePersonas'
 import { suiteHasTtsProviderMismatch } from '../utils/evaluatorTtsMismatch'
 
 const DEFAULT_SCENARIO_NAMES = [
@@ -84,7 +91,7 @@ export default function EvaluatorDetail() {
   const { data: personas = [] } = useQuery({
     queryKey: ['personas'],
     queryFn: () => apiClient.listPersonas(),
-    enabled: isEditing,
+    enabled: isEditing && !!suite && !isChatMedium(suite.agent_call_medium),
   })
 
   const voiceBundleId = agent?.voice_bundle_id
@@ -268,7 +275,8 @@ export default function EvaluatorDetail() {
   }
 
   const isInbound = suite.agent_call_type === 'inbound'
-  const hasTtsMismatch = suiteHasTtsProviderMismatch(suite)
+  const isChatAgent = isChatEvaluatorSuite(suite)
+  const hasTtsMismatch = !isChatAgent && suiteHasTtsProviderMismatch(suite)
   const blocksOutboundRun = hasTtsMismatch && !isInbound
   const firstCombo = suite.combinations[0]
   const existingScenarioIds = new Set(suite.combinations.map((c) => c.scenario_id))
@@ -278,9 +286,11 @@ export default function EvaluatorDetail() {
   const voiceBundleTtsProvider = voiceBundle?.tts_provider
     ? String(voiceBundle.tts_provider).toLowerCase()
     : null
-  const filteredPersonas = voiceBundleTtsProvider
-    ? (personas as any[]).filter((p) => p.tts_provider?.toLowerCase() === voiceBundleTtsProvider)
-    : (personas as any[])
+  const filteredPersonas = isChatAgent
+    ? filterPersonasByMedium(personas as { tts_provider?: string | null }[], 'chat')
+    : voiceBundleTtsProvider
+      ? (personas as any[]).filter((p) => p.tts_provider?.toLowerCase() === voiceBundleTtsProvider)
+      : filterPersonasByMedium(personas as { tts_provider?: string | null }[], 'voice')
   const availableScenarios = (scenarios as any[]).filter(
     (s) => !DEFAULT_SCENARIO_NAMES.includes(s.name) && !existingScenarioIds.has(s.id),
   )
@@ -293,9 +303,7 @@ export default function EvaluatorDetail() {
 
   const metricRows = metrics as MetricRow[]
 
-  const displayTitle = isEditing
-    ? 'Edit Evaluator Suite'
-    : suite.name || `${suite.agent_name} · ${suite.persona_name}`
+  const displayTitle = isEditing ? 'Edit Evaluator Suite' : formatSuiteDisplayName(suite)
 
   return (
     <div className="space-y-6">
@@ -303,7 +311,11 @@ export default function EvaluatorDetail() {
 
       <EvaluatorDetailHeader
         title={displayTitle}
-        subtitle={!isEditing ? `${suite.combination_count} combination${suite.combination_count !== 1 ? 's' : ''} (${personaCount} persona${personaCount !== 1 ? 's' : ''} × ${distinctScenarioCount} scenario${distinctScenarioCount !== 1 ? 's' : ''})${suite.agent_suite_count > 1 ? ` · ${suite.agent_suite_count} suites for this agent` : ''}` : undefined}
+        subtitle={
+          !isEditing
+            ? `${suite.combination_count} combination${suite.combination_count !== 1 ? 's' : ''} (${formatSuiteCombinationSummary(suite, personaCount, distinctScenarioCount)})${suite.agent_suite_count > 1 ? ` · ${suite.agent_suite_count} suites for this agent` : ''}`
+            : undefined
+        }
         callMedium={suite.agent_call_medium}
         callType={suite.agent_call_type}
         isEditing={isEditing}
@@ -350,7 +362,7 @@ export default function EvaluatorDetail() {
 
           {!isEditing && (
             <motion.div
-              className="grid grid-cols-2 md:grid-cols-4 gap-4"
+              className={`grid grid-cols-2 gap-4 ${isChatAgent ? 'md:grid-cols-3' : 'md:grid-cols-4'}`}
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
             >
@@ -362,14 +374,16 @@ export default function EvaluatorDetail() {
                 iconClass="text-blue-600"
                 icon={<Bot className="w-5 h-5" />}
               />
-              <StatCard
-                label={personaCount > 1 ? 'Personas' : 'Persona'}
-                value={formatSuitePersonaLabel(suite)}
-                accentClass="text-base font-semibold text-gray-900"
-                iconBgClass="bg-purple-50"
-                iconClass="text-purple-600"
-                icon={<User className="w-5 h-5" />}
-              />
+              {!isChatAgent ? (
+                <StatCard
+                  label={personaCount > 1 ? 'Personas' : 'Persona'}
+                  value={formatSuitePersonaLabel(suite)}
+                  accentClass="text-base font-semibold text-gray-900"
+                  iconBgClass="bg-purple-50"
+                  iconClass="text-purple-600"
+                  icon={<User className="w-5 h-5" />}
+                />
+              ) : null}
               <StatCard
                 label="Scenarios"
                 value={distinctScenarioCount}
@@ -411,15 +425,15 @@ export default function EvaluatorDetail() {
             </div>
           )}
 
-          {isEditing && (
+          {isEditing && !isChatAgent && (
             <div className="space-y-4 border-t border-gray-100 pt-6">
               <div>
                 <h3 className="text-sm font-semibold text-gray-900 mb-3">Personas</h3>
-                {voiceBundleTtsProvider && (
+                {voiceBundleTtsProvider ? (
                   <p className="text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 mb-3">
-                    Showing personas matching TTS provider {voiceBundleTtsProvider}
+                    Showing caller personas matching TTS provider {voiceBundleTtsProvider}
                   </p>
-                )}
+                ) : null}
                 <div className="flex flex-wrap gap-2 mb-3">
                   {(suite.personas ?? []).map((persona) => (
                     <span
@@ -488,7 +502,7 @@ export default function EvaluatorDetail() {
                     </Button>
                   </div>
                 )}
-                {personaCount <= 1 && (
+                {personaCount <= 1 && swapPersonas.length > 0 && (
                   <p className="text-xs text-gray-500 mt-2">
                     Use Change persona to swap the library persona for this suite.
                   </p>
@@ -577,7 +591,11 @@ export default function EvaluatorDetail() {
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Evaluator ID</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Persona</th>
+                {!isChatAgent ? (
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Persona
+                  </th>
+                ) : null}
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Scenario</th>
                 <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
               </tr>
@@ -586,12 +604,16 @@ export default function EvaluatorDetail() {
               {suite.combinations.map((c) => (
                 <tr key={c.id} className="hover:bg-gray-50 transition-colors">
                   <td className="px-6 py-4 font-mono text-xs text-gray-500">{c.evaluator_id}</td>
-                  <td className="px-6 py-4">
-                    <div className="flex items-center gap-2">
-                      <User className="h-4 w-4 text-purple-400 shrink-0" />
-                      <span className="text-sm font-medium text-gray-900">{c.persona_name || c.persona_id || '—'}</span>
-                    </div>
-                  </td>
+                  {!isChatAgent ? (
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-2">
+                        <User className="h-4 w-4 text-purple-400 shrink-0" />
+                        <span className="text-sm font-medium text-gray-900">
+                          {c.persona_name || c.persona_id || '—'}
+                        </span>
+                      </div>
+                    </td>
+                  ) : null}
                   <td className="px-6 py-4">
                     <div className="flex items-center gap-2">
                       <FileText className="h-4 w-4 text-gray-400 shrink-0" />

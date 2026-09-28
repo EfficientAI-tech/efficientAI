@@ -45,13 +45,13 @@ export const TELEPHONY_STEPS = [
 
 export const PLATFORM_STEPS = [
   { id: 1, title: 'Connect', description: 'Choose platform, integration, agent' },
-  { id: 2, title: 'Voice', description: 'Select voice bundle' },
-  { id: 3, title: 'Prompts', description: 'Imported prompt → test prompt' },
+  { id: 2, title: 'Prompts', description: 'Imported prompt → test prompt' },
+  { id: 3, title: 'Voice', description: 'Select voice bundle' },
 ] as const
 
 export const CHAT_STEPS = [
-  { id: 1, title: 'Agent', description: 'Identity, platform, prompt' },
-  { id: 2, title: 'Pre-prod eval', description: 'Evaluator LLMs & mode' },
+  { id: 1, title: 'Agent', description: 'Name, connection, and prompt' },
+  { id: 2, title: 'Testing', description: 'Test LLM (Platform LLM)' },
 ] as const
 
 export function createWizardMaxStep(path: CreateAgentPath): CreateStepId {

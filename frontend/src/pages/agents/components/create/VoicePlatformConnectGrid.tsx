@@ -18,6 +18,8 @@ export interface VoicePlatformConnectGridProps {
   voiceAiAgentId: string
   onIntegrationChange: (integrationId: string) => void
   onAgentIdChange: (agentId: string) => void
+  platformOptions?: IntegrationPlatform[]
+  remoteAgentKind?: 'voice' | 'chat'
 }
 
 export default function VoicePlatformConnectGrid({
@@ -28,6 +30,8 @@ export default function VoicePlatformConnectGrid({
   voiceAiAgentId,
   onIntegrationChange,
   onAgentIdChange,
+  platformOptions = VOICE_PLATFORM_OPTIONS,
+  remoteAgentKind = 'voice',
 }: VoicePlatformConnectGridProps) {
   const activeIntegrations = integrations.filter((integration) => integration.is_active)
 
@@ -36,7 +40,7 @@ export default function VoicePlatformConnectGrid({
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-      {VOICE_PLATFORM_OPTIONS.map((platform) => {
+      {platformOptions.map((platform) => {
         const logo = getIntegrationPlatformLogo(platform)
         const label = getIntegrationPlatformLabel(platform)
         const isSelected = selectedPlatform === platform
@@ -103,6 +107,11 @@ export default function VoicePlatformConnectGrid({
                         platformLabel={label}
                         value={voiceAiAgentId}
                         onChange={onAgentIdChange}
+                        agentKind={
+                          remoteAgentKind === 'chat' && platform === IntegrationPlatform.RETELL
+                            ? 'chat'
+                            : 'voice'
+                        }
                       />
                     ) : null}
                   </>

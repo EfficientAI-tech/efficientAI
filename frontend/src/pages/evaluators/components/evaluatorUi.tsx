@@ -57,8 +57,10 @@ export function getCallTypeConfig(
 
 export function EvalRunKindBadge({
   isChat,
+  chatConnectionType,
 }: {
   isChat: boolean
+  chatConnectionType?: string | null
 }) {
   if (!isChat) {
     return (
@@ -67,10 +69,29 @@ export function EvalRunKindBadge({
       </span>
     )
   }
+  const label =
+    chatConnectionType === 'internal_llm'
+      ? 'LLM-to-LLM chat'
+      : chatConnectionType
+        ? 'Live text chat eval'
+        : 'Text chat agent'
+  const title =
+    chatConnectionType === 'internal_llm'
+      ? 'Both legs use platform LLMs'
+      : chatConnectionType
+        ? 'Test LLM; production leg uses your live chat integration'
+        : undefined
   return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border bg-violet-50 text-violet-800 border-violet-200">
+    <span
+      title={title}
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${
+        chatConnectionType && chatConnectionType !== 'internal_llm'
+          ? 'bg-sky-50 text-sky-800 border-sky-200'
+          : 'bg-violet-50 text-violet-800 border-violet-200'
+      }`}
+    >
       <MessagesSquare className="h-3.5 w-3.5" />
-      LLM chat sim
+      {label}
     </span>
   )
 }
