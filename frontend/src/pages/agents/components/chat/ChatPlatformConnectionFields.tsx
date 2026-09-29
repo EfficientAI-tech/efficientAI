@@ -90,6 +90,7 @@ export default function ChatPlatformConnectionFields({
                   <VoiceAgentPicker
                     integrationId={voiceAiIntegrationId}
                     platformLabel={platformLabel}
+                    platformLogo={getIntegrationPlatformLogo(selectedPlatform)}
                     value={voiceAiAgentId}
                     onChange={onAgentIdChange}
                     agentKind="chat"

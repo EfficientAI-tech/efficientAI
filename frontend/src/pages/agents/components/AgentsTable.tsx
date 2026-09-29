@@ -3,7 +3,6 @@ import { Phone } from 'lucide-react'
 import { TestAgent, Integration, IntegrationPlatform } from '../../../types/api'
 import { getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../../config/providers'
 import { CallTypeBadge } from '../../evaluators/components/evaluatorUi'
-import { isChatMedium } from '../../../lib/agentMedium'
 
 interface AgentsTableProps {
   agents: TestAgent[]
@@ -85,7 +84,7 @@ export default function AgentsTable({
                 <td className="px-6 py-4 whitespace-nowrap">
                   {agent.agent_id ? (
                     <div className="flex items-center gap-2">
-                      {!isChatMedium(agent.call_medium) ? getIntegrationLogo(agent) : null}
+                      {getIntegrationLogo(agent)}
                       <span
                         className="font-mono font-semibold text-sm text-primary-600 hover:text-primary-800 hover:underline cursor-pointer"
                         onClick={() => navigate(`/agents/${agent.agent_id || agent.id}`)}

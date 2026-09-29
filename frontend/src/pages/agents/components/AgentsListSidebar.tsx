@@ -144,7 +144,7 @@ export default function AgentsListSidebar({
                 className="flex-1 min-w-0 text-left px-2 py-2.5"
               >
                 <div className="flex items-center gap-1.5">
-                  {!isChatMedium(agent.call_medium) ? getIntegrationLogo(agent) : null}
+                  {getIntegrationLogo(agent)}
                   <span className="font-mono text-xs font-semibold text-primary-600 truncate">
                     {agent.agent_id || agent.id.slice(0, 8)}
                   </span>

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
+import AnchoredSelect from '../../../../components/shared/AnchoredSelect'
 import { apiClient } from '../../../../lib/api'
 
 interface VoiceAgentPickerProps {
@@ -10,6 +11,7 @@ interface VoiceAgentPickerProps {
   onChange: (agentId: string) => void
   /** Retell text chat needs chat-channel agent IDs, not voice agents. */
   agentKind?: 'voice' | 'chat'
+  platformLogo?: string | null
 }
 
 export default function VoiceAgentPicker({
@@ -18,6 +20,7 @@ export default function VoiceAgentPicker({
   value,
   onChange,
   agentKind = 'voice',
+  platformLogo = null,
 }: VoiceAgentPickerProps) {
   const queryClient = useQueryClient()
   const [manualEntry, setManualEntry] = useState(false)
@@ -68,25 +71,10 @@ export default function VoiceAgentPicker({
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center justify-between gap-2">
-        <label className="block text-xs font-medium text-gray-600">
-          {agentKind === 'chat' ? 'Chat Agent *' : 'Agent *'}
-        </label>
-        {showPicker ? (
-          <button
-            type="button"
-            onClick={handleRefresh}
-            disabled={busy}
-            className="inline-flex items-center gap-1 text-xs text-gray-600 hover:text-gray-900 disabled:opacity-50"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${busy ? 'animate-spin' : ''}`} />
-            Refresh
-          </button>
-        ) : null}
-      </div>
-
       {showPicker ? (
         <>
+          <div className="flex items-end justify-between gap-2">
+            <div className="flex-1 min-w-0">
           {errorMessage ? (
             <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">
               {errorMessage}
@@ -113,19 +101,30 @@ export default function VoiceAgentPicker({
               Large account — not all agents may be listed. Use manual entry if yours is missing.
             </p>
           ) : null}
-          <select
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            disabled={busy || Boolean(errorMessage)}
-            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-primary-500 disabled:bg-gray-50"
-          >
-            <option value="">{busy ? 'Loading agents…' : 'Select agent'}</option>
-            {agents.map((agent) => (
-              <option key={agent.id} value={agent.id}>
-                {agent.name} ({agent.id})
-              </option>
-            ))}
-          </select>
+              <AnchoredSelect
+                label={agentKind === 'chat' ? 'Chat Agent *' : 'Agent *'}
+                value={value}
+                options={agents.map((agent) => ({
+                  value: agent.id,
+                  label: `${agent.name} (${agent.id})`,
+                  iconUrl: platformLogo,
+                }))}
+                placeholder={busy ? 'Loading agents…' : 'Select agent'}
+                disabled={busy || Boolean(errorMessage)}
+                onChange={onChange}
+                maxMenuHeight={280}
+              />
+            </div>
+            <button
+              type="button"
+              onClick={handleRefresh}
+              disabled={busy}
+              className="mb-0.5 inline-flex shrink-0 items-center gap-1 text-xs text-gray-600 hover:text-gray-900 disabled:opacity-50"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${busy ? 'animate-spin' : ''}`} />
+              Refresh
+            </button>
+          </div>
           {!busy && agents.length === 0 && !errorMessage ? (
             <p className="text-xs text-gray-500">No agents returned for this integration.</p>
           ) : null}
@@ -139,6 +138,9 @@ export default function VoiceAgentPicker({
         </>
       ) : (
         <>
+          <label className="block text-xs font-medium text-gray-600">
+            {agentKind === 'chat' ? 'Chat Agent *' : 'Agent *'}
+          </label>
           {data?.message ? (
             <p className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-md px-3 py-2">
               {data.message}

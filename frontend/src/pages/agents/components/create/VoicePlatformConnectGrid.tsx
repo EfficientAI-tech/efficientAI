@@ -100,6 +100,7 @@ export default function VoicePlatformConnectGrid({
                       <VoiceAgentPicker
                         integrationId={voiceAiIntegrationId}
                         platformLabel={label}
+                        platformLogo={logo}
                         value={voiceAiAgentId}
                         onChange={onAgentIdChange}
                         agentKind={

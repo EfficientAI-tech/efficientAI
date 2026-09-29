@@ -44,7 +44,7 @@ def test_fixture_write_conflict():
         replay_events_until_turn_complete(events)
 
 
-def test_livekit_agent_transcript_without_role():
+def test_agent_transcript_without_role():
     text = extract_assistant_text(
         {"type": "transcript", "text": "Hello from agent", "topic": "agent_response"}
     )
