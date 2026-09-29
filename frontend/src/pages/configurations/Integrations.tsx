@@ -1670,7 +1670,7 @@ export default function Integrations() {
                         </div>
                         <div>
                           <label className="block text-sm font-medium text-gray-700 mb-1">
-                            {selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'API Key' : 'Auth ID'} {isEditMode && <span className="text-gray-500 font-normal">(leave blank to keep current)</span>}
+                        {selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'API Key' : selectedTelephonyProvider === TelephonyProvider.TWILIO ? 'Account SID' : 'Auth ID'} {isEditMode && <span className="text-gray-500 font-normal">(leave blank to keep current)</span>}
                           </label>
                           <input type="password" value={telephonyAuthId} onChange={(e) => setTelephonyAuthId(e.target.value)} required={!isEditMode}
                             placeholder={isEditMode ? 'Leave blank to keep current' : selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'Enter API Key' : 'Enter Auth ID'} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500" />

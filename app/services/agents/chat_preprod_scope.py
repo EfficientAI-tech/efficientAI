@@ -17,6 +17,7 @@ _LIVE_CONNECTIONS = frozenset(
     {
         ChatConnectionTypeEnum.PROVIDER_CHAT.value,
         ChatConnectionTypeEnum.CUSTOMER_API.value,
+        ChatConnectionTypeEnum.CUSTOMER_WEBSOCKET.value,
         ChatConnectionTypeEnum.MESSAGING_CHANNELS.value,
     }
 )

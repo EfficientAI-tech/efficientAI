@@ -116,6 +116,50 @@ def _fetch_sync_reply(cfg: dict[str, Any], transcript: list[dict[str, str]], cha
         return resp.text.strip() or None
 
 
+def _resolve_telephony_integration(
+    db: Session,
+    *,
+    organization_id: UUID,
+    integration_id_raw: Any,
+) -> Optional[TelephonyIntegration]:
+    if not integration_id_raw:
+        return None
+    try:
+        integration_uuid = UUID(str(integration_id_raw))
+    except (TypeError, ValueError):
+        return None
+    return (
+        db.query(TelephonyIntegration)
+        .filter(
+            TelephonyIntegration.id == integration_uuid,
+            TelephonyIntegration.organization_id == organization_id,
+            TelephonyIntegration.is_active == True,
+        )
+        .first()
+    )
+
+
+def _resolve_twilio_credentials(
+    db: Session,
+    *,
+    organization_id: UUID,
+    cfg: dict[str, Any],
+) -> tuple[str, str]:
+    telephony_id = cfg.get("messaging_telephony_integration_id") or cfg.get(
+        "messaging_integration_id"
+    )
+    telephony = _resolve_telephony_integration(
+        db, organization_id=organization_id, integration_id_raw=telephony_id
+    )
+    if telephony and telephony.provider.lower() == "twilio":
+        sid = decrypt_api_key(telephony.auth_id)
+        token = decrypt_api_key(telephony.auth_token)
+        return sid, token
+    sid = _cfg_str(cfg, "twilio_account_sid")
+    token = _cfg_str(cfg, "twilio_auth_token")
+    return sid, token
+
+
 def try_messaging_worker_send(
     db: Session,
     *,
@@ -137,25 +181,20 @@ def try_messaging_worker_send(
 
     meta_token = _cfg_str(cfg, "meta_whatsapp_access_token", "whatsapp_access_token")
     meta_phone_id = _cfg_str(cfg, "meta_whatsapp_phone_number_id", "whatsapp_phone_number_id")
-    twilio_sid = _cfg_str(cfg, "twilio_account_sid")
-    twilio_token = _cfg_str(cfg, "twilio_auth_token")
+    twilio_sid, twilio_token = _resolve_twilio_credentials(
+        db, organization_id=organization_id, cfg=cfg
+    )
     twilio_from = _cfg_str(cfg, "twilio_from", "twilio_whatsapp_from")
 
-    integration_id_raw = cfg.get("messaging_integration_id")
+    plivo_integration_id = cfg.get("messaging_integration_id")
     telephony: Optional[TelephonyIntegration] = None
-    if integration_id_raw:
-        try:
-            integration_uuid = UUID(str(integration_id_raw))
-            telephony = (
-                db.query(TelephonyIntegration)
-                .filter(
-                    TelephonyIntegration.id == integration_uuid,
-                    TelephonyIntegration.organization_id == organization_id,
-                    TelephonyIntegration.is_active == True,
-                )
-                .first()
-            )
-        except (TypeError, ValueError):
+    if plivo_integration_id and not cfg.get("messaging_telephony_integration_id"):
+        telephony = _resolve_telephony_integration(
+            db,
+            organization_id=organization_id,
+            integration_id_raw=plivo_integration_id,
+        )
+        if telephony and telephony.provider.lower() != "plivo":
             telephony = None
 
     voice_integration_id = cfg.get("messaging_voice_integration_id")
@@ -184,6 +223,17 @@ def try_messaging_worker_send(
             )
             sent_via = "meta_whatsapp"
         elif twilio_sid and twilio_token and twilio_from:
+            turn_id = None
+            if channel == "sms":
+                from app.services.agents.chat_messaging_turn_wait import (
+                    register_twilio_sms_turn,
+                    wait_twilio_sms_reply,
+                )
+
+                turn_id = register_twilio_sms_turn(
+                    twilio_from=twilio_from,
+                    messaging_recipient=recipient,
+                )
             _send_twilio_message(
                 account_sid=twilio_sid,
                 auth_token=twilio_token,
@@ -193,6 +243,10 @@ def try_messaging_worker_send(
                 channel=channel,
             )
             sent_via = f"twilio_{channel}"
+            if channel == "sms" and turn_id:
+                inbound = wait_twilio_sms_reply(turn_id)
+                if inbound:
+                    return inbound.strip(), f"messaging_{sent_via}_inbound"
         elif telephony and telephony.provider.lower() == "plivo" and sender:
             _send_plivo_sms(telephony, src=sender, dst=recipient, body=user_text)
             sent_via = "plivo_sms"

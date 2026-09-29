@@ -26,6 +26,7 @@ from app.api.v1.routes import (
     evaluator_results,
     evaluator_result_metric_clusters,
     chat,
+    chat_messaging_webhooks,
     playground,
     settings,
     observability,
@@ -82,6 +83,7 @@ api_router.include_router(metrics.router)
 api_router.include_router(evaluator_result_metric_clusters.router)
 api_router.include_router(evaluator_results.router)
 api_router.include_router(chat.router)
+api_router.include_router(chat_messaging_webhooks.router)
 api_router.include_router(playground.router)
 api_router.include_router(settings.router)
 api_router.include_router(observability.router)

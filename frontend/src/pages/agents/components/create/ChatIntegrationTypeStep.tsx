@@ -1,4 +1,4 @@
-import { Brain, Cloud, Globe, MessagesSquare, type LucideIcon } from 'lucide-react'
+import { Brain, Cable, Cloud, Globe, MessagesSquare, type LucideIcon } from 'lucide-react'
 
 import type { ChatConnectionType } from './ChatConnectionStep'
 import { WizardStepHeader } from './WizardStepHeader'
@@ -15,6 +15,7 @@ const ICONS: Record<ChatIntegrationOptionId, LucideIcon> = {
   internal_llm: Brain,
   provider_chat: Cloud,
   customer_api: Globe,
+  customer_websocket: Cable,
   messaging_channels: MessagesSquare,
 }
 
@@ -22,6 +23,7 @@ const WIZARD_LABELS: Record<ChatIntegrationOptionId, string> = {
   internal_llm: 'LLM',
   provider_chat: WIZARD_EXISTING_PLATFORM_LABEL,
   customer_api: 'HTTP API',
+  customer_websocket: 'WebSocket',
   messaging_channels: 'Messaging',
 }
 

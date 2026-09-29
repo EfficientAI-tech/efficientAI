@@ -70,6 +70,7 @@ class ChatConnectionTypeEnum(str, enum.Enum):
     INTERNAL_LLM = "internal_llm"
     PROVIDER_CHAT = "provider_chat"
     CUSTOMER_API = "customer_api"
+    CUSTOMER_WEBSOCKET = "customer_websocket"
     MESSAGING_CHANNELS = "messaging_channels"
 
 
@@ -140,6 +141,7 @@ class TelephonyProvider(str, enum.Enum):
     PLIVO = "plivo"
     EXOTEL = "exotel"
     VOBIZ = "vobiz"
+    TWILIO = "twilio"
 
 
 class CredentialRoutingMode(str, enum.Enum):

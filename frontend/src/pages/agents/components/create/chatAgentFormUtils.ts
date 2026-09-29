@@ -35,6 +35,13 @@ export function chatConfigFromAgent(agent: TestAgent): ChatConnectionConfigForm 
     twilioAccountSid: String(cfg.twilio_account_sid || ''),
     twilioAuthToken: String(cfg.twilio_auth_token || ''),
     twilioFrom: String(cfg.twilio_from || ''),
+    websocketUrl: String(cfg.websocket_url || ''),
+    websocketAuthHeader: String(cfg.websocket_auth_header || 'Authorization'),
+    websocketAuthValue: String(cfg.websocket_auth_value || ''),
+    messagingTelephonyIntegrationId: String(
+      cfg.messaging_telephony_integration_id || cfg.messaging_integration_id || '',
+    ),
+    twilioInboundWebhookToken: String(cfg.twilio_inbound_webhook_token || ''),
   }
 }
 
@@ -55,9 +62,24 @@ export function buildChatConnectionConfigPayload(
         : {}),
     }
   }
+  if (connectionType === 'customer_websocket') {
+    const authValue = chatSecretForPayload(config.websocketAuthValue)
+    return {
+      websocket_url: config.websocketUrl.trim(),
+      ...(config.websocketAuthHeader.trim() && authValue
+        ? {
+            websocket_auth_header: config.websocketAuthHeader.trim(),
+            websocket_auth_value: authValue,
+          }
+        : {}),
+    }
+  }
   if (connectionType === 'messaging_channels') {
     return {
-      messaging_channel: config.messagingChannel,
+      messaging_channel: config.messagingChannel || 'sms',
+      ...(config.messagingTelephonyIntegrationId
+        ? { messaging_telephony_integration_id: config.messagingTelephonyIntegrationId }
+        : {}),
       ...(config.messagingIntegrationId
         ? { messaging_integration_id: config.messagingIntegrationId }
         : {}),
@@ -110,6 +132,8 @@ export function connectionTypeLabel(type?: string | null): string {
       return 'Existing platform'
     case 'customer_api':
       return 'HTTP API'
+    case 'customer_websocket':
+      return 'WebSocket'
     case 'messaging_channels':
       return 'Messaging'
     default:

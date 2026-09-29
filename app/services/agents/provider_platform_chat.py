@@ -204,6 +204,10 @@ def close_provider_chat_session(
     state: ProviderChatState,
 ) -> None:
     """Best-effort teardown after an eval simulation (Retell end-chat, Vapi delete session)."""
+    from app.services.agents.customer_websocket_chat import close_customer_websocket_session
+
+    close_customer_websocket_session(state)
+
     elevenlabs_session = state.extra.get("_elevenlabs_convai_session")
     if elevenlabs_session is not None:
         try:

@@ -241,6 +241,15 @@ export const TELEPHONY_PROVIDER_CONFIG: Record<TelephonyProvider, TelephonyProvi
       { key: 'auth_token', label: 'Auth Token', required: true, type: 'password' },
     ],
   },
+  [TelephonyProvider.TWILIO]: {
+    label: 'Twilio',
+    logo: null,
+    description: 'Programmable SMS and WhatsApp for chat agent eval',
+    fields: [
+      { key: 'auth_id', label: 'Account SID', required: true, type: 'text' },
+      { key: 'auth_token', label: 'Auth Token', required: true, type: 'password' },
+    ],
+  },
 }
 
 export const getTelephonyProviderLabel = (provider: TelephonyProvider): string =>

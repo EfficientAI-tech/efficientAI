@@ -65,6 +65,7 @@ def uses_live_production_leg(agent: Agent) -> bool:
         return False
     return conn in (
         ChatConnectionTypeEnum.CUSTOMER_API.value,
+        ChatConnectionTypeEnum.CUSTOMER_WEBSOCKET.value,
         ChatConnectionTypeEnum.MESSAGING_CHANNELS.value,
     )
 
@@ -105,6 +106,21 @@ def generate_production_chat_reply(
             language=str(agent.language or "en"),
         )
         meta["production_leg"] = "customer_api"
+        return reply, meta
+
+    if conn == ChatConnectionTypeEnum.CUSTOMER_WEBSOCKET.value:
+        from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
+        from app.services.agents.customer_websocket_chat import call_customer_websocket_chat
+
+        cfg = chat_connection_config_for_runtime(cfg_raw)
+        reply = call_customer_websocket_chat(
+            cfg,
+            transcript=transcript,
+            agent_name=(agent.name or "Agent").strip(),
+            language=str(agent.language or "en"),
+            state=provider_state,
+        )
+        meta["production_leg"] = "customer_websocket"
         return reply, meta
 
     if conn == ChatConnectionTypeEnum.PROVIDER_CHAT.value:
@@ -184,6 +200,7 @@ def generate_production_chat_reply(
     if conn in (
         ChatConnectionTypeEnum.MESSAGING_CHANNELS.value,
         ChatConnectionTypeEnum.CUSTOMER_API.value,
+        ChatConnectionTypeEnum.CUSTOMER_WEBSOCKET.value,
     ) and mode == ChatEvalModeEnum.POST_PROD_LIVE.value:
         raise ValueError(
             f"Live production chat ({conn}) could not complete this turn. "

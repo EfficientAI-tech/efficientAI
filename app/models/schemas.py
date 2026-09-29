@@ -299,6 +299,14 @@ class AgentCreate(BaseModel):
                     raise ValueError("Customer API chat requires chat_connection_config.api_base_url.")
                 if len(prompt.split()) < 3:
                     raise ValueError("Customer API chat requires a production prompt for eval metadata.")
+            elif conn == ChatConnectionTypeEnum.CUSTOMER_WEBSOCKET:
+                cfg = self.chat_connection_config or {}
+                if not (cfg.get("websocket_url") or "").strip():
+                    raise ValueError(
+                        "Customer WebSocket chat requires chat_connection_config.websocket_url."
+                    )
+                if len(prompt.split()) < 3:
+                    raise ValueError("Customer WebSocket chat requires a production prompt.")
             elif conn == ChatConnectionTypeEnum.MESSAGING_CHANNELS:
                 cfg = self.chat_connection_config or {}
                 channel = (cfg.get("messaging_channel") or "").strip().lower()

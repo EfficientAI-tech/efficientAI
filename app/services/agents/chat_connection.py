@@ -113,6 +113,14 @@ def validate_chat_connection_for_agent(agent: Agent) -> Optional[str]:
             return "Customer API chat agents require test-agent LLM for eval simulation."
         return None
 
+    if conn == ChatConnectionTypeEnum.CUSTOMER_WEBSOCKET.value:
+        cfg = chat_connection_config(agent)
+        if not (cfg.get("websocket_url") or "").strip():
+            return "WebSocket chat agents require websocket_url in chat_connection_config."
+        if not agent_has_test_llm_config(agent):
+            return "WebSocket chat agents require test-agent LLM for eval simulation."
+        return None
+
     if conn == ChatConnectionTypeEnum.MESSAGING_CHANNELS.value:
         cfg = chat_connection_config(agent)
         channel = (cfg.get("messaging_channel") or "").strip()

@@ -55,9 +55,9 @@ from app.services.testing.test_agent_template import (
 router = APIRouter(prefix="/agents", tags=["agents"])
 
 
-def _stored_chat_connection_config(config, *, previous=None):
+def _stored_chat_connection_config(config, *, previous=None, connection_type=None):
     from app.services.agents.chat_connection_config_store import (
-        prepare_chat_connection_config_for_storage,
+        enrich_chat_connection_config_for_storage,
     )
     from app.services.agents.chat_outbound_urls import assert_chat_connection_urls_safe
     from app.services.telephony.recording_download import ExotelInvalidContentError
@@ -69,7 +69,11 @@ def _stored_chat_connection_config(config, *, previous=None):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
-    return prepare_chat_connection_config_for_storage(config, previous=previous)
+    return enrich_chat_connection_config_for_storage(
+        config,
+        connection_type=connection_type,
+        previous=previous,
+    )
 
 
 def _chat_eval_mode_for_create(agent: AgentCreate, is_chat_agent: bool):
@@ -800,7 +804,14 @@ async def create_agent(
         test_llm_model=agent.test_llm_model,
         test_llm_credential_id=agent.test_llm_credential_id,
         test_llm_config=agent.test_llm_config,
-        chat_connection_config=_stored_chat_connection_config(agent.chat_connection_config),
+        chat_connection_config=_stored_chat_connection_config(
+            agent.chat_connection_config,
+            connection_type=(
+                agent.chat_connection_type.value
+                if agent.chat_connection_type and hasattr(agent.chat_connection_type, "value")
+                else agent.chat_connection_type
+            ),
+        ),
         chat_eval_mode=_chat_eval_mode_for_create(agent, is_chat_agent),
         ai_provider_id=agent.ai_provider_id,
         voice_ai_integration_id=agent.voice_ai_integration_id,
@@ -1028,9 +1039,11 @@ async def update_agent(
     update_data = agent_update.model_dump(exclude_unset=True, exclude_none=False)
 
     if "chat_connection_config" in update_data:
+        conn_for_storage = update_data.get("chat_connection_type") or db_agent.chat_connection_type
         update_data["chat_connection_config"] = _stored_chat_connection_config(
             update_data.get("chat_connection_config"),
             previous=db_agent.chat_connection_config,
+            connection_type=conn_for_storage,
         )
     if "chat_eval_mode" in update_data and update_data["chat_eval_mode"] is not None:
         update_data["chat_eval_mode"] = (

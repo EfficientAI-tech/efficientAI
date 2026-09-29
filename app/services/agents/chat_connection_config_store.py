@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 from typing import Any, Optional
 
 from app.core.encryption import decrypt_api_key, encrypt_api_key
@@ -12,6 +13,7 @@ _SECRET_KEYS = (
     "meta_whatsapp_access_token",
     "whatsapp_access_token",
     "twilio_auth_token",
+    "websocket_auth_value",
 )
 
 
@@ -30,6 +32,27 @@ def mask_chat_connection_config_for_response(
         if isinstance(out.get(key), str) and out[key].strip():
             out[key] = CHAT_CONFIG_SECRET_MASK
     return out
+
+
+def enrich_chat_connection_config_for_storage(
+    config: Optional[dict[str, Any]],
+    *,
+    connection_type: Optional[str] = None,
+    previous: Optional[dict[str, Any]] = None,
+) -> Optional[dict[str, Any]]:
+    """Apply defaults (e.g. Twilio inbound webhook token) before encrypting secrets."""
+    if not config or not isinstance(config, dict):
+        return config
+    out = dict(config)
+    prev = previous if isinstance(previous, dict) else {}
+    conn = (connection_type or "").strip().lower()
+    channel = (out.get("messaging_channel") or prev.get("messaging_channel") or "").strip().lower()
+    if conn == "messaging_channels" and channel in ("sms", "whatsapp"):
+        if not (out.get("twilio_inbound_webhook_token") or prev.get("twilio_inbound_webhook_token")):
+            out["twilio_inbound_webhook_token"] = secrets.token_urlsafe(24)
+        elif not out.get("twilio_inbound_webhook_token") and prev.get("twilio_inbound_webhook_token"):
+            out["twilio_inbound_webhook_token"] = prev["twilio_inbound_webhook_token"]
+    return prepare_chat_connection_config_for_storage(out, previous=previous)
 
 
 def prepare_chat_connection_config_for_storage(

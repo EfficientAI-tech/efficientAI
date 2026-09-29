@@ -36,6 +36,7 @@ function integrationOptionFromType(type: string): ChatIntegrationOptionId {
   const t = (type || 'internal_llm').toLowerCase()
   if (t === 'messaging_channels') return 'messaging_channels'
   if (t === 'customer_api') return 'customer_api'
+  if (t === 'customer_websocket') return 'customer_websocket'
   if (t === 'provider_chat') return 'provider_chat'
   return 'internal_llm'
 }

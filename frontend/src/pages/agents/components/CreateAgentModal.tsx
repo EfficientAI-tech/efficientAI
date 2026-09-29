@@ -331,6 +331,12 @@ export default function CreateAgentModal({
             chatConnectionConfig,
           )
         }
+        if (chatIntegrationOption === 'customer_websocket') {
+          payload.chat_connection_config = buildChatConnectionConfigPayload(
+            'customer_websocket',
+            chatConnectionConfig,
+          )
+        }
         if (chatIntegrationOption === 'messaging_channels') {
           payload.chat_connection_config = buildChatConnectionConfigPayload(
             'messaging_channels',
@@ -426,6 +432,11 @@ export default function CreateAgentModal({
         voice_ai_integration_id: '',
         voice_ai_agent_id: '',
       }))
+    }
+    if (option === 'messaging_channels') {
+      setChatConnectionConfig((prev) =>
+        prev.messagingChannel ? prev : { ...prev, messagingChannel: 'sms' },
+      )
     }
   }
 

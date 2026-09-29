@@ -8,6 +8,7 @@ export type ChatConnectionType =
   | 'internal_llm'
   | 'provider_chat'
   | 'customer_api'
+  | 'customer_websocket'
   | 'messaging_channels'
 
 export type ChatConnectionForm = {

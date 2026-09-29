@@ -8,6 +8,7 @@ export const CHAT_POSTPROD_LIVE_EVAL_MODE = 'post_prod_live' as const
 const LIVE_CONNECTION_TYPES: ChatConnectionType[] = [
   'provider_chat',
   'customer_api',
+  'customer_websocket',
   'messaging_channels',
 ]
 

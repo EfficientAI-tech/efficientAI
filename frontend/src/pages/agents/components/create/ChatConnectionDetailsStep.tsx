@@ -2,6 +2,8 @@ import { useState, type ReactNode } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import {
   ChevronDown,
+  Cable,
+  Copy,
   Globe,
   Loader2,
   MessageCircle,
@@ -10,12 +12,17 @@ import {
   Smartphone,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import { Integration, type IntegrationPlatform } from '../../../../types/api'
+import { Integration, IntegrationPlatform, TelephonyProvider } from '../../../../types/api'
 import { apiClient } from '../../../../lib/api'
 import { CHAT_CONFIG_SECRET_MASK, isStoredChatSecret } from '../../../../lib/chatConnectionSecrets'
 import { CREATE_WIZARD_FIELD_CLASS, CREATE_WIZARD_LABEL_CLASS } from './createWizardUi'
 import type { ChatIntegrationOptionId } from './ChatIntegrationTypeStep'
 import type { CreateAgentFormData } from './createAgentTypes'
+import { useOrgTelephony } from '../../../../hooks/useOrgTelephony'
+import {
+  getTelephonyProviderLabel,
+} from '../../../../config/providers'
+import { buildTwilioInboundWebhookUrl } from '../../../../lib/chatMessagingWebhookUrl'
 
 export type ChatConnectionConfigForm = {
   apiBaseUrl: string
@@ -33,6 +40,11 @@ export type ChatConnectionConfigForm = {
   twilioAccountSid: string
   twilioAuthToken: string
   twilioFrom: string
+  websocketUrl: string
+  websocketAuthHeader: string
+  websocketAuthValue: string
+  messagingTelephonyIntegrationId: string
+  twilioInboundWebhookToken: string
 }
 
 export const DEFAULT_CHAT_CONNECTION_CONFIG: ChatConnectionConfigForm = {
@@ -51,6 +63,11 @@ export const DEFAULT_CHAT_CONNECTION_CONFIG: ChatConnectionConfigForm = {
   twilioAccountSid: '',
   twilioAuthToken: '',
   twilioFrom: '',
+  websocketUrl: '',
+  websocketAuthHeader: 'Authorization',
+  websocketAuthValue: '',
+  messagingTelephonyIntegrationId: '',
+  twilioInboundWebhookToken: '',
 }
 
 interface ChatConnectionDetailsStepProps {
@@ -232,8 +249,24 @@ export function validateChatConnectionDetails(
   if (integrationType === 'customer_api') {
     return Boolean(config.apiBaseUrl.trim() && (!requirePrompt || productionPrompt.trim()))
   }
+  if (integrationType === 'customer_websocket') {
+    return Boolean(config.websocketUrl.trim() && (!requirePrompt || productionPrompt.trim()))
+  }
   if (integrationType === 'messaging_channels') {
-    return Boolean(config.messagingChannel && (!requirePrompt || productionPrompt.trim()))
+    const hasTwilio =
+      Boolean(config.messagingTelephonyIntegrationId.trim()) ||
+      Boolean(config.twilioAccountSid.trim() && config.twilioAuthToken.trim())
+    const hasSmsBasics =
+      config.messagingChannel === 'sms' &&
+      Boolean(config.twilioFrom.trim() && config.messagingRecipient.trim() && hasTwilio)
+    const hasWhatsappMeta =
+      config.messagingChannel === 'whatsapp' &&
+      Boolean(config.metaWhatsappPhoneNumberId.trim() && config.metaWhatsappAccessToken.trim())
+    return Boolean(
+      config.messagingChannel &&
+        (hasSmsBasics || hasWhatsappMeta) &&
+        (!requirePrompt || productionPrompt.trim()),
+    )
   }
   return true
 }
@@ -254,6 +287,10 @@ export default function ChatConnectionDetailsStep({
   embedded = false,
   variant = 'wizard',
 }: ChatConnectionDetailsStepProps) {
+  const { activeConfigs: telephonyConfigs } = useOrgTelephony()
+  const twilioConfigs = telephonyConfigs.filter((c) => c.provider === 'twilio')
+  const plivoConfigs = telephonyConfigs.filter((c) => c.provider === 'plivo')
+
   const sectionClass = embedded ? 'w-full' : 'space-y-4'
   const fieldClass =
     variant === 'workspace'
@@ -263,7 +300,6 @@ export default function ChatConnectionDetailsStep({
     variant === 'workspace'
       ? 'block text-sm font-medium text-gray-700 mb-1.5'
       : CREATE_WIZARD_LABEL_CLASS
-  const activeIntegrations = integrations.filter((i) => i.is_active)
 
   if (integrationType === 'internal_llm') {
     return null
@@ -325,8 +361,67 @@ export default function ChatConnectionDetailsStep({
     )
   }
 
+  if (integrationType === 'customer_websocket') {
+    return (
+      <div className={sectionClass}>
+        <ConfigPanel icon={Cable} title="WebSocket" variant={variant}>
+          <div>
+            <label className={labelClass}>WebSocket URL *</label>
+            <input
+              className={fieldClass}
+              value={config.websocketUrl}
+              onChange={(e) => onConfigChange({ websocketUrl: e.target.value })}
+              placeholder="wss://your-agent.example.com/chat"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              One persistent session per eval run. Each turn sends the same JSON body as the HTTP API
+              integration; reply is parsed from the next message.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className={labelClass}>Auth header</label>
+              <input
+                className={fieldClass}
+                value={config.websocketAuthHeader}
+                onChange={(e) => onConfigChange({ websocketAuthHeader: e.target.value })}
+                placeholder="Authorization"
+              />
+            </div>
+            <div>
+              <label className={labelClass}>Auth value</label>
+              <input
+                type="password"
+                className={fieldClass}
+                value={config.websocketAuthValue}
+                onChange={(e) => onConfigChange({ websocketAuthValue: e.target.value })}
+                placeholder={
+                  isStoredChatSecret(config.websocketAuthValue)
+                    ? `${CHAT_CONFIG_SECRET_MASK} (stored — enter new value to replace)`
+                    : 'Optional bearer token'
+                }
+              />
+            </div>
+          </div>
+        </ConfigPanel>
+      </div>
+    )
+  }
+
   if (integrationType === 'messaging_channels') {
-    const channel = config.messagingChannel
+    const channel = config.messagingChannel || 'sms'
+    const inboundWebhookUrl = buildTwilioInboundWebhookUrl(config.twilioInboundWebhookToken)
+
+    const copyWebhook = async () => {
+      if (!inboundWebhookUrl) return
+      try {
+        await navigator.clipboard.writeText(inboundWebhookUrl)
+        _showToast('Webhook URL copied', 'success')
+      } catch {
+        _showToast('Could not copy URL', 'error')
+      }
+    }
+
     return (
       <div className={sectionClass}>
         <ConfigPanel icon={MessagesSquare} title="Messaging" variant={variant}>
@@ -346,6 +441,12 @@ export default function ChatConnectionDetailsStep({
                 onSelect={() => onConfigChange({ messagingChannel: 'sms' })}
               />
             </div>
+            {channel === 'sms' ? (
+              <p className="text-xs text-gray-500 mt-2">
+                SMS via Twilio is recommended first. Configure the inbound webhook on your Twilio number
+                after saving the agent (requires a public HTTPS URL, e.g. ngrok in dev).
+              </p>
+            ) : null}
           </div>
           <div>
             <label className={labelClass}>Eval recipient</label>
@@ -388,12 +489,101 @@ export default function ChatConnectionDetailsStep({
             </div>
           ) : null}
 
-          <div className="rounded-lg border border-gray-100 bg-gray-50/50 p-3 space-y-3">
-            <p className="text-xs font-medium text-gray-800">
-              {channel === 'sms' ? 'Twilio SMS' : 'Or Twilio WhatsApp'}
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div className="sm:col-span-3 sm:grid sm:grid-cols-3 sm:gap-3 space-y-3 sm:space-y-0">
+          {channel === 'sms' ? (
+            <div className="rounded-lg border border-gray-100 bg-gray-50/50 p-3 space-y-3">
+              <p className="text-xs font-medium text-gray-800">Twilio SMS</p>
+              {twilioConfigs.length > 0 ? (
+                <div>
+                  <label className={labelClass}>Saved Twilio integration</label>
+                  <select
+                    className={fieldClass}
+                    value={config.messagingTelephonyIntegrationId}
+                    onChange={(e) =>
+                      onConfigChange({ messagingTelephonyIntegrationId: e.target.value })
+                    }
+                  >
+                    <option value="">Select integration</option>
+                    {twilioConfigs.map((cfg) => (
+                      <option key={cfg.id} value={cfg.id}>
+                        {cfg.name || getTelephonyProviderLabel(TelephonyProvider.TWILIO)}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Add credentials under Integrations → Telephony if none appear.
+                  </p>
+                </div>
+              ) : null}
+              {!config.messagingTelephonyIntegrationId ? (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className={labelClass}>Account SID</label>
+                    <input
+                      className={fieldClass}
+                      value={config.twilioAccountSid}
+                      onChange={(e) => onConfigChange({ twilioAccountSid: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className={labelClass}>Auth token</label>
+                    <input
+                      type="password"
+                      className={fieldClass}
+                      value={config.twilioAuthToken}
+                      onChange={(e) => onConfigChange({ twilioAuthToken: e.target.value })}
+                      placeholder={
+                        isStoredChatSecret(config.twilioAuthToken)
+                          ? `${CHAT_CONFIG_SECRET_MASK} (stored — enter new value to replace)`
+                          : 'Auth token'
+                      }
+                    />
+                  </div>
+                  <div>
+                    <label className={labelClass}>From number *</label>
+                    <input
+                      className={fieldClass}
+                      value={config.twilioFrom}
+                      onChange={(e) => onConfigChange({ twilioFrom: e.target.value })}
+                      placeholder="+1…"
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <label className={labelClass}>From number *</label>
+                  <input
+                    className={fieldClass}
+                    value={config.twilioFrom}
+                    onChange={(e) => onConfigChange({ twilioFrom: e.target.value })}
+                    placeholder="+1…"
+                  />
+                </div>
+              )}
+              {inboundWebhookUrl ? (
+                <div>
+                  <label className={labelClass}>Twilio inbound webhook (A message comes in)</label>
+                  <div className="flex gap-2">
+                    <input className={fieldClass} readOnly value={inboundWebhookUrl} />
+                    <button
+                      type="button"
+                      onClick={() => void copyWebhook()}
+                      className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-xs font-medium text-gray-800 hover:bg-gray-50"
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                      Copy
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-xs text-gray-500">
+                  Save the agent to generate the inbound webhook URL for your Twilio number.
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="rounded-lg border border-gray-100 bg-gray-50/50 p-3 space-y-3">
+              <p className="text-xs font-medium text-gray-800">Twilio WhatsApp (optional)</p>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className={labelClass}>Account SID</label>
                   <input
@@ -422,26 +612,26 @@ export default function ChatConnectionDetailsStep({
                     className={fieldClass}
                     value={config.twilioFrom}
                     onChange={(e) => onConfigChange({ twilioFrom: e.target.value })}
-                    placeholder={channel === 'whatsapp' ? 'whatsapp:+…' : '+1…'}
+                    placeholder="whatsapp:+…"
                   />
                 </div>
               </div>
             </div>
-          </div>
+          )}
 
-          <AdvancedFields label="Webhooks & integrations">
-            {activeIntegrations.length > 0 ? (
+          <AdvancedFields label="Webhooks & fallbacks">
+            {plivoConfigs.length > 0 && channel === 'sms' ? (
               <div>
-                <label className={labelClass}>Saved integration</label>
+                <label className={labelClass}>Plivo integration (SMS fallback)</label>
                 <select
                   className={fieldClass}
                   value={config.messagingIntegrationId}
                   onChange={(e) => onConfigChange({ messagingIntegrationId: e.target.value })}
                 >
                   <option value="">None</option>
-                  {activeIntegrations.map((i) => (
-                    <option key={i.id} value={i.id}>
-                      {i.name || i.platform}
+                  {plivoConfigs.map((cfg) => (
+                    <option key={cfg.id} value={cfg.id}>
+                      {cfg.name || getTelephonyProviderLabel(TelephonyProvider.PLIVO)}
                     </option>
                   ))}
                 </select>
