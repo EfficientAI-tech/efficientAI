@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import Any, Optional
 from uuid import UUID
 
@@ -19,6 +20,10 @@ from app.services.agents.chat_production_leg import (
 from app.services.agents.provider_platform_chat import (
     ProviderChatState,
     close_provider_chat_session,
+)
+from app.services.testing.evaluator_simulation_errors import (
+    ProductionChatLegError,
+    TestAgentLlmLegError,
 )
 from app.models.enums import ModelProvider
 from app.services.ai.llm_service import llm_service
@@ -50,6 +55,9 @@ _THANKS_CLOSING_RE = re.compile(
     r"\b(?:thank\s+you|thanks)\b\s*[.!]?\s*$",
     re.IGNORECASE,
 )
+
+_SIMULATION_LLM_RETRIES = 3
+_SIMULATION_TASK_DEFAULTS = {"temperature": 0.7, "max_tokens": 2048}
 
 
 def _production_turn_needs_user_seed(transcript: list[dict[str, str]]) -> bool:
@@ -149,25 +157,67 @@ def _generate_turn(
     credential_id: Optional[UUID],
     leg_label: str = "simulation",
 ) -> str:
-    try:
-        result = llm_service.generate_response(
-            messages=messages,
-            llm_provider=llm_provider,
-            llm_model=llm_model,
-            organization_id=organization_id,
-            db=db,
-            llm_config=llm_config,
-            task_defaults={"temperature": 0.7, "max_tokens": 300},
-            credential_id=credential_id,
+    last_result: Optional[dict[str, Any]] = None
+    for attempt in range(_SIMULATION_LLM_RETRIES):
+        override_llm_config: Optional[dict[str, Any]] = None
+        if attempt > 0:
+            override_llm_config = {
+                "temperature": min(1.0, 0.7 + 0.15 * attempt),
+            }
+            time.sleep(0.35 * attempt)
+        try:
+            result = llm_service.generate_response(
+                messages=messages,
+                llm_provider=llm_provider,
+                llm_model=llm_model,
+                organization_id=organization_id,
+                db=db,
+                llm_config=llm_config,
+                task_defaults=_SIMULATION_TASK_DEFAULTS,
+                override_llm_config=override_llm_config,
+                credential_id=credential_id,
+            )
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"{leg_label} failed ({llm_provider.value}/{llm_model}): {exc}"
+            ) from exc
+        last_result = result
+        text = (result.get("text") or "").strip()
+        if text:
+            return text
+        logger.warning(
+            "[LLM simulation] Empty {} response (attempt {}/{}, provider={}, model={}, finish_reason={})",
+            leg_label,
+            attempt + 1,
+            _SIMULATION_LLM_RETRIES,
+            llm_provider.value,
+            llm_model,
+            result.get("finish_reason"),
         )
-    except RuntimeError as exc:
-        raise RuntimeError(
-            f"{leg_label} failed ({llm_provider.value}/{llm_model}): {exc}"
-        ) from exc
-    text = (result.get("text") or "").strip()
-    if not text:
-        raise ValueError("LLM returned an empty simulation response")
-    return text
+
+    result = last_result or {}
+    refusal = (result.get("refusal") or "").strip()
+    if refusal:
+        raise ValueError(
+            f"LLM refused the simulation request ({leg_label}; "
+            f"provider={llm_provider.value}, model={llm_model}): {refusal}"
+        )
+    finish_reason = result.get("finish_reason")
+    hint = ""
+    if finish_reason == "length" or result.get("truncated"):
+        hint = (
+            " The model hit the output token limit before producing visible text "
+            "(common with reasoning models like gpt-oss-120b or gpt-5-mini); "
+            "raise max_tokens or set reasoning_effort=minimal in test agent LLM config."
+        )
+    elif finish_reason:
+        hint = f" finish_reason={finish_reason}."
+    raise ValueError(
+        f"LLM returned an empty simulation response ({leg_label}; "
+        f"provider={llm_provider.value}, model={llm_model}).{hint} "
+        f"Tried {_SIMULATION_LLM_RETRIES} times. "
+        "Check provider rate limits and worker logs for [LLMService] empty assistant text."
+    )
 
 
 def run_llm_to_llm_evaluator_simulation(
@@ -233,6 +283,36 @@ def run_llm_to_llm_evaluator_simulation(
     if isinstance(scenario.required_info, dict):
         scenario_first_message = scenario.required_info.get("first_message")
     exchanges = 0
+
+    def _write_transcript_to_result() -> None:
+        result.transcription = "\n".join(
+            f"{entry['speaker']}: {entry['text']}"
+            for entry in transcript
+            if entry.get("text")
+        )
+        result.speaker_segments = [
+            {
+                "speaker": entry["speaker"],
+                "text": entry["text"],
+                "start": float(idx),
+                "end": float(idx) + 1.0,
+            }
+            for idx, entry in enumerate(transcript)
+        ]
+        result.provider_platform = "internal"
+        result.call_data = {
+            "source": "llm_to_llm_simulation",
+            "simulation": "llm_to_llm",
+            "modality": "chat" if chat_mode else "voice",
+            "chat_connection_type": conn_type,
+            **production_leg_meta,
+            "test_llm_source": test_llm.source,
+            "exchanges": exchanges,
+            "messages": transcript,
+            "partial": exchanges < max_turns,
+        }
+        result.duration_seconds = float(max(1, len(transcript)))
+
     try:
         while exchanges < max_turns:
             if uses_live_production_leg(agent) and _production_turn_needs_user_seed(transcript):
@@ -260,38 +340,53 @@ def run_llm_to_llm_evaluator_simulation(
                 )
                 transcript.append({"speaker": "Speaker 1", "text": opener})
 
-            with llm_usage_context(agent_ctx):
-                agent_text, leg_meta = generate_production_chat_reply(
-                    db,
-                    agent=agent,
-                    organization_id=organization_id,
-                    transcript=transcript,
-                    provider_state=provider_chat_state,
+            try:
+                with llm_usage_context(agent_ctx):
+                    agent_text, leg_meta = generate_production_chat_reply(
+                        db,
+                        agent=agent,
+                        organization_id=organization_id,
+                        transcript=transcript,
+                        provider_state=provider_chat_state,
+                    )
+            except Exception as exc:
+                leg = (
+                    provider_chat_state.extra.get("production_leg")
+                    or provider_chat_state.platform
+                    or conn_type
                 )
+                raise ProductionChatLegError(
+                    str(leg),
+                    f"Production chat leg failed ({leg}): {exc}",
+                ) from exc
             production_leg_meta.update(leg_meta)
             transcript.append({"speaker": "Speaker 2", "text": agent_text})
             exchanges += 1
             if _should_end_conversation(agent_text, turn_index=exchanges):
                 break
 
-            with llm_usage_context(caller_ctx):
-                caller_text = _generate_turn(
-                    messages=_caller_messages(caller_system, transcript),
-                    llm_provider=test_llm.provider,
-                    llm_model=test_llm.model,
-                    organization_id=organization_id,
-                    db=db,
-                    llm_config=test_llm.llm_config,
-                    credential_id=test_llm.credential_id,
-                    leg_label=(
-                        "Simulated customer (test voice bundle LLM) — link a test bundle on the agent "
-                        "or set Test Agent LLM override"
-                    ),
-                )
+            try:
+                with llm_usage_context(caller_ctx):
+                    caller_text = _generate_turn(
+                        messages=_caller_messages(caller_system, transcript),
+                        llm_provider=test_llm.provider,
+                        llm_model=test_llm.model,
+                        organization_id=organization_id,
+                        db=db,
+                        llm_config=test_llm.llm_config,
+                        credential_id=test_llm.credential_id,
+                        leg_label="Simulated customer (test agent LLM)",
+                    )
+            except Exception as exc:
+                raise TestAgentLlmLegError(f"Test agent LLM failed: {exc}") from exc
             transcript.append({"speaker": "Speaker 1", "text": caller_text})
             exchanges += 1
             if _should_end_conversation(caller_text, turn_index=exchanges):
                 break
+    except Exception:
+        if transcript:
+            _write_transcript_to_result()
+        raise
     finally:
         try:
             close_provider_chat_session(
@@ -306,33 +401,9 @@ def run_llm_to_llm_evaluator_simulation(
                 evaluator.evaluator_id,
             )
 
-    transcription = "\n".join(
-        f"{entry['speaker']}: {entry['text']}" for entry in transcript if entry.get("text")
-    )
-    speaker_segments = [
-        {
-            "speaker": entry["speaker"],
-            "text": entry["text"],
-            "start": float(idx),
-            "end": float(idx) + 1.0,
-        }
-        for idx, entry in enumerate(transcript)
-    ]
-
-    result.transcription = transcription
-    result.speaker_segments = speaker_segments
-    result.provider_platform = "internal"
-    result.call_data = {
-        "source": "llm_to_llm_simulation",
-        "simulation": "llm_to_llm",
-        "modality": "chat" if chat_mode else "voice",
-        "chat_connection_type": conn_type,
-        **production_leg_meta,
-        "test_llm_source": test_llm.source,
-        "exchanges": exchanges,
-        "messages": transcript,
-    }
-    result.duration_seconds = float(max(1, len(transcript)))
+    _write_transcript_to_result()
+    if isinstance(result.call_data, dict):
+        result.call_data["partial"] = False
 
     logger.info(
         "[LLM simulation] Completed evaluator {} result {} with {} transcript lines",

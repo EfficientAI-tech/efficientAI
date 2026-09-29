@@ -6,7 +6,13 @@ import { apiClient } from '../../lib/api'
 import Button from '../../components/Button'
 import { useAgentStore } from '../../store/agentStore'
 import { useToast } from '../../hooks/useToast'
-import { TestAgentConversation, VoiceBundle, Integration, IntegrationPlatform } from '../../types/api'
+import {
+  AIProvider,
+  TestAgentConversation,
+  VoiceBundle,
+  Integration,
+  IntegrationPlatform,
+} from '../../types/api'
 import { AgentDetailHeader, AgentInfoView, DeleteAgentModal } from './components'
 import { agentProductionTabLabel, isChatMedium } from '../../lib/agentMedium'
 import { CallTypeBadge } from '../evaluators/components/evaluatorUi'
@@ -26,6 +32,11 @@ import {
   chatConnectionValidationMessage,
   validateChatConnection,
 } from './components/create/ChatConnectionStep'
+import {
+  applyTestAgentLlmPayload,
+  testAgentLlmValidationMessage,
+  validateTestAgentLlm,
+} from './components/create/ChatTestAgentLlmStep'
 import type { ChatConnectionConfigForm } from './components/create/ChatConnectionDetailsStep'
 import {
   DEFAULT_CHAT_CONNECTION_CONFIG,
@@ -190,6 +201,11 @@ export default function AgentWorkspaceDetail({
     queryFn: () => apiClient.listIntegrations(),
   })
 
+  const { data: aiProviders = [] } = useQuery<AIProvider[]>({
+    queryKey: ['ai-providers'],
+    queryFn: () => apiClient.listAIProviders(),
+  })
+
   const syncChatStateFromAgent = useCallback(
     (a: NonNullable<Awaited<ReturnType<typeof apiClient.getAgent>>>) => {
       if (!isChatMedium(a.call_medium)) return
@@ -282,6 +298,8 @@ export default function AgentWorkspaceDetail({
         if (configPayload) {
           payload.chat_connection_config = configPayload
         }
+
+        applyTestAgentLlmPayload(payload, chatConnection, aiProviders)
 
       } else {
         payload.voice_bundle_id = data.voice_bundle_id?.trim() || null
@@ -409,12 +427,19 @@ export default function AgentWorkspaceDetail({
       }
       if (
         connType === 'internal_llm' &&
-        !validateChatConnection({ ...chatConnection, connectionType: connType })
+        !validateChatConnection({ ...chatConnection, connectionType: connType }, aiProviders)
       ) {
         showToast(
           chatConnectionValidationMessage({ ...chatConnection, connectionType: connType }),
           'error',
         )
+        return
+      }
+      if (
+        connType !== 'internal_llm' &&
+        !validateTestAgentLlm(chatConnection, aiProviders)
+      ) {
+        showToast(testAgentLlmValidationMessage(), 'error')
         return
       }
     }

@@ -59,15 +59,14 @@ def test_provider_without_model_uses_gateway_model(db_session, org):
     assert model_str == "openai/gpt-4.1"
 
 
-def test_auto_detect_prefers_default_custom_gateway_credential(db_session, org):
+def test_auto_detect_without_provider_raises(db_session, org):
+    from fastapi import HTTPException
+
     _make_provider(db_session, org, is_default=True)
 
-    provider_enum, model_str = get_llm_provider_and_model(
-        org.id, db_session, provider=None, model=None
-    )
-
-    assert provider_enum == ModelProvider.CUSTOM
-    assert model_str == "openai/gpt-4.1"
+    with pytest.raises(HTTPException) as exc:
+        get_llm_provider_and_model(org.id, db_session, provider=None, model=None)
+    assert exc.value.status_code == 400
 
 
 def test_credential_id_pins_specific_gateway_model(db_session, org):
@@ -120,7 +119,9 @@ def test_provider_without_model_does_not_fall_back_to_openai(db_session, org):
     assert model_str == "openai/gpt-4.1"
 
 
-def test_auto_detect_fireworks_uses_provider_default_not_openai(db_session, org):
+def test_direct_provider_without_model_raises(db_session, org):
+    from fastapi import HTTPException
+
     fireworks_row = AIProvider(
         id=uuid4(),
         organization_id=org.id,
@@ -130,13 +131,16 @@ def test_auto_detect_fireworks_uses_provider_default_not_openai(db_session, org)
         is_active=True,
         is_default=True,
         routing_mode="direct",
+        enabled_models=["accounts/fireworks/models/gpt-oss-120b"],
     )
     db_session.add(fireworks_row)
     db_session.commit()
 
-    provider_enum, model_str = get_llm_provider_and_model(
-        org.id, db_session, provider=None, model=None
-    )
-
-    assert provider_enum == ModelProvider.FIREWORKS
-    assert model_str == "gpt-oss-20b"
+    with pytest.raises(HTTPException) as exc:
+        get_llm_provider_and_model(
+            org.id,
+            db_session,
+            provider="fireworks",
+            model=None,
+        )
+    assert exc.value.status_code == 400

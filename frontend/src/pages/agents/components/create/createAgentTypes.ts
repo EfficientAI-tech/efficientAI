@@ -59,12 +59,14 @@ export const CHAT_STEPS_LLM = [
 export const CHAT_STEPS_PLATFORM = [
   { id: 1, title: 'Connect', description: 'Name and platform integration' },
   { id: 2, title: 'Prompts', description: 'Production prompt → test prompt' },
+  { id: 3, title: 'Test agent', description: 'LLM for simulated customer' },
 ] as const
 
 /** Customer HTTP API and messaging chat agents */
 export const CHAT_STEPS_CONNECT = [
   { id: 1, title: 'Connect', description: 'Name and connection settings' },
   { id: 2, title: 'Prompts', description: 'Production prompt → test prompt' },
+  { id: 3, title: 'Test agent', description: 'LLM for simulated customer' },
 ] as const
 
 export function chatWizardNeedsLlmStep(integration: ChatIntegrationOptionId): boolean {
@@ -77,16 +79,8 @@ export function chatWizardSteps(integration: ChatIntegrationOptionId) {
   return CHAT_STEPS_CONNECT
 }
 
-export function chatWizardMaxStep(_integration: ChatIntegrationOptionId): CreateStepId {
-  return 2
-}
-
-/** Chat create: link first active bundle for eval customer LLM (no wizard step). */
-export function defaultVoiceBundleIdForChat(
-  bundles: { id: string; is_active?: boolean }[],
-): string {
-  const active = bundles.filter((b) => b.is_active !== false)
-  return active[0]?.id ?? ''
+export function chatWizardMaxStep(integration: ChatIntegrationOptionId): CreateStepId {
+  return integration === 'internal_llm' ? 2 : 3
 }
 
 export function createWizardMaxStep(_path: CreateAgentPath): CreateStepId {

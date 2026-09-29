@@ -1,5 +1,6 @@
 import type { ChatConnectionType } from './ChatConnectionStep'
 
+/** Backend pre-prod simulation leg — not shown in create wizard anymore. */
 export const CHAT_PREPROD_CONNECTION_TYPE: ChatConnectionType = 'internal_llm'
 export const CHAT_PREPROD_EVAL_MODE = 'pre_prod_sim' as const
 export const CHAT_POSTPROD_LIVE_EVAL_MODE = 'post_prod_live' as const
@@ -11,7 +12,7 @@ const LIVE_CONNECTION_TYPES: ChatConnectionType[] = [
 ]
 
 export function isPreProdChatConnection(type: ChatConnectionType | string): boolean {
-  return (type || CHAT_PREPROD_CONNECTION_TYPE) === CHAT_PREPROD_CONNECTION_TYPE
+  return (type || CHAT_PREPROD_CONNECTION_TYPE) === 'internal_llm'
 }
 
 export function chatEvalModeForConnection(type: ChatConnectionType | string): typeof CHAT_PREPROD_EVAL_MODE | typeof CHAT_POSTPROD_LIVE_EVAL_MODE {

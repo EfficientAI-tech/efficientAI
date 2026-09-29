@@ -51,6 +51,8 @@ export interface TestAgentTemplateInput {
 }
 
 export interface TestAgentTemplateDraft {
+  /** Set when template came from "Generate from production" in create/edit wizard. */
+  generated_from_production?: boolean
   sections: TestPromptSectionDraft[]
   first_message: TestAgentFirstMessageDraft
 }

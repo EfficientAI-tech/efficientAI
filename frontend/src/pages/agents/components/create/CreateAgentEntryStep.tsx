@@ -11,6 +11,8 @@ interface CreateAgentEntryStepProps {
   onVoicePathChange: (path: CreateAgentPath) => void
   chatIntegration: ChatIntegrationOptionId
   onChatIntegrationChange: (option: ChatIntegrationOptionId) => void
+  /** Modal entry: prominent step header + moderately sized choice cards. */
+  compact?: boolean
 }
 
 export default function CreateAgentEntryStep({
@@ -21,9 +23,17 @@ export default function CreateAgentEntryStep({
   onVoicePathChange,
   chatIntegration,
   onChatIntegrationChange,
+  compact = false,
 }: CreateAgentEntryStepProps) {
   if (phase === 'entry_medium') {
-    return <AgentMediumStep value={agentMedium} onChange={onAgentMediumChange} />
+    return (
+      <AgentMediumStep
+        value={agentMedium}
+        onChange={onAgentMediumChange}
+        embedded={false}
+        compact={compact}
+      />
+    )
   }
 
   if (agentMedium === 'voice') {
@@ -31,13 +41,20 @@ export default function CreateAgentEntryStep({
       <VoicePathSelector
         value={voicePath === 'chat' ? 'telephony' : voicePath}
         onChange={onVoicePathChange}
+        embedded={false}
+        compact={compact}
       />
     )
   }
 
   if (agentMedium === 'chat') {
     return (
-      <ChatIntegrationTypeStep value={chatIntegration} onChange={onChatIntegrationChange} />
+      <ChatIntegrationTypeStep
+        value={chatIntegration}
+        onChange={onChatIntegrationChange}
+        embedded={false}
+        compact={compact}
+      />
     )
   }
 

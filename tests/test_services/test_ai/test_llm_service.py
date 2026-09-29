@@ -364,3 +364,130 @@ def test_generate_response_azure_foundry_uses_openai_v1_routing(monkeypatch):
     assert captured["model"] == "openai/gpt-5-mini"
     assert captured["api_base"] == "https://eaitest-resource.openai.azure.com/openai/v1"
     assert "azure_endpoint" not in captured
+
+
+def test_coerce_llm_message_text_handles_string_and_blocks():
+    assert llm_module._coerce_llm_message_text("hi") == "hi"
+    assert llm_module._coerce_llm_message_text(None) == ""
+    assert (
+        llm_module._coerce_llm_message_text(
+            [{"type": "text", "text": "Hello"}, {"type": "text", "text": " world"}]
+        )
+        == "Hello world"
+    )
+
+
+def test_generate_response_does_not_auto_inject_reasoning_effort(monkeypatch):
+    service = LLMService()
+    captured = {}
+
+    def _fake_completion(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="sim reply"),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+
+    monkeypatch.setattr(llm_module.litellm, "completion", _fake_completion)
+    monkeypatch.setattr(
+        service,
+        "_resolve_credential_context",
+        lambda *a, **k: (None, None),
+    )
+    monkeypatch.setattr(service, "_resolve_api_key", lambda *a, **k: "sk-test")
+
+    service.generate_response(
+        messages=[{"role": "user", "content": "hi"}],
+        llm_provider=ModelProvider.OPENAI,
+        llm_model="gpt-5-mini",
+        organization_id=uuid4(),
+        db=_mock_org_db(),
+        task_defaults={"max_tokens": 300},
+    )
+
+    assert "reasoning_effort" not in captured
+    assert captured.get("max_tokens") == 300
+
+
+def test_parse_model_visible_text_harmony_final_channel():
+    raw = "<|channel|>analysis<|message|>thinking...<|channel|>final<|message|>Hello there"
+    assert llm_module._parse_model_visible_text(raw) == "Hello there"
+
+
+def test_generate_response_sets_reasoning_effort_for_fireworks_gpt_oss(monkeypatch):
+    service = LLMService()
+    captured = {}
+
+    def _fake_completion(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="customer line"),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+
+    monkeypatch.setattr(llm_module.litellm, "completion", _fake_completion)
+    monkeypatch.setattr(
+        service,
+        "_resolve_credential_context",
+        lambda *a, **k: (None, None),
+    )
+    monkeypatch.setattr(service, "_resolve_api_key", lambda *a, **k: "sk-test")
+
+    service.generate_response(
+        messages=[{"role": "user", "content": "hi"}],
+        llm_provider=ModelProvider.FIREWORKS,
+        llm_model="gpt-oss-120b",
+        organization_id=uuid4(),
+        db=_mock_org_db(),
+        task_defaults={"max_tokens": 256},
+    )
+
+    assert "reasoning_effort" not in captured
+    assert captured.get("max_tokens") == 256
+
+
+def test_fireworks_rewrites_minimal_reasoning_effort_from_llm_config(monkeypatch):
+    service = LLMService()
+    captured = {}
+
+    def _fake_completion(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="ok"),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+
+    monkeypatch.setattr(llm_module.litellm, "completion", _fake_completion)
+    monkeypatch.setattr(
+        service,
+        "_resolve_credential_context",
+        lambda *a, **k: (None, None),
+    )
+    monkeypatch.setattr(service, "_resolve_api_key", lambda *a, **k: "sk-test")
+
+    service.generate_response(
+        messages=[{"role": "user", "content": "hi"}],
+        llm_provider=ModelProvider.FIREWORKS,
+        llm_model="gpt-oss-120b",
+        organization_id=uuid4(),
+        db=_mock_org_db(),
+        llm_config={"reasoning_effort": "minimal"},
+        task_defaults={"max_tokens": 256},
+    )
+
+    assert captured.get("reasoning_effort") == "low"

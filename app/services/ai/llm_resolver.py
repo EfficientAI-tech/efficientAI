@@ -2,9 +2,8 @@
 
 The original copy lives at the top of ``app/api/v1/routes/prompt_partials.py``.
 A second consumer was added for the call-import evaluation insights
-endpoint, so the helper now lives here and both routes import from this
-module to keep the "auto-detect first available provider" + "fallback
-to a sensible default model" behavior identical across surfaces.
+endpoint, so the helper now lives here. Callers must pass an explicit
+provider and/or credential_id and model (unless gateway_model pins the model).
 """
 
 from typing import Optional, Tuple
@@ -121,16 +120,19 @@ def _resolved_model_for_row(
     ai_prov: AIProvider,
     explicit_model: Optional[str],
 ) -> str:
+    provider_enum = _provider_enum(ai_prov.provider)
     if explicit_model:
-        provider_enum = _provider_enum(ai_prov.provider)
         return _maybe_normalize_together_model(provider_enum, explicit_model)
     ctx = routing_context_from_ai_provider(ai_prov)
     _, effective = resolve_effective_routing(organization_id, db, ctx)
-    provider_enum = _provider_enum(ai_prov.provider)
     if effective != "direct" and ctx.gateway_model:
         return _maybe_normalize_together_model(provider_enum, ctx.gateway_model)
-    return _maybe_normalize_together_model(
-        provider_enum, _default_model_for(provider_enum, ai_prov)
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "LLM model is required. Select a model from the enabled list for this credential, "
+            "or use a gateway credential with a pinned gateway model."
+        ),
     )
 
 
@@ -140,7 +142,13 @@ def _resolved_model_for_integration(
 ) -> str:
     if explicit_model:
         return explicit_model
-    return _default_model_for(provider_enum)
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"LLM model is required for {provider_enum.value}. "
+            "Select a model explicitly in the UI."
+        ),
+    )
 
 
 def _resolve_integration_llm_provider(
@@ -193,9 +201,9 @@ def get_llm_provider_and_model(
       LLM providers such as Sarvam.
     * When ``provider`` is supplied we resolve the matching active
       ``AIProvider`` row, falling back to Integration when configured.
-    * When both are omitted we prefer the org-wide default credential,
-      then OpenAI -> Anthropic -> Google, then Sarvam Integration, then
-      any other active AIProvider row.
+    * When both provider and credential_id are omitted, returns 400 — callers
+      must pass an explicit provider and/or credential_id (and model when
+      not pinned by gateway_model).
     * Raises ``HTTPException(400)`` with an actionable message when no
       LLM credential has been configured.
 
@@ -285,62 +293,10 @@ def get_llm_provider_and_model(
             ),
         )
 
-    default_row = (
-        db.query(AIProvider)
-        .filter(
-            AIProvider.organization_id == organization_id,
-            AIProvider.is_active == True,  # noqa: E712 (SQLAlchemy boolean)
-            AIProvider.is_default == True,  # noqa: E712
-        )
-        .order_by(desc(AIProvider.updated_at))
-        .first()
-    )
-    if default_row:
-        provider_enum = _provider_enum(default_row.provider)
-        model_str = _resolved_model_for_row(
-            organization_id, db, default_row, explicit_model
-        )
-        return provider_enum, model_str
-
-    for prov in _AUTO_DETECT_PRIORITY:
-        ai_prov = resolve_ai_provider(prov.value, db, organization_id)
-        if ai_prov:
-            model_str = _resolved_model_for_row(
-                organization_id, db, ai_prov, explicit_model
-            )
-            return prov, model_str
-
-    sarvam_match = _resolve_integration_llm_provider(
-        organization_id,
-        db,
-        platform=IntegrationPlatform.SARVAM.value,
-    )
-    if sarvam_match:
-        provider_enum, _integration = sarvam_match
-        return provider_enum, _resolved_model_for_integration(
-            provider_enum, explicit_model
-        )
-
-    fallback = (
-        db.query(AIProvider)
-        .filter(
-            AIProvider.organization_id == organization_id,
-            AIProvider.is_active == True,  # noqa: E712
-        )
-        .order_by(desc(AIProvider.updated_at))
-        .first()
-    )
-    if fallback:
-        provider_enum = _provider_enum(fallback.provider)
-        model_str = _resolved_model_for_row(
-            organization_id, db, fallback, explicit_model
-        )
-        return provider_enum, model_str
-
     raise HTTPException(
         status_code=400,
         detail=(
-            "No active LLM credential configured. Add an AI provider "
-            "or voice-platform integration in settings."
+            "LLM provider and model are required. Select a credential and model "
+            "in the UI (or pass provider, model, and optional credential_id)."
         ),
     )

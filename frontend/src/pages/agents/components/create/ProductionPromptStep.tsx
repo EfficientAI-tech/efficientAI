@@ -1,6 +1,6 @@
 import { Sparkles, Loader2, RefreshCw } from 'lucide-react'
 import { AIProvider } from '../../../../types/api'
-import { formatGatewayCredentialLabel } from '../../../../lib/llmModelOptions'
+import LlmCredentialAnchoredFields from '../../../../components/providers/LlmCredentialAnchoredFields'
 import TestAgentTemplateEditor from '../TestAgentTemplateEditor'
 import {
   TestAgentTemplateDraft,
@@ -53,8 +53,8 @@ export default function ProductionPromptStep({
   onAiCredentialIdChange,
   aiModel,
   onAiModelChange,
-  selectableModels,
-  gatewayDirectModel,
+  selectableModels: _selectableModels,
+  gatewayDirectModel: _gatewayDirectModel,
   onGenerateTestPrompt,
   isGenerating,
   canGenerate,
@@ -117,53 +117,17 @@ export default function ProductionPromptStep({
       </div>
 
       <div className="p-3 bg-gray-50 rounded-lg border border-gray-200 space-y-3">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">AI Provider</label>
-            <select
-              value={aiCredentialId}
-              onChange={(e) => {
-                onAiCredentialIdChange(e.target.value)
-                onAiModelChange('')
-              }}
-              className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white"
-            >
-              <option value="">Auto-detect</option>
-              {aiProviders.filter((p) => p.is_active).map((p) => (
-                <option key={p.id} value={p.id}>
-                  {formatGatewayCredentialLabel(p, {
-                    custom: 'Custom',
-                    openai: 'OpenAI',
-                    anthropic: 'Anthropic',
-                    google: 'Google',
-                  })}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Model</label>
-            <select
-              value={aiModel}
-              onChange={(e) => onAiModelChange(e.target.value)}
-              disabled={!aiCredentialId || !!gatewayDirectModel}
-              className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white disabled:bg-gray-100"
-            >
-              {!aiCredentialId ? (
-                <option value="">Auto-detect with provider</option>
-              ) : null}
-              {gatewayDirectModel ? (
-                <option value="">{gatewayDirectModel}</option>
-              ) : (
-                selectableModels.map((model) => (
-                  <option key={model} value={model}>
-                    {model}
-                  </option>
-                ))
-              )}
-            </select>
-          </div>
-        </div>
+        <LlmCredentialAnchoredFields
+          credentialId={aiCredentialId}
+          model={aiModel}
+          activeProviders={aiProviders.filter((p) => p.is_active)}
+          onCredentialChange={(id) => {
+            onAiCredentialIdChange(id)
+            onAiModelChange('')
+          }}
+          onModelChange={onAiModelChange}
+          credentialLabel="AI Provider"
+        />
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">Additional context (optional)</label>
           <textarea
@@ -202,18 +166,50 @@ export default function ProductionPromptStep({
           template={testAgentTemplate}
           onChange={onTestAgentTemplateChange}
         />
-        <p className={`mt-2 text-xs ${wordCount >= 10 ? 'text-green-600' : 'text-gray-500'}`}>
-          {wordCount}/10 words minimum in assembled prompt
+        <p
+          className={`mt-2 text-xs ${
+            testAgentTemplate.generated_from_production && wordCount >= 10
+              ? 'text-green-600'
+              : 'text-gray-500'
+          }`}
+        >
+          {testAgentTemplate.generated_from_production
+            ? `${wordCount} words in assembled prompt`
+            : 'Generate from production above — manual edits alone cannot complete this step.'}
         </p>
       </div>
     </div>
   )
 }
 
+export type PromptStepValidationOptions = {
+  requireGeneratedFromProduction?: boolean
+}
+
 export function isPromptStepValid(
   productionPrompt: string,
   testAgentTemplate: TestAgentTemplateDraft,
+  options?: PromptStepValidationOptions,
 ): boolean {
   if (!productionPrompt.trim()) return false
-  return isTemplateFilled(testAgentTemplate)
+  if (!isTemplateFilled(testAgentTemplate)) return false
+  if (options?.requireGeneratedFromProduction && !testAgentTemplate.generated_from_production) {
+    return false
+  }
+  return true
+}
+
+export function promptStepValidationMessage(
+  productionPrompt: string,
+  testAgentTemplate: TestAgentTemplateDraft,
+  options?: PromptStepValidationOptions,
+): string {
+  if (!productionPrompt.trim()) return 'Production prompt is required.'
+  if (!isTemplateFilled(testAgentTemplate)) {
+    return 'Test agent prompt must be at least 10 words.'
+  }
+  if (options?.requireGeneratedFromProduction && !testAgentTemplate.generated_from_production) {
+    return 'Use “Generate from production” to create the test agent prompt before continuing.'
+  }
+  return 'Complete the prompt step.'
 }

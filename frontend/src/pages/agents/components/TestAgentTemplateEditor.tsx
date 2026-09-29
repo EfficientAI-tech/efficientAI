@@ -153,13 +153,7 @@ export default function TestAgentTemplateEditor({
         </div>
       ) : null}
 
-      {isChat ? (
-        <p className="text-sm text-gray-600 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
-          Chat evals open with the persona and scenario, then alternate Retell (production) and your
-          test bundle LLM (customer). You do not need to change first-message settings here — those
-          apply to voice calls and playground only.
-        </p>
-      ) : (
+      {!isChat ? (
         <section className="rounded-lg border border-indigo-200 bg-indigo-50/40 overflow-hidden">
           <div className="border-b border-indigo-100 bg-indigo-50/80 px-4 py-3">
             <h3 className="text-sm font-semibold text-gray-900">First message</h3>
@@ -175,15 +169,17 @@ export default function TestAgentTemplateEditor({
             />
           </div>
         </section>
-      )}
+      ) : null}
 
       <section className="rounded-lg border border-gray-200 bg-white overflow-hidden">
         <div className="border-b border-gray-200 bg-gray-50 px-4 py-3">
-          <h3 className="text-sm font-semibold text-gray-900">Simulated customer prompt</h3>
-          <p className="text-xs text-gray-600 mt-0.5">
+          <h3 className="text-sm font-semibold text-gray-900">
+            {isChat ? 'Test agent prompt' : 'Simulated customer prompt'}
+          </h3>
+          <p className="text-xs text-gray-500 mt-0.5">
             {isChat
-              ? 'Instructions for the test bundle LLM playing the customer — not your Retell agent.'
-              : 'Caller persona and scenario behavior — assembled into the live test agent prompt.'}
+              ? 'System instructions for the customer role.'
+              : 'Caller persona and scenario — assembled into the live test agent prompt.'}
           </p>
         </div>
 
@@ -304,6 +300,7 @@ export function applyGeneratedTemplate(
           }
         })
       : current.sections,
+    generated_from_production: true,
     first_message: {
       production_mode: productionMode,
       production_message:

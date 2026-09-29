@@ -1,6 +1,7 @@
 """ElevenLabs ConvAI text chat WebSocket helpers."""
 
 from app.services.agents.elevenlabs_convai_chat import (
+    _collapse_obvious_duplicate,
     _extract_agent_text_from_event,
     _handle_ping,
 )
@@ -24,6 +25,20 @@ def test_extract_agent_chat_response_part_nested():
         }
     )
     assert text == "Hi there"
+
+
+def test_collapse_obvious_duplicate_halves():
+    raw = "Hello world Hello world"
+    assert _collapse_obvious_duplicate(raw) == "Hello world"
+
+
+def test_collapse_obvious_duplicate_spaced_twin():
+    raw = (
+        "Hey, this is Monika from Flipkart customer support .How can i help you ? "
+        "Hey, this is Monika from Flipkart customer support .How can i help you ?"
+    )
+    collapsed = _collapse_obvious_duplicate(raw)
+    assert collapsed.count("Monika") == 1
 
 
 def test_handle_ping_sends_pong():

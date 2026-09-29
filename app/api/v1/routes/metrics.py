@@ -1676,7 +1676,7 @@ class MetricGenerateExample(BaseModel):
 class MetricGenerateRequest(BaseModel):
     """Request body for AI-generated metric suggestion."""
     mode: Literal["description", "examples"]
-    surface: Literal["agent", "chat_agent", "voice_playground", "blind_test"] = "agent"
+    surface: Literal["agent", "chat_agent", "voice_playground"] = "agent"
     description: Optional[str] = Field(
         default=None,
         description="Free-form description of what the metric should measure (mode=description).",
@@ -1709,7 +1709,7 @@ def _build_metric_generation_messages(req: MetricGenerateRequest) -> List[Dict[s
     """Build the LLM prompt for generating a metric definition."""
     surfaces_block = (
         f'  - "supported_surfaces": list, must include "{req.surface}". '
-        f'Other allowed values: "agent", "chat_agent", "voice_playground", "blind_test".\n'
+        f'Other allowed values: "agent", "chat_agent", "voice_playground".\n'
         f'  - "enabled_surfaces": list, default to the same as supported_surfaces.\n'
     )
 
@@ -1726,8 +1726,8 @@ You MUST respond with ONLY a JSON object (no markdown, no commentary) with this 
       // for "boolean": {}
       // for "text": {}  (no extra config; the description tells the LLM what to summarize)
   },
-  "supported_surfaces": ["agent" | "chat_agent" | "voice_playground" | "blind_test", ...],
-  "enabled_surfaces": ["agent" | "chat_agent" | "voice_playground" | "blind_test", ...],
+  "supported_surfaces": ["agent" | "chat_agent" | "voice_playground", ...],
+  "enabled_surfaces": ["agent" | "chat_agent" | "voice_playground", ...],
   "suggested_tags": ["...", "..."]
 }
 
@@ -1962,7 +1962,7 @@ class MetricParseBulkRequest(BaseModel):
     independent top-level metrics.
     """
     prompt: str = Field(..., description="The pasted Label-block prompt.")
-    surface: Literal["agent", "chat_agent", "voice_playground", "blind_test"] = "agent"
+    surface: Literal["agent", "chat_agent", "voice_playground"] = "agent"
     parent_name: Optional[str] = Field(
         default=None,
         max_length=120,

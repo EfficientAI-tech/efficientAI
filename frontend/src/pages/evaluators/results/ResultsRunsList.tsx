@@ -6,6 +6,7 @@ import type { EvaluatorResultRow, ListEvaluatorResultsParams } from '../../../ty
 import ResultsHierarchyNav, { type HierarchyCrumb } from './ResultsHierarchyNav'
 import ResultsCountCards from './ResultsCountCards'
 import Button from '../../../components/Button'
+import ConfirmModal from '../../../components/ConfirmModal'
 import {
   Clock,
   Eye,
@@ -13,7 +14,6 @@ import {
   RotateCcw,
   Trash2,
 } from 'lucide-react'
-import { AnimatePresence, motion } from 'framer-motion'
 import {
   displayEvaluatorResultStatus,
   isEvaluatorResultInProgress,
@@ -361,32 +361,19 @@ export default function ResultsRunsList({
         )}
       </div>
 
-      <AnimatePresence>
-        {showDeleteModal && (
-          <motion.div className="fixed inset-0 z-50 flex items-center justify-center" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <div className="absolute inset-0 bg-gray-500/75" onClick={() => setShowDeleteModal(false)} />
-            <div className="relative bg-white rounded-xl p-6 max-w-md mx-4 shadow-xl">
-              <p className="text-gray-900 font-medium">Delete {selectedResults.size} result(s)?</p>
-              <div className="mt-4 flex justify-end gap-2">
-                <Button variant="ghost" onClick={() => setShowDeleteModal(false)}>
-                  Cancel
-                </Button>
-                <Button
-                  variant="danger"
-                  isLoading={deleteBulkMutation.isPending}
-                  onClick={() =>
-                    deleteBulkMutation.mutate(Array.from(selectedResults), {
-                      onSuccess: () => setShowDeleteModal(false),
-                    })
-                  }
-                >
-                  Delete
-                </Button>
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <ConfirmModal
+        isOpen={showDeleteModal}
+        title={`Delete ${selectedResults.size} result${selectedResults.size !== 1 ? 's' : ''}?`}
+        confirmLabel="Delete"
+        onConfirm={() =>
+          deleteBulkMutation.mutate(Array.from(selectedResults), {
+            onSuccess: () => setShowDeleteModal(false),
+          })
+        }
+        onCancel={() => setShowDeleteModal(false)}
+        isLoading={deleteBulkMutation.isPending}
+        variant="danger"
+      />
     </div>
   )
 }

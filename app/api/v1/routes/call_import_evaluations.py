@@ -3502,7 +3502,18 @@ def _generate_report_narrative(
         from app.services.ai.llm_resolver import get_llm_provider_and_model
         from app.services.ai.llm_service import llm_service
 
-        provider_enum, model_str = get_llm_provider_and_model(organization_id, db, None, None)
+        llm_provider = (report_config.get("llm_provider") or "").strip() or None
+        llm_model = (report_config.get("llm_model") or "").strip() or None
+        llm_credential_id = report_config.get("llm_credential_id")
+        if not llm_provider and not llm_credential_id:
+            return {"observations": {}, "evidence": {}, "design_notes": [], "audit_summary": None}
+        provider_enum, model_str = get_llm_provider_and_model(
+            organization_id,
+            db,
+            llm_provider,
+            llm_model,
+            credential_id=llm_credential_id,
+        )
         prompt = (
             "You are writing a vendor-safe external call quality audit report. "
             "Return strict JSON with keys observations (object keyed by metric_id), "

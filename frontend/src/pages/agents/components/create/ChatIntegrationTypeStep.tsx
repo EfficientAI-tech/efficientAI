@@ -29,6 +29,7 @@ interface ChatIntegrationTypeStepProps {
   value: ChatIntegrationOptionId
   onChange: (value: ChatIntegrationOptionId) => void
   embedded?: boolean
+  compact?: boolean
 }
 
 export function isChatIntegrationAvailable(id: ChatIntegrationOptionId): boolean {
@@ -43,26 +44,39 @@ export default function ChatIntegrationTypeStep({
   value,
   onChange,
   embedded,
+  compact,
 }: ChatIntegrationTypeStepProps) {
   const options = CHAT_CONNECTION_CAPABILITIES.filter((c) => c.offeredInCreateWizard)
 
   return (
     <div className={embedded ? 'w-full' : 'w-full max-w-3xl mx-auto space-y-6'}>
       {!embedded ? (
-        <WizardStepHeader title="Chat connection" subtitle="How production replies on each eval turn." />
+        <WizardStepHeader
+          title="Chat connection"
+          subtitle="How production replies on each eval turn."
+          prominence={compact ? 'entry' : 'default'}
+        />
       ) : null}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 w-full max-w-4xl">
+      <div
+        className={`grid w-full ${
+          compact
+            ? 'grid-cols-1 gap-3.5 mt-4 sm:grid-cols-3'
+            : 'grid-cols-1 sm:grid-cols-3 gap-3 mt-6 max-w-4xl'
+        }`}
+      >
         {options.map((option) => {
           const Icon = ICONS[option.id]
+          const shortDesc = option.description.split('.')[0]
           return (
             <WizardIconCard
               key={option.id}
               label={WIZARD_LABELS[option.id]}
-              subtitle={option.description}
+              subtitle={compact ? shortDesc : option.description}
               icon={Icon}
               selected={value === option.id}
               onSelect={() => onChange(option.id)}
-              medium
+              medium={!compact}
+              compact={compact}
             />
           )
         })}

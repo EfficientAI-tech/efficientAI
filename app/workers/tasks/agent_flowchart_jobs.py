@@ -47,6 +47,7 @@ def generate_agent_flowchart_task(
     *,
     provider: str | None = None,
     model: str | None = None,
+    credential_id: str | None = None,
 ):
     db = SessionLocal()
     partial: PromptPartial | None = None
@@ -74,6 +75,7 @@ def generate_agent_flowchart_task(
             usage_context_for_prompt_partial,
         )
 
+        cred_uuid = UUID(credential_id) if credential_id else None
         with llm_usage_context(usage_context_for_prompt_partial(partial)):
             graph, provider_enum, model_str = generate_agent_flowchart(
                 prompt_text=partial.content,
@@ -81,6 +83,7 @@ def generate_agent_flowchart_task(
                 db=db,
                 provider=provider,
                 model=model,
+                credential_id=cred_uuid,
             )
         partial.agent_flowchart = graph.model_dump(mode="json")
         if isinstance(partial.agent_flowchart, dict):
@@ -137,6 +140,7 @@ def map_agent_flowchart_prompt_sections_task(
     *,
     provider: str | None = None,
     model: str | None = None,
+    credential_id: str | None = None,
 ):
     db = SessionLocal()
     partial: PromptPartial | None = None
@@ -172,6 +176,7 @@ def map_agent_flowchart_prompt_sections_task(
             AgentFlowGraph.model_validate(partial.agent_flowchart),
             partial.content,
         )
+        cred_uuid = UUID(credential_id) if credential_id else None
         with llm_usage_context(usage_context_for_prompt_partial(partial)):
             mapped_graph = map_all_flow_nodes_to_prompt(
                 prompt_text=partial.content,
@@ -180,6 +185,7 @@ def map_agent_flowchart_prompt_sections_task(
                 db=db,
                 provider=provider,
                 model=model,
+                credential_id=cred_uuid,
             )
         partial.agent_flowchart = mapped_graph.model_dump(mode="json")
         if isinstance(partial.agent_flowchart, dict):

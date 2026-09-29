@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom'
 import { Integration, IntegrationPlatform } from '../../../../types/api'
 import { getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../../../config/providers'
+import AnchoredSelect from '../../../../components/shared/AnchoredSelect'
 import VoiceAgentPicker from './VoiceAgentPicker'
 
 export const VOICE_PLATFORM_OPTIONS: IntegrationPlatform[] = [
@@ -84,23 +85,17 @@ export default function VoicePlatformConnectGrid({
                   </p>
                 ) : (
                   <>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">
-                        Integration *
-                      </label>
-                      <select
-                        value={voiceAiIntegrationId}
-                        onChange={(e) => onIntegrationChange(e.target.value)}
-                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-primary-500"
-                      >
-                        <option value="">Select integration</option>
-                        {platformIntegrations.map((integration) => (
-                          <option key={integration.id} value={integration.id}>
-                            {integration.name || label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+                    <AnchoredSelect
+                      label="Integration *"
+                      value={voiceAiIntegrationId}
+                      options={platformIntegrations.map((integration) => ({
+                        value: integration.id,
+                        label: integration.name || label,
+                        iconUrl: logo,
+                      }))}
+                      placeholder="Select integration"
+                      onChange={onIntegrationChange}
+                    />
                     {voiceAiIntegrationId ? (
                       <VoiceAgentPicker
                         integrationId={voiceAiIntegrationId}

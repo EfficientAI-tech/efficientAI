@@ -25,7 +25,7 @@ export const CHAT_CONNECTION_CAPABILITIES: ChatConnectionCapability[] = [
     label: 'LLM',
     description: 'LLM plays production; test agent is the customer.',
     pattern: 'llm_to_llm',
-    offeredInCreateWizard: true,
+    offeredInCreateWizard: false,
   },
   {
     id: 'provider_chat',

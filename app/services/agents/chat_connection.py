@@ -83,11 +83,7 @@ def chat_connection_config(agent: Agent) -> dict[str, Any]:
 def agent_has_test_llm_config(agent: Agent) -> bool:
     test_provider = (getattr(agent, "test_llm_provider", None) or "").strip()
     test_model = (getattr(agent, "test_llm_model", None) or "").strip()
-    if test_provider and test_model:
-        return True
-    main_provider = (getattr(agent, "main_llm_provider", None) or "").strip()
-    main_model = (getattr(agent, "main_llm_model", None) or "").strip()
-    return bool(main_provider and main_model)
+    return bool(test_provider and test_model)
 
 
 def validate_chat_connection_for_agent(agent: Agent) -> Optional[str]:
@@ -100,12 +96,21 @@ def validate_chat_connection_for_agent(agent: Agent) -> Optional[str]:
         prompt = (agent.provider_prompt or agent.description or "").strip()
         if len(prompt.split()) < 3:
             return "Provider chat agents require a production prompt (at least 3 words)."
+        test_provider = (getattr(agent, "test_llm_provider", None) or "").strip()
+        test_model = (getattr(agent, "test_llm_model", None) or "").strip()
+        if not (test_provider and test_model):
+            return (
+                "Provider chat agents require test-agent LLM (credential and model) "
+                "for eval simulation."
+            )
         return None
 
     if conn == ChatConnectionTypeEnum.CUSTOMER_API.value:
         cfg = chat_connection_config(agent)
         if not (cfg.get("api_base_url") or "").strip():
             return "Customer API agents require api_base_url in chat_connection_config."
+        if not agent_has_test_llm_config(agent):
+            return "Customer API chat agents require test-agent LLM for eval simulation."
         return None
 
     if conn == ChatConnectionTypeEnum.MESSAGING_CHANNELS.value:
@@ -113,14 +118,14 @@ def validate_chat_connection_for_agent(agent: Agent) -> Optional[str]:
         channel = (cfg.get("messaging_channel") or "").strip()
         if channel not in ("whatsapp", "sms"):
             return "Messaging agents require messaging_channel (whatsapp or sms)."
+        if not agent_has_test_llm_config(agent):
+            return "Messaging chat agents require test-agent LLM for eval simulation."
         return None
 
     if conn == ChatConnectionTypeEnum.INTERNAL_LLM.value:
         main_provider = (getattr(agent, "main_llm_provider", None) or "").strip()
         main_model = (getattr(agent, "main_llm_model", None) or "").strip()
         if main_provider and main_model:
-            return None
-        if agent.voice_bundle_id:
             return None
         return "LLM chat agents require chat agent LLM credentials (main LLM)."
 

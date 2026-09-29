@@ -2743,9 +2743,8 @@ class ApiClient {
    *
    * - Pass ``regenerate: true`` to force a fresh LLM call even when a
    *   cached summary exists at the current ``completed_rows`` watermark.
-   * - Pass ``provider`` + ``model`` to pin a specific LLM. Omit both to
-   *   let the backend auto-detect the org's first active OpenAI /
-   *   Anthropic / Google credential (mirroring Prompt Partials).
+   * - Pass ``provider``, ``model``, and optional ``credential_id`` to run
+   *   insights with an explicit LLM selection.
    */
   async generateCallImportEvaluationInsights(
     callImportId: string,
@@ -5348,7 +5347,7 @@ class ApiClient {
 
   async generateMetric(data: {
     mode: 'description' | 'examples'
-    surface: 'agent' | 'chat_agent' | 'voice_playground' | 'blind_test'
+    surface: 'agent' | 'chat_agent' | 'voice_playground'
     description?: string
     examples?: Array<{ transcript: string; rating: any; notes?: string }>
     provider?: string
@@ -5373,7 +5372,7 @@ class ApiClient {
 
   async parseBulkMetric(data: {
     prompt: string
-    surface: 'agent' | 'chat_agent' | 'voice_playground' | 'blind_test'
+    surface: 'agent' | 'chat_agent' | 'voice_playground'
     /** When set, the response includes a ``parent`` block + all labels are children. */
     parent_name?: string
     parent_description?: string

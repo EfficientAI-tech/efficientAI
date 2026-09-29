@@ -1046,7 +1046,7 @@ class Metric(Base):
     )
     trigger = Column(String, nullable=False, default=MetricTrigger.ALWAYS.value)
     metric_origin = Column(String(30), nullable=False, default="default")
-    supported_surfaces = Column(JSON, nullable=False, default=list)  # agent, chat_agent, voice_playground, blind_test
+    supported_surfaces = Column(JSON, nullable=False, default=list)  # agent, chat_agent, voice_playground
     enabled_surfaces = Column(JSON, nullable=False, default=list)  # subset of supported_surfaces
     custom_data_type = Column(String(30), nullable=True)  # "boolean" | "enum" | "number_range"
     custom_config = Column(JSON, nullable=True)  # enum options / number range config

@@ -16,7 +16,6 @@ import {
 } from 'lucide-react'
 import { agentProductionTabLabel, isChatMedium } from '../../../lib/agentMedium'
 import { connectionTypeLabel } from './create/chatAgentFormUtils'
-import { chatConnectionCapability, patternLabel } from '../../../lib/chatConnectionCapabilities'
 import { CallTypeBadge } from '../../evaluators/components/evaluatorUi'
 import ParamSlider from './ParamSlider'
 import {
@@ -31,6 +30,9 @@ import {
 import { VoiceBundle, Integration, IntegrationPlatform, TestAgent } from '../../../types/api'
 import { getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../../config/providers'
 import VoiceBundleDetailCard from './VoiceBundleDetailCard'
+import ChatTestAgentLlmDetailCard, {
+  chatTestAgentLlmConfigured,
+} from './ChatTestAgentLlmDetailCard'
 import AgentPromptVisualization from './AgentPromptVisualization'
 import Button from '../../../components/Button'
 import { agentProviderPromptTag } from './agentFlowchartUtils'
@@ -139,7 +141,7 @@ export default function AgentInfoView({
     const hasVoiceAiIntegration = Boolean(voiceAiIntegrationId && voiceIntegration)
     const hasVoiceAiAgentId = Boolean(voiceAiAgentId)
     const voiceAiConfigured = hasVoiceAiIntegration && hasVoiceAiAgentId
-    const chatTestLlmConfigured = Boolean(linkedBundle && linkedBundle.is_active !== false)
+    const chatTestLlmConfigured = chatTestAgentLlmConfigured(agent)
     const chatTestPromptConfigured = Boolean(
       (agent.test_agent_template && isTemplateFilled(templateFromApi(agent.test_agent_template))) ||
         (agent.description && agent.description.trim().split(/\s+/).length >= 10),
@@ -250,17 +252,6 @@ export default function AgentInfoView({
                         value={agent.test_llm_model}
                       />
                     ) : null}
-                    <OverviewStatCard
-                      icon={Globe}
-                      label="Simulation"
-                      value={
-                        patternLabel(
-                          chatConnectionCapability(agent.chat_connection_type || 'internal_llm')
-                            ?.pattern ?? 'llm_to_llm',
-                        )
-                      }
-                      accent="emerald"
-                    />
                   </>
                 )}
               </div>
@@ -324,10 +315,20 @@ export default function AgentInfoView({
                   }
                 />
                 {isChatAgent ? (
-                  <OverviewDetailRow
-                    label="Test prompt"
-                    value={chatTestPromptConfigured ? 'Configured' : OVERVIEW_NOT_CONFIGURED}
-                  />
+                  <>
+                    <OverviewDetailRow
+                      label="Test LLM"
+                      value={
+                        chatTestLlmConfigured && agent.test_llm_model
+                          ? `${agent.test_llm_provider || '?'} / ${agent.test_llm_model}`
+                          : OVERVIEW_NOT_CONFIGURED
+                      }
+                    />
+                    <OverviewDetailRow
+                      label="Test prompt"
+                      value={chatTestPromptConfigured ? 'Configured' : OVERVIEW_NOT_CONFIGURED}
+                    />
+                  </>
                 ) : (
                   <OverviewDetailRow label="Voice bundle" value={voiceBundleLabel} />
                 )}
@@ -390,7 +391,7 @@ export default function AgentInfoView({
         (template && assembleTestAgentPrompt(template.sections)) ||
         agent.description?.trim() ||
         ''
-      const chatTestConfigured = Boolean(linkedBundle && linkedBundle.is_active !== false)
+      const chatTestConfigured = chatTestAgentLlmConfigured(agent)
       return (
         <div className="space-y-4">
           <TestAgentSubTabNav value={testAgentSubTab} onChange={setTestAgentSubTab} />
@@ -399,61 +400,52 @@ export default function AgentInfoView({
             <>
               <div>
                 <h3 className="text-base font-semibold text-gray-900">Test Agent Configuration</h3>
-                <p className="text-sm text-gray-500 mt-0.5">
-                  Voice stack LLM for the simulated customer in chat evals (production uses Retell/Vapi).
-                </p>
+                <p className="text-sm text-gray-500 mt-0.5">Model and credential for the test agent.</p>
               </div>
-              <VoiceBundleDetailCard
-                bundle={linkedBundle}
-                paramTuningMode="readonly"
-                pipelineScope="chat_llm"
-                onEdit={
-                  linkedBundle && onEditVoiceBundle ? () => onEditVoiceBundle(linkedBundle.id) : undefined
-                }
-                onManageInVoiceBundles={() => navigate('/voicebundles')}
-              />
+              <ChatTestAgentLlmDetailCard agent={agent} />
               {!chatTestConfigured ? (
-                <p className="text-sm text-amber-700">
-                  Link a test voice bundle in Edit → Test Agent (same bundle as voice evals).
-                </p>
+                <p className="text-sm text-amber-700">Configure a model in Edit → Test Agent.</p>
               ) : null}
             </>
           )}
 
           {testAgentSubTab === 'prompt' && (
-            <>
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <div>
-              <h3 className="text-base font-semibold text-gray-900">Test Agent Prompt</h3>
-              <p className="text-sm text-gray-500 mt-0.5">
-                Instructions for the EfficientAI simulated customer in chat evals.
-              </p>
-            </div>
-            <PromptViewToggle view={testPromptView} onChange={setTestPromptView} />
-          </div>
-          {testPromptView === 'text' ? (
-            <section className="rounded-lg border border-gray-200 overflow-hidden bg-gray-50">
-              <div className="p-5 max-h-[60vh] overflow-y-auto">
-                {testPromptText ? (
-                  <div className={PROSE}>
-                    <ReactMarkdown>{testPromptText}</ReactMarkdown>
-                  </div>
-                ) : (
-                  <p className="text-sm text-gray-400 italic">
-                    No test agent template yet. Use Edit on the Test Agent tab.
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div>
+                  <h3 className="text-base font-semibold text-gray-900">Test Agent Prompt</h3>
+                  <p className="text-sm text-gray-500 mt-0.5">
+                    Customer persona and scenario for chat evals.
                   </p>
-                )}
+                </div>
+                <PromptViewToggle view={testPromptView} onChange={setTestPromptView} />
               </div>
-            </section>
-          ) : (
-            <AgentPromptVisualization
-              agentId={agent.id}
-              agentName={agent.name}
-              promptContent={testPromptText}
-              partialNameLabel="Test agent prompt"
-            />
-          )}
-            </>
+              {testPromptView === 'text' ? (
+                <section className="rounded-lg border border-gray-200 overflow-hidden bg-gray-50">
+                  <div className="border-b border-gray-200 bg-white px-4 py-3">
+                    <h4 className="text-sm font-semibold text-gray-900">System prompt</h4>
+                  </div>
+                  <div className="p-5 max-h-[60vh] overflow-y-auto">
+                    {testPromptText ? (
+                      <div className={PROSE}>
+                        <ReactMarkdown>{testPromptText}</ReactMarkdown>
+                      </div>
+                    ) : (
+                      <p className="text-sm text-gray-400 italic">
+                        No prompt configured. Use Edit to add one.
+                      </p>
+                    )}
+                  </div>
+                </section>
+              ) : (
+                <AgentPromptVisualization
+                  agentId={agent.id}
+                  agentName={agent.name}
+                  promptContent={testPromptText}
+                  partialNameLabel="System Prompt"
+                />
+              )}
+            </div>
           )}
         </div>
       )

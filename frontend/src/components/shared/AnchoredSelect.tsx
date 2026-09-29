@@ -4,7 +4,11 @@ import { ChevronDown } from 'lucide-react'
 import { useAnchoredMenuPosition } from '../../hooks/useAnchoredMenuPosition'
 import { MODERN_SELECT_CLASS } from '../../pages/evaluators/components/evaluatorUi'
 
-export type AnchoredSelectOption = { value: string; label: string }
+export type AnchoredSelectOption = {
+  value: string
+  label: string
+  iconUrl?: string | null
+}
 
 type Props = {
   id?: string
@@ -69,8 +73,11 @@ export default function AnchoredSelect({
         onClick={() => setOpen((v) => !v)}
         className={`${MODERN_SELECT_CLASS} flex items-center justify-between gap-2 text-left disabled:bg-gray-50 disabled:text-gray-400`}
       >
-        <span className={`truncate ${selected ? 'text-gray-900' : 'text-gray-400'}`}>
-          {selected?.label ?? placeholder}
+        <span className={`flex items-center gap-2 min-w-0 truncate ${selected ? 'text-gray-900' : 'text-gray-400'}`}>
+          {selected?.iconUrl ? (
+            <img src={selected.iconUrl} alt="" className="h-4 w-4 shrink-0 object-contain" />
+          ) : null}
+          <span className="truncate">{selected?.label ?? placeholder}</span>
         </span>
         <ChevronDown
           className={`h-4 w-4 shrink-0 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`}
@@ -100,7 +107,12 @@ export default function AnchoredSelect({
                     setOpen(false)
                   }}
                 >
-                  {opt.label}
+                  <span className="flex items-center gap-2 min-w-0">
+                    {opt.iconUrl ? (
+                      <img src={opt.iconUrl} alt="" className="h-4 w-4 shrink-0 object-contain" />
+                    ) : null}
+                    <span className="truncate">{opt.label}</span>
+                  </span>
                 </button>
               ))}
             </div>,

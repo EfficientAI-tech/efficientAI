@@ -7,14 +7,12 @@ from typing import Any, FrozenSet, Optional
 SURFACE_VOICE_AGENT = "agent"
 SURFACE_CHAT_AGENT = "chat_agent"
 SURFACE_VOICE_PLAYGROUND = "voice_playground"
-SURFACE_BLIND_TEST = "blind_test"
 
 ALLOWED_METRIC_SURFACES: FrozenSet[str] = frozenset(
     {
         SURFACE_VOICE_AGENT,
         SURFACE_CHAT_AGENT,
         SURFACE_VOICE_PLAYGROUND,
-        SURFACE_BLIND_TEST,
     }
 )
 

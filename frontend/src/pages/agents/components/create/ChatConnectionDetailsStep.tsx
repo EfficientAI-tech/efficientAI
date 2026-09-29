@@ -67,17 +67,23 @@ interface ChatConnectionDetailsStepProps {
   onPromptFetched: (prompt: string) => void
   showToast: (message: string, type: 'success' | 'error') => void
   embedded?: boolean
+  variant?: 'wizard' | 'workspace'
 }
 
 function ConfigPanel({
   icon: Icon,
   title,
   children,
+  variant = 'wizard',
 }: {
   icon: LucideIcon
   title: string
   children: ReactNode
+  variant?: 'wizard' | 'workspace'
 }) {
+  if (variant === 'workspace') {
+    return <div className="space-y-4">{children}</div>
+  }
   return (
     <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
       <div className="flex items-center gap-2.5 px-4 py-3 border-b border-gray-100 bg-gray-50/80">
@@ -246,8 +252,17 @@ export default function ChatConnectionDetailsStep({
   onPromptFetched: _onPromptFetched,
   showToast: _showToast,
   embedded = false,
+  variant = 'wizard',
 }: ChatConnectionDetailsStepProps) {
   const sectionClass = embedded ? 'w-full' : 'space-y-4'
+  const fieldClass =
+    variant === 'workspace'
+      ? 'w-full px-3 py-2.5 border border-gray-200 rounded-lg bg-white text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500/30 focus:border-primary-400'
+      : CREATE_WIZARD_FIELD_CLASS
+  const labelClass =
+    variant === 'workspace'
+      ? 'block text-sm font-medium text-gray-700 mb-1.5'
+      : CREATE_WIZARD_LABEL_CLASS
   const activeIntegrations = integrations.filter((i) => i.is_active)
 
   if (integrationType === 'internal_llm') {
@@ -261,11 +276,11 @@ export default function ChatConnectionDetailsStep({
   if (integrationType === 'customer_api') {
     return (
       <div className={sectionClass}>
-        <ConfigPanel icon={Globe} title="HTTP API">
+        <ConfigPanel icon={Globe} title="HTTP API" variant={variant}>
           <div>
-            <label className={CREATE_WIZARD_LABEL_CLASS}>Base URL *</label>
+            <label className={labelClass}>Base URL *</label>
             <input
-              className={CREATE_WIZARD_FIELD_CLASS}
+              className={fieldClass}
               value={config.apiBaseUrl}
               onChange={(e) => onConfigChange({ apiBaseUrl: e.target.value })}
               placeholder="https://api.example.com"
@@ -273,18 +288,18 @@ export default function ChatConnectionDetailsStep({
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className={CREATE_WIZARD_LABEL_CLASS}>Message path</label>
+              <label className={labelClass}>Message path</label>
               <input
-                className={CREATE_WIZARD_FIELD_CLASS}
+                className={fieldClass}
                 value={config.apiMessagePath}
                 onChange={(e) => onConfigChange({ apiMessagePath: e.target.value })}
                 placeholder="/chat"
               />
             </div>
             <div>
-              <label className={CREATE_WIZARD_LABEL_CLASS}>Auth header</label>
+              <label className={labelClass}>Auth header</label>
               <input
-                className={CREATE_WIZARD_FIELD_CLASS}
+                className={fieldClass}
                 value={config.apiAuthHeader}
                 onChange={(e) => onConfigChange({ apiAuthHeader: e.target.value })}
                 placeholder="Authorization"
@@ -292,10 +307,10 @@ export default function ChatConnectionDetailsStep({
             </div>
           </div>
           <div>
-            <label className={CREATE_WIZARD_LABEL_CLASS}>Auth value</label>
+            <label className={labelClass}>Auth value</label>
             <input
               type="password"
-              className={CREATE_WIZARD_FIELD_CLASS}
+              className={fieldClass}
               value={config.apiAuthValue}
               onChange={(e) => onConfigChange({ apiAuthValue: e.target.value })}
               placeholder={
@@ -314,9 +329,9 @@ export default function ChatConnectionDetailsStep({
     const channel = config.messagingChannel
     return (
       <div className={sectionClass}>
-        <ConfigPanel icon={MessagesSquare} title="Messaging">
+        <ConfigPanel icon={MessagesSquare} title="Messaging" variant={variant}>
           <div>
-            <label className={CREATE_WIZARD_LABEL_CLASS}>Channel *</label>
+            <label className={labelClass}>Channel *</label>
             <div className="flex gap-2">
               <ChannelOption
                 label="WhatsApp"
@@ -333,9 +348,9 @@ export default function ChatConnectionDetailsStep({
             </div>
           </div>
           <div>
-            <label className={CREATE_WIZARD_LABEL_CLASS}>Eval recipient</label>
+            <label className={labelClass}>Eval recipient</label>
             <input
-              className={CREATE_WIZARD_FIELD_CLASS}
+              className={fieldClass}
               value={config.messagingRecipient}
               onChange={(e) => onConfigChange({ messagingRecipient: e.target.value })}
               placeholder="+14155551234"
@@ -347,19 +362,19 @@ export default function ChatConnectionDetailsStep({
               <p className="text-xs font-medium text-emerald-900">Meta WhatsApp Cloud</p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className={CREATE_WIZARD_LABEL_CLASS}>Phone number ID</label>
+                  <label className={labelClass}>Phone number ID</label>
                   <input
-                    className={CREATE_WIZARD_FIELD_CLASS}
+                    className={fieldClass}
                     value={config.metaWhatsappPhoneNumberId}
                     onChange={(e) => onConfigChange({ metaWhatsappPhoneNumberId: e.target.value })}
                     placeholder="From Meta developer console"
                   />
                 </div>
                 <div>
-                  <label className={CREATE_WIZARD_LABEL_CLASS}>Access token</label>
+                  <label className={labelClass}>Access token</label>
                   <input
                     type="password"
-                    className={CREATE_WIZARD_FIELD_CLASS}
+                    className={fieldClass}
                     value={config.metaWhatsappAccessToken}
                     onChange={(e) => onConfigChange({ metaWhatsappAccessToken: e.target.value })}
                     placeholder={
@@ -380,18 +395,18 @@ export default function ChatConnectionDetailsStep({
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div className="sm:col-span-3 sm:grid sm:grid-cols-3 sm:gap-3 space-y-3 sm:space-y-0">
                 <div>
-                  <label className={CREATE_WIZARD_LABEL_CLASS}>Account SID</label>
+                  <label className={labelClass}>Account SID</label>
                   <input
-                    className={CREATE_WIZARD_FIELD_CLASS}
+                    className={fieldClass}
                     value={config.twilioAccountSid}
                     onChange={(e) => onConfigChange({ twilioAccountSid: e.target.value })}
                   />
                 </div>
                 <div>
-                  <label className={CREATE_WIZARD_LABEL_CLASS}>Auth token</label>
+                  <label className={labelClass}>Auth token</label>
                   <input
                     type="password"
-                    className={CREATE_WIZARD_FIELD_CLASS}
+                    className={fieldClass}
                     value={config.twilioAuthToken}
                     onChange={(e) => onConfigChange({ twilioAuthToken: e.target.value })}
                     placeholder={
@@ -402,9 +417,9 @@ export default function ChatConnectionDetailsStep({
                   />
                 </div>
                 <div>
-                  <label className={CREATE_WIZARD_LABEL_CLASS}>From number</label>
+                  <label className={labelClass}>From number</label>
                   <input
-                    className={CREATE_WIZARD_FIELD_CLASS}
+                    className={fieldClass}
                     value={config.twilioFrom}
                     onChange={(e) => onConfigChange({ twilioFrom: e.target.value })}
                     placeholder={channel === 'whatsapp' ? 'whatsapp:+…' : '+1…'}
@@ -417,9 +432,9 @@ export default function ChatConnectionDetailsStep({
           <AdvancedFields label="Webhooks & integrations">
             {activeIntegrations.length > 0 ? (
               <div>
-                <label className={CREATE_WIZARD_LABEL_CLASS}>Saved integration</label>
+                <label className={labelClass}>Saved integration</label>
                 <select
-                  className={CREATE_WIZARD_FIELD_CLASS}
+                  className={fieldClass}
                   value={config.messagingIntegrationId}
                   onChange={(e) => onConfigChange({ messagingIntegrationId: e.target.value })}
                 >
@@ -433,27 +448,27 @@ export default function ChatConnectionDetailsStep({
               </div>
             ) : null}
             <div>
-              <label className={CREATE_WIZARD_LABEL_CLASS}>Sender ID</label>
+              <label className={labelClass}>Sender ID</label>
               <input
-                className={CREATE_WIZARD_FIELD_CLASS}
+                className={fieldClass}
                 value={config.messagingSenderId}
                 onChange={(e) => onConfigChange({ messagingSenderId: e.target.value })}
                 placeholder="Plivo / custom sender"
               />
             </div>
             <div>
-              <label className={CREATE_WIZARD_LABEL_CLASS}>Sync reply URL</label>
+              <label className={labelClass}>Sync reply URL</label>
               <input
-                className={CREATE_WIZARD_FIELD_CLASS}
+                className={fieldClass}
                 value={config.messagingSyncReplyUrl}
                 onChange={(e) => onConfigChange({ messagingSyncReplyUrl: e.target.value })}
                 placeholder="POST — returns agent reply JSON"
               />
             </div>
             <div>
-              <label className={CREATE_WIZARD_LABEL_CLASS}>Outbound webhook</label>
+              <label className={labelClass}>Outbound webhook</label>
               <input
-                className={CREATE_WIZARD_FIELD_CLASS}
+                className={fieldClass}
                 value={config.outboundWebhookUrl}
                 onChange={(e) => onConfigChange({ outboundWebhookUrl: e.target.value })}
                 placeholder="Optional notify URL"

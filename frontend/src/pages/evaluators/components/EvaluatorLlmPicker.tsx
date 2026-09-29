@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
 import { ModelProvider, type AIProvider } from '../../../types/api'
@@ -88,7 +88,7 @@ export default function EvaluatorLlmPicker({
 
   const providerOptions = useMemo(
     () => [
-      { value: '', label: 'Default (OpenAI)' },
+      { value: '', label: 'Select provider' },
       ...configuredProviderKeys.map((key) => ({
         value: key,
         label: providerDisplayLabel(key),
@@ -99,7 +99,7 @@ export default function EvaluatorLlmPicker({
 
   const modelOptionsList = useMemo(() => {
     if (!llmProvider) {
-      return [{ value: '', label: 'Using default model' }]
+      return [{ value: '', label: 'Select provider first' }]
     }
     if (modelsLoading && resolvedModels.length === 0) {
       return [{ value: '', label: 'Loading models…' }]
@@ -109,12 +109,6 @@ export default function EvaluatorLlmPicker({
     }
     return resolvedModels.map((model) => ({ value: model, label: model }))
   }, [llmProvider, modelsLoading, resolvedModels])
-
-  useEffect(() => {
-    if (!llmProvider || resolvedModels.length === 0) return
-    if (llmModel && resolvedModels.includes(llmModel)) return
-    onModelChange(resolvedModels[0])
-  }, [llmProvider, resolvedModels, llmModel, onModelChange])
 
   const handleProviderSelect = (value: string) => {
     if (!value) {
@@ -134,7 +128,7 @@ export default function EvaluatorLlmPicker({
         <h4 className="text-sm font-semibold text-gray-900">Evaluation LLM</h4>
       </div>
       <p className="text-xs text-gray-500">
-        Model used for post-call transcript evaluation. Defaults to gpt-4o if unset.
+        Select the provider and model used for post-call transcript evaluation.
       </p>
 
       {credentialsLoading ? (
@@ -156,7 +150,7 @@ export default function EvaluatorLlmPicker({
               value={llmProvider ?? ''}
               options={providerOptions}
               onChange={handleProviderSelect}
-              placeholder="Default (OpenAI)"
+              placeholder="Select provider"
             />
             <AnchoredSelect
               label="Model"
@@ -164,14 +158,15 @@ export default function EvaluatorLlmPicker({
               options={modelOptionsList}
               onChange={onModelChange}
               disabled={!llmProvider || (modelsLoading && resolvedModels.length === 0)}
-              placeholder="Using default model"
+              placeholder="Select model"
               maxMenuHeight={320}
             />
           </div>
           {configuredProviderKeys.length === 0 ? (
             <p className="text-xs text-gray-600">
-              Only the platform default is available until you add an LLM under{' '}
-              <span className="font-medium">Configurations → Integrations</span>.
+              Add an LLM credential under{' '}
+              <span className="font-medium">Configurations → AI Providers</span> to
+              evaluate with your own models.
             </p>
           ) : null}
         </>

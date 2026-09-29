@@ -159,12 +159,6 @@ export default function SampleTextsPanel() {
   }
 
   useEffect(() => {
-    if (selectedLlmProvider && llmModels.length > 0 && !llmModels.includes(selectedLlmModel)) {
-      setSelectedLlmModel(llmModels[0])
-    }
-  }, [selectedLlmProvider, llmModels, selectedLlmModel])
-
-  useEffect(() => {
     const newSamples = generateSamplesMutation.data?.samples || []
     if (newSamples.length === 0) return
     setAiGeneratedSamples((prev) => {

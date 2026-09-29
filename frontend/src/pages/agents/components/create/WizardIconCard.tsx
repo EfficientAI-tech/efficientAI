@@ -12,6 +12,8 @@ interface WizardIconCardProps {
   medium?: boolean
   /** Wider tiles for secondary choices (e.g. telephony vs platform). */
   large?: boolean
+  /** Compact tiles for short entry screens in a small modal. */
+  compact?: boolean
 }
 
 export default function WizardIconCard({
@@ -22,15 +24,22 @@ export default function WizardIconCard({
   subtitle,
   medium = false,
   large = false,
+  compact = false,
 }: WizardIconCardProps) {
-  const sizeClass = large
-    ? 'min-h-[9.5rem] px-5 py-7 gap-3'
-    : medium
-      ? 'min-h-[8.25rem] px-5 py-6 gap-2.5'
-      : 'min-h-[8rem] px-4 py-5 gap-2.5'
+  const sizeClass = compact
+    ? 'min-h-[8rem] px-4 py-5 gap-3'
+    : large
+      ? 'min-h-[9.5rem] px-5 py-7 gap-3'
+      : medium
+        ? 'min-h-[8.25rem] px-5 py-6 gap-2.5'
+        : 'min-h-[8rem] px-4 py-5 gap-2.5'
 
-  const iconClass = large ? 'h-8 w-8' : medium ? 'h-7 w-7' : 'h-7 w-7'
-  const textClass = large ? 'text-sm' : 'text-sm'
+  const iconClass = compact ? 'h-8 w-8' : large ? 'h-8 w-8' : medium ? 'h-7 w-7' : 'h-7 w-7'
+  const labelClass = compact
+    ? 'text-sm sm:text-base'
+    : large
+      ? 'text-sm'
+      : 'text-sm'
 
   return (
     <button
@@ -55,14 +64,18 @@ export default function WizardIconCard({
         strokeWidth={1.5}
       />
       <span
-        className={`text-center leading-snug font-semibold px-1 ${textClass} ${
+        className={`text-center leading-snug font-semibold px-1 ${labelClass} ${
           selected ? 'text-primary-900' : 'text-gray-800'
         }`}
       >
         {label}
       </span>
       {subtitle ? (
-        <span className="text-[11px] leading-tight text-center text-gray-500 px-1 line-clamp-2">
+        <span
+          className={`text-center text-gray-500 px-2 line-clamp-2 ${
+            compact ? 'text-[11px] sm:text-xs leading-snug' : 'text-[11px] leading-tight'
+          }`}
+        >
           {subtitle}
         </span>
       ) : null}

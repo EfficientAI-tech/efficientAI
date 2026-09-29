@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { Sparkles, Loader2, Eye, Code, Trash2, Save, PhoneOutgoing, PhoneIncoming } from 'lucide-react'
+import { Eye, Code, Trash2, PhoneOutgoing, PhoneIncoming } from 'lucide-react'
 import ParamSlider from './ParamSlider'
 import { OverviewSection, formatSilenceHangupLabel, OverviewConfigBadge, OverviewDetailRow, OVERVIEW_NOT_CONFIGURED } from './AgentOverviewLayout'
 import ReactMarkdown from 'react-markdown'
@@ -14,13 +14,10 @@ import { TelephonyProvider } from '../../../types/api'
 import type { AgentDetailTab } from './AgentInfoView'
 import TestAgentSubTabNav, { type TestAgentSubTab } from './TestAgentSubTabNav'
 import VoiceBundleDetailCard from './VoiceBundleDetailCard'
-import {
-  formatGatewayCredentialLabel,
-  resolveLLMModelsForCredential,
-} from '../../../lib/llmModelOptions'
+import { resolveLLMModelsForCredential } from '../../../lib/llmModelOptions'
 import { useAgentPhoneAssignmentCheck } from './useAgentPhoneAssignmentCheck'
 import { formatAgentPhoneConflictMessage } from './agentPhoneValidation'
-import TestAgentTemplateEditor, { applyGeneratedTemplate } from './TestAgentTemplateEditor'
+import { applyGeneratedTemplate } from './TestAgentTemplateEditor'
 import {
   TestAgentTemplateDraft,
   assembleTestAgentPrompt,
@@ -29,6 +26,7 @@ import {
 import { agentProductionTabLabel, isChatMedium } from '../../../lib/agentMedium'
 import { CallTypeBadge } from '../../evaluators/components/evaluatorUi'
 import ChatAgentEditSection from './ChatAgentEditSection'
+import TestAgentPromptEditPanel from './TestAgentPromptEditPanel'
 import type { ChatConnectionForm } from './create/ChatConnectionStep'
 import type { ChatConnectionConfigForm } from './create/ChatConnectionDetailsStep'
 
@@ -247,9 +245,14 @@ export default function AgentEditForm({
     ? voiceBundles.find((vb) => vb.id === formData.voice_bundle_id)
     : undefined
 
-  const testAgentConfigured = Boolean(
-    linkedVoiceBundle && linkedVoiceBundle.is_active !== false,
+  const isChatAgent = isChatMedium(formData.call_medium)
+
+  const chatTestLlmConfigured = Boolean(
+    chatConnection?.testLlmCredentialId && chatConnection?.testLlmModel?.trim(),
   )
+  const testAgentConfigured = isChatAgent
+    ? chatTestLlmConfigured
+    : Boolean(linkedVoiceBundle && linkedVoiceBundle.is_active !== false)
   const voiceAiConfigured = Boolean(
     formData.voice_ai_integration_id?.trim() && formData.voice_ai_agent_id?.trim(),
   )
@@ -271,7 +274,6 @@ export default function AgentEditForm({
       : OVERVIEW_NOT_CONFIGURED
 
   const hasPlatformLink = Boolean(formData.voice_ai_integration_id || formData.voice_ai_agent_id)
-  const isChatAgent = isChatMedium(formData.call_medium)
 
   const productionPromptProse =
     'prose prose-sm max-w-none prose-headings:text-gray-900 prose-p:text-gray-700 prose-code:text-gray-800 prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-gray-900 prose-pre:text-gray-100 prose-ul:text-gray-700 prose-ol:text-gray-700'
@@ -563,7 +565,16 @@ export default function AgentEditForm({
                   />
                   {!isChatAgent ? (
                     <OverviewDetailRow label="Voice bundle" value={voiceBundleLabel} />
-                  ) : null}
+                  ) : (
+                    <OverviewDetailRow
+                      label="Test agent LLM"
+                      value={
+                        chatConnection?.testLlmModel?.trim()
+                          ? `${chatConnection.testLlmProvider || '?'} / ${chatConnection.testLlmModel}`
+                          : OVERVIEW_NOT_CONFIGURED
+                      }
+                    />
+                  )}
                 </dl>
               </OverviewSection>
 
@@ -600,117 +611,44 @@ export default function AgentEditForm({
         </div>
       )}
 
-      {activeTab === 'test_agent' && isChatAgent && chatConnection && onChatConnectionChange ? (
-        <div className="w-full space-y-6">
-          <ChatAgentEditSection
-            mode="test"
-            connectionType={chatConnectionType}
-            formData={formData}
-            onFormChange={(patch) => onChange({ ...formData, ...patch })}
-            providerPrompt={formData.provider_prompt}
-            onProviderPromptChange={(value) => onChange({ ...formData, provider_prompt: value })}
-            chatConnection={chatConnection}
-            onChatConnectionChange={onChatConnectionChange}
-            chatConfig={chatConnectionConfig!}
-            onChatConfigChange={onChatConnectionConfigChange!}
-            integrations={integrations}
-            selectedPlatform={chatEditPlatform ?? null}
-            onSelectPlatform={onChatEditPlatformChange!}
-            showToast={showToast}
-          />
-          <div className="border border-gray-200 rounded-lg p-4 bg-white space-y-3">
-            <div>
-              <label className="block text-sm font-medium text-gray-700">Customer LLM (voice bundle)</label>
-              <p className="text-xs text-gray-500 mt-1">
-                Pick which bundle&apos;s LLM plays the customer. Use <span className="font-medium">Save</span>{' '}
-                (top right) to store your choice on this agent. Model and temperature are edited in{' '}
-                <span className="font-medium">Voice Bundles</span> — they apply to every agent using that bundle.
-              </p>
-            </div>
-            <select
-              value={formData.voice_bundle_id}
-              onChange={(e) => onChange({ ...formData, voice_bundle_id: e.target.value })}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white"
-            >
-              <option value="">Select a voice bundle</option>
-              {voiceBundles
-                .filter((vb) => vb.is_active)
-                .map((vb) => (
-                  <option key={vb.id} value={vb.id}>
-                    {vb.name} — {vb.llm_provider || '?'} / {vb.llm_model || '?'}
-                  </option>
-                ))}
-            </select>
-            {linkedVoiceBundle ? (
-              <div className="rounded-lg border border-purple-100 bg-purple-50/40 px-3 py-2.5 text-sm text-gray-800">
-                <span className="font-medium">{linkedVoiceBundle.name}</span>
-                <span className="text-gray-600">
-                  {' '}
-                  · {linkedVoiceBundle.llm_provider} / {linkedVoiceBundle.llm_model}
-                </span>
-                <div className="flex flex-wrap gap-2 mt-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      const returnPath = agentId
-                        ? `/agents/${agentId}?tab=test_agent`
-                        : '/agents'
-                      navigate(
-                        `/voicebundles?edit=${linkedVoiceBundle.id}&return=${encodeURIComponent(returnPath)}`,
-                      )
-                    }}
-                  >
-                    Edit bundle LLM
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => navigate('/voicebundles')}
-                  >
-                    Voice Bundles
-                  </Button>
-                </div>
-              </div>
-            ) : null}
-          </div>
-          <div className="border border-gray-200 rounded-lg p-4 bg-white space-y-4">
-            {linkedVoiceBundle && hasStructuredTemplate ? (
-              <p className="text-sm text-green-800 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
-                Ready for chat evals after you click <span className="font-medium">Save</span> above. Retell =
-                production; <span className="font-medium">{linkedVoiceBundle.llm_model}</span> = simulated customer.
-              </p>
-            ) : null}
-            <label className="block text-sm font-medium text-gray-700">Simulated customer template</label>
-            <p className="text-xs text-gray-500 -mt-2">
-              Optional to tweak per agent; scenario + persona still drive each eval run.
-            </p>
-            <TestAgentTemplateEditor
-              template={formData.test_agent_template}
-              onChange={(test_agent_template) =>
-                onChange({
-                  ...formData,
-                  test_agent_template,
-                  description: assembleTestAgentPrompt(test_agent_template.sections),
-                })
-              }
-              legacyDescription={formData.description}
-              showLegacy={showLegacyPrompt}
-              variant="workspace"
-              simulationMedium="chat"
-            />
-          </div>
-        </div>
-      ) : null}
-
-      {activeTab === 'test_agent' && !isChatAgent && (
+      {activeTab === 'test_agent' &&
+        (!isChatAgent || (chatConnection && onChatConnectionChange)) && (
         <div className="w-full space-y-4">
           <TestAgentSubTabNav value={testAgentSubTab} onChange={setTestAgentSubTab} />
 
-          {testAgentSubTab === 'configuration' && (
+          {testAgentSubTab === 'configuration' && isChatAgent && chatConnection && onChatConnectionChange ? (
             <div className="space-y-4">
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">Test Agent Configuration</h3>
+                <p className="text-sm text-gray-500 mt-0.5">Language model for the customer role in chat evals.</p>
+              </div>
+              <ChatAgentEditSection
+                mode="test"
+                connectionType={chatConnectionType}
+                formData={formData}
+                onFormChange={(patch) => onChange({ ...formData, ...patch })}
+                providerPrompt={formData.provider_prompt}
+                onProviderPromptChange={(value) => onChange({ ...formData, provider_prompt: value })}
+                chatConnection={chatConnection}
+                onChatConnectionChange={onChatConnectionChange}
+                chatConfig={chatConnectionConfig!}
+                onChatConfigChange={onChatConnectionConfigChange!}
+                integrations={integrations}
+                selectedPlatform={chatEditPlatform ?? null}
+                onSelectPlatform={onChatEditPlatformChange!}
+                showToast={showToast}
+              />
+            </div>
+          ) : null}
+
+          {testAgentSubTab === 'configuration' && !isChatAgent && (
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">Test Agent Configuration</h3>
+                <p className="text-sm text-gray-500 mt-0.5">
+                  Voice stack for EfficientAI test caller and evaluator runs.
+                </p>
+              </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Voice Bundle</label>
                 <select
@@ -750,227 +688,27 @@ export default function AgentEditForm({
           )}
 
           {testAgentSubTab === 'prompt' && (
-            <div className="border border-gray-200 rounded-lg p-4 bg-white space-y-4">
-              <div className="flex items-center justify-between mb-1">
-                <label className="block text-sm font-medium text-gray-700">EfficientAI Test Agent Template</label>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowGenerateFromProductionPanel(!showGenerateFromProductionPanel)}
-                    disabled={generateFromProductionMutation.isPending}
-                    className={`inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-lg border transition-colors ${
-                      showGenerateFromProductionPanel
-                        ? 'bg-amber-100 text-amber-800 border-amber-300'
-                        : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
-                    }`}
-                  >
-                    {generateFromProductionMutation.isPending ? (
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                    ) : (
-                      <Sparkles className="h-3 w-3" />
-                    )}
-                    {generateFromProductionMutation.isPending ? 'Generating...' : 'Generate from production'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={onSaveSystemPrompt}
-                    disabled={!isTemplateFilled(formData.test_agent_template)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
-                  >
-                    <Save className="h-3 w-3" />
-                    Save Prompt
-                  </button>
-                </div>
-              </div>
-
-              {showGenerateFromProductionPanel && (
-                <div className="p-3 bg-amber-50 rounded-lg border border-amber-200 space-y-3">
-                  <p className="text-xs text-amber-700">
-                    Uses the production agent prompt from the Voice Agent tab to generate complementary
-                    caller sections and first-message settings.
-                  </p>
-                  {!formData.provider_prompt?.trim() ? (
-                    <p className="text-xs text-red-600">
-                      Add a production prompt on the Voice Agent tab first.
-                    </p>
-                  ) : null}
-                  <textarea
-                    value={setupAdditionalContext}
-                    onChange={(e) => setSetupAdditionalContext(e.target.value)}
-                    rows={2}
-                    placeholder="Additional context (optional)…"
-                    className="w-full px-3 py-2 text-sm border border-amber-200 rounded-lg bg-white"
-                  />
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">LLM Provider</label>
-                      <select
-                        value={aiCredentialId}
-                        onChange={(e) => {
-                          setAiCredentialId(e.target.value)
-                          setAiModel('')
-                        }}
-                        className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white"
-                      >
-                        <option value="">Auto-detect</option>
-                        {aiProviders
-                          .filter((p) => p.is_active)
-                          .map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {formatGatewayCredentialLabel(p, {
-                                custom: 'Custom',
-                                openai: 'OpenAI',
-                                anthropic: 'Anthropic',
-                                google: 'Google',
-                              })}
-                            </option>
-                          ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">Model</label>
-                      <select
-                        value={aiModel}
-                        onChange={(e) => setAiModel(e.target.value)}
-                        disabled={!aiCredentialId || !!gatewayDirectModel}
-                        className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white disabled:bg-gray-100"
-                      >
-                        {!aiCredentialId ? (
-                          <option value="">Auto-detect with provider</option>
-                        ) : null}
-                        {gatewayDirectModel ? (
-                          <option value="">{gatewayDirectModel}</option>
-                        ) : (
-                          selectableModels.map((m: string) => (
-                            <option key={m} value={m}>
-                              {m}
-                            </option>
-                          ))
-                        )}
-                      </select>
-                    </div>
-                  </div>
-                  <div className="flex justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setShowGenerateFromProductionPanel(false)}
-                      className="px-3 py-1.5 text-xs font-medium text-gray-600"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => generateFromProductionMutation.mutate()}
-                      disabled={
-                        generateFromProductionMutation.isPending ||
-                        !formData.provider_prompt?.trim()
-                      }
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-amber-600 text-white rounded-lg disabled:opacity-50"
-                    >
-                      {generateFromProductionMutation.isPending ? (
-                        <>
-                          <Loader2 className="h-3 w-3 animate-spin" /> Generating...
-                        </>
-                      ) : (
-                        <>
-                          <Sparkles className="h-3 w-3" /> Generate
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              <TestAgentTemplateEditor
-                template={formData.test_agent_template}
-                onChange={(test_agent_template) =>
-                  onChange({
-                    ...formData,
-                    test_agent_template,
-                    description: assembleTestAgentPrompt(test_agent_template.sections),
-                  })
-                }
-                legacyDescription={formData.description}
-                showLegacy={showLegacyPrompt}
-                variant="workspace"
-              />
-
-              <div className="rounded-lg border border-gray-200 bg-white p-3">
-                <div className="flex items-center justify-between gap-2 mb-2">
-                  <label className="text-sm font-medium text-gray-700">Custom prompt variables</label>
-                  <button
-                    type="button"
-                    className="text-xs font-medium text-primary-600 hover:text-primary-800"
-                    onClick={() => {
-                      const base = { ...(formData.prompt_variables || {}) }
-                      let n = 1
-                      let key = 'custom_var'
-                      while (base[key]) {
-                        n += 1
-                        key = `custom_var_${n}`
-                      }
-                      base[key] = ''
-                      onChange({ ...formData, prompt_variables: base })
-                    }}
-                  >
-                    + Add variable
-                  </button>
-                </div>
-                <p className="text-xs text-gray-500 mb-2">
-                  Define keys you can insert with <code className="text-gray-700">{'{'}</code> or{' '}
-                  <code className="text-gray-700">@</code>. Values are optional descriptions for your team.
-                </p>
-                {Object.keys(formData.prompt_variables || {}).length === 0 ? (
-                  <p className="text-xs text-gray-400 italic">No custom variables yet.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {Object.entries(formData.prompt_variables || {}).map(([key, desc]) => (
-                      <div key={key} className="flex flex-wrap items-center gap-2">
-                        <input
-                          type="text"
-                          value={key}
-                          onChange={(e) => {
-                            const nextKey = e.target.value.replace(/\s+/g, '_')
-                            const vars = { ...(formData.prompt_variables || {}) }
-                            delete vars[key]
-                            if (nextKey) vars[nextKey] = desc
-                            onChange({ ...formData, prompt_variables: vars })
-                          }}
-                          className="w-36 px-2 py-1.5 text-xs font-mono border border-gray-300 rounded-md"
-                          placeholder="variable_key"
-                        />
-                        <input
-                          type="text"
-                          value={desc}
-                          onChange={(e) =>
-                            onChange({
-                              ...formData,
-                              prompt_variables: {
-                                ...(formData.prompt_variables || {}),
-                                [key]: e.target.value,
-                              },
-                            })
-                          }
-                          className="flex-1 min-w-[120px] px-2 py-1.5 text-xs border border-gray-300 rounded-md"
-                          placeholder="Description (optional)"
-                        />
-                        <button
-                          type="button"
-                          className="text-xs text-red-600 hover:text-red-800"
-                          onClick={() => {
-                            const vars = { ...(formData.prompt_variables || {}) }
-                            delete vars[key]
-                            onChange({ ...formData, prompt_variables: vars })
-                          }}
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
+            <TestAgentPromptEditPanel
+              medium={isChatAgent ? 'chat' : 'voice'}
+              formData={formData}
+              onChange={(patch) => onChange({ ...formData, ...patch })}
+              showLegacy={showLegacyPrompt}
+              onSaveSystemPrompt={onSaveSystemPrompt}
+              showGeneratePanel={showGenerateFromProductionPanel}
+              onToggleGeneratePanel={() =>
+                setShowGenerateFromProductionPanel(!showGenerateFromProductionPanel)
+              }
+              setupAdditionalContext={setupAdditionalContext}
+              onSetupAdditionalContextChange={setSetupAdditionalContext}
+              aiProviders={aiProviders}
+              aiCredentialId={aiCredentialId}
+              onAiCredentialIdChange={setAiCredentialId}
+              aiModel={aiModel}
+              onAiModelChange={setAiModel}
+              gatewayDirectModel={gatewayDirectModel}
+              selectableModels={selectableModels}
+              generateMutation={generateFromProductionMutation}
+            />
           )}
         </div>
       )}

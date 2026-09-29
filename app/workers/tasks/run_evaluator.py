@@ -201,13 +201,38 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
                     "provider_platform": "internal",
                 }
             except Exception as sim_error:
-                logger.error(
-                    f"[RunEvaluator {evaluator.evaluator_id}] LLM simulation error: {sim_error}",
-                    exc_info=True,
+                from app.services.testing.evaluator_simulation_errors import (
+                    ProductionChatLegError,
+                    TestAgentLlmLegError,
                 )
+
+                if isinstance(sim_error, ProductionChatLegError):
+                    logger.error(
+                        "[RunEvaluator {}] Production chat leg error ({}): {}",
+                        evaluator.evaluator_id,
+                        sim_error.leg,
+                        sim_error,
+                        exc_info=True,
+                    )
+                    result.call_event = "production_chat_leg_error"
+                elif isinstance(sim_error, TestAgentLlmLegError):
+                    logger.error(
+                        "[RunEvaluator {}] Test agent LLM error: {}",
+                        evaluator.evaluator_id,
+                        sim_error,
+                        exc_info=True,
+                    )
+                    result.call_event = "test_agent_llm_error"
+                else:
+                    logger.error(
+                        "[RunEvaluator {}] LLM simulation error: {}",
+                        evaluator.evaluator_id,
+                        sim_error,
+                        exc_info=True,
+                    )
+                    result.call_event = "llm_simulation_error"
                 result.status = EvaluatorResultStatus.FAILED.value
                 result.error_message = str(sim_error)
-                result.call_event = "llm_simulation_error"
                 db.commit()
                 from app.services.testing.evaluator_run_errors import evaluator_error_is_retryable
 
@@ -244,7 +269,12 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
             return {"error": "Agent does not have required configuration for bridging"}
 
     except Exception as exc:
-        logger.error(f"[RunEvaluator {evaluator_id}] Task failed: {exc}", exc_info=True)
+        logger.error(
+            "[RunEvaluator {}] Task failed: {}",
+            evaluator_id,
+            exc,
+            exc_info=True,
+        )
         try:
             result = db.query(EvaluatorResult).filter(
                 EvaluatorResult.id == UUID(evaluator_result_id)

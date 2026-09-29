@@ -1,4 +1,5 @@
-import { MODERN_INPUT_CLASS } from '../../evaluators/components/evaluatorUi'
+import AIProviderModelPicker from '../../../components/AIProviderModelPicker'
+import { OverviewSection } from './AgentOverviewLayout'
 import ChatConnectionStep, { type ChatConnectionForm } from './create/ChatConnectionStep'
 import ChatConnectionDetailsStep, {
   type ChatConnectionConfigForm,
@@ -8,9 +9,8 @@ import { connectionTypeLabel } from './create/chatAgentFormUtils'
 import type { CreateAgentFormData } from './create/createAgentTypes'
 import { defaultTestAgentTemplate } from './agentTestSetupConstants'
 import { Integration, IntegrationPlatform } from '../../../types/api'
-import PlatformConnectStep from './create/PlatformConnectStep'
-import { ChatProviderPromptBlock } from './create/ChatConnectionDetailsStep'
-import { NATIVE_PROVIDER_TEXT_CHAT_PLATFORMS } from '../../../lib/chatConnectionCapabilities'
+import ChatPlatformConnectionFields from './chat/ChatPlatformConnectionFields'
+import ChatProductionPromptEditor from './chat/ChatProductionPromptEditor'
 
 interface ChatAgentEditSectionProps {
   mode: 'production' | 'test'
@@ -40,6 +40,23 @@ function integrationOptionFromType(type: string): ChatIntegrationOptionId {
   return 'internal_llm'
 }
 
+const stubFormData = (
+  formData: ChatAgentEditSectionProps['formData'],
+): CreateAgentFormData => ({
+  name: formData.name || '',
+  phone_number: '',
+  language: formData.language || 'en',
+  description: '',
+  test_agent_template: defaultTestAgentTemplate(),
+  call_type: formData.call_type || 'outbound',
+  call_medium: 'chat',
+  telephony_phone_number_id: '',
+  voice_bundle_id: '',
+  voice_ai_integration_id: formData.voice_ai_integration_id,
+  voice_ai_agent_id: formData.voice_ai_agent_id,
+  silence_hangup_secs: 15,
+})
+
 export default function ChatAgentEditSection({
   mode,
   connectionType,
@@ -57,113 +74,97 @@ export default function ChatAgentEditSection({
   showToast,
 }: ChatAgentEditSectionProps) {
   const integrationType = integrationOptionFromType(connectionType)
+  const connectionLabel = connectionTypeLabel(connectionType)
 
   if (mode === 'test') {
     return (
-      <p className="text-sm text-gray-600 max-w-3xl">
-        Configure the <span className="font-medium text-gray-800">simulated customer</span> (bundle LLM +
-        template). Your production chat agent is on the <span className="font-medium text-gray-800">Chat Agent</span>{' '}
-        tab — nothing here changes production.
-      </p>
+      <div className="rounded-xl border border-gray-200 bg-white p-5 max-w-3xl">
+        <AIProviderModelPicker
+          provider={chatConnection.testLlmProvider}
+          model={chatConnection.testLlmModel}
+          credentialId={chatConnection.testLlmCredentialId}
+          onProviderChange={(provider) =>
+            onChatConnectionChange({
+              testLlmProvider: provider,
+              testLlmModel: '',
+              testLlmCredentialId: '',
+            })
+          }
+          onModelChange={(model) => onChatConnectionChange({ testLlmModel: model })}
+          onCredentialIdChange={(credentialId) =>
+            onChatConnectionChange({ testLlmCredentialId: credentialId })
+          }
+          onSelectionChange={(next) =>
+            onChatConnectionChange({
+              testLlmProvider: next.provider,
+              testLlmModel: next.model,
+              testLlmCredentialId: next.credentialId,
+            })
+          }
+          size="md"
+          showAdvancedOptions={false}
+        />
+      </div>
     )
   }
 
   return (
-    <div className="space-y-6 max-w-3xl">
-      <p className="text-sm text-gray-600">
-        Production agent under test —{' '}
-        <span className="font-medium text-gray-900">{connectionTypeLabel(connectionType)}</span>
-      </p>
-
+    <div className="space-y-5 w-full max-w-4xl">
       {integrationType === 'provider_chat' ? (
-        <PlatformConnectStep
-          showNameField={false}
-          integrations={integrations}
-          agentName={formData.name}
-          onAgentNameChange={() => {}}
-          selectedPlatform={selectedPlatform}
-          onSelectPlatform={onSelectPlatform}
-          voiceAiIntegrationId={formData.voice_ai_integration_id}
-          voiceAiAgentId={formData.voice_ai_agent_id}
-          onIntegrationChange={(id) => onFormChange({ voice_ai_integration_id: id })}
-          onAgentIdChange={(id) => onFormChange({ voice_ai_agent_id: id })}
-          introTitle="Existing platform integration"
-          introSubtitle="External chat agent on Vapi, Retell, ElevenLabs, or Smallest."
-          platformOptions={NATIVE_PROVIDER_TEXT_CHAT_PLATFORMS}
-          remoteAgentKind="chat"
-        />
+        <OverviewSection title="Platform" description={`${connectionLabel} · production agent`}>
+          <ChatPlatformConnectionFields
+            integrations={integrations}
+            selectedPlatform={selectedPlatform}
+            onSelectPlatform={onSelectPlatform}
+            voiceAiIntegrationId={formData.voice_ai_integration_id}
+            voiceAiAgentId={formData.voice_ai_agent_id}
+            onIntegrationChange={(id) => onFormChange({ voice_ai_integration_id: id, voice_ai_agent_id: '' })}
+            onAgentIdChange={(id) => onFormChange({ voice_ai_agent_id: id })}
+          />
+        </OverviewSection>
       ) : null}
 
       {integrationType !== 'internal_llm' && integrationType !== 'provider_chat' ? (
-        <ChatConnectionDetailsStep
-          integrationType={integrationType}
-          formData={{
-            name: formData.name || '',
-            phone_number: '',
-            language: formData.language || 'en',
-            description: '',
-            test_agent_template: defaultTestAgentTemplate(),
-            call_type: formData.call_type || 'outbound',
-            call_medium: 'chat',
-            telephony_phone_number_id: '',
-            voice_bundle_id: '',
-            voice_ai_integration_id: formData.voice_ai_integration_id,
-            voice_ai_agent_id: formData.voice_ai_agent_id,
-            silence_hangup_secs: 15,
-          }}
-          onFormChange={onFormChange}
-          integrations={integrations}
-          selectedPlatform={selectedPlatform}
-          onSelectPlatform={onSelectPlatform}
-          config={chatConfig}
-          onConfigChange={onChatConfigChange}
-          productionPrompt={providerPrompt}
-          onProductionPromptChange={onProviderPromptChange}
-          onPromptFetched={() => {}}
-          showToast={showToast}
-        />
+        <OverviewSection title="Connection" description={connectionLabel}>
+          <ChatConnectionDetailsStep
+            variant="workspace"
+            embedded
+            integrationType={integrationType}
+            formData={stubFormData(formData)}
+            onFormChange={onFormChange}
+            integrations={integrations}
+            selectedPlatform={selectedPlatform}
+            onSelectPlatform={onSelectPlatform}
+            config={chatConfig}
+            onConfigChange={onChatConfigChange}
+            productionPrompt={providerPrompt}
+            onProductionPromptChange={onProviderPromptChange}
+            onPromptFetched={() => {}}
+            showToast={showToast}
+          />
+        </OverviewSection>
       ) : null}
 
       {integrationType === 'internal_llm' ? (
-        <ChatConnectionStep
-          value={chatConnection}
-          onChange={onChatConnectionChange}
-          variant="compact"
-        />
+        <OverviewSection title="Production model" description="LLM for the production chat leg.">
+          <ChatConnectionStep
+            value={chatConnection}
+            onChange={onChatConnectionChange}
+            variant="compact"
+          />
+        </OverviewSection>
       ) : null}
 
-      {integrationType === 'provider_chat' ? (
-        <ChatProviderPromptBlock
-          formData={{
-            name: formData.name || '',
-            phone_number: '',
-            language: formData.language || 'en',
-            description: '',
-            test_agent_template: defaultTestAgentTemplate(),
-            call_type: formData.call_type || 'outbound',
-            call_medium: 'chat',
-            telephony_phone_number_id: '',
-            voice_bundle_id: '',
-            voice_ai_integration_id: formData.voice_ai_integration_id,
-            voice_ai_agent_id: formData.voice_ai_agent_id,
-            silence_hangup_secs: 15,
-          }}
-          productionPrompt={providerPrompt}
-          onProductionPromptChange={onProviderPromptChange}
-          onPromptFetched={() => {}}
+      <OverviewSection title="Production prompt" description="Scored in evaluators against the test agent.">
+        <ChatProductionPromptEditor
+          value={providerPrompt}
+          onChange={onProviderPromptChange}
+          showImportFromProvider={integrationType === 'provider_chat'}
+          integrationId={formData.voice_ai_integration_id}
+          agentId={formData.voice_ai_agent_id}
           showToast={showToast}
         />
-      ) : (
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Production prompt *</label>
-          <textarea
-            className={`${MODERN_INPUT_CLASS} min-h-[200px] font-mono text-xs`}
-            value={providerPrompt}
-            onChange={(e) => onProviderPromptChange(e.target.value)}
-            placeholder="Instructions scored against in evals…"
-          />
-        </div>
-      )}
+      </OverviewSection>
     </div>
   )
 }

@@ -204,6 +204,22 @@ def close_provider_chat_session(
     state: ProviderChatState,
 ) -> None:
     """Best-effort teardown after an eval simulation (Retell end-chat, Vapi delete session)."""
+    elevenlabs_session = state.extra.get("_elevenlabs_convai_session")
+    if elevenlabs_session is not None:
+        try:
+            elevenlabs_session.close()
+        except Exception as exc:
+            logger.warning("[ProviderChat] ElevenLabs convai close failed: {}", exc)
+        state.extra.pop("_elevenlabs_convai_session", None)
+
+    smallest_session = state.extra.get("_smallest_atoms_session")
+    if smallest_session is not None:
+        try:
+            smallest_session.close()
+        except Exception as exc:
+            logger.warning("[ProviderChat] Smallest Atoms chat close failed: {}", exc)
+        state.extra.pop("_smallest_atoms_session", None)
+
     if not state.retell_chat_id and not state.vapi_session_id:
         return
     if not agent.voice_ai_integration_id:
@@ -282,15 +298,25 @@ def generate_provider_platform_reply(
         return _retell_chat_turn(api_key, assistant_id, user_input, state)
 
     if platform == IntegrationPlatform.ELEVENLABS.value:
-        from app.services.agents.elevenlabs_convai_chat import elevenlabs_convai_reply
+        from app.services.agents.elevenlabs_convai_chat import (
+            ElevenLabsConvaiSession,
+            elevenlabs_convai_reply,
+        )
 
-        conv_id = state.extra.get("elevenlabs_conversation_id")
-        if isinstance(conv_id, str):
-            conv_id = conv_id.strip() or None
-        else:
-            conv_id = None
+        session = state.extra.get("_elevenlabs_convai_session")
+        if session is None:
+            session = ElevenLabsConvaiSession(api_key, assistant_id)
+            conv_id = state.extra.get("elevenlabs_conversation_id")
+            if isinstance(conv_id, str) and conv_id.strip():
+                session.conversation_id = conv_id.strip()
+            state.extra["_elevenlabs_convai_session"] = session
+
         reply, new_conv_id = elevenlabs_convai_reply(
-            api_key, assistant_id, user_input, conversation_id=conv_id
+            api_key,
+            assistant_id,
+            user_input,
+            conversation_id=session.conversation_id,
+            session=session,
         )
         if new_conv_id:
             state.extra["elevenlabs_conversation_id"] = new_conv_id
@@ -298,9 +324,22 @@ def generate_provider_platform_reply(
         return reply
 
     if platform == IntegrationPlatform.SMALLEST.value:
-        from app.services.agents.smallest_atoms_chat import smallest_atoms_chat_reply
+        from app.services.agents.smallest_atoms_chat import (
+            SmallestAtomsChatSession,
+            smallest_atoms_chat_reply,
+        )
 
-        reply, sm_meta = smallest_atoms_chat_reply(api_key, assistant_id, user_input)
+        session = state.extra.get("_smallest_atoms_session")
+        if session is None:
+            session = SmallestAtomsChatSession(api_key, assistant_id)
+            state.extra["_smallest_atoms_session"] = session
+
+        reply, sm_meta = smallest_atoms_chat_reply(
+            api_key,
+            assistant_id,
+            user_input,
+            session=session,
+        )
         state.extra.update(sm_meta)
         state.extra["production_leg"] = "smallest_atoms_chat"
         return reply

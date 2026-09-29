@@ -7,7 +7,11 @@ import { ModelProvider, type AIProvider } from '../../types/api'
 import LLMAdvancedOptionsPanel from '../providers/LLMAdvancedOptionsPanel'
 import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
 import { resolveActiveAIProvider } from '../../lib/gatewayRouting'
-import { resolveLLMModelsForCredential } from '../../lib/llmModelOptions'
+import {
+  isLLMSelectionComplete,
+  resolveLLMModelForSubmit,
+  resolveLLMModelsForCredential,
+} from '../../lib/llmModelOptions'
 
 const PROVIDER_LABELS: Record<string, string> = {
   openai: 'OpenAI',
@@ -82,15 +86,10 @@ export default function AIGeneratePanel({
   const selectableModels =
     modelResolution.mode === 'catalog' ? modelResolution.models : []
 
-  useEffect(() => {
-    if (gatewayDirectModel) {
-      if (model) setModel('')
-      return
-    }
-    if (provider && selectableModels.length > 0 && !selectableModels.includes(model)) {
-      setModel(selectableModels[0])
-    }
-  }, [provider, selectableModels, model, gatewayDirectModel])
+  const selectionComplete = isLLMSelectionComplete(
+    { provider, model, credential_id: credentialId },
+    aiProviders,
+  )
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -116,12 +115,17 @@ export default function AIGeneratePanel({
   })
 
   const handleGenerate = () => {
+    const resolvedModel = resolveLLMModelForSubmit(
+      { provider, model, credential_id: credentialId },
+      aiProviders,
+    )
+    if (!provider || !resolvedModel) return
     generateMutation.mutate({
       description,
       tone: showToneAndFormat ? tone : undefined,
       format_style: showToneAndFormat ? format : undefined,
-      ...(provider ? { provider } : {}),
-      ...(model ? { model } : {}),
+      provider,
+      model: resolvedModel,
       ...(llmConfig ? { llm_config: llmConfig } : {}),
     })
   }
@@ -199,25 +203,13 @@ export default function AIGeneratePanel({
                 <span className="truncate">
                   {provider
                     ? `${getProviderLabel(provider as ModelProvider)}${aiProviders.find((p) => p.provider === provider)?.name ? ` — ${aiProviders.find((p) => p.provider === provider)?.name}` : ''}`
-                    : 'Auto-detect (use first available)'}
+                    : 'Select credential'}
                 </span>
               </div>
               <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showProviderDropdown ? 'transform rotate-180' : ''}`} />
             </button>
             {showProviderDropdown && (
               <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-auto">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setProvider('')
-                    setCredentialId('')
-                    setModel('')
-                    setShowProviderDropdown(false)
-                  }}
-                  className="w-full px-3 py-2 text-left hover:bg-gray-50 transition-colors text-sm text-gray-700"
-                >
-                  Auto-detect (use first available)
-                </button>
                 {aiProviders.filter((p) => p.is_active).map((p) => (
                   <button
                     key={p.id}
@@ -268,9 +260,12 @@ export default function AIGeneratePanel({
               ) : selectableModels.length === 0 ? (
                 <option value="">Loading models...</option>
               ) : (
-                selectableModels.map((m: string) => (
-                  <option key={m} value={m}>{m}</option>
-                ))
+                <>
+                  <option value="">Select model</option>
+                  {selectableModels.map((m: string) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </>
               )}
             </select>
           )}
@@ -297,7 +292,11 @@ export default function AIGeneratePanel({
         <button
           type="button"
           onClick={handleGenerate}
-          disabled={generateMutation.isPending || (requireDescription && !description.trim())}
+          disabled={
+            generateMutation.isPending ||
+            (requireDescription && !description.trim()) ||
+            !selectionComplete
+          }
           className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50"
         >
           {generateMutation.isPending ? (
