@@ -743,13 +743,18 @@ def process_evaluator_result_task(self, result_id: str):
                     Metric.enabled == True,
                     or_(Metric.lifecycle.is_(None), Metric.lifecycle == "active"),
                 ).all()
+                from app.services.metrics.surfaces import (
+                    metric_enabled_for_eval_surface,
+                    metric_eval_surface_for_call_medium,
+                )
+
+                eval_surface = metric_eval_surface_for_call_medium(
+                    agent.call_medium if agent else None
+                )
                 enabled_metrics = [
                     m for m in enabled_metrics
                     if (m.name or "").strip().lower() not in REMOVED_EVALUATION_METRIC_NAMES
-                    and (
-                        "agent" in (m.enabled_surfaces or [])
-                        or not (m.enabled_surfaces or [])  # legacy/unset → default to agent
-                    )
+                    and metric_enabled_for_eval_surface(m.enabled_surfaces, eval_surface)
                 ]
 
                 # Explicit metric selection on the evaluator/suite. Categorization

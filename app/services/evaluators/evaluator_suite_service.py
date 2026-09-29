@@ -374,7 +374,14 @@ def create_evaluator_suite(
 
     _validate_scenarios_for_agent(scenarios, data.agent_id)
 
-    validated_metric_ids = validate_metric_ids(db, organization_id, data.metric_ids)
+    from app.services.metrics.surfaces import metric_eval_surface_for_call_medium
+
+    validated_metric_ids = validate_metric_ids(
+        db,
+        organization_id,
+        data.metric_ids,
+        eval_surface=metric_eval_surface_for_call_medium(agent.call_medium),
+    )
     scenario_ids = list(dict.fromkeys(data.scenario_ids))
 
     existing_for_agent = (
@@ -443,7 +450,17 @@ def update_evaluator_suite(
         if not data.metric_ids:
             validated = None
         else:
-            validated = validate_metric_ids(db, suite.organization_id, data.metric_ids)
+            agent = db.query(Agent).filter(Agent.id == suite.agent_id).first()
+            from app.services.metrics.surfaces import metric_eval_surface_for_call_medium
+
+            validated = validate_metric_ids(
+                db,
+                suite.organization_id,
+                data.metric_ids,
+                eval_surface=metric_eval_surface_for_call_medium(
+                    agent.call_medium if agent else None
+                ),
+            )
         suite.metric_ids = validated
         combinations = load_suite_combinations(
             db, suite.id, suite.organization_id, suite.workspace_id

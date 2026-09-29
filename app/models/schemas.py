@@ -596,6 +596,15 @@ class AgentResponse(BaseModel):
                 raise ValueError(f"Invalid CallMediumEnum value: {v}")
         return v
 
+    @field_validator("chat_connection_config", mode="after")
+    @classmethod
+    def mask_chat_connection_secrets(cls, value):
+        from app.services.agents.chat_connection_config_store import (
+            mask_chat_connection_config_for_response,
+        )
+
+        return mask_chat_connection_config_for_response(value)
+
     model_config = ConfigDict(from_attributes=True)
 
 

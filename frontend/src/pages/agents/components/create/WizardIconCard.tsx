@@ -6,6 +6,8 @@ interface WizardIconCardProps {
   icon: LucideIcon
   selected: boolean
   onSelect: () => void
+  /** One-line hint under the label. */
+  subtitle?: string
   /** Primary medium pickers (Voice Agent vs Chat Agent). */
   medium?: boolean
   /** Wider tiles for secondary choices (e.g. telephony vs platform). */
@@ -17,6 +19,7 @@ export default function WizardIconCard({
   icon: Icon,
   selected,
   onSelect,
+  subtitle,
   medium = false,
   large = false,
 }: WizardIconCardProps) {
@@ -58,6 +61,11 @@ export default function WizardIconCard({
       >
         {label}
       </span>
+      {subtitle ? (
+        <span className="text-[11px] leading-tight text-center text-gray-500 px-1 line-clamp-2">
+          {subtitle}
+        </span>
+      ) : null}
     </button>
   )
 }

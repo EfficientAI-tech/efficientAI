@@ -58,7 +58,9 @@ def call_customer_chat_api(
     url = urljoin(f"{base}/", path.lstrip("/"))
 
     from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
+    from app.services.agents.chat_outbound_urls import assert_chat_connection_urls_safe
 
+    assert_chat_connection_urls_safe(config)
     cfg = chat_connection_config_for_runtime(config)
     headers: dict[str, str] = {"Content-Type": "application/json"}
     auth_header = (cfg.get("api_auth_header") or config.get("api_auth_header") or "").strip()
@@ -66,13 +68,16 @@ def call_customer_chat_api(
     if auth_header and auth_value:
         headers[auth_header] = auth_value
 
+    from app.services.agents.chat_outbound_payload import customer_api_request_body
+
     timeout = float(config.get("timeout_secs") or DEFAULT_TIMEOUT_SECS)
-    body = {
-        "messages": _openai_style_messages(transcript),
-        "transcript": transcript,
-        "agent_name": agent_name,
-        "language": language,
-    }
+    body = customer_api_request_body(
+        config,
+        openai_messages=_openai_style_messages(transcript),
+        transcript=transcript,
+        agent_name=agent_name,
+        language=language,
+    )
 
     with httpx.Client(timeout=timeout) as client:
         response = client.post(url, json=body, headers=headers)

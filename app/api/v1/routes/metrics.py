@@ -1185,24 +1185,31 @@ def update_metric(
 
     # Update fields if provided
     if metric_data.name is not None:
-        # Name uniqueness is scoped to the same parent: e.g. two parents
-        # may each have a child named "happy" without colliding.
+        workspace_filter = (
+            Metric.workspace_id.is_(None)
+            if metric.workspace_id is None
+            else Metric.workspace_id == metric.workspace_id
+        )
+        parent_filter = (
+            Metric.parent_metric_id.is_(None)
+            if metric.parent_metric_id is None
+            else Metric.parent_metric_id == metric.parent_metric_id
+        )
         existing = (
             db.query(Metric)
             .filter(
                 Metric.name == metric_data.name,
                 Metric.organization_id == organization_id,
                 Metric.id != metric_id,
-                Metric.parent_metric_id.is_(metric.parent_metric_id)
-                if metric.parent_metric_id is None
-                else Metric.parent_metric_id == metric.parent_metric_id,
+                workspace_filter,
+                parent_filter,
             )
             .first()
         )
         if existing:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="A metric with this name already exists"
+                detail="A metric with this name already exists in this workspace",
             )
         metric.name = metric_data.name
 
@@ -1245,6 +1252,22 @@ def update_metric(
     if metric_data.enabled_surfaces is not None:
         metric.enabled_surfaces = metric_data.enabled_surfaces
         metric.enabled = len(metric_data.enabled_surfaces) > 0
+        if metric_data.supported_surfaces is None:
+            merged = set(metric.supported_surfaces or [])
+            merged.update(metric_data.enabled_surfaces)
+            metric.supported_surfaces = list(merged)
+
+    surfaces_updated = (
+        metric_data.supported_surfaces is not None
+        or metric_data.enabled_surfaces is not None
+    )
+    if surfaces_updated and metric.selection_mode and not metric.parent_metric_id:
+        for child in list(metric.children or []):
+            if metric_data.supported_surfaces is not None:
+                child.supported_surfaces = list(metric.supported_surfaces or [])
+            if metric_data.enabled_surfaces is not None:
+                child.enabled_surfaces = list(metric.enabled_surfaces or [])
+                child.enabled = bool(metric.enabled)
 
     if metric_data.custom_data_type is not None:
         metric.custom_data_type = metric_data.custom_data_type
@@ -1413,8 +1436,8 @@ def seed_default_metrics(
             "trigger": MetricTrigger.ALWAYS,
             "enabled": True,
             "metric_origin": "default",
-            "supported_surfaces": ["agent", "voice_playground"],
-            "enabled_surfaces": ["agent", "voice_playground"],
+            "supported_surfaces": ["agent", "chat_agent", "voice_playground"],
+            "enabled_surfaces": ["agent", "chat_agent", "voice_playground"],
         },
         {
             "name": "Professionalism",
@@ -1423,8 +1446,8 @@ def seed_default_metrics(
             "trigger": MetricTrigger.ALWAYS,
             "enabled": True,
             "metric_origin": "default",
-            "supported_surfaces": ["agent"],
-            "enabled_surfaces": ["agent"],
+            "supported_surfaces": ["agent", "chat_agent"],
+            "enabled_surfaces": ["agent", "chat_agent"],
         },
         # =========================================================================
         # Acoustic Metrics (Parselmouth - traditional voice analysis)
@@ -1653,7 +1676,7 @@ class MetricGenerateExample(BaseModel):
 class MetricGenerateRequest(BaseModel):
     """Request body for AI-generated metric suggestion."""
     mode: Literal["description", "examples"]
-    surface: Literal["agent", "voice_playground", "blind_test"] = "agent"
+    surface: Literal["agent", "chat_agent", "voice_playground", "blind_test"] = "agent"
     description: Optional[str] = Field(
         default=None,
         description="Free-form description of what the metric should measure (mode=description).",
@@ -1686,7 +1709,7 @@ def _build_metric_generation_messages(req: MetricGenerateRequest) -> List[Dict[s
     """Build the LLM prompt for generating a metric definition."""
     surfaces_block = (
         f'  - "supported_surfaces": list, must include "{req.surface}". '
-        f'Other allowed values: "agent", "voice_playground", "blind_test".\n'
+        f'Other allowed values: "agent", "chat_agent", "voice_playground", "blind_test".\n'
         f'  - "enabled_surfaces": list, default to the same as supported_surfaces.\n'
     )
 
@@ -1703,8 +1726,8 @@ You MUST respond with ONLY a JSON object (no markdown, no commentary) with this 
       // for "boolean": {}
       // for "text": {}  (no extra config; the description tells the LLM what to summarize)
   },
-  "supported_surfaces": ["agent" | "voice_playground" | "blind_test", ...],
-  "enabled_surfaces": ["agent" | "voice_playground" | "blind_test", ...],
+  "supported_surfaces": ["agent" | "chat_agent" | "voice_playground" | "blind_test", ...],
+  "enabled_surfaces": ["agent" | "chat_agent" | "voice_playground" | "blind_test", ...],
   "suggested_tags": ["...", "..."]
 }
 
@@ -1812,7 +1835,9 @@ def generate_metric(
         logger.error(f"[Metric Generate] Failed to parse LLM JSON: {e}")
         raise HTTPException(status_code=502, detail="Could not parse LLM response as JSON")
 
-    allowed_surfaces = {"agent", "voice_playground", "blind_test"}
+    from app.services.metrics.surfaces import ALLOWED_METRIC_SURFACES
+
+    allowed_surfaces = set(ALLOWED_METRIC_SURFACES)
     supported = [s for s in (parsed.get("supported_surfaces") or []) if s in allowed_surfaces]
     if req.surface not in supported:
         supported = list({*supported, req.surface})
@@ -1937,7 +1962,7 @@ class MetricParseBulkRequest(BaseModel):
     independent top-level metrics.
     """
     prompt: str = Field(..., description="The pasted Label-block prompt.")
-    surface: Literal["agent", "voice_playground", "blind_test"] = "agent"
+    surface: Literal["agent", "chat_agent", "voice_playground", "blind_test"] = "agent"
     parent_name: Optional[str] = Field(
         default=None,
         max_length=120,

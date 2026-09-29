@@ -1,3 +1,4 @@
+import { chatSecretForPayload } from '../../../../lib/chatConnectionSecrets'
 import type { TestAgent } from '../../../../types/api'
 import type { ChatConnectionConfigForm } from './ChatConnectionDetailsStep'
 import type { ChatConnectionForm } from './ChatConnectionStep'
@@ -42,13 +43,14 @@ export function buildChatConnectionConfigPayload(
   config: ChatConnectionConfigForm,
 ): Record<string, unknown> | undefined {
   if (connectionType === 'customer_api') {
+    const apiAuthValue = chatSecretForPayload(config.apiAuthValue)
     return {
       api_base_url: config.apiBaseUrl.trim(),
       api_message_path: config.apiMessagePath.trim() || '/chat',
-      ...(config.apiAuthHeader.trim() && config.apiAuthValue.trim()
+      ...(config.apiAuthHeader.trim() && apiAuthValue
         ? {
             api_auth_header: config.apiAuthHeader.trim(),
-            api_auth_value: config.apiAuthValue.trim(),
+            api_auth_value: apiAuthValue,
           }
         : {}),
     }
@@ -74,15 +76,17 @@ export function buildChatConnectionConfigPayload(
       ...(config.metaWhatsappPhoneNumberId.trim()
         ? { meta_whatsapp_phone_number_id: config.metaWhatsappPhoneNumberId.trim() }
         : {}),
-      ...(config.metaWhatsappAccessToken.trim()
-        ? { meta_whatsapp_access_token: config.metaWhatsappAccessToken.trim() }
-        : {}),
+      ...(() => {
+        const token = chatSecretForPayload(config.metaWhatsappAccessToken)
+        return token ? { meta_whatsapp_access_token: token } : {}
+      })(),
       ...(config.twilioAccountSid.trim()
         ? { twilio_account_sid: config.twilioAccountSid.trim() }
         : {}),
-      ...(config.twilioAuthToken.trim()
-        ? { twilio_auth_token: config.twilioAuthToken.trim() }
-        : {}),
+      ...(() => {
+        const token = chatSecretForPayload(config.twilioAuthToken)
+        return token ? { twilio_auth_token: token } : {}
+      })(),
       ...(config.twilioFrom.trim() ? { twilio_from: config.twilioFrom.trim() } : {}),
     }
   }

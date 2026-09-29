@@ -62,7 +62,7 @@ export default function ChatAgentEditSection({
     return (
       <p className="text-sm text-gray-600 max-w-3xl">
         Configure the <span className="font-medium text-gray-800">simulated customer</span> (bundle LLM +
-        template). Your Retell agent is on the <span className="font-medium text-gray-800">Chat Agent</span>{' '}
+        template). Your production chat agent is on the <span className="font-medium text-gray-800">Chat Agent</span>{' '}
         tab — nothing here changes production.
       </p>
     )
@@ -155,14 +155,12 @@ export default function ChatAgentEditSection({
         />
       ) : (
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Production prompt</label>
-          <p className="text-xs text-gray-500 mb-2">
-            System instructions for the agent under test.
-          </p>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Production prompt *</label>
           <textarea
             className={`${MODERN_INPUT_CLASS} min-h-[200px] font-mono text-xs`}
             value={providerPrompt}
             onChange={(e) => onProviderPromptChange(e.target.value)}
+            placeholder="Instructions scored against in evals…"
           />
         </div>
       )}

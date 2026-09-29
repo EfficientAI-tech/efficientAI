@@ -117,7 +117,7 @@ def test_normalized_chat_eval_mode_upgrades_stale_pre_prod_on_provider_chat():
     assert normalized_chat_eval_mode(agent) == "post_prod_live"
 
 
-def test_platform_link_overrides_messaging_connection_type():
+def test_stored_messaging_connection_type_not_overridden_by_platform_link():
     from types import SimpleNamespace
     from app.services.agents.chat_connection import normalized_chat_connection_type
 
@@ -130,7 +130,23 @@ def test_platform_link_overrides_messaging_connection_type():
         main_llm_provider="",
         main_llm_model="",
     )
-    assert normalized_chat_connection_type(agent) == "provider_chat"
+    assert normalized_chat_connection_type(agent) == "messaging_channels"
+
+
+def test_stored_internal_llm_not_upgraded_by_leftover_api_url():
+    from types import SimpleNamespace
+    from app.services.agents.chat_connection import normalized_chat_connection_type
+
+    agent = SimpleNamespace(
+        call_medium="chat",
+        chat_connection_type="internal_llm",
+        voice_ai_integration_id=None,
+        voice_ai_agent_id=None,
+        chat_connection_config={"api_base_url": "https://example.com/chat"},
+        main_llm_provider="openai",
+        main_llm_model="gpt-4.1-nano",
+    )
+    assert normalized_chat_connection_type(agent) == "internal_llm"
 
 
 def test_normalized_connection_infers_provider_chat_from_platform_link():

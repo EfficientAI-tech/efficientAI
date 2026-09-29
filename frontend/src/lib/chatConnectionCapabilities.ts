@@ -23,32 +23,28 @@ export const CHAT_CONNECTION_CAPABILITIES: ChatConnectionCapability[] = [
   {
     id: 'internal_llm',
     label: 'LLM',
-    description:
-      'Production prompt on your LLM; EfficientAI test agent plays the customer (like voice evals).',
+    description: 'LLM plays production; test agent is the customer.',
     pattern: 'llm_to_llm',
     offeredInCreateWizard: true,
   },
   {
     id: 'provider_chat',
     label: 'Existing platform',
-    description:
-      'Each production turn hits your platform text chat API (Vapi, Retell, ElevenLabs, or Smallest). Customer side is the EfficientAI test agent.',
+    description: 'Retell, Vapi, ElevenLabs, or Smallest text chat.',
     pattern: 'live_production_plus_customer_llm',
     offeredInCreateWizard: true,
   },
   {
     id: 'customer_api',
     label: 'HTTP API',
-    description:
-      'Your HTTP endpoint answers each production turn. Customer side is the EfficientAI test agent.',
+    description: 'POST each turn to your REST API.',
     pattern: 'live_production_plus_customer_llm',
     offeredInCreateWizard: true,
   },
   {
     id: 'messaging_channels',
     label: 'Messaging',
-    description:
-      'WhatsApp/SMS or webhooks for production replies. Customer side is the EfficientAI test agent.',
+    description: 'WhatsApp or SMS for production replies.',
     pattern: 'live_production_plus_customer_llm',
     offeredInCreateWizard: true,
   },

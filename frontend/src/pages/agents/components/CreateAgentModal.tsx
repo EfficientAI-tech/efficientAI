@@ -291,16 +291,10 @@ export default function CreateAgentModal({
           }
         }
         if (chatIntegrationOption === 'customer_api') {
-          payload.chat_connection_config = {
-            api_base_url: chatConnectionConfig.apiBaseUrl.trim(),
-            api_message_path: chatConnectionConfig.apiMessagePath.trim() || '/chat',
-            ...(chatConnectionConfig.apiAuthHeader.trim() && chatConnectionConfig.apiAuthValue.trim()
-              ? {
-                  api_auth_header: chatConnectionConfig.apiAuthHeader.trim(),
-                  api_auth_value: chatConnectionConfig.apiAuthValue.trim(),
-                }
-              : {}),
-          }
+          payload.chat_connection_config = buildChatConnectionConfigPayload(
+            'customer_api',
+            chatConnectionConfig,
+          )
         }
         if (chatIntegrationOption === 'messaging_channels') {
           payload.chat_connection_config = buildChatConnectionConfigPayload(
@@ -387,7 +381,10 @@ export default function CreateAgentModal({
       connectionType: connType,
       useSeparateTestLlm: connType !== 'internal_llm' ? true : prev.useSeparateTestLlm,
     }))
-    if (!chatWizardNeedsLlmStep(option) && currentStep > 2) {
+    if (!chatWizardNeedsLlmStep(option) && currentStep > 1) {
+      setCurrentStep(1)
+    }
+    if (chatWizardNeedsLlmStep(option) && currentStep > 2) {
       setCurrentStep(2)
     }
     if (option !== 'provider_chat') {
@@ -491,19 +488,26 @@ export default function CreateAgentModal({
           }
           return false
         }
-        return true
-      }
-      if (currentStep === 2) {
-        if (!isPromptStepValid(productionPrompt, formData.test_agent_template)) {
-          if (!productionPrompt.trim()) showToast('Production prompt is required.', 'error')
-          else showToast('Test agent prompt must be at least 10 words.', 'error')
-          return false
+        if (chatIntegrationOption === 'internal_llm') {
+          if (!isPromptStepValid(productionPrompt, formData.test_agent_template)) {
+            if (!productionPrompt.trim()) showToast('Production prompt is required.', 'error')
+            else showToast('Test agent prompt must be at least 10 words.', 'error')
+            return false
+          }
         }
         return true
       }
-      if (currentStep === 3) {
-        if (chatIntegrationOption === 'internal_llm' && !validateChatConnection(chatConnection)) {
-          showToast(chatConnectionValidationMessage(chatConnection), 'error')
+      if (currentStep === 2) {
+        if (chatIntegrationOption === 'internal_llm') {
+          if (!validateChatConnection(chatConnection)) {
+            showToast(chatConnectionValidationMessage(chatConnection), 'error')
+            return false
+          }
+          return true
+        }
+        if (!isPromptStepValid(productionPrompt, formData.test_agent_template)) {
+          if (!productionPrompt.trim()) showToast('Production prompt is required.', 'error')
+          else showToast('Test agent prompt must be at least 10 words.', 'error')
           return false
         }
         return true
@@ -551,13 +555,13 @@ export default function CreateAgentModal({
       return
     }
 
-    if (createPath === 'chat' && currentStep === 1 && chatIntegrationOption === 'provider_chat') {
+    if (
+      createPath === 'chat' &&
+      chatIntegrationOption === 'provider_chat' &&
+      currentStep === 1
+    ) {
       setCurrentStep(2)
-      if (
-        !productionPrompt.trim() &&
-        formData.voice_ai_integration_id &&
-        formData.voice_ai_agent_id?.trim()
-      ) {
+      if (!hasFetchedPlatformPrompt) {
         fetchPlatformPromptMutation.mutate({})
       }
       return
@@ -699,6 +703,51 @@ export default function CreateAgentModal({
     }
 
     if (createPath === 'chat') {
+      const chatPromptsStep = (
+        <ProductionPromptStep
+          agentName={formData.name}
+          language={formData.language}
+          callType={formData.call_type}
+          productionPrompt={productionPrompt}
+          onProductionPromptChange={setProductionPrompt}
+          isFetchingProductionPrompt={
+            chatIntegrationOption === 'provider_chat' && fetchPlatformPromptMutation.isPending
+          }
+          fetchError={chatIntegrationOption === 'provider_chat' ? promptFetchError : null}
+          importFromProvider={
+            chatIntegrationOption === 'provider_chat'
+              ? {
+                  onClick: () => fetchPlatformPromptMutation.mutate({}),
+                  isPending: fetchPlatformPromptMutation.isPending,
+                  disabled:
+                    !formData.voice_ai_integration_id?.trim() ||
+                    !formData.voice_ai_agent_id?.trim(),
+                }
+              : undefined
+          }
+          testAgentTemplate={formData.test_agent_template}
+          onTestAgentTemplateChange={(test_agent_template) =>
+            setFormData((prev) => ({
+              ...prev,
+              test_agent_template,
+              description: assembleTestAgentPrompt(test_agent_template.sections),
+            }))
+          }
+          additionalContext={setupAdditionalContext}
+          onAdditionalContextChange={setSetupAdditionalContext}
+          aiProviders={aiProviders}
+          aiCredentialId={aiCredentialId}
+          onAiCredentialIdChange={setAiCredentialId}
+          aiModel={aiModel}
+          onAiModelChange={setAiModel}
+          selectableModels={selectableModels}
+          gatewayDirectModel={gatewayDirectModel}
+          onGenerateTestPrompt={() => generateTestPromptMutation.mutate()}
+          isGenerating={generateTestPromptMutation.isPending}
+          canGenerate={Boolean(formData.name.trim() && productionPrompt.trim())}
+        />
+      )
+
       if (currentStep === 1) {
         return (
           <div className="w-full max-w-4xl mx-auto space-y-6">
@@ -729,88 +778,40 @@ export default function CreateAgentModal({
             ) : null}
             {chatIntegrationOption !== 'internal_llm' &&
             chatIntegrationOption !== 'provider_chat' ? (
-              <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-                <ChatConnectionDetailsStep
-                  embedded
-                  integrationType={chatIntegrationOption}
-                  formData={formData}
-                  onFormChange={(patch) => setFormData((prev) => ({ ...prev, ...patch }))}
-                  integrations={integrations}
-                  selectedPlatform={chatProviderPlatform}
-                  onSelectPlatform={setChatProviderPlatform}
-                  config={chatConnectionConfig}
-                  onConfigChange={(patch) =>
-                    setChatConnectionConfig((prev) => ({ ...prev, ...patch }))
-                  }
-                  productionPrompt={productionPrompt}
-                  onProductionPromptChange={setProductionPrompt}
-                  onPromptFetched={() => {}}
-                  showToast={showToast}
-                />
-              </div>
+              <ChatConnectionDetailsStep
+                embedded
+                integrationType={chatIntegrationOption}
+                formData={formData}
+                onFormChange={(patch) => setFormData((prev) => ({ ...prev, ...patch }))}
+                integrations={integrations}
+                selectedPlatform={chatProviderPlatform}
+                onSelectPlatform={setChatProviderPlatform}
+                config={chatConnectionConfig}
+                onConfigChange={(patch) =>
+                  setChatConnectionConfig((prev) => ({ ...prev, ...patch }))
+                }
+                productionPrompt={productionPrompt}
+                onProductionPromptChange={setProductionPrompt}
+                onPromptFetched={() => {}}
+                showToast={showToast}
+              />
             ) : null}
+            {chatIntegrationOption === 'internal_llm' ? chatPromptsStep : null}
           </div>
         )
       }
       if (currentStep === 2) {
-        return (
-          <div className="w-full max-w-4xl mx-auto space-y-4">
-            <ProductionPromptStep
-              agentName={formData.name}
-              language={formData.language}
-              callType={formData.call_type}
-              productionPrompt={productionPrompt}
-              onProductionPromptChange={setProductionPrompt}
-              isFetchingProductionPrompt={
-                chatIntegrationOption === 'provider_chat' && fetchPlatformPromptMutation.isPending
-              }
-              fetchError={
-                chatIntegrationOption === 'provider_chat' ? promptFetchError : null
-              }
-              importFromProvider={
-                chatIntegrationOption === 'provider_chat'
-                  ? {
-                      onClick: () => fetchPlatformPromptMutation.mutate({}),
-                      isPending: fetchPlatformPromptMutation.isPending,
-                      disabled:
-                        !formData.voice_ai_integration_id?.trim() ||
-                        !formData.voice_ai_agent_id?.trim(),
-                    }
-                  : undefined
-              }
-              testAgentTemplate={formData.test_agent_template}
-              onTestAgentTemplateChange={(test_agent_template) =>
-                setFormData((prev) => ({
-                  ...prev,
-                  test_agent_template,
-                  description: assembleTestAgentPrompt(test_agent_template.sections),
-                }))
-              }
-              additionalContext={setupAdditionalContext}
-              onAdditionalContextChange={setSetupAdditionalContext}
-              aiProviders={aiProviders}
-              aiCredentialId={aiCredentialId}
-              onAiCredentialIdChange={setAiCredentialId}
-              aiModel={aiModel}
-              onAiModelChange={setAiModel}
-              selectableModels={selectableModels}
-              gatewayDirectModel={gatewayDirectModel}
-              onGenerateTestPrompt={() => generateTestPromptMutation.mutate()}
-              isGenerating={generateTestPromptMutation.isPending}
-              canGenerate={Boolean(formData.name.trim() && productionPrompt.trim())}
-            />
-          </div>
-        )
-      }
-      if (currentStep === 3 && chatIntegrationOption === 'internal_llm') {
-        return (
-          <div className="space-y-6 max-w-4xl mx-auto">
-            <ChatConnectionStep
-              value={chatConnection}
-              onChange={(patch) => setChatConnection((prev) => ({ ...prev, ...patch }))}
-            />
-          </div>
-        )
+        if (chatIntegrationOption === 'internal_llm') {
+          return (
+            <div className="space-y-6 max-w-4xl mx-auto">
+              <ChatConnectionStep
+                value={chatConnection}
+                onChange={(patch) => setChatConnection((prev) => ({ ...prev, ...patch }))}
+              />
+            </div>
+          )
+        }
+        return <div className="w-full max-w-4xl mx-auto space-y-6">{chatPromptsStep}</div>
       }
       return null
     }

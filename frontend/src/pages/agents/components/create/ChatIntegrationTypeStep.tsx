@@ -49,19 +49,20 @@ export default function ChatIntegrationTypeStep({
   return (
     <div className={embedded ? 'w-full' : 'w-full max-w-3xl mx-auto space-y-6'}>
       {!embedded ? (
-        <WizardStepHeader title="Chat connection" subtitle="How the production agent is reached each turn." />
+        <WizardStepHeader title="Chat connection" subtitle="How production replies on each eval turn." />
       ) : null}
-      <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Chat</p>
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 w-full max-w-4xl">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 w-full max-w-4xl">
         {options.map((option) => {
           const Icon = ICONS[option.id]
           return (
             <WizardIconCard
               key={option.id}
               label={WIZARD_LABELS[option.id]}
+              subtitle={option.description}
               icon={Icon}
               selected={value === option.id}
               onSelect={() => onChange(option.id)}
+              medium
             />
           )
         })}

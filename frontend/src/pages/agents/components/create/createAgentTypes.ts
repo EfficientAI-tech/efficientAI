@@ -50,25 +50,35 @@ export const PLATFORM_STEPS = [
   { id: 3, title: 'Voice', description: 'Select voice bundle' },
 ] as const
 
-export const CHAT_STEPS = [
-  { id: 1, title: 'Connect', description: 'Name, chat connection, and provider' },
-  { id: 2, title: 'Prompts', description: 'Production prompt and test agent template' },
-  { id: 3, title: 'Chat agent LLM', description: 'API credential and model (production leg)' },
+export const CHAT_STEPS_LLM = [
+  { id: 1, title: 'Setup', description: 'Name and prompts' },
+  { id: 2, title: 'Production LLM', description: 'API credential and model' },
 ] as const
 
-export const CHAT_STEPS_TWO_STEP = CHAT_STEPS.filter((s) => s.id !== 3)
+/** Retell / Vapi / platform-linked chat agents */
+export const CHAT_STEPS_PLATFORM = [
+  { id: 1, title: 'Connect', description: 'Name and platform integration' },
+  { id: 2, title: 'Prompts', description: 'Production prompt → test prompt' },
+] as const
+
+/** Customer HTTP API and messaging chat agents */
+export const CHAT_STEPS_CONNECT = [
+  { id: 1, title: 'Connect', description: 'Name and connection settings' },
+  { id: 2, title: 'Prompts', description: 'Production prompt → test prompt' },
+] as const
 
 export function chatWizardNeedsLlmStep(integration: ChatIntegrationOptionId): boolean {
   return integration === 'internal_llm'
 }
 
 export function chatWizardSteps(integration: ChatIntegrationOptionId) {
-  if (chatWizardNeedsLlmStep(integration)) return CHAT_STEPS
-  return CHAT_STEPS_TWO_STEP
+  if (integration === 'internal_llm') return CHAT_STEPS_LLM
+  if (integration === 'provider_chat') return CHAT_STEPS_PLATFORM
+  return CHAT_STEPS_CONNECT
 }
 
-export function chatWizardMaxStep(integration: ChatIntegrationOptionId): CreateStepId {
-  return chatWizardNeedsLlmStep(integration) ? 3 : 2
+export function chatWizardMaxStep(_integration: ChatIntegrationOptionId): CreateStepId {
+  return 2
 }
 
 /** Chat create: link first active bundle for eval customer LLM (no wizard step). */

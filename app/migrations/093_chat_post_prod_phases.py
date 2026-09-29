@@ -4,7 +4,6 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 description = "chat_eval_mode on agents; content_modality on call_imports"
-MIGRATION_SCOPE = "catalog"
 
 
 def upgrade(db: Session):

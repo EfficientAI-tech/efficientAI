@@ -55,12 +55,21 @@ from app.services.testing.test_agent_template import (
 router = APIRouter(prefix="/agents", tags=["agents"])
 
 
-def _stored_chat_connection_config(config):
+def _stored_chat_connection_config(config, *, previous=None):
     from app.services.agents.chat_connection_config_store import (
         prepare_chat_connection_config_for_storage,
     )
+    from app.services.agents.chat_outbound_urls import assert_chat_connection_urls_safe
+    from app.services.telephony.recording_download import ExotelInvalidContentError
 
-    return prepare_chat_connection_config_for_storage(config)
+    try:
+        assert_chat_connection_urls_safe(config)
+    except ExotelInvalidContentError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    return prepare_chat_connection_config_for_storage(config, previous=previous)
 
 
 def _chat_eval_mode_for_create(agent: AgentCreate, is_chat_agent: bool):
@@ -1020,7 +1029,8 @@ async def update_agent(
 
     if "chat_connection_config" in update_data:
         update_data["chat_connection_config"] = _stored_chat_connection_config(
-            update_data.get("chat_connection_config")
+            update_data.get("chat_connection_config"),
+            previous=db_agent.chat_connection_config,
         )
     if "chat_eval_mode" in update_data and update_data["chat_eval_mode"] is not None:
         update_data["chat_eval_mode"] = (

@@ -51,10 +51,13 @@ def _has_platform_chat_link(agent: Agent) -> bool:
 
 
 def normalized_chat_connection_type(agent: Agent) -> str:
-    """Resolve connection type, inferring platform/API/messaging when DB defaulted to internal_llm."""
+    """Resolve connection type; trust stored enum, infer only when type was never set."""
     raw = getattr(agent, "chat_connection_type", None)
     conn = coerce_chat_connection_type(raw)
     if not _is_chat_medium(agent):
+        return conn
+
+    if raw is not None and str(raw).strip():
         return conn
 
     cfg = chat_connection_config(agent)
@@ -63,12 +66,8 @@ def normalized_chat_connection_type(agent: Agent) -> str:
     channel = (cfg.get("messaging_channel") or "").strip().lower()
     has_messaging = channel in ("whatsapp", "sms")
 
-    if conn == ChatConnectionTypeEnum.CUSTOMER_API.value and has_api:
-        return conn
-    if has_platform and conn != ChatConnectionTypeEnum.CUSTOMER_API.value:
+    if has_platform:
         return ChatConnectionTypeEnum.PROVIDER_CHAT.value
-    if conn != ChatConnectionTypeEnum.INTERNAL_LLM.value:
-        return conn
     if has_api:
         return ChatConnectionTypeEnum.CUSTOMER_API.value
     if has_messaging:

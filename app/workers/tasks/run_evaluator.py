@@ -120,7 +120,16 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
                 result.error_message = str(bridge_error)
                 result.call_event = "bridge_error"
                 db.commit()
-                raise
+                from app.services.testing.evaluator_run_errors import evaluator_error_is_retryable
+
+                if evaluator_error_is_retryable(bridge_error):
+                    raise
+                return {
+                    "evaluator_id": evaluator_id,
+                    "result_id": evaluator_result_id,
+                    "status": "failed",
+                    "error": str(bridge_error),
+                }
 
         elif use_llm_text_simulation:
             from app.models.database import Persona, Scenario
@@ -200,7 +209,16 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
                 result.error_message = str(sim_error)
                 result.call_event = "llm_simulation_error"
                 db.commit()
-                raise
+                from app.services.testing.evaluator_run_errors import evaluator_error_is_retryable
+
+                if evaluator_error_is_retryable(sim_error):
+                    raise
+                return {
+                    "evaluator_id": evaluator_id,
+                    "result_id": evaluator_result_id,
+                    "status": "failed",
+                    "error": str(sim_error),
+                }
 
         else:
             logger.error(f"[RunEvaluator {evaluator.evaluator_id}] Agent missing required configuration")
@@ -219,7 +237,7 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
                 f"voice_bundle={has_voice_bundle}, voice_ai_integration={has_voice_ai_integration}."
                 f"{chat_detail} "
                 "For LLM chat agents set Chat Agent LLM; for platform chat set integration and agent ID "
-                "and production prompt. Restart Celery workers after deploying API changes."
+                "and production prompt."
             )
             result.call_event = "configuration_error"
             db.commit()
@@ -237,6 +255,10 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
                 db.commit()
         except Exception:
             pass
+        from app.services.testing.evaluator_run_errors import evaluator_error_is_retryable
+
+        if not evaluator_error_is_retryable(exc):
+            raise
         raise self.retry(exc=exc, countdown=60)
     finally:
         db.close()

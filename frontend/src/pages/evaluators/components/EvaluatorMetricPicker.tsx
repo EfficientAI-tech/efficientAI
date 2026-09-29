@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Layers } from 'lucide-react'
 import { apiClient } from '../../../lib/api'
+import { metricListSurfaceForAgentMedium } from '../../../lib/metricSurfaces'
 import {
   getTopLevelMetricsForAgentMedium,
   isCategorizationParent,
@@ -25,9 +26,11 @@ export default function EvaluatorMetricPicker({
   fluidHeight = false,
   agentMedium = 'voice',
 }: Props) {
+  const listSurface = metricListSurfaceForAgentMedium(agentMedium)
+
   const { data: metrics = [] } = useQuery({
-    queryKey: ['metrics', 'agent'],
-    queryFn: () => apiClient.listMetrics('agent', true),
+    queryKey: ['metrics', listSurface],
+    queryFn: () => apiClient.listMetrics(listSurface, true),
   })
 
   const metricRows = metrics as MetricRow[]
@@ -42,8 +45,8 @@ export default function EvaluatorMetricPicker({
   return (
     <div className="space-y-3">
       <p className="text-sm text-gray-600">
-        Optional — leave empty to score against all enabled agent metrics
-        {agentMedium === 'chat' ? ' (voice-only audio metrics are hidden for chat agents)' : ''}.
+        Optional — leave empty to score all metrics enabled for{' '}
+        {agentMedium === 'chat' ? 'chat agent' : 'voice agent'} evals.
         Categorization metrics select as one unit.
       </p>
       <div

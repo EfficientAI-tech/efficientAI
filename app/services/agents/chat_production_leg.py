@@ -14,9 +14,11 @@ from app.services.agents.chat_connection import (
     normalized_chat_connection_type,
 )
 from app.services.agents.chat_llm_config import resolve_simulation_llm
+from app.services.agents.chat_outbound_urls import assert_chat_connection_urls_safe
 from app.services.agents.customer_api_chat import call_customer_chat_api
 from app.services.agents.provider_platform_chat import ProviderChatState, generate_provider_platform_reply
 from app.services.ai.llm_service import llm_service
+from app.services.testing.simulation_prompts import build_agent_system_prompt
 from app.services.testing.test_agent_simulation_prompt import is_chat_agent
 
 
@@ -67,6 +69,13 @@ def uses_live_production_leg(agent: Agent) -> bool:
     )
 
 
+def _fail_live_messaging(conn: str, leg: Optional[str], detail: str) -> None:
+    raise ValueError(
+        f"Live messaging production leg failed ({leg or 'unknown'}): {detail}. "
+        "Fix credentials, recipient, and sync reply URL — eval will not fall back to LLM simulation."
+    )
+
+
 def generate_production_chat_reply(
     db: Session,
     *,
@@ -82,11 +91,13 @@ def generate_production_chat_reply(
         "chat_eval_mode": mode,
         "chat_connection_type": conn,
     }
+    cfg_raw = chat_connection_config(agent)
+    assert_chat_connection_urls_safe(cfg_raw)
 
     if conn == ChatConnectionTypeEnum.CUSTOMER_API.value:
         from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
 
-        cfg = chat_connection_config_for_runtime(chat_connection_config(agent))
+        cfg = chat_connection_config_for_runtime(cfg_raw)
         reply = call_customer_chat_api(
             cfg,
             transcript=transcript,
@@ -128,7 +139,7 @@ def generate_production_chat_reply(
         from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
         from app.services.agents.messaging_channel_chat import try_messaging_worker_send
 
-        cfg = chat_connection_config_for_runtime(chat_connection_config(agent))
+        cfg = chat_connection_config_for_runtime(cfg_raw)
         reply, leg = try_messaging_worker_send(
             db,
             organization_id=organization_id,
@@ -138,52 +149,49 @@ def generate_production_chat_reply(
         if reply:
             meta["production_leg"] = leg
             return reply, meta
-        if leg and not leg.startswith("messaging_skip"):
-            meta["production_leg"] = leg
 
         webhook = (cfg.get("outbound_webhook_url") or cfg.get("messaging_webhook_url") or "").strip()
         if webhook:
             import httpx
 
+            from app.services.agents.customer_api_chat import extract_reply_text
+
+            assert_chat_connection_urls_safe({"outbound_webhook_url": webhook})
+            from app.services.agents.chat_outbound_payload import messaging_webhook_request_body
+
             with httpx.Client(timeout=60.0) as client:
                 resp = client.post(
                     webhook,
-                    json={
-                        "messages": transcript,
-                        "channel": cfg.get("messaging_channel"),
-                        "sender_id": cfg.get("messaging_sender_id"),
-                    },
+                    json=messaging_webhook_request_body(
+                        transcript=transcript,
+                        channel=cfg.get("messaging_channel"),
+                        sender_id=cfg.get("messaging_sender_id"),
+                    ),
                 )
                 resp.raise_for_status()
                 data = resp.json() if resp.content else {}
-                from app.services.agents.customer_api_chat import extract_reply_text
-
                 reply = extract_reply_text(data) or resp.text.strip()
                 if reply:
                     meta["production_leg"] = "messaging_webhook"
                     return reply, meta
 
-    if conn == ChatConnectionTypeEnum.PROVIDER_CHAT.value:
-        raise ValueError(
-            "Platform chat agents use the live Vapi/Retell API for production turns only; "
-            "LLM prompt simulation is not used. Check integration, assistant id, and platform chat setup."
+        _fail_live_messaging(
+            conn,
+            leg,
+            "no outbound reply (check send credentials, recipient, and messaging_sync_reply_url for send-only setups)",
         )
 
-    if (
-        is_chat_agent(agent)
-        and agent.voice_ai_integration_id
-        and (agent.voice_ai_agent_id or "").strip()
-    ):
+    if conn in (
+        ChatConnectionTypeEnum.MESSAGING_CHANNELS.value,
+        ChatConnectionTypeEnum.CUSTOMER_API.value,
+    ) and mode == ChatEvalModeEnum.POST_PROD_LIVE.value:
         raise ValueError(
-            "This agent has a voice platform integration and assistant id but eval used "
-            f"LLM production simulation (connection={conn}). Set chat connection to platform "
-            "chat, save the agent, and restart Celery workers so code changes load."
+            f"Live production chat ({conn}) could not complete this turn. "
+            "Check agent connection settings and platform credentials."
         )
-
-    from app.services.testing.llm_to_llm_evaluator_simulation import _build_agent_system_prompt
 
     main_llm = resolve_simulation_llm(db, agent=agent, organization_id=organization_id, leg="main")
-    agent_system = _build_agent_system_prompt(agent)
+    agent_system = build_agent_system_prompt(agent)
     messages = _agent_messages(agent_system, transcript)
     try:
         result = llm_service.generate_response(
@@ -198,16 +206,11 @@ def generate_production_chat_reply(
         )
     except RuntimeError as exc:
         raise RuntimeError(
-            "Production-side LLM simulation failed. For Retell/Vapi chat agents, production "
-            f"should use the platform API (connection=provider_chat), not org LLM "
-            f"({main_llm.source}). Save integration + chat agent ID, restart Celery workers, "
-            f"then re-run. Detail: {exc}"
+            f"Production-side LLM simulation failed ({main_llm.source}): {exc}"
         ) from exc
     text = (result.get("text") or "").strip()
     if not text:
         raise ValueError("Production LLM returned an empty message")
     meta["production_leg"] = "internal_llm_sim"
     meta["main_llm_source"] = main_llm.source
-    if is_chat_agent(agent) and conn == ChatConnectionTypeEnum.MESSAGING_CHANNELS.value:
-        meta["production_leg"] = "messaging_llm_sim"
     return text, meta

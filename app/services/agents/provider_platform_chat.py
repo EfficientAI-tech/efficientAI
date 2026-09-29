@@ -56,8 +56,6 @@ def _last_user_utterance(transcript: list[dict[str, str]]) -> str:
             text = (entry.get("text") or "").strip()
             if text:
                 return text
-    if transcript:
-        return (transcript[-1].get("text") or "").strip()
     return ""
 
 
@@ -196,6 +194,64 @@ def _retell_chat_turn(
             raise ValueError("Retell chat completion returned no agent message")
         state.extra["production_leg"] = "retell_chat"
         return reply
+
+
+def close_provider_chat_session(
+    db: Session,
+    *,
+    agent: Agent,
+    organization_id: UUID,
+    state: ProviderChatState,
+) -> None:
+    """Best-effort teardown after an eval simulation (Retell end-chat, Vapi delete session)."""
+    if not state.retell_chat_id and not state.vapi_session_id:
+        return
+    if not agent.voice_ai_integration_id:
+        return
+    integration = (
+        db.query(Integration)
+        .filter(
+            Integration.id == agent.voice_ai_integration_id,
+            Integration.organization_id == organization_id,
+            Integration.is_active == True,
+        )
+        .first()
+    )
+    if not integration:
+        return
+    platform = (
+        integration.platform.value
+        if hasattr(integration.platform, "value")
+        else str(integration.platform)
+    ).lower()
+    api_key = decrypt_api_key(integration.api_key)
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            if platform == IntegrationPlatform.RETELL.value and state.retell_chat_id:
+                resp = client.patch(
+                    f"https://api.retellai.com/end-chat/{state.retell_chat_id}",
+                    headers=headers,
+                )
+                if resp.status_code not in (200, 204):
+                    logger.warning(
+                        "[ProviderChat] Retell end-chat {} returned {}",
+                        state.retell_chat_id,
+                        resp.status_code,
+                    )
+            elif platform == IntegrationPlatform.VAPI.value and state.vapi_session_id:
+                resp = client.delete(
+                    f"https://api.vapi.ai/session/{state.vapi_session_id}",
+                    headers=headers,
+                )
+                if resp.status_code not in (200, 204):
+                    logger.warning(
+                        "[ProviderChat] Vapi delete session {} returned {}",
+                        state.vapi_session_id,
+                        resp.status_code,
+                    )
+    except Exception as exc:
+        logger.warning("[ProviderChat] Session teardown failed (non-fatal): {}", exc)
 
 
 def generate_provider_platform_reply(

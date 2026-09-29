@@ -28,6 +28,7 @@ import ScenarioViewModal from '../components/ScenarioViewModal'
 import EvaluatorDetailHeader from '../components/EvaluatorDetailHeader'
 import EvaluatorTtsMismatchBanner from '../components/EvaluatorTtsMismatchBanner'
 import { isChatMedium } from '../../../lib/agentMedium'
+import { metricListSurfaceForAgentMedium } from '../../../lib/metricSurfaces'
 import { filterPersonasByMedium } from '../../../lib/personaMedium'
 import EvaluatorMetricsDisplay from '../components/EvaluatorMetricsDisplay'
 import { MODERN_INPUT_CLASS, MODERN_SELECT_CLASS, StatCard } from '../components/evaluatorUi'
@@ -111,9 +112,13 @@ export default function EvaluatorDetail() {
     enabled: isEditing && !!voiceBundleId,
   })
 
+  const metricListSurface = metricListSurfaceForAgentMedium(
+    isChatMedium(suite?.agent_call_medium) ? 'chat' : 'voice',
+  )
+
   const { data: metrics = [] } = useQuery({
-    queryKey: ['metrics', 'agent'],
-    queryFn: () => apiClient.listMetrics('agent', true),
+    queryKey: ['metrics', metricListSurface],
+    queryFn: () => apiClient.listMetrics(metricListSurface, true),
     enabled: !!suite,
   })
 

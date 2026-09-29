@@ -5348,7 +5348,7 @@ class ApiClient {
 
   async generateMetric(data: {
     mode: 'description' | 'examples'
-    surface: 'agent' | 'voice_playground' | 'blind_test'
+    surface: 'agent' | 'chat_agent' | 'voice_playground' | 'blind_test'
     description?: string
     examples?: Array<{ transcript: string; rating: any; notes?: string }>
     provider?: string
@@ -5373,7 +5373,7 @@ class ApiClient {
 
   async parseBulkMetric(data: {
     prompt: string
-    surface: 'agent' | 'voice_playground' | 'blind_test'
+    surface: 'agent' | 'chat_agent' | 'voice_playground' | 'blind_test'
     /** When set, the response includes a ``parent`` block + all labels are children. */
     parent_name?: string
     parent_description?: string

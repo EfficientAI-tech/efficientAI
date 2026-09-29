@@ -51,14 +51,10 @@ def _provider_field_str(raw) -> str:
 
 
 def agent_has_chat_simulation_config(agent: Agent) -> bool:
-    """True when we can run chat text simulation for this agent."""
+    """True when a chat agent can run text simulation (not used for voice agents)."""
     medium = (agent.call_medium or CallMediumEnum.PHONE_CALL.value).lower()
     if medium != CallMediumEnum.CHAT.value:
-        main_provider = _provider_field_str(getattr(agent, "main_llm_provider", None))
-        main_model = (getattr(agent, "main_llm_model", None) or "").strip()
-        if main_provider and main_model:
-            return True
-        return agent.voice_bundle_id is not None
+        return False
 
     if validate_chat_connection_for_agent(agent) is None:
         return True
