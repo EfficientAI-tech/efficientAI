@@ -39,9 +39,8 @@ def test_chat_test_leg_uses_agent_fields(db_session, org_id):
     assert resolved.source == "test_llm"
 
 
-def test_voice_agent_falls_back_to_voice_bundle(db_session, org_id):
+def test_voice_agent_falls_back_to_voice_bundle(db_session, org_id, seed_org):
     from app.models.database import VoiceBundle
-    from app.models.enums import ModelProvider
 
     bundle_id = uuid4()
     bundle = VoiceBundle(

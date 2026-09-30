@@ -3499,7 +3499,7 @@ def _generate_report_narrative(
     if not insight_aggregates:
         return {"observations": {}, "evidence": {}, "design_notes": [], "audit_summary": None}
     try:
-        from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request_for_request
+        from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
         from app.services.ai.llm_service import llm_service
 
         llm_provider = (report_config.get("llm_provider") or "").strip() or None

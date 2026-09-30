@@ -1,0 +1,19 @@
+[
+  {
+    "type": "session.started",
+    "session_id": "sess_fixture_002"
+  },
+  {
+    "type": "transcript",
+    "role": "assistant",
+    "text": "First sentence."
+  },
+  {
+    "type": "transcript",
+    "role": "assistant",
+    "text": "Second sentence."
+  },
+  {
+    "type": "agent_stop_talking"
+  }
+]
