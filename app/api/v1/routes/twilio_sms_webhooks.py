@@ -9,7 +9,10 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.core.public_url import configured_public_base_url
+from app.services.telephony.twilio_webhook_urls import (
+    twilio_sms_inbound_webhook_url,
+    twilio_webhook_base,
+)
 from app.dependencies import get_db
 from app.models.database import Agent, TelephonyIntegration
 from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
@@ -49,7 +52,7 @@ def _validate_twilio_signature(
     signature = request.headers.get("X-Twilio-Signature") or ""
     if not auth_token or not signature:
         return False
-    public_base = configured_public_base_url()
+    public_base = twilio_webhook_base()
     signed_url = public_webhook_url_for_validation(str(request.url), public_base)
     if validate_twilio_request(
         auth_token=auth_token,
@@ -81,7 +84,8 @@ def process_twilio_sms_inbound(
         if settings.DEBUG:
             logger.warning(
                 "[TwilioWebhook] invalid signature for agent {} (DEBUG: accepting). "
-                "Set PUBLIC_BASE_URL to your ngrok URL exactly as in Twilio Console.",
+                "Set twilio.webhook_base_url or security.public_base_url in config.yml "
+                "(ngrok URL must match Twilio Console exactly).",
                 agent.id,
             )
         else:
@@ -117,10 +121,8 @@ def process_twilio_sms_inbound(
 
 
 @router.get("/sms-inbound-url")
-async def twilio_sms_inbound_webhook_url() -> dict[str, str]:
-    base = configured_public_base_url().rstrip("/")
-    prefix = (settings.API_V1_PREFIX or "/api/v1").rstrip("/")
-    return {"url": f"{base}{prefix}/telephony/twilio/webhooks/sms-inbound"}
+async def twilio_sms_inbound_webhook_url_route() -> dict[str, str]:
+    return {"url": twilio_sms_inbound_webhook_url()}
 
 
 @router.post("/sms-inbound")

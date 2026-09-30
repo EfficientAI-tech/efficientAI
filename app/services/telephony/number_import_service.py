@@ -43,12 +43,9 @@ def _assert_import_provider(provider: str) -> str:
 
 
 def _twilio_sms_inbound_webhook_url() -> str:
-    from app.config import settings
-    from app.core.public_url import configured_public_base_url
+    from app.services.telephony.twilio_webhook_urls import twilio_sms_inbound_webhook_url
 
-    base = configured_public_base_url().rstrip("/")
-    prefix = (settings.API_V1_PREFIX or "/api/v1").rstrip("/")
-    return f"{base}{prefix}/telephony/twilio/webhooks/sms-inbound"
+    return twilio_sms_inbound_webhook_url()
 
 
 def _vobiz_answer_webhook_url() -> str:
