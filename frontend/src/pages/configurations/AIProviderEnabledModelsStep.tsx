@@ -94,8 +94,11 @@ export default function AIProviderEnabledModelsStep({
     [catalog],
   )
 
-  const isCustomProvider = String(provider).toLowerCase() === 'custom'
-  const showManualAdd = isCustomProvider || (!isLoading && catalogIsEmpty)
+  const providerKey = String(provider).toLowerCase()
+  const isCustomProvider = providerKey === 'custom'
+  const isOpenRouterProvider = providerKey === 'openrouter'
+  const showManualAdd =
+    isCustomProvider || isOpenRouterProvider || (!isLoading && catalogIsEmpty)
 
   const customModels = useMemo(
     () => enabledModels.filter((model) => !catalogModelSet.has(model)),
@@ -229,8 +232,18 @@ export default function AIProviderEnabledModelsStep({
       {showManualAdd ? (
         <div className={`${usageTheme.panel} p-3`}>
           <label className="block text-sm font-medium text-gray-900 mb-2">
-            {isCustomProvider ? 'Custom model ID' : 'Add deployment / model name'}
+            {isCustomProvider
+              ? 'Custom model ID'
+              : isOpenRouterProvider
+                ? 'OpenRouter model ID'
+                : 'Add deployment / model name'}
           </label>
+          {isOpenRouterProvider ? (
+            <p className="mb-2 text-xs text-gray-600">
+              Use OpenRouter slugs like <span className="font-medium">vendor/model</span> (for
+              example <span className="font-medium">anthropic/claude-sonnet-4</span>).
+            </p>
+          ) : null}
           <div className="flex gap-2">
             <input
               type="text"
@@ -246,7 +259,9 @@ export default function AIProviderEnabledModelsStep({
               placeholder={
                 isCustomProvider
                   ? 'e.g. openai/gpt-4o or production-gpt4'
-                  : 'e.g. accounts/fireworks/models/gpt-oss-120b'
+                  : isOpenRouterProvider
+                    ? 'e.g. openai/gpt-4o'
+                    : 'e.g. accounts/fireworks/models/gpt-oss-120b'
               }
             />
             <button type="button" onClick={addCustomModel} className={usageTheme.applyBtn}>

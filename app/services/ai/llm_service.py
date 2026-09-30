@@ -21,6 +21,12 @@ from sqlalchemy.orm import Session
 from app.models.database import ModelProvider, AIProvider
 from app.services.credentials import resolve_ai_provider, resolve_integration
 from app.services.ai.llm_generation_config import build_litellm_kwargs
+from app.services.ai.openrouter_jev import (
+    call_openrouter_systemone,
+    extract_jev_payload,
+    is_openrouter_jev_model,
+    systemone_response_to_text,
+)
 from app.services.ai.llm_gateway import (
     apply_llm_gateway,
     resolve_effective_routing,
@@ -49,6 +55,7 @@ _LITELLM_PROVIDER_PREFIX: Dict[str, str] = {
     "together": "together_ai",
     "typesafe": "typesafe",
     "sarvam": "sarvam",
+    "openrouter": "openrouter",
 }
 
 # Matches the model-name half of the Gemini 2.5 family: ``gemini-2.5-pro``,
@@ -334,6 +341,47 @@ def _azure_deployment_name(catalog_model: str) -> str:
     return catalog_model
 
 
+def _record_generate_response_usage(
+    result: Dict[str, Any],
+    *,
+    llm_model: str,
+    organization_id: UUID,
+    raw_response: Any = None,
+    usage: Any = None,
+) -> None:
+    """Persist token usage for billing rollups (best-effort)."""
+    try:
+        from app.services.usage.context import (
+            LLMUsageProductSection,
+            ensure_usage_context,
+            reset_usage_context,
+        )
+        from app.services.usage.normalize import (
+            normalize_llm_usage,
+            usage_snapshot_is_billable,
+        )
+        from app.services.usage.llm_usage import record_llm_usage
+
+        usage_token = ensure_usage_context(
+            organization_id,
+            product_section=LLMUsageProductSection.OTHER,
+        )
+        try:
+            snapshot = normalize_llm_usage(raw_response=raw_response, usage=usage)
+            result["usage"]["cache_read_tokens"] = snapshot.cache_read_tokens
+            result["usage"]["cache_creation_tokens"] = snapshot.cache_creation_tokens
+            result["usage"]["reasoning_tokens"] = snapshot.reasoning_tokens
+            if usage_snapshot_is_billable(snapshot):
+                record_llm_usage(
+                    llm_model, snapshot, organization_id=organization_id
+                )
+        finally:
+            if usage_token is not None:
+                reset_usage_context(usage_token)
+    except Exception as exc:
+        logger.debug("llm usage record skipped: {}", exc)
+
+
 class LLMService:
     """Service for generating text responses using various LLM providers."""
 
@@ -425,6 +473,11 @@ class LLMService:
             model = _azure_deployment_name(model)
         if provider_value.lower() == "fireworks" and not model.startswith("accounts/"):
             model = f"accounts/fireworks/models/{model}"
+        if provider_value.lower() == "openrouter":
+            normalized = model.strip()
+            if normalized.lower().startswith("openrouter/"):
+                return normalized
+            return f"openrouter/{normalized}"
         return f"{prefix}/{model}"
 
     def generate_response(
@@ -559,6 +612,48 @@ class LLMService:
             )
             model_str = str(call_kwargs.get("model") or model_str)
 
+        if is_openrouter_jev_model(provider_value, llm_model):
+            if not api_key:
+                raise RuntimeError(
+                    "OpenRouter Jev requires a direct API key on this credential."
+                )
+            jev_payload = extract_jev_payload(messages, completion_extra)
+            if jev_payload is None:
+                raise RuntimeError(
+                    f"OpenRouter Jev model {llm_model} requires structured "
+                    "state/questions; chat/completions is not supported."
+                )
+            state, questions = jev_payload
+            body = call_openrouter_systemone(
+                api_key=api_key,
+                model=llm_model,
+                state=state,
+                questions=questions,
+            )
+            from app.services.usage.normalize import normalize_llm_usage
+
+            snapshot = normalize_llm_usage(raw_response=body)
+            result = {
+                "text": systemone_response_to_text(body),
+                "model": llm_model,
+                "finish_reason": "stop",
+                "truncated": False,
+                "usage": {
+                    "prompt_tokens": snapshot.prompt_tokens,
+                    "completion_tokens": snapshot.completion_tokens,
+                    "total_tokens": snapshot.total_tokens,
+                },
+                "raw_response": body,
+                "processing_time": time.time() - start_time,
+            }
+            _record_generate_response_usage(
+                result,
+                llm_model=llm_model,
+                organization_id=organization_id,
+                raw_response=body,
+            )
+            return result
+
         if completion_extra:
             for key, value in completion_extra.items():
                 if value is not None:
@@ -602,36 +697,12 @@ class LLMService:
             "raw_response": response,
             "processing_time": time.time() - start_time,
         }
-        try:
-            from app.services.usage.context import (
-                LLMUsageProductSection,
-                ensure_usage_context,
-                reset_usage_context,
-            )
-            from app.services.usage.normalize import (
-                normalize_llm_usage,
-                usage_snapshot_is_billable,
-            )
-            from app.services.usage.llm_usage import record_llm_usage
-
-            usage_token = ensure_usage_context(
-                organization_id,
-                product_section=LLMUsageProductSection.OTHER,
-            )
-            try:
-                snapshot = normalize_llm_usage(raw_response=response)
-                result["usage"]["cache_read_tokens"] = snapshot.cache_read_tokens
-                result["usage"]["cache_creation_tokens"] = snapshot.cache_creation_tokens
-                result["usage"]["reasoning_tokens"] = snapshot.reasoning_tokens
-                if usage_snapshot_is_billable(snapshot):
-                    record_llm_usage(
-                        llm_model, snapshot, organization_id=organization_id
-                    )
-            finally:
-                if usage_token is not None:
-                    reset_usage_context(usage_token)
-        except Exception as exc:
-            logger.debug("llm usage record skipped: {}", exc)
+        _record_generate_response_usage(
+            result,
+            llm_model=llm_model,
+            organization_id=organization_id,
+            raw_response=response,
+        )
         return result
 
 

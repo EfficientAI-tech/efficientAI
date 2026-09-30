@@ -317,6 +317,22 @@ class PreviewIntegrationAgentPromptResponse(BaseModel):
     provider_prompt: str
 
 
+class IntegrationVoiceAgentListItem(BaseModel):
+    """One remote voice agent row for integration picker UIs."""
+
+    id: str
+    name: str
+
+
+class ListIntegrationVoiceAgentsResponse(BaseModel):
+    """``GET /integrations/{id}/voice-agents`` payload."""
+
+    agents: List[IntegrationVoiceAgentListItem] = Field(default_factory=list)
+    platform: str
+    cached: bool = False
+    truncated: bool = False
+    list_supported: bool = True
+    message: Optional[str] = None
 
 
 class AgentPhoneAssignmentConflict(BaseModel):

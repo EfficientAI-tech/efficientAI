@@ -401,6 +401,7 @@ export interface ListIntegrationVoiceAgentsResponse {
 // VoiceBundle Types
 export enum ModelProvider {
   OPENAI = 'openai',
+  OPENROUTER = 'openrouter',
   ANTHROPIC = 'anthropic',
   GOOGLE = 'google',
   XAI = 'xai',

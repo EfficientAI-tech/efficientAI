@@ -67,7 +67,10 @@ def normalize_llm_usage(raw_response: Any = None, *, usage: Any = None) -> Usage
     """Extract token buckets from a LiteLLM response or raw usage object."""
     usage_obj = usage
     if usage_obj is None and raw_response is not None:
-        usage_obj = getattr(raw_response, "usage", None)
+        if isinstance(raw_response, Mapping):
+            usage_obj = raw_response.get("usage")
+        else:
+            usage_obj = getattr(raw_response, "usage", None)
 
     data = _usage_mapping(usage_obj)
     prompt_tokens = _as_int(data.get("prompt_tokens") or data.get("input_tokens"))

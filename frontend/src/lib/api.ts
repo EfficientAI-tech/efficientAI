@@ -3452,6 +3452,9 @@ class ApiClient {
       q?: string
       metric_id?: string
       metric_value?: string
+      classification_yes_no?: string
+      classification_choice?: string
+      classification_level?: string
       status?: string
       // Flow-chart drilldown: filter to rows whose sequence under the
       // given parent contains ``flow_node`` (and optionally is

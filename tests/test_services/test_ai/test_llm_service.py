@@ -81,6 +81,18 @@ def test_litellm_model_name_maps_known_provider_prefixes():
         LLMService._litellm_model_name(ModelProvider.AZURE, "azure-openai-gpt4")
         == "azure/gpt-4"
     )
+    assert (
+        LLMService._litellm_model_name(
+            ModelProvider.OPENROUTER, "anthropic/claude-sonnet-4"
+        )
+        == "openrouter/anthropic/claude-sonnet-4"
+    )
+    assert (
+        LLMService._litellm_model_name(
+            ModelProvider.OPENROUTER, "openrouter/openai/gpt-4o"
+        )
+        == "openrouter/openai/gpt-4o"
+    )
 
 
 def test_generate_response_raises_when_provider_not_configured(monkeypatch):
