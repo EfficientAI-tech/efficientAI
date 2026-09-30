@@ -467,11 +467,7 @@ async def preview_integration_agent_prompt(
     try:
         from app.services.voice_providers.prompt_sync import fetch_provider_prompt
 
-        prompt = fetch_provider_prompt(
-            integration,
-            body.voice_ai_agent_id,
-            agent_channel=body.agent_channel,
-        )
+        prompt = fetch_provider_prompt(integration, body.voice_ai_agent_id)
     except Exception as e:
         raise HTTPException(
             status_code=502,
@@ -479,24 +475,10 @@ async def preview_integration_agent_prompt(
         )
 
     if not isinstance(prompt, str) or not prompt.strip():
-        platform_val = (
-            integration.platform.value
-            if hasattr(integration.platform, "value")
-            else str(integration.platform)
-        ).lower()
-        if platform_val == "retell":
-            detail = (
-                "Retell returned no importable prompt. For conversation-flow agents, set "
-                "Global prompt on the flow (chat and voice) and publish the agent. For chat "
-                "agents, use the chat agent ID from Retell and ensure Global prompt is saved on "
-                "the linked conversation flow. For Retell LLM agents, set General prompt (and "
-                "state prompts if used). Custom LLM agents cannot import a prompt."
-            )
-        else:
-            detail = (
-                "Provider returned no prompt. Verify the external agent has a system prompt configured."
-            )
-        raise HTTPException(status_code=422, detail=detail)
+        raise HTTPException(
+            status_code=422,
+            detail="Provider returned no prompt. Verify the external agent has a system prompt configured.",
+        )
 
     return PreviewIntegrationAgentPromptResponse(provider_prompt=prompt)
 
@@ -510,7 +492,6 @@ async def list_integration_voice_agents_route(
     integration_id: UUID,
     refresh: bool = Query(False),
     search: Optional[str] = Query(None),
-    agent_kind: str = Query("voice", pattern="^(voice|chat)$"),
     organization_id: UUID = Depends(get_organization_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
@@ -545,7 +526,6 @@ async def list_integration_voice_agents_route(
             integration,
             refresh=refresh,
             search=search,
-            agent_kind=agent_kind,
         )
     except Exception as e:
         raise HTTPException(
