@@ -91,13 +91,15 @@ def test_run_llm_to_llm_evaluator_simulation_builds_transcript(monkeypatch):
     )
     db = SimpleNamespace()
 
+    from app.models.database import VoiceBundle
+
     def _query(model):
         class _Q:
             def filter(self, *_args, **_kwargs):
                 return self
 
             def first(self):
-                if model.__name__ == "VoiceBundle":
+                if model is VoiceBundle:
                     return voice_bundle
                 return None
 
@@ -222,4 +224,4 @@ def test_run_llm_to_llm_evaluator_simulation_chat_modality(monkeypatch):
 
     assert result.call_data["modality"] == "chat"
     assert result.call_data["chat_connection_type"] == "internal_llm"
-    assert "Hi, I'm Sam" in result.transcription
+    assert "Hi, this is Sam" in result.transcription

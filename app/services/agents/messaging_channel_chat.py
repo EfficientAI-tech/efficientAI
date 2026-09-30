@@ -452,7 +452,8 @@ def try_messaging_worker_send(
                     twilio_from=_normalize_sms_phone(twilio_from),
                     messaging_recipient=recipient,
                 )
-            if channel == "sms":
+                if not turn_id:
+                    return None, "messaging_sms_concurrent_turn"
                 _send_twilio_sms_with_trial_fallback(
                     account_sid=twilio_sid,
                     auth_token=twilio_token,

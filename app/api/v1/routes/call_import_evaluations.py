@@ -3124,13 +3124,13 @@ def _explain_period_deltas(
         if isinstance(tldr_raw.get("model"), str):
             model_hint = tldr_raw["model"]
 
-    from app.services.ai.llm_resolver import get_llm_provider_and_model
+    from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
     from app.services.call_import_user_insights import _call_llm, _parse_json_object
     from app.services.usage.call_import_context import (
         call_import_evaluation_usage_context,
     )
 
-    provider_enum, model_str = get_llm_provider_and_model(
+    provider_enum, model_str = get_llm_provider_and_model_for_request(
         organization_id, db, provider_hint, model_hint
     )
     usage_ctx = call_import_evaluation_usage_context(
@@ -3499,7 +3499,7 @@ def _generate_report_narrative(
     if not insight_aggregates:
         return {"observations": {}, "evidence": {}, "design_notes": [], "audit_summary": None}
     try:
-        from app.services.ai.llm_resolver import get_llm_provider_and_model
+        from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request_for_request
         from app.services.ai.llm_service import llm_service
 
         llm_provider = (report_config.get("llm_provider") or "").strip() or None
@@ -3507,7 +3507,7 @@ def _generate_report_narrative(
         llm_credential_id = report_config.get("llm_credential_id")
         if not llm_provider and not llm_credential_id:
             return {"observations": {}, "evidence": {}, "design_notes": [], "audit_summary": None}
-        provider_enum, model_str = get_llm_provider_and_model(
+        provider_enum, model_str = get_llm_provider_and_model_for_request(
             organization_id,
             db,
             llm_provider,
@@ -5564,14 +5564,14 @@ def _generate_and_persist_tldr_summary(
         evaluation, aggregate, rationale_samples, metric_meta
     )
 
-    from app.services.ai.llm_resolver import get_llm_provider_and_model
+    from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
     from app.services.ai.llm_service import llm_service
     from app.services.usage.call_import_context import (
         call_import_evaluation_usage_context,
     )
     from app.services.usage.context import llm_usage_context
 
-    provider_enum, model_str = get_llm_provider_and_model(
+    provider_enum, model_str = get_llm_provider_and_model_for_request(
         organization_id, db, provider, model
     )
 
@@ -5747,9 +5747,9 @@ async def generate_call_import_evaluation_insights(
     db.commit()
     db.refresh(evaluation)
 
-    from app.services.ai.llm_resolver import get_llm_provider_and_model
+    from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
 
-    provider_enum, model_str = get_llm_provider_and_model(
+    provider_enum, model_str = get_llm_provider_and_model_for_request(
         organization_id, db, body.provider, body.model, body.credential_id
     )
 
@@ -5946,9 +5946,9 @@ async def generate_call_import_evaluation_user_insights(
             ),
         )
 
-    from app.services.ai.llm_resolver import get_llm_provider_and_model
+    from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
 
-    provider_enum, model_str = get_llm_provider_and_model(
+    provider_enum, model_str = get_llm_provider_and_model_for_request(
         organization_id, db, body.provider, body.model, body.credential_id
     )
 
@@ -6646,9 +6646,9 @@ async def generate_call_import_evaluation_metric_clusters(
                 ),
             )
 
-    from app.services.ai.llm_resolver import get_llm_provider_and_model
+    from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
 
-    provider_enum, model_str = get_llm_provider_and_model(
+    provider_enum, model_str = get_llm_provider_and_model_for_request(
         organization_id, db, body.provider, body.model, body.credential_id
     )
 
@@ -6841,7 +6841,7 @@ async def generate_call_import_evaluation_prompt_improvements(
         )
 
     from app.services.call_import_prompt_improvements import is_imported_agent
-    from app.services.ai.llm_resolver import get_llm_provider_and_model
+    from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
 
     imported_agent = (
         db.query(PromptPartial)
@@ -6867,7 +6867,7 @@ async def generate_call_import_evaluation_prompt_improvements(
         ):
             return cached
 
-    provider_enum, model_str = get_llm_provider_and_model(
+    provider_enum, model_str = get_llm_provider_and_model_for_request(
         organization_id, db, body.provider, body.model, body.credential_id
     )
 

@@ -8,7 +8,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from loguru import logger
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.services.telephony.twilio_webhook_urls import (
     twilio_sms_inbound_webhook_url,
     twilio_webhook_base,
@@ -79,18 +78,16 @@ def process_twilio_sms_inbound(
     auth_token: str,
     request: Request,
 ) -> None:
+    if not auth_token:
+        logger.warning("[TwilioWebhook] missing auth token for agent {}", agent.id)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Twilio webhook signature validation is not configured",
+        )
     signature_ok = _validate_twilio_signature(request=request, params=params, auth_token=auth_token)
-    if auth_token and not signature_ok:
-        if settings.DEBUG:
-            logger.warning(
-                "[TwilioWebhook] invalid signature for agent {} (DEBUG: accepting). "
-                "Set twilio.webhook_base_url or security.public_base_url in config.yml "
-                "(ngrok URL must match Twilio Console exactly).",
-                agent.id,
-            )
-        else:
-            logger.warning("[TwilioWebhook] invalid signature for agent {}", agent.id)
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid Twilio signature")
+    if not signature_ok:
+        logger.warning("[TwilioWebhook] invalid signature for agent {}", agent.id)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid Twilio signature")
 
     body = (params.get("Body") or "").strip()
     msg_from = params.get("From") or ""

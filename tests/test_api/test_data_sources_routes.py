@@ -124,7 +124,7 @@ def test_blob_routes_reject_cross_tenant_keys(
 
 
 def test_blob_presigned_url_allows_trace_spans_key(
-    authenticated_client, monkeypatch, org_id
+    authenticated_client, monkeypatch, org_id, default_workspace
 ):
     from app.api.v1.routes import data_sources as data_routes
     from app.config import settings
@@ -133,7 +133,8 @@ def test_blob_presigned_url_allows_trace_spans_key(
     monkeypatch.setattr(settings, "TRACES_S3_PREFIX", "traces/", raising=False)
     _patch_storage(monkeypatch, data_routes, org_id, prefix="audio/", blob_provider="s3")
     trace_key = (
-        f"traces/organizations/{org_id}/workspaces/ws-1/traces/trace-1/spans.json"
+        f"traces/organizations/{org_id}/workspaces/{default_workspace.id}/"
+        f"traces/trace-1/spans.json"
     )
     encoded_key = trace_key.replace("/", "%2F")
 

@@ -53,14 +53,19 @@ def call_customer_chat_api(
         raise ValueError("Customer API base URL is not configured on this agent.")
 
     path = (config.get("api_message_path") or "/chat").strip()
+    if "://" in path or path.startswith("//"):
+        raise ValueError("api_message_path must be a relative path, not an absolute URL")
     if not path.startswith("/"):
         path = f"/{path}"
-    url = urljoin(f"{base}/", path.lstrip("/"))
 
     from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
     from app.services.agents.chat_outbound_urls import assert_chat_connection_urls_safe
 
     assert_chat_connection_urls_safe(config)
+    url = urljoin(f"{base}/", path.lstrip("/"))
+    from app.services.telephony.recording_download import assert_outbound_http_url_safe
+
+    assert_outbound_http_url_safe(url)
     cfg = chat_connection_config_for_runtime(config)
     headers: dict[str, str] = {"Content-Type": "application/json"}
     auth_header = (cfg.get("api_auth_header") or config.get("api_auth_header") or "").strip()

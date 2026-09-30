@@ -9,7 +9,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.models.database import Agent
-from app.models.database import ModelProvider
+from app.models.database import ModelProvider, VoiceBundle
 from app.services.ai.together_models import normalize_together_model_name
 from app.models.enums import CallMediumEnum
 from app.services.agents.chat_connection import (
@@ -82,6 +82,40 @@ def _missing_llm_message(leg: Literal["main", "test"]) -> str:
     )
 
 
+def _agent_call_medium(agent: Agent) -> str:
+    raw = getattr(agent, "call_medium", None) or CallMediumEnum.PHONE_CALL.value
+    if hasattr(raw, "value") and not isinstance(raw, str):
+        raw = raw.value
+    return str(raw).lower()
+
+
+def _voice_bundle_simulation_llm(
+    db: Session,
+    *,
+    agent: Agent,
+) -> Optional[ResolvedSimulationLlm]:
+    if _agent_call_medium(agent) == CallMediumEnum.CHAT.value:
+        return None
+    bundle_id = getattr(agent, "voice_bundle_id", None)
+    if not bundle_id:
+        return None
+    bundle = db.query(VoiceBundle).filter(VoiceBundle.id == bundle_id).first()
+    if not bundle:
+        return None
+    provider_raw = _provider_field_str(bundle.llm_provider)
+    model = (bundle.llm_model or "").strip()
+    if not provider_raw or not model:
+        return None
+    prov = _parse_provider(provider_raw)
+    return ResolvedSimulationLlm(
+        provider=prov,
+        model=_normalize_simulation_model(prov, model),
+        llm_config=bundle.llm_config if isinstance(bundle.llm_config, dict) else None,
+        credential_id=bundle.llm_credential_id,
+        source="voice_bundle",
+    )
+
+
 def resolve_simulation_llm(
     db: Session,
     *,
@@ -91,7 +125,7 @@ def resolve_simulation_llm(
 ) -> ResolvedSimulationLlm:
     """Main leg = production chat agent; test leg = simulated customer.
 
-    Only uses LLM fields stored on the agent — no org-default or voice-bundle fallback.
+    Chat agents require explicit agent LLM fields. Voice agents fall back to the voice bundle.
     """
     if leg == "test":
         provider_raw = _provider_field_str(agent.test_llm_provider)
@@ -107,6 +141,9 @@ def resolve_simulation_llm(
         source = "main_llm"
 
     if not provider_raw or not model:
+        fallback = _voice_bundle_simulation_llm(db, agent=agent)
+        if fallback is not None:
+            return fallback
         raise ValueError(_missing_llm_message(leg))
 
     prov = _parse_provider(provider_raw)

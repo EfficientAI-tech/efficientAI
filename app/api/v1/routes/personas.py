@@ -39,7 +39,7 @@ from app.models.schemas import (
 )
 from app.models.enums import ModelProvider
 from app.services.ai.model_config_service import model_config_service
-from app.services.ai.llm_resolver import get_llm_provider_and_model as _get_llm_provider_and_model
+from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request as _get_llm_provider_and_model
 from app.services.personas.configured_tts_providers import get_configured_tts_provider_keys
 from app.services.personas.persona_tts_config import (
     normalize_persona_tts_config,

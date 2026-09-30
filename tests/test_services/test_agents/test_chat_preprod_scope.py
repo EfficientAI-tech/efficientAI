@@ -180,7 +180,9 @@ def test_validate_chat_connection_provider_chat_without_agent_llm():
         test_llm_model="",
         voice_bundle_id=None,
     )
-    assert validate_chat_connection_for_agent(agent) is None
+    err = validate_chat_connection_for_agent(agent)
+    assert err is not None
+    assert "test-agent LLM" in err
 
 
 def test_validate_chat_connection_customer_api_without_agent_llm():
@@ -195,4 +197,6 @@ def test_validate_chat_connection_customer_api_without_agent_llm():
         test_llm_model="",
         voice_bundle_id=None,
     )
-    assert validate_chat_connection_for_agent(agent) is None
+    err = validate_chat_connection_for_agent(agent)
+    assert err is not None
+    assert "test-agent LLM" in err

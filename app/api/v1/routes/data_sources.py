@@ -7,7 +7,7 @@ from pydantic import BaseModel
 import io
 
 from app.config import settings
-from app.dependencies import get_api_key, get_organization_id
+from app.dependencies import get_api_key, get_organization_id, get_workspace_id
 from app.models.schemas import MessageResponse, S3ListFilesResponse, S3FileInfo, S3BrowseResponse, S3FolderInfo
 from app.services.storage.blob_paths import assert_key_belongs_to_org
 from app.services.storage.s3_service import s3_service
@@ -17,13 +17,21 @@ from uuid import UUID
 router = APIRouter(prefix="/data-sources/s3", tags=["Data Sources"])
 
 
-def _validate_org_file_key(file_key: str, organization_id: UUID, *, decode: bool = False) -> str:
+def _validate_org_file_key(
+    file_key: str,
+    organization_id: UUID,
+    *,
+    decode: bool = False,
+    workspace_id: Optional[UUID] = None,
+) -> str:
     return assert_key_belongs_to_org(
         file_key,
         organization_id,
         storage_prefix=s3_service.prefix,
         decode=decode,
         extra_storage_prefixes=[settings.TRACES_S3_PREFIX],
+        active_workspace_id=workspace_id,
+        traces_s3_prefix=settings.TRACES_S3_PREFIX,
     )
 
 
@@ -222,6 +230,7 @@ async def download_from_s3(
     file_key: str,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
 ):
     """Download a file from the S3 bucket."""
     if not s3_service.is_enabled():
@@ -231,7 +240,9 @@ async def download_from_s3(
         )
     
     try:
-        validated_key = _validate_org_file_key(file_key, organization_id)
+        validated_key = _validate_org_file_key(
+            file_key, organization_id, workspace_id=workspace_id
+        )
         file_bytes = s3_service.download_file_by_key(validated_key)
         filename = validated_key.split("/")[-1]
         return StreamingResponse(
@@ -270,6 +281,7 @@ async def get_s3_presigned_url(
     expiration: int = 3600,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
 ):
     """Get presigned URL for S3 file playback/access."""
     if not s3_service.is_enabled():
@@ -279,7 +291,9 @@ async def get_s3_presigned_url(
         )
     
     try:
-        validated_key = _validate_org_file_key(file_key, organization_id, decode=True)
+        validated_key = _validate_org_file_key(
+            file_key, organization_id, decode=True, workspace_id=workspace_id
+        )
         url = s3_service.generate_presigned_url_by_key(validated_key, expiration=expiration)
         return PresignedUrlResponse(url=url, expires_in=expiration)
     except HTTPException:
@@ -306,6 +320,7 @@ async def delete_from_s3(
     file_key: str,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
 ):
     """Delete a file from the S3 bucket."""
     if not s3_service.is_enabled():
@@ -315,7 +330,9 @@ async def delete_from_s3(
         )
     
     try:
-        validated_key = _validate_org_file_key(file_key, organization_id)
+        validated_key = _validate_org_file_key(
+            file_key, organization_id, workspace_id=workspace_id
+        )
         s3_service.delete_file_by_key(validated_key)
         return {"message": "File deleted successfully."}
     except HTTPException:

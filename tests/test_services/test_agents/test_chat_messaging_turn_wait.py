@@ -40,7 +40,7 @@ def test_complete_turn_when_twilio_to_differs_from_configured_from(mock_redis_fn
     mock_redis_fn.return_value = client
 
     def fake_get(key: str):
-        if "pending:from:+15550002" in key:
+        if "pending:from:+15550002:+15550001" in key or "pending:from:+15550002:" in key:
             return "turn-1"
         return None
 

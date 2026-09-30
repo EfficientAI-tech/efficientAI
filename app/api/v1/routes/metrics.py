@@ -1806,11 +1806,11 @@ def generate_metric(
         raise HTTPException(status_code=400, detail="At least one example is required when mode='examples'")
 
     from app.services.ai.llm_service import llm_service
-    from app.services.ai.llm_resolver import get_llm_provider_and_model
+    from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
 
     messages = _build_metric_generation_messages(req)
 
-    provider_enum, model_str = get_llm_provider_and_model(
+    provider_enum, model_str = get_llm_provider_and_model_for_request(
         organization_id, db, req.provider, req.model, req.credential_id
     )
 

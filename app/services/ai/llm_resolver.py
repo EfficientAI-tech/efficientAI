@@ -300,3 +300,65 @@ def get_llm_provider_and_model(
             "in the UI (or pass provider, model, and optional credential_id)."
         ),
     )
+
+
+def _default_org_llm_credential(db: Session, organization_id: UUID) -> Optional[AIProvider]:
+    return (
+        db.query(AIProvider)
+        .filter(
+            AIProvider.organization_id == organization_id,
+            AIProvider.is_active == True,  # noqa: E712
+        )
+        .order_by(desc(AIProvider.is_default), AIProvider.created_at.asc())
+        .first()
+    )
+
+
+def _default_model_for_org_credential(
+    organization_id: UUID,
+    db: Session,
+    ai_prov: AIProvider,
+    provider_enum: ModelProvider,
+) -> str:
+    if (ai_prov.routing_mode or "").lower() == "gateway" and ai_prov.gateway_model:
+        return _maybe_normalize_together_model(provider_enum, ai_prov.gateway_model)
+    enabled = effective_enabled_models_for_credential(ai_prov) or ai_prov.enabled_models
+    if enabled:
+        return _maybe_normalize_together_model(provider_enum, enabled[0])
+    if provider_enum == ModelProvider.OPENAI:
+        return "gpt-4o-mini"
+    return _default_model_for(provider_enum, ai_prov)
+
+
+def get_llm_provider_and_model_for_request(
+    organization_id: UUID,
+    db: Session,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    credential_id: Optional[UUID] = None,
+) -> Tuple[ModelProvider, str]:
+    """Resolve LLM settings from an API/worker request body (org default when omitted)."""
+    if (provider or "").strip() or (model or "").strip() or credential_id is not None:
+        return get_llm_provider_and_model(
+            organization_id, db, provider, model, credential_id
+        )
+    ai_prov = _default_org_llm_credential(db, organization_id)
+    if ai_prov is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No AI provider configured for this organization. "
+                "Add one in Settings → AI Providers."
+            ),
+        )
+    provider_enum = _provider_enum(ai_prov.provider)
+    model_str = _default_model_for_org_credential(
+        organization_id, db, ai_prov, provider_enum
+    )
+    return get_llm_provider_and_model(
+        organization_id,
+        db,
+        ai_prov.provider,
+        model_str,
+        credential_id=ai_prov.id,
+    )

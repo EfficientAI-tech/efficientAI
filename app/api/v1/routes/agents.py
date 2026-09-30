@@ -223,7 +223,7 @@ GENERATE_AGENT_DESCRIPTION_SYSTEM = (
 )
 
 
-from app.services.ai.llm_resolver import get_llm_provider_and_model as _get_llm_provider_and_model
+from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request as _get_llm_provider_and_model
 
 
 @router.post("/generate-description")

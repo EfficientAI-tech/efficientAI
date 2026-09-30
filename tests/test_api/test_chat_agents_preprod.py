@@ -106,10 +106,11 @@ def test_create_chat_agent_provider_chat_without_test_llm(authenticated_client, 
 
 
 def test_update_provider_chat_agent_persists_voice_bundle(
-    authenticated_client, make_integration, make_voice_bundle
+    authenticated_client, make_integration, make_voice_bundle, make_ai_provider
 ):
     integration = make_integration(platform="retell")
     bundle = make_voice_bundle()
+    cred = make_ai_provider(provider="openai")
     payload = {
         "name": "Retell Chat With Bundle",
         "language": "en",
@@ -120,6 +121,9 @@ def test_update_provider_chat_agent_persists_voice_bundle(
         "chat_connection_type": "provider_chat",
         "voice_ai_integration_id": str(integration.id),
         "voice_ai_agent_id": "chat-agent-retell-1",
+        "test_llm_provider": "openai",
+        "test_llm_model": "gpt-4o-mini",
+        "test_llm_credential_id": str(cred.id),
     }
     created = authenticated_client.post("/api/v1/agents", json=payload)
     assert created.status_code == 201
