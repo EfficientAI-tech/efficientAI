@@ -27,6 +27,7 @@ IMPORT_SUPPORTED_PROVIDERS = frozenset(
         TelephonyProvider.VOBIZ.value,
         TelephonyProvider.PLIVO.value,
         TelephonyProvider.EXOTEL.value,
+        TelephonyProvider.TWILIO.value,
     }
 )
 
@@ -39,6 +40,15 @@ def _assert_import_provider(provider: str) -> str:
             f"Supported: {', '.join(sorted(IMPORT_SUPPORTED_PROVIDERS))}"
         )
     return provider_key
+
+
+def _twilio_sms_inbound_webhook_url() -> str:
+    from app.config import settings
+    from app.core.public_url import configured_public_base_url
+
+    base = configured_public_base_url().rstrip("/")
+    prefix = (settings.API_V1_PREFIX or "/api/v1").rstrip("/")
+    return f"{base}{prefix}/telephony/twilio/webhooks/sms-inbound"
 
 
 def _vobiz_answer_webhook_url() -> str:
@@ -156,6 +166,8 @@ def _list_remote_numbers(
     if provider_key == TelephonyProvider.PLIVO.value:
         return client.list_numbers()
     if provider_key == TelephonyProvider.EXOTEL.value:
+        return client.list_incoming_phone_numbers()
+    if provider_key == TelephonyProvider.TWILIO.value:
         return client.list_incoming_phone_numbers()
     raise ValueError(f"Unsupported provider: {provider}")
 
@@ -276,6 +288,8 @@ def _answer_url_for_provider(provider: str) -> str:
         return _plivo_answer_webhook_url()
     if provider_key == TelephonyProvider.EXOTEL.value:
         return _exotel_voice_webhook_url()
+    if provider_key == TelephonyProvider.TWILIO.value:
+        return _twilio_sms_inbound_webhook_url()
     raise ValueError(f"Unsupported provider: {provider}")
 
 
@@ -311,6 +325,11 @@ def _configure_inbound_webhook(
         if not sid:
             return False, "Missing Exotel incoming-number SID", None
         return client.set_number_voice_url(sid, answer_url)
+    if provider_key == TelephonyProvider.TWILIO.value:
+        sid = remote.get("sid") or remote.get("Sid") or remote.get("provider_number_id")
+        if not sid:
+            return False, "Missing Twilio incoming-number SID", None
+        return client.set_number_sms_webhook(sid, answer_url)
     raise ValueError(f"Unsupported provider: {provider}")
 
 

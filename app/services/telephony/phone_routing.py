@@ -9,6 +9,7 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.models.database import Agent, TelephonyPhoneNumber
+from app.models.enums import CallMediumEnum, ChatConnectionTypeEnum
 from app.services.telephony.plivo_client import expand_phone_candidates, normalize_e164
 
 
@@ -87,29 +88,30 @@ def find_agent_phone_assignment_conflict(
         if agent:
             return _conflict_payload(agent, number_row.phone_number)
 
-    linked_agent = (
-        db.query(Agent)
-        .join(
-            TelephonyPhoneNumber,
-            TelephonyPhoneNumber.id == Agent.telephony_phone_number_id,
-        )
-        .filter(
-            Agent.organization_id == organization_id,
-            Agent.call_medium == "phone_call",
-            TelephonyPhoneNumber.phone_number.in_(unique_candidates),
-        )
-        .first()
-    )
-    if linked_agent and linked_agent.id != exclude_agent_id:
-        number = (
-            db.query(TelephonyPhoneNumber)
-            .filter(TelephonyPhoneNumber.id == linked_agent.telephony_phone_number_id)
+    for call_medium in (CallMediumEnum.PHONE_CALL.value, CallMediumEnum.CHAT.value):
+        linked_agent = (
+            db.query(Agent)
+            .join(
+                TelephonyPhoneNumber,
+                TelephonyPhoneNumber.id == Agent.telephony_phone_number_id,
+            )
+            .filter(
+                Agent.organization_id == organization_id,
+                Agent.call_medium == call_medium,
+                TelephonyPhoneNumber.phone_number.in_(unique_candidates),
+            )
             .first()
         )
-        return _conflict_payload(
-            linked_agent,
-            number.phone_number if number else unique_candidates[0],
-        )
+        if linked_agent and linked_agent.id != exclude_agent_id:
+            number = (
+                db.query(TelephonyPhoneNumber)
+                .filter(TelephonyPhoneNumber.id == linked_agent.telephony_phone_number_id)
+                .first()
+            )
+            return _conflict_payload(
+                linked_agent,
+                number.phone_number if number else unique_candidates[0],
+            )
 
     return None
 
@@ -223,6 +225,80 @@ def resolve_inbound_agent_for_number(
         "Inbound number {} owned by org {} but no agent linked (candidates={})",
         number_row.phone_number,
         number_row.organization_id,
+        candidates,
+    )
+    return None, None, None
+
+
+def _agent_is_messaging_sms(agent: Agent) -> bool:
+    raw_conn = getattr(agent, "chat_connection_type", None) or ""
+    conn = str(raw_conn).strip().lower()
+    if "." in conn:
+        conn = conn.rsplit(".", 1)[-1]
+    if conn != ChatConnectionTypeEnum.MESSAGING_CHANNELS.value:
+        return False
+    cfg = agent.chat_connection_config if isinstance(agent.chat_connection_config, dict) else {}
+    channel = (cfg.get("messaging_channel") or "").strip().lower()
+    return channel == "sms"
+
+
+def resolve_messaging_sms_agent_for_inbound(
+    db: Session,
+    to_number_raw: Optional[str],
+) -> Tuple[Optional[Agent], Optional[TelephonyPhoneNumber], Optional[UUID]]:
+    """Resolve chat messaging (SMS) agent for Twilio inbound To number."""
+    candidates = expand_phone_candidates(to_number_raw)
+    if not candidates:
+        return None, None, None
+
+    number_row = _find_inbound_number_row(db, candidates)
+    if not number_row:
+        logger.warning(
+            "Twilio SMS inbound routing miss for To={} (candidates={})",
+            to_number_raw,
+            candidates,
+        )
+        return None, None, None
+
+    org_id = number_row.organization_id
+
+    if number_row.agent_id:
+        agent = (
+            db.query(Agent)
+            .filter(
+                Agent.id == number_row.agent_id,
+                Agent.organization_id == org_id,
+            )
+            .first()
+        )
+        if agent and _agent_is_messaging_sms(agent):
+            return agent, number_row, number_row.telephony_integration_id
+
+    linked_agent = (
+        db.query(Agent)
+        .join(
+            TelephonyPhoneNumber,
+            TelephonyPhoneNumber.id == Agent.telephony_phone_number_id,
+        )
+        .filter(
+            Agent.organization_id == org_id,
+            Agent.call_medium == CallMediumEnum.CHAT.value,
+            TelephonyPhoneNumber.phone_number.in_(candidates),
+            TelephonyPhoneNumber.is_active.is_(True),
+            TelephonyPhoneNumber.inbound_enabled.is_(True),
+        )
+        .first()
+    )
+    if linked_agent and _agent_is_messaging_sms(linked_agent):
+        if number_row.agent_id != linked_agent.id:
+            number_row.agent_id = linked_agent.id
+            db.commit()
+        return linked_agent, number_row, number_row.telephony_integration_id
+
+    logger.warning(
+        "Twilio SMS number {} in org {} has no messaging SMS agent (candidates={})",
+        number_row.phone_number,
+        org_id,
         candidates,
     )
     return None, None, None

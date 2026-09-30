@@ -56,6 +56,7 @@ router = APIRouter(prefix="/agents", tags=["agents"])
 
 
 def _stored_chat_connection_config(config, *, previous=None, connection_type=None):
+    from app.config import settings
     from app.services.agents.chat_connection_config_store import (
         enrich_chat_connection_config_for_storage,
     )
@@ -63,7 +64,7 @@ def _stored_chat_connection_config(config, *, previous=None, connection_type=Non
     from app.services.telephony.recording_download import ExotelInvalidContentError
 
     try:
-        assert_chat_connection_urls_safe(config)
+        assert_chat_connection_urls_safe(config, allow_loopback=bool(settings.DEBUG))
     except ExotelInvalidContentError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -131,9 +132,11 @@ def _validate_agent_phone_assignment(
     exclude_agent_id: Optional[UUID] = None,
 ) -> None:
     """Raise HTTPException if phone assignment conflicts with another agent."""
-    if call_medium != CallMediumEnum.PHONE_CALL:
+    if call_medium not in (CallMediumEnum.PHONE_CALL, CallMediumEnum.CHAT):
         return
-    if not phone_number and not telephony_phone_number_id:
+    if call_medium == CallMediumEnum.PHONE_CALL and not phone_number and not telephony_phone_number_id:
+        return
+    if call_medium == CallMediumEnum.CHAT and not telephony_phone_number_id:
         return
 
     from app.services.telephony.phone_routing import find_agent_phone_assignment_conflict
@@ -1413,6 +1416,59 @@ async def setup_chat_import_for_agent(
         "content_modality": "chat",
         "imports_path": "/chat-imports",
     }
+
+
+class ChatMessagingTestTwilioSmsRequest(BaseModel):
+    messaging_recipient: Optional[str] = None
+    twilio_from: Optional[str] = None
+    twilio_sms_trial_body_template: Optional[str] = None
+
+
+@router.post("/{agent_id}/chat-messaging/test-twilio-sms")
+async def test_chat_messaging_twilio_sms(
+    agent_id: str,
+    body: ChatMessagingTestTwilioSmsRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Send one Twilio SMS using saved credentials (does not run an eval turn)."""
+    import httpx
+
+    from app.models.enums import ChatConnectionTypeEnum
+    from app.services.agents.chat_connection import normalized_chat_connection_type
+    from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
+    from app.services.agents.messaging_channel_chat import (
+        _twilio_api_error_detail,
+        test_twilio_sms_send,
+    )
+
+    db_agent = _get_agent_for_org_workspace(db, agent_id, organization_id, workspace_id)
+    conn = normalized_chat_connection_type(db_agent)
+    if conn != ChatConnectionTypeEnum.MESSAGING_CHANNELS.value:
+        raise HTTPException(status_code=400, detail="Agent is not a messaging chat agent")
+
+    cfg = chat_connection_config_for_runtime(db_agent.chat_connection_config)
+    overrides = {
+        k: v.strip()
+        for k, v in body.model_dump().items()
+        if isinstance(v, str) and v.strip()
+    }
+    try:
+        result = test_twilio_sms_send(
+            db,
+            organization_id=organization_id,
+            cfg=cfg,
+            overrides=overrides or None,
+            telephony_phone_number_id=db_agent.telephony_phone_number_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except httpx.HTTPStatusError as exc:
+        detail = _twilio_api_error_detail(exc.response)
+        raise HTTPException(status_code=502, detail=detail) from exc
+
+    return {"ok": True, **result}
 
 
 def _get_agent_for_org_workspace(db, agent_id: str, organization_id: UUID, workspace_id: UUID) -> Agent:

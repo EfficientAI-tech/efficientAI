@@ -265,7 +265,6 @@ export default function AgentWorkspaceDetail({
       if (data.call_medium === 'chat') {
         payload.voice_bundle_id = data.voice_bundle_id?.trim() || null
         payload.phone_number = null
-        payload.telephony_phone_number_id = null
         payload.provider_prompt = data.provider_prompt?.trim() || null
         payload.test_agent_template = data.test_agent_template
         payload.description =
@@ -277,6 +276,12 @@ export default function AgentWorkspaceDetail({
         const connType = (agent?.chat_connection_type || 'internal_llm') as ChatConnectionForm['connectionType']
         payload.chat_connection_type = connType
         payload.chat_eval_mode = chatEvalModeForConnection(connType)
+
+        if (connType === 'messaging_channels' && data.telephony_phone_number_id?.trim()) {
+          payload.telephony_phone_number_id = data.telephony_phone_number_id.trim()
+        } else {
+          payload.telephony_phone_number_id = null
+        }
 
         if (connType === 'internal_llm' && chatConnection.mainLlmProvider) {
           payload.main_llm_provider = chatConnection.mainLlmProvider

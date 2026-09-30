@@ -73,7 +73,23 @@ def uses_live_production_leg(agent: Agent) -> bool:
 def _fail_live_messaging(conn: str, leg: Optional[str], detail: str) -> None:
     raise ValueError(
         f"Live messaging production leg failed ({leg or 'unknown'}): {detail}. "
-        "Fix credentials, recipient, and sync reply URL — eval will not fall back to LLM simulation."
+        "Eval will not fall back to LLM simulation."
+    )
+
+
+def _live_messaging_failure_detail(leg: Optional[str]) -> str:
+    if leg and leg.startswith("messaging_send_failed:"):
+        return leg.split(":", 1)[1]
+    if leg and (leg.endswith("_send_only") or "send_only" in leg):
+        return (
+            "Outbound SMS was sent but no inbound production reply arrived in time (~90s). "
+            "From the eval recipient phone, send an SMS reply to your Twilio From number with "
+            "the agent answer. In Twilio Console set “A message comes in” to POST the agent’s "
+            "inbound webhook URL (PUBLIC_BASE_URL/ngrok must reach this API)."
+        )
+    return (
+        "No production reply (check send credentials, recipient, inbound webhook, "
+        "and messaging_sync_reply_url for send-only setups)"
     )
 
 
@@ -93,7 +109,9 @@ def generate_production_chat_reply(
         "chat_connection_type": conn,
     }
     cfg_raw = chat_connection_config(agent)
-    assert_chat_connection_urls_safe(cfg_raw)
+    from app.config import settings
+
+    assert_chat_connection_urls_safe(cfg_raw, allow_loopback=bool(settings.DEBUG))
 
     if conn == ChatConnectionTypeEnum.CUSTOMER_API.value:
         from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
@@ -161,6 +179,7 @@ def generate_production_chat_reply(
             organization_id=organization_id,
             cfg=cfg,
             transcript=transcript,
+            telephony_phone_number_id=getattr(agent, "telephony_phone_number_id", None),
         )
         if reply:
             meta["production_leg"] = leg
@@ -194,7 +213,7 @@ def generate_production_chat_reply(
         _fail_live_messaging(
             conn,
             leg,
-            "no outbound reply (check send credentials, recipient, and messaging_sync_reply_url for send-only setups)",
+            _live_messaging_failure_detail(leg),
         )
 
     if conn in (

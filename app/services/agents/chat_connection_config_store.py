@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import secrets
 from typing import Any, Optional
 
 from app.core.encryption import decrypt_api_key, encrypt_api_key
@@ -48,9 +47,7 @@ def enrich_chat_connection_config_for_storage(
     conn = (connection_type or "").strip().lower()
     channel = (out.get("messaging_channel") or prev.get("messaging_channel") or "").strip().lower()
     if conn == "messaging_channels" and channel in ("sms", "whatsapp"):
-        if not (out.get("twilio_inbound_webhook_token") or prev.get("twilio_inbound_webhook_token")):
-            out["twilio_inbound_webhook_token"] = secrets.token_urlsafe(24)
-        elif not out.get("twilio_inbound_webhook_token") and prev.get("twilio_inbound_webhook_token"):
+        if prev.get("twilio_inbound_webhook_token") and not out.get("twilio_inbound_webhook_token"):
             out["twilio_inbound_webhook_token"] = prev["twilio_inbound_webhook_token"]
     return prepare_chat_connection_config_for_storage(out, previous=previous)
 

@@ -8,29 +8,31 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from loguru import logger
 from sqlalchemy.orm import Session
 
-from app.core.public_url import configured_public_base_url
 from app.dependencies import get_db
+from app.core.public_url import configured_public_base_url
 from app.models.database import Agent
 from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
-from app.services.agents.chat_messaging_turn_wait import complete_twilio_sms_turn
 from app.services.agents.messaging_channel_chat import _resolve_twilio_credentials
-from app.services.agents.twilio_webhook_auth import (
-    public_webhook_url_for_validation,
-    validate_twilio_request,
+from app.api.v1.routes.twilio_sms_webhooks import (
+    _twilio_form_params,
+    process_twilio_sms_inbound,
 )
 
 router = APIRouter(prefix="/chat/messaging", tags=["Chat Messaging Webhooks"])
+
+
+@router.get("/public-base-url")
+async def messaging_public_base_url() -> dict[str, str]:
+    """Base URL for Twilio webhooks (PUBLIC_BASE_URL, else FRONTEND_BASE_URL)."""
+    return {"public_base_url": configured_public_base_url()}
 
 
 def _agent_for_webhook_token(db: Session, token: str) -> Optional[Agent]:
     token = (token or "").strip()
     if not token:
         return None
-    return (
-        db.query(Agent)
-        .filter(Agent.chat_connection_config["twilio_inbound_webhook_token"].astext == token)
-        .first()
-    )
+    token_expr = Agent.chat_connection_config.op("->>")("twilio_inbound_webhook_token")
+    return db.query(Agent).filter(token_expr == token).first()
 
 
 def _twilio_auth_token_for_agent(db: Session, agent: Agent, cfg: dict[str, Any]) -> str:
@@ -52,30 +54,20 @@ async def twilio_sms_inbound_webhook(
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown webhook")
 
-    form = await request.form()
-    params = {key: str(form.get(key) or "") for key in form.keys()}
-    cfg = chat_connection_config_for_runtime(agent.chat_connection_config)
-    auth_token = _twilio_auth_token_for_agent(db, agent, cfg)
-    signature = request.headers.get("X-Twilio-Signature") or ""
-    public_base = configured_public_base_url()
-    signed_url = public_webhook_url_for_validation(str(request.url), public_base)
-    if auth_token and not validate_twilio_request(
-        auth_token=auth_token,
-        url=signed_url,
-        params=params,
-        signature=signature,
-    ):
-        logger.warning("[TwilioWebhook] invalid signature for agent {}", agent.id)
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid Twilio signature")
-
-    body = (params.get("Body") or "").strip()
+    params = await _twilio_form_params(request)
     msg_from = params.get("From") or ""
     msg_to = params.get("To") or ""
-    if body:
-        complete_twilio_sms_turn(
-            twilio_to=msg_to,
-            reply_from=msg_from,
-            body=body,
-        )
+    body_preview = (params.get("Body") or "").strip()[:80]
+    logger.info(
+        "[TwilioWebhook] legacy token inbound POST agent={} from={} to={} body={!r}",
+        agent.id,
+        msg_from,
+        msg_to,
+        body_preview,
+    )
+
+    cfg = chat_connection_config_for_runtime(agent.chat_connection_config)
+    auth_token = _twilio_auth_token_for_agent(db, agent, cfg)
+    process_twilio_sms_inbound(agent=agent, params=params, auth_token=auth_token, request=request)
 
     return Response(content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>', media_type="text/xml")

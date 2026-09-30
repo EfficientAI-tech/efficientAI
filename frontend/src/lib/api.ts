@@ -1304,6 +1304,32 @@ class ApiClient {
   }
 
   // Agents endpoints
+  async getMessagingPublicBaseUrl(): Promise<{ public_base_url: string }> {
+    const response = await this.client.get('/api/v1/chat/messaging/public-base-url')
+    return response.data
+  }
+
+  async testAgentTwilioSms(
+    agentId: string,
+    overrides?: {
+      messaging_recipient?: string
+      twilio_from?: string
+      twilio_sms_trial_body_template?: string
+    },
+  ): Promise<{
+    ok: boolean
+    message_sid: string
+    to: string
+    from: string
+    body_sent: string
+  }> {
+    const response = await this.client.post(
+      `/api/v1/agents/${agentId}/chat-messaging/test-twilio-sms`,
+      overrides ?? {},
+    )
+    return response.data
+  }
+
   async createAgent(data: {
     name: string
     phone_number?: string

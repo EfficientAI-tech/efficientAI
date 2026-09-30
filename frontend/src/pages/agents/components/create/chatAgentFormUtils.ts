@@ -42,6 +42,10 @@ export function chatConfigFromAgent(agent: TestAgent): ChatConnectionConfigForm 
       cfg.messaging_telephony_integration_id || cfg.messaging_integration_id || '',
     ),
     twilioInboundWebhookToken: String(cfg.twilio_inbound_webhook_token || ''),
+    twilioSmsTrialBodyTemplate: String(
+      cfg.twilio_sms_trial_body_template ||
+        ((cfg.messaging_channel as string) === 'sms' ? 'sms_appointment_reminders' : ''),
+    ),
   }
 }
 
@@ -110,6 +114,9 @@ export function buildChatConnectionConfigPayload(
         return token ? { twilio_auth_token: token } : {}
       })(),
       ...(config.twilioFrom.trim() ? { twilio_from: config.twilioFrom.trim() } : {}),
+      ...(config.twilioSmsTrialBodyTemplate.trim()
+        ? { twilio_sms_trial_body_template: config.twilioSmsTrialBodyTemplate.trim() }
+        : {}),
     }
   }
   return undefined

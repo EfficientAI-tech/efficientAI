@@ -11,6 +11,7 @@ import type {
   LLMGatewayType,
 } from '../../lib/api'
 import Button from '../../components/Button'
+import TelephonyProviderBrand from '../../components/TelephonyProviderBrand'
 import { useToast } from '../../hooks/useToast'
 import {
   getProviderLabel,
@@ -1641,14 +1642,7 @@ export default function Integrations() {
                         return (
                           <button key={tp} type="button" disabled={isEditMode} onClick={() => setSelectedTelephonyProvider(tp)}
                             className={`text-left rounded-lg border p-3 transition ${selectedTelephonyProvider === tp ? 'border-green-500 bg-green-50' : 'border-gray-200 hover:border-gray-300'} ${isEditMode ? 'opacity-75 cursor-not-allowed' : ''}`}>
-                            <div className="flex items-center gap-2">
-                              {meta?.logo ? (
-                                <img src={meta.logo} alt={meta.label} className="w-5 h-5 object-contain" />
-                              ) : (
-                                <Phone className="h-4 w-4 text-green-600" />
-                              )}
-                              <span className="font-medium text-gray-900">{meta?.label || tp}</span>
-                            </div>
+                            <TelephonyProviderBrand provider={tp} size="sm" />
                             <p className="text-xs text-gray-600 mt-1">{meta?.description}</p>
                           </button>
                         )

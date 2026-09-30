@@ -17,7 +17,13 @@ _DEFAULT_TTL_SECS = 90
 def _redis() -> redis.Redis:
     global _redis_client
     if _redis_client is None:
-        _redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+        # BLPOP blocks longer than default socket read timeouts; keep socket open.
+        _redis_client = redis.from_url(
+            settings.REDIS_URL,
+            decode_responses=True,
+            socket_connect_timeout=10,
+            socket_timeout=None,
+        )
     return _redis_client
 
 
@@ -27,6 +33,11 @@ def _normalize_phone(value: str) -> str:
 
 def _pending_key(twilio_to: str, reply_from: str) -> str:
     return f"chat:messaging:pending:{_normalize_phone(twilio_to)}:{_normalize_phone(reply_from)}"
+
+
+def _pending_from_key(reply_from: str) -> str:
+    """Fallback when Twilio To differs from configured From (trial sender IDs, short codes)."""
+    return f"chat:messaging:pending:from:{_normalize_phone(reply_from)}"
 
 
 def _reply_list_key(turn_id: str) -> str:
@@ -42,10 +53,18 @@ def register_twilio_sms_turn(
     """Register expectation: inbound SMS From recipient To twilio_from."""
     turn_id = str(uuid.uuid4())
     key = _pending_key(twilio_from, messaging_recipient)
+    from_key = _pending_from_key(messaging_recipient)
     try:
         client = _redis()
         client.set(key, turn_id, ex=ttl_secs)
+        client.set(from_key, turn_id, ex=ttl_secs)
         client.delete(_reply_list_key(turn_id))
+        logger.info(
+            "[MessagingTurnWait] registered turn {} pending inbound from {} to {}",
+            turn_id,
+            _normalize_phone(messaging_recipient),
+            _normalize_phone(twilio_from),
+        )
     except redis.RedisError as exc:
         logger.warning("[MessagingTurnWait] register failed: {}", exc)
     return turn_id
@@ -66,6 +85,8 @@ def wait_twilio_sms_reply(
             return body or None
     except redis.RedisError as exc:
         logger.warning("[MessagingTurnWait] wait failed: {}", exc)
+    except redis.TimeoutError as exc:
+        logger.warning("[MessagingTurnWait] wait timed out (no inbound SMS): {}", exc)
     return None
 
 
@@ -76,15 +97,34 @@ def complete_twilio_sms_turn(
     body: str,
     ttl_secs: int = _DEFAULT_TTL_SECS,
 ) -> bool:
-    key = _pending_key(twilio_to, reply_from)
+    pair_key = _pending_key(twilio_to, reply_from)
+    from_key = _pending_from_key(reply_from)
     try:
         client = _redis()
-        turn_id = client.get(key)
+        turn_id = client.get(pair_key)
+        matched_key = pair_key if turn_id else None
         if not turn_id:
+            turn_id = client.get(from_key)
+            matched_key = from_key if turn_id else None
+        if not turn_id:
+            logger.warning(
+                "[MessagingTurnWait] no pending turn for inbound SMS "
+                "(pair_key={}, from_key={}, from={}, to={})",
+                pair_key,
+                from_key,
+                _normalize_phone(reply_from),
+                _normalize_phone(twilio_to),
+            )
             return False
-        client.delete(key)
+        client.delete(pair_key)
+        client.delete(from_key)
         client.rpush(_reply_list_key(turn_id), (body or "").strip())
         client.expire(_reply_list_key(turn_id), ttl_secs)
+        logger.info(
+            "[MessagingTurnWait] completed turn {} via key {}",
+            turn_id,
+            matched_key,
+        )
         return True
     except redis.RedisError as exc:
         logger.warning("[MessagingTurnWait] complete failed: {}", exc)

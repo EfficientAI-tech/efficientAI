@@ -243,7 +243,7 @@ export const TELEPHONY_PROVIDER_CONFIG: Record<TelephonyProvider, TelephonyProvi
   },
   [TelephonyProvider.TWILIO]: {
     label: 'Twilio',
-    logo: null,
+    logo: '/twilio.svg',
     description: 'Programmable SMS and WhatsApp for chat agent eval',
     fields: [
       { key: 'auth_id', label: 'Account SID', required: true, type: 'text' },

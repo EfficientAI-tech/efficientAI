@@ -17,7 +17,12 @@ interface ChatAgentEditSectionProps {
   connectionType: string
   formData: Pick<
     CreateAgentFormData,
-    'voice_ai_integration_id' | 'voice_ai_agent_id' | 'name' | 'language' | 'call_type'
+    | 'voice_ai_integration_id'
+    | 'voice_ai_agent_id'
+    | 'name'
+    | 'language'
+    | 'call_type'
+    | 'telephony_phone_number_id'
   >
   onFormChange: (patch: Partial<CreateAgentFormData>) => void
   providerPrompt: string
@@ -30,6 +35,7 @@ interface ChatAgentEditSectionProps {
   selectedPlatform: IntegrationPlatform | null
   onSelectPlatform: (p: IntegrationPlatform | null) => void
   showToast: (message: string, type: 'success' | 'error') => void
+  agentId?: string
 }
 
 function integrationOptionFromType(type: string): ChatIntegrationOptionId {
@@ -51,7 +57,7 @@ const stubFormData = (
   test_agent_template: defaultTestAgentTemplate(),
   call_type: formData.call_type || 'outbound',
   call_medium: 'chat',
-  telephony_phone_number_id: '',
+  telephony_phone_number_id: formData.telephony_phone_number_id || '',
   voice_bundle_id: '',
   voice_ai_integration_id: formData.voice_ai_integration_id,
   voice_ai_agent_id: formData.voice_ai_agent_id,
@@ -73,6 +79,7 @@ export default function ChatAgentEditSection({
   selectedPlatform,
   onSelectPlatform,
   showToast,
+  agentId,
 }: ChatAgentEditSectionProps) {
   const integrationType = integrationOptionFromType(connectionType)
   const connectionLabel = connectionTypeLabel(connectionType)
@@ -142,6 +149,7 @@ export default function ChatAgentEditSection({
             onProductionPromptChange={onProviderPromptChange}
             onPromptFetched={() => {}}
             showToast={showToast}
+            agentId={agentId}
           />
         </OverviewSection>
       ) : null}

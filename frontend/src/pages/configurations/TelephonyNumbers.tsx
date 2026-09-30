@@ -1,8 +1,9 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useState, useEffect, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createPortal } from 'react-dom'
 import { Phone, Plus, Trash2, Users, X, Pencil } from 'lucide-react'
 import Button from '../../components/Button'
+import TelephonyProviderBrand from '../../components/TelephonyProviderBrand'
 import { useToast } from '../../hooks/useToast'
 import { useOrgTelephony } from '../../hooks/useOrgTelephony'
 import {
@@ -12,10 +13,11 @@ import {
   TelephonyAvailableNumber,
   TelephonyImportNumbersResponse,
   PlatformOutboundPoolResponse,
+  TelephonyIntegrationResponse,
 } from '../../lib/api'
 import {
+  getTelephonyProviderDescription,
   getTelephonyProviderLabel,
-  getTelephonyProviderLogo,
 } from '../../config/providers'
 import { TelephonyProvider } from '../../types/api'
 
@@ -23,23 +25,18 @@ const IMPORT_SUPPORTED_PROVIDERS: TelephonyProvider[] = [
   TelephonyProvider.VOBIZ,
   TelephonyProvider.PLIVO,
   TelephonyProvider.EXOTEL,
+  TelephonyProvider.TWILIO,
 ]
 
+function telephonyIntegrationLabel(cfg: TelephonyIntegrationResponse): string {
+  const provider = (cfg.provider || '') as TelephonyProvider
+  const providerName = getTelephonyProviderLabel(provider)
+  const custom = cfg.name?.trim()
+  const base = custom ? `${providerName} — ${custom}` : `${providerName} credential`
+  return cfg.is_default ? `${base} (default)` : base
+}
+
 type TelephonyTab = 'numbers' | 'contacts'
-
-function poolProviderEnum(provider: string): TelephonyProvider | null {
-  const normalized = provider.toLowerCase()
-  if (Object.values(TelephonyProvider).includes(normalized as TelephonyProvider)) {
-    return normalized as TelephonyProvider
-  }
-  return null
-}
-
-function poolProviderLabel(provider: string): string {
-  const known = poolProviderEnum(provider)
-  if (known) return getTelephonyProviderLabel(known)
-  return provider.charAt(0).toUpperCase() + provider.slice(1)
-}
 
 export default function TelephonyNumbers() {
   const queryClient = useQueryClient()
@@ -49,6 +46,7 @@ export default function TelephonyNumbers() {
   const [providerFilter, setProviderFilter] = useState<string>('all')
   const [showImportModal, setShowImportModal] = useState(false)
   const [importProvider, setImportProvider] = useState<TelephonyProvider>(TelephonyProvider.VOBIZ)
+  const [importCredentialId, setImportCredentialId] = useState('')
   const [selectedImportNumbers, setSelectedImportNumbers] = useState<string[]>([])
   const [importResults, setImportResults] = useState<TelephonyImportNumbersResponse | null>(null)
   const [newContactPhone, setNewContactPhone] = useState('')
@@ -73,25 +71,54 @@ export default function TelephonyNumbers() {
     const configured = new Set(
       activeConfigs.map((cfg) => (cfg.provider || '').toLowerCase()).filter(Boolean),
     )
-    return IMPORT_SUPPORTED_PROVIDERS.filter(
-      (provider) => provider === TelephonyProvider.VOBIZ || configured.has(provider),
-    )
+    return IMPORT_SUPPORTED_PROVIDERS.filter((provider) => configured.has(provider))
   }, [activeConfigs])
+
+  const integrationsForImportProvider = useMemo(
+    () =>
+      activeConfigs.filter(
+        (cfg) => (cfg.provider || '').toLowerCase() === importProvider.toLowerCase(),
+      ),
+    [activeConfigs, importProvider],
+  )
+
+  useEffect(() => {
+    if (!showImportModal) return
+    if (integrationsForImportProvider.length === 0) {
+      setImportCredentialId('')
+      return
+    }
+    const stillValid = integrationsForImportProvider.some((c) => c.id === importCredentialId)
+    if (stillValid) return
+    const preferred =
+      integrationsForImportProvider.find((c) => c.is_default) ||
+      integrationsForImportProvider[0]
+    setImportCredentialId(preferred.id)
+  }, [showImportModal, importProvider, integrationsForImportProvider, importCredentialId])
 
   const {
     data: availableNumbers = [],
     isLoading: availableNumbersLoading,
     refetch: refetchAvailableNumbers,
   } = useQuery<TelephonyAvailableNumber[]>({
-    queryKey: ['telephony-available-numbers', importProvider],
-    queryFn: () => apiClient.listAvailableTelephonyNumbers(importProvider),
-    enabled: showImportModal,
+    queryKey: ['telephony-available-numbers', importProvider, importCredentialId],
+    queryFn: () =>
+      apiClient.listAvailableTelephonyNumbers(
+        importProvider,
+        importCredentialId || undefined,
+      ),
+    enabled: showImportModal && Boolean(importCredentialId),
     retry: false,
   })
 
   const importNumbersMutation = useMutation({
     mutationFn: (numbers: string[]) =>
-      apiClient.importTelephonyNumbers(importProvider, numbers),
+      apiClient.importTelephonyNumbers(
+        importProvider,
+        numbers,
+        undefined,
+        importCredentialId || undefined,
+      ),
     onSuccess: (data) => {
       setImportResults(data)
       queryClient.invalidateQueries({ queryKey: ['telephony-numbers'] })
@@ -152,7 +179,7 @@ export default function TelephonyNumbers() {
     mutationFn: (data: { phone_number: string; label?: string }) => apiClient.createDialTarget(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['telephony-dial-targets'] })
-      closeContactModal()
+      resetContactModal()
       showToast('Contact saved', 'success')
     },
     onError: (error: any) => {
@@ -170,7 +197,7 @@ export default function TelephonyNumbers() {
     }) => apiClient.updateDialTarget(targetId, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['telephony-dial-targets'] })
-      closeContactModal()
+      resetContactModal()
       showToast('Contact updated', 'success')
     },
     onError: (error: any) => {
@@ -229,12 +256,16 @@ export default function TelephonyNumbers() {
     setShowContactModal(true)
   }
 
-  const closeContactModal = () => {
-    if (createContactMutation.isPending || updateContactMutation.isPending) return
+  const resetContactModal = () => {
     setShowContactModal(false)
     setEditingContact(null)
     setNewContactPhone('')
     setNewContactLabel('')
+  }
+
+  const closeContactModal = () => {
+    if (createContactMutation.isPending || updateContactMutation.isPending) return
+    resetContactModal()
   }
 
   const submitContact = () => {
@@ -350,8 +381,8 @@ export default function TelephonyNumbers() {
             <Phone className="w-10 h-10 text-gray-300 mx-auto mb-3" />
             <p className="text-gray-600">No telephony numbers imported yet.</p>
             <p className="text-sm text-gray-500 mt-1">
-              Connect a telephony provider in Integrations, then import numbers here and assign them
-              to agents for inbound calls.
+              Connect a telephony provider in Integrations, import numbers here, then assign them to
+              voice or messaging chat agents.
             </p>
             <div className="mt-4">
               <Button variant="secondary" size="sm" leftIcon={<Plus className="h-4 w-4" />} onClick={openImportModal}>
@@ -378,9 +409,7 @@ export default function TelephonyNumbers() {
                   <tr key={number.id} className="hover:bg-gray-50">
                     <td className="px-6 py-4 text-sm font-medium text-gray-900">{number.phone_number}</td>
                     <td className="px-6 py-4 text-sm text-gray-600">
-                      {number.provider
-                        ? getTelephonyProviderLabel(number.provider as TelephonyProvider)
-                        : '—'}
+                      <TelephonyProviderBrand provider={number.provider} size="sm" />
                     </td>
                     <td className="px-6 py-4 text-sm">
                       <StatusBadge enabled={number.inbound_enabled ?? true} />
@@ -456,28 +485,20 @@ export default function TelephonyNumbers() {
               </p>
               <ul className="divide-y divide-gray-100 border border-gray-200 rounded-lg">
                 {outboundPool.numbers.map((entry) => {
-                  const providerEnum = poolProviderEnum(entry.provider)
-                  const logo = providerEnum ? getTelephonyProviderLogo(providerEnum) : null
                   return (
                     <li
                       key={`${entry.provider}:${entry.phone_number}`}
                       className="px-4 py-3 flex items-center justify-between gap-4"
                     >
                       <div className="flex items-center gap-3 min-w-0">
-                        {logo ? (
-                          <img
-                            src={logo}
-                            alt={poolProviderLabel(entry.provider)}
-                            className="h-5 w-5 object-contain shrink-0"
-                          />
-                        ) : (
-                          <Phone className="h-5 w-5 text-gray-400 shrink-0" />
-                        )}
+                        <TelephonyProviderBrand
+                          provider={entry.provider}
+                          size="sm"
+                          showLabel={false}
+                        />
                         <span className="text-sm font-medium text-gray-900 truncate">{entry.phone_number}</span>
                       </div>
-                      <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 rounded shrink-0">
-                        {poolProviderLabel(entry.provider)}
-                      </span>
+                      <TelephonyProviderBrand provider={entry.provider} size="sm" />
                     </li>
                   )
                 })}
@@ -491,14 +512,17 @@ export default function TelephonyNumbers() {
         <p className="font-medium">How to use these numbers</p>
         <ul className="mt-2 space-y-1 list-disc list-inside text-blue-800">
           <li>
-            <strong>Inbound:</strong> assign a number to an agent (Agent → Phone call → Select from provider).
+            <strong>Voice inbound:</strong> assign a number on the agent (Phone call → Select from provider).
           </li>
           <li>
-            <strong>Outbound:</strong> place a call from an evaluator detail page (standard evaluators with phone-call agents),
-            or use the telephony outbound API. Caller ID uses your selection, org numbers, or the platform pool automatically.
+            <strong>SMS chat:</strong> import Twilio numbers here, link on a messaging agent, set the platform
+            inbound webhook on the number in Twilio Console.
           </li>
           <li>
-            <strong>Contacts:</strong> save frequently called destination numbers on the Contacts tab for quick selection when placing outbound test calls.
+            <strong>Outbound voice:</strong> evaluators and telephony API use org numbers or the platform pool.
+          </li>
+          <li>
+            <strong>Contacts:</strong> saved numbers for voice outbound tests and SMS chat eval recipients.
           </li>
         </ul>
       </div>
@@ -510,7 +534,7 @@ export default function TelephonyNumbers() {
           <div className="px-6 py-4 border-b border-gray-200">
             <h2 className="text-lg font-semibold text-gray-900">Contacts</h2>
             <p className="text-sm text-gray-600 mt-1">
-              People and numbers you call often during outbound tests.
+              Saved numbers for voice outbound tests and SMS chat eval recipients.
             </p>
           </div>
 
@@ -666,19 +690,13 @@ export default function TelephonyNumbers() {
             onClick={() => setShowImportModal(false)}
           >
             <div
-              className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto"
+              className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-                <div className="flex items-center gap-2">
-                  {getTelephonyProviderLogo(importProvider) && (
-                    <img
-                      src={getTelephonyProviderLogo(importProvider)!}
-                      alt={getTelephonyProviderLabel(importProvider)}
-                      className="h-6 w-6 object-contain"
-                    />
-                  )}
-                  <h3 className="text-lg font-semibold text-gray-900">Import phone numbers</h3>
+              <div className="px-4 py-3 border-b border-gray-200 flex justify-between items-center">
+                <div className="flex items-center gap-2 min-w-0">
+                  <TelephonyProviderBrand provider={importProvider} size="sm" showLabel={false} />
+                  <h3 className="text-base font-semibold text-gray-900 truncate">Import phone numbers</h3>
                 </div>
                 <button
                   onClick={() => setShowImportModal(false)}
@@ -687,25 +705,83 @@ export default function TelephonyNumbers() {
                   <X className="h-5 w-5" />
                 </button>
               </div>
-              <div className="p-6 space-y-4">
+              <div className="p-4 space-y-3">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Provider</label>
-                  <select
-                    value={importProvider}
-                    onChange={(e) =>
-                      handleImportProviderChange(e.target.value as TelephonyProvider)
-                    }
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
-                  >
-                    {importableProviders.map((provider) => (
-                      <option key={provider} value={provider}>
-                        {getTelephonyProviderLabel(provider)}
-                      </option>
-                    ))}
-                  </select>
+                  <label className="block text-xs font-medium text-gray-700 mb-1.5">Provider</label>
+                  {importableProviders.length === 0 ? (
+                    <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1.5">
+                      Connect a telephony provider in Integrations first.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Provider">
+                        {importableProviders.map((provider) => {
+                          const selected = importProvider === provider
+                          return (
+                            <button
+                              key={provider}
+                              type="button"
+                              role="radio"
+                              aria-checked={selected}
+                              onClick={() => handleImportProviderChange(provider)}
+                              className={`inline-flex items-center rounded-md border px-2 py-1 text-sm transition shrink-0 ${
+                                selected
+                                  ? 'border-primary-500 bg-primary-50 text-primary-900 shadow-sm'
+                                  : 'border-gray-200 text-gray-700 hover:border-gray-300 hover:bg-gray-50'
+                              }`}
+                            >
+                              <TelephonyProviderBrand provider={provider} size="sm" />
+                            </button>
+                          )
+                        })}
+                      </div>
+                      {getTelephonyProviderDescription(importProvider) ? (
+                        <p className="text-xs text-gray-500 mt-1.5 leading-snug">
+                          {getTelephonyProviderDescription(importProvider)}
+                        </p>
+                      ) : null}
+                    </>
+                  )}
                 </div>
 
-                {availableNumbersLoading ? (
+                {integrationsForImportProvider.length > 0 ? (
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                      Integration credential
+                    </label>
+                    <div className="relative">
+                      <div className="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
+                        <TelephonyProviderBrand
+                          provider={importProvider}
+                          size="sm"
+                          showLabel={false}
+                        />
+                      </div>
+                      <select
+                        value={importCredentialId}
+                        onChange={(e) => {
+                          setImportCredentialId(e.target.value)
+                          setSelectedImportNumbers([])
+                          setImportResults(null)
+                        }}
+                        className="w-full pl-9 pr-2 py-1.5 border border-gray-300 rounded-md text-sm bg-white"
+                      >
+                      {integrationsForImportProvider.map((cfg) => (
+                        <option key={cfg.id} value={cfg.id}>
+                          {telephonyIntegrationLabel(cfg)}
+                        </option>
+                      ))}
+                      </select>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1.5">
+                    No active integration for {getTelephonyProviderLabel(importProvider)}. Add one
+                    under Integrations → Telephony.
+                  </p>
+                )}
+
+                {!importCredentialId ? null : availableNumbersLoading ? (
                   <p className="text-sm text-gray-600">
                     Loading numbers from {getTelephonyProviderLabel(importProvider)}...
                   </p>
@@ -716,16 +792,19 @@ export default function TelephonyNumbers() {
                     numbers.
                   </p>
                 ) : (
-                  <div className="space-y-2 max-h-64 overflow-y-auto border border-gray-200 rounded-lg p-3">
-                    {availableNumbers.map((item) => (
+                  <div className="max-h-52 overflow-y-auto border border-gray-200 rounded-md divide-y divide-gray-100">
+                    {availableNumbers.map((item) => {
+                      const meta = [item.region, item.country].filter(Boolean).join(', ')
+                      return (
                       <label
                         key={item.e164}
-                        className={`flex items-center gap-3 p-2 rounded ${
-                          item.already_imported ? 'opacity-60' : 'hover:bg-gray-50'
+                        className={`flex items-center gap-2 px-2 py-1.5 text-sm ${
+                          item.already_imported ? 'opacity-60 bg-gray-50/50' : 'hover:bg-gray-50 cursor-pointer'
                         }`}
                       >
                         <input
                           type="checkbox"
+                          className="shrink-0 rounded border-gray-300"
                           disabled={item.already_imported}
                           checked={selectedImportNumbers.includes(item.e164)}
                           onChange={(e) => {
@@ -736,20 +815,20 @@ export default function TelephonyNumbers() {
                             }
                           }}
                         />
-                        <div className="flex-1 min-w-0">
-                          <div className="text-sm font-medium text-gray-900">{item.e164}</div>
-                          <div className="text-xs text-gray-500">
-                            {[item.region, item.country].filter(Boolean).join(', ') || '—'}
-                          </div>
+                        <div className="flex-1 min-w-0 flex items-baseline gap-2">
+                          <span className="font-medium text-gray-900 tabular-nums">{item.e164}</span>
+                          {meta ? (
+                            <span className="text-xs text-gray-500 truncate">{meta}</span>
+                          ) : null}
                         </div>
                         {item.already_imported && (
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs text-green-700">Imported</span>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <span className="text-[11px] text-green-700 font-medium">Imported</span>
                             {item.imported_number_id && (
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                className="text-red-600 hover:text-red-700 hover:bg-red-50 h-7 px-2"
+                                className="text-red-600 hover:text-red-700 hover:bg-red-50 h-6 px-1.5 text-xs min-h-0"
                                 isLoading={
                                   removeImportedFromModalMutation.isPending &&
                                   removeImportedFromModalMutation.variables === item.imported_number_id
@@ -767,7 +846,7 @@ export default function TelephonyNumbers() {
                           </div>
                         )}
                       </label>
-                    ))}
+                    )})}
                   </div>
                 )}
 
@@ -788,12 +867,12 @@ export default function TelephonyNumbers() {
                   </div>
                 )}
 
-                <div className="flex gap-3">
-                  <Button variant="outline" className="flex-1" onClick={() => setShowImportModal(false)}>
+                <div className="flex justify-end gap-2 pt-1">
+                  <Button variant="outline" size="sm" onClick={() => setShowImportModal(false)}>
                     Close
                   </Button>
                   <Button
-                    className="flex-1"
+                    size="sm"
                     disabled={selectedImportNumbers.length === 0}
                     isLoading={importNumbersMutation.isPending}
                     onClick={() => importNumbersMutation.mutate(selectedImportNumbers)}

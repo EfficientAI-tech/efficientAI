@@ -342,6 +342,9 @@ export default function CreateAgentModal({
             'messaging_channels',
             chatConnectionConfig,
           )
+          if (data.telephony_phone_number_id?.trim()) {
+            payload.telephony_phone_number_id = data.telephony_phone_number_id.trim()
+          }
         }
         if (chatIntegrationOption === 'provider_chat') {
           payload.voice_ai_integration_id = formData.voice_ai_integration_id.trim()

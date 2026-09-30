@@ -7,23 +7,36 @@ Messaging chat agents (`chat_connection_type=messaging_channels`, `messaging_cha
 1. Eval registers a pending turn in Redis (pair: your Twilio **From** number and eval **recipient**).
 2. EfficientAI sends the simulated customer message via Twilio REST (`Messages.json`).
 3. Production replies by SMS to your Twilio number.
-4. Twilio POSTs the inbound message to your **inbound webhook URL**.
-5. The webhook completes the pending turn; the eval worker receives the reply body.
+4. Twilio POSTs the inbound message to the **platform inbound webhook URL**.
+5. The webhook routes by **To** number to the chat agent linked on that telephony inventory row, then completes the pending turn.
 
 Fallback order if inbound does not arrive in time: `messaging_sync_reply_url`, then `outbound_webhook_url`.
 
 ## Setup
 
-1. Add **Twilio** under Integrations → Telephony (Account SID + Auth Token), or enter credentials on the agent.
-2. Create a chat agent → **Messaging** → **SMS**. Set **From** (Twilio number) and **Eval recipient** (E.164).
-3. Save the agent and copy the **Twilio inbound webhook** URL into Twilio Console → your number → **A message comes in** (HTTP POST).
-4. Use a **public HTTPS** base URL (`PUBLIC_BASE_URL` / `FRONTEND_BASE_URL`). For local dev, use ngrok (see [Twilio SMS quickstart](https://www.twilio.com/docs/messaging/quickstart)).
+1. Add **Twilio** under Integrations → Telephony (Account SID + Auth Token).
+2. Import or sync your SMS-capable numbers on **Telephony Numbers** (choose provider **and** which integration credential to fetch from if you have several).
+3. Create a chat agent → **Messaging** → **SMS**. Select the **Twilio SMS number** (links credentials + From) and set **Eval recipient** (E.164).
+4. Copy the **platform inbound webhook** from the agent form into Twilio Console → your number → **A message comes in** (HTTP POST). One URL for all agents; routing is by called number.
+5. Use a **public HTTPS** base URL (`PUBLIC_BASE_URL`). For local dev, use ngrok (see [Twilio SMS quickstart](https://www.twilio.com/docs/messaging/quickstart)).
+
+### Twilio trial accounts
+
+Free/trial Twilio accounts **cannot** send arbitrary SMS body text via the API ([error 572006](https://www.twilio.com/docs/errors/572006)). The `Body` field must be one of Twilio’s template **names** (same as Console “Try out SMS”), for example `sms_appointment_reminders`.
+
+On the agent, set **Outbound SMS body (Twilio trial)** to one of those templates. EfficientAI sends that template to your eval recipient; you then **reply by SMS** to your Twilio number with the agent’s answer. The inbound webhook completes the eval turn.
+
+Upgrade the Twilio account to send the simulated customer’s actual message text on each turn.
+
+Use **Test send SMS** on the agent connection form (after saving) to run the same Twilio API call as eval outbound; credentials stay on the server.
 
 ## Webhook
 
-`POST /api/v1/chat/messaging/twilio/inbound/{twilio_inbound_webhook_token}`
+`POST /api/v1/telephony/twilio/webhooks/sms-inbound`
 
-Token is generated automatically in `chat_connection_config` when the agent is saved. Requests are validated with `X-Twilio-Signature`.
+Configure this URL on each Twilio SMS number. Requests are validated with `X-Twilio-Signature` using the Twilio integration tied to that number.
+
+Legacy per-agent URLs (`/api/v1/chat/messaging/twilio/inbound/{token}`) still work for older agents that already have `twilio_inbound_webhook_token` in config.
 
 ## Config keys
 
@@ -31,7 +44,6 @@ Token is generated automatically in `chat_connection_config` when the agent is s
 |-----|-------------|
 | `messaging_channel` | `sms` |
 | `messaging_recipient` | E.164 test recipient |
-| `twilio_from` | Twilio sender number |
-| `messaging_telephony_integration_id` | Saved Twilio telephony row (preferred) |
-| `twilio_account_sid` / `twilio_auth_token` | Inline fallback credentials |
-| `twilio_inbound_webhook_token` | Auto-generated webhook path token |
+| Agent `telephony_phone_number_id` | Twilio line from Telephony Numbers (preferred) |
+| `twilio_sms_trial_body_template` | Twilio trial template name (e.g. `sms_appointment_reminders`) |
+| `messaging_telephony_integration_id` / inline SID+token | Legacy fallback only |

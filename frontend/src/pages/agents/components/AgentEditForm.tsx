@@ -734,6 +734,7 @@ export default function AgentEditForm({
             selectedPlatform={chatEditPlatform ?? null}
             onSelectPlatform={onChatEditPlatformChange}
             showToast={showToast}
+            agentId={agentId}
           />
         )}
 
