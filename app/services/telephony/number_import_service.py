@@ -42,6 +42,28 @@ def _assert_import_provider(provider: str) -> str:
     return provider_key
 
 
+def _credential_configuration_error(provider: str, exc: BaseException) -> ValueError:
+    provider_label = (provider or "telephony").strip().lower()
+    detail = str(exc).strip()
+    if detail:
+        return ValueError(
+            f"Invalid {provider_label} credentials ({detail}). "
+            "Update the integration under Settings → Integrations."
+        )
+    return ValueError(
+        f"Invalid {provider_label} credentials. "
+        "Update the integration under Settings → Integrations."
+    )
+
+
+def _is_provider_credential_error(exc: BaseException) -> bool:
+    name = type(exc).__name__.lower()
+    if "authentication" in name or "auth" in name and "error" in name:
+        return True
+    msg = str(exc).lower()
+    return "invalid auth_id" in msg or "invalid credentials" in msg or "authentication" in msg
+
+
 def _twilio_sms_inbound_webhook_url() -> str:
     from app.services.telephony.twilio_webhook_urls import twilio_sms_inbound_webhook_url
 
@@ -144,12 +166,17 @@ def _build_provider_client(
         provider=provider_key,
         credential_id=credential_id,
     )
-    client = telephony_service.get_provider_client(
-        org_id,
-        db,
-        provider=provider_key,
-        credential_id=credential_id,
-    )
+    try:
+        client = telephony_service.get_provider_client(
+            org_id,
+            db,
+            provider=provider_key,
+            credential_id=credential_id,
+        )
+    except Exception as exc:
+        if _is_provider_credential_error(exc):
+            raise _credential_configuration_error(provider_key, exc) from exc
+        raise
     return client, integration
 
 

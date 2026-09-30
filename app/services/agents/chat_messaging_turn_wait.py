@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from typing import Optional
+from uuid import UUID
 
 import redis
 from loguru import logger
@@ -31,13 +32,20 @@ def _normalize_phone(value: str) -> str:
     return "".join(ch for ch in (value or "").strip() if ch.isdigit() or ch == "+")
 
 
-def _pending_key(twilio_to: str, reply_from: str) -> str:
-    return f"chat:messaging:pending:{_normalize_phone(twilio_to)}:{_normalize_phone(reply_from)}"
+def _agent_token(agent_id: UUID | str) -> str:
+    return str(agent_id).strip()
 
 
-def _pending_from_key(reply_from: str) -> str:
-    """Fallback when Twilio To differs from configured From (trial sender IDs, short codes)."""
-    return f"chat:messaging:pending:from:{_normalize_phone(reply_from)}"
+def _pending_key(agent_id: UUID | str, twilio_to: str, reply_from: str) -> str:
+    return (
+        f"chat:messaging:pending:{_agent_token(agent_id)}:"
+        f"{_normalize_phone(twilio_to)}:{_normalize_phone(reply_from)}"
+    )
+
+
+def _pending_from_key(agent_id: UUID | str, reply_from: str) -> str:
+    """Fallback when Twilio To differs from configured From (trial IDs); scoped to one agent."""
+    return f"chat:messaging:pending:from:{_agent_token(agent_id)}:{_normalize_phone(reply_from)}"
 
 
 def _reply_list_key(turn_id: str) -> str:
@@ -46,14 +54,15 @@ def _reply_list_key(turn_id: str) -> str:
 
 def register_twilio_sms_turn(
     *,
+    agent_id: UUID | str,
     twilio_from: str,
     messaging_recipient: str,
     ttl_secs: int = _DEFAULT_TTL_SECS,
 ) -> str:
-    """Register expectation: inbound SMS From recipient To twilio_from."""
+    """Register expectation: inbound SMS From recipient To twilio_from for this agent."""
     turn_id = str(uuid.uuid4())
-    key = _pending_key(twilio_from, messaging_recipient)
-    from_key = _pending_from_key(messaging_recipient)
+    key = _pending_key(agent_id, twilio_from, messaging_recipient)
+    from_key = _pending_from_key(agent_id, messaging_recipient)
     try:
         client = _redis()
         if not client.set(key, turn_id, ex=ttl_secs, nx=True):
@@ -98,13 +107,14 @@ def wait_twilio_sms_reply(
 
 def complete_twilio_sms_turn(
     *,
+    agent_id: UUID | str,
     twilio_to: str,
     reply_from: str,
     body: str,
     ttl_secs: int = _DEFAULT_TTL_SECS,
 ) -> bool:
-    pair_key = _pending_key(twilio_to, reply_from)
-    from_key = _pending_from_key(reply_from)
+    pair_key = _pending_key(agent_id, twilio_to, reply_from)
+    from_key = _pending_from_key(agent_id, reply_from)
     try:
         client = _redis()
         turn_id = client.get(pair_key)

@@ -96,6 +96,7 @@ def process_twilio_sms_inbound(
         return
 
     matched = complete_twilio_sms_turn(
+        agent_id=agent.id,
         twilio_to=msg_to,
         reply_from=msg_from,
         body=body,

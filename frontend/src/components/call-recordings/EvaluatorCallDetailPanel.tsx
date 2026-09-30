@@ -35,6 +35,7 @@ import {
   evaluatorDrawerScopeTags,
   type EvaluatorCallScope,
 } from './callDetailScope'
+import { isChatEvalResult, isTranscriptOnlyEvalResult } from '../../lib/agentMedium'
 
 type DrawerTab =
   | 'transcript'
@@ -348,8 +349,14 @@ export default function EvaluatorCallDetailPanel({
     })
   }, [result, callShortIdFromData, evaluatorResultId])
 
+  const transcriptOnlyEval = useMemo(
+    () => (result ? isTranscriptOnlyEvalResult(result) : false),
+    [result],
+  )
+  const chatEval = useMemo(() => (result ? isChatEvalResult(result) : false), [result])
+
   useEffect(() => {
-    if (!result) return
+    if (!result || transcriptOnlyEval) return
     if (audioPlayback.callShortId) {
       prefetchCallRecordingAudio(audioPlayback.callShortId, false)
       return
@@ -361,7 +368,7 @@ export default function EvaluatorCallDetailPanel({
     if (hasEvaluatorResultRecording(result)) {
       prefetchEvaluatorRecordingAudio(evaluatorResultId)
     }
-  }, [result, audioPlayback, evaluatorResultId])
+  }, [result, audioPlayback, evaluatorResultId, transcriptOnlyEval])
 
   if (!result && (isLoading || isFetching)) {
     return (
@@ -419,7 +426,9 @@ export default function EvaluatorCallDetailPanel({
       <div className="shrink-0 border-b border-gray-200 bg-white px-5 py-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="text-lg font-semibold text-gray-900">Call details</h2>
+            <h2 className="text-lg font-semibold text-gray-900">
+              {chatEval ? 'Chat transcript' : 'Call details'}
+            </h2>
             <p className="mt-0.5 text-xs text-gray-500">
               Result{' '}
               <span className="font-mono font-medium text-primary-600">
@@ -459,13 +468,15 @@ export default function EvaluatorCallDetailPanel({
             </div>
           ) : null}
 
-          <CallWaveformPlayer
-            evaluatorResultId={audioPlayback.evaluatorResultId}
-            callShortId={audioPlayback.callShortId}
-            observabilityCallShortId={audioPlayback.observabilityCallShortId}
-            callData={result?.call_data}
-            platform={result?.provider_platform}
-          />
+          {!transcriptOnlyEval ? (
+            <CallWaveformPlayer
+              evaluatorResultId={audioPlayback.evaluatorResultId}
+              callShortId={audioPlayback.callShortId}
+              observabilityCallShortId={audioPlayback.observabilityCallShortId}
+              callData={result?.call_data}
+              platform={result?.provider_platform}
+            />
+          ) : null}
 
           <div className="-mx-5 flex flex-nowrap gap-0.5 overflow-x-auto border-t border-gray-200 bg-white px-5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {visibleTabs.map(({ id, label, icon: Icon }) => (

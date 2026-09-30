@@ -658,10 +658,11 @@ def test_stream_evaluator_result_audio_proxies_vapi_with_bearer(
     assert captured["headers"]["Authorization"] == "Bearer vapi-private-key"
 
 
-def test_stream_evaluator_result_audio_redirects_vapi_presigned_url(
+def test_stream_evaluator_result_audio_proxies_vapi_presigned_url(
     authenticated_client,
     make_evaluator_result,
     mock_recording_hostname_dns,
+    monkeypatch,
 ):
     signed_url = (
         "https://hipaa-recordings.s3.amazonaws.com/recording.wav?"
@@ -679,13 +680,30 @@ def test_stream_evaluator_result_audio_redirects_vapi_presigned_url(
         },
     )
 
-    response = authenticated_client.get(
-        "/api/v1/evaluator-results/994466/audio",
-        follow_redirects=False,
-    )
+    captured = {}
 
-    assert response.status_code in {302, 307}
-    assert response.headers["location"] == signed_url
+    class FakeResp:
+        status_code = 200
+        content = b"presigned-audio"
+
+        def iter_content(self, chunk_size=8192):
+            yield self.content
+
+        headers = {"content-type": "audio/wav"}
+
+    def fake_get(url, headers=None, stream=True, timeout=60):
+        captured["url"] = url
+        captured["headers"] = headers
+        return FakeResp()
+
+    monkeypatch.setattr("requests.get", fake_get)
+
+    response = authenticated_client.get("/api/v1/evaluator-results/994466/audio")
+
+    assert response.status_code == 200
+    assert response.content == b"presigned-audio"
+    assert captured["url"] == signed_url
+    assert captured["headers"] is None
 
 
 def test_stream_evaluator_result_audio_not_found(

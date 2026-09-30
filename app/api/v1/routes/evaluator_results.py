@@ -946,8 +946,6 @@ async def stream_evaluator_result_audio(
                 result.call_data = refreshed
                 db.commit()
                 audio_url = extract_vapi_recording_url(call_data) or audio_url
-        if is_presigned_storage_url(audio_url):
-            return RedirectResponse(audio_url)
         if vapi_playback_url_needs_refresh(audio_url):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

@@ -180,6 +180,7 @@ def generate_production_chat_reply(
             cfg=cfg,
             transcript=transcript,
             telephony_phone_number_id=getattr(agent, "telephony_phone_number_id", None),
+            agent_id=agent.id,
         )
         if reply:
             meta["production_leg"] = leg

@@ -380,6 +380,7 @@ def try_messaging_worker_send(
     cfg: dict[str, Any],
     transcript: list[dict[str, str]],
     telephony_phone_number_id: Optional[UUID] = None,
+    agent_id: Optional[UUID] = None,
 ) -> tuple[Optional[str], str]:
     """Send the latest user turn via carrier APIs; optional sync URL for agent reply."""
     channel = _cfg_str(cfg, "messaging_channel").lower() or "sms"
@@ -449,6 +450,7 @@ def try_messaging_worker_send(
                 )
 
                 turn_id = register_twilio_sms_turn(
+                    agent_id=agent_id or organization_id,
                     twilio_from=_normalize_sms_phone(twilio_from),
                     messaging_recipient=recipient,
                 )
