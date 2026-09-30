@@ -1837,6 +1837,10 @@ export interface CallImportEvaluationRow {
   /** Mandatory identifier from the source batch (renamed from ``external_call_id``). */
   conversation_id: string | null
   transcript: string | null
+  /** CSV-supplied production transcript from the source row. */
+  production_transcript?: string | null
+  /** Worker-produced diarised transcript from the source row. */
+  diarised_transcript?: string | null
   raw_columns: Record<string, any> | null
   recording_url: string | null
   recording_date: string | null
@@ -2046,6 +2050,12 @@ export interface CallImportMetricAggregate {
    * the co-occurrence heatmap chart type.
    */
   co_occurrence?: CallImportMetricLabelPair[]
+  /** Per-dimension tallies for Jev classification metrics. */
+  classification_facets?: {
+    yes_no: CallImportMetricValueCount[]
+    choice: CallImportMetricValueCount[]
+    level: CallImportMetricValueCount[]
+  }
 }
 
 export interface CallImportEvaluationAggregateResponse {

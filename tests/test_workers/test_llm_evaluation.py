@@ -9,6 +9,7 @@ import json
 from types import SimpleNamespace
 from uuid import uuid4
 
+from app.services.ai import llm_service as llm_service_module
 from app.workers.tasks.helpers import llm_evaluation
 
 
@@ -994,6 +995,150 @@ def test_build_jev_questions_marks_text_metrics_unsupported():
     assert unsupported == [text_metric]
 
 
+def test_build_classification_jev_questions_from_custom_config():
+    metric = _make_metric(
+        name="Outcome",
+        metric_type="text",
+        custom_data_type="classification",
+        metric_id="cl1",
+        custom_config={
+            "noul": {
+                "enabled": True,
+                "instructions": "Resolved?",
+                "criteria": {"true": "Yes", "false": "No"},
+            },
+            "choice": {
+                "enabled": True,
+                "instructions": "Issue type?",
+                "criteria": {"billing": "Billing", "tech": "Technical"},
+            },
+            "score": {"enabled": False},
+        },
+    )
+    questions = llm_evaluation._build_classification_jev_questions(metric)
+    assert questions["noul"]["type"] == "noul"
+    assert questions["choice"]["criteria"]["billing"] == "Billing"
+    assert "score" not in questions
+
+
+def test_map_classification_jev_answers_builds_display_and_probabilities():
+    metric = _make_metric(name="Outcome", metric_type="text", metric_id="cl1")
+    answers = {
+        "noul": {"type": "noul", "noul": 0.92},
+        "choice": {
+            "type": "choice",
+            "choice": "billing",
+            "confidence": 0.8,
+            "probabilities": {"billing": 0.9, "tech": 0.1},
+        },
+    }
+    entry = llm_evaluation._map_classification_jev_answers(metric, answers)
+    assert entry["type"] == "classification"
+    assert "0.92" in entry["value"]
+    assert entry["answers"]["choice"]["probabilities"]["billing"] == 0.9
+    assert entry["noul_probability"] == 0.92
+
+
+def test_evaluate_with_llm_classification_requires_jev_model(monkeypatch):
+    metric = _make_metric(
+        name="Outcome",
+        metric_type="text",
+        custom_data_type="classification",
+        metric_id="cl1",
+        custom_config={
+            "noul": {
+                "enabled": True,
+                "instructions": "Resolved?",
+                "criteria": {"true": "Yes", "false": "No"},
+            },
+            "choice": {"enabled": False},
+            "score": {"enabled": False},
+        },
+    )
+
+    def fail_generate(**kwargs):
+        raise AssertionError("LLM should not be called for classification on non-Jev model")
+
+    monkeypatch.setattr(
+        llm_service_module.llm_service,
+        "generate_response",
+        fail_generate,
+    )
+
+    scores, _ = llm_evaluation.evaluate_with_llm(
+        transcription="hello",
+        llm_metrics=[metric],
+        ai_providers=[],
+        organization_id=uuid4(),
+        result_id="test",
+        db=None,
+        evaluator=SimpleNamespace(
+            llm_provider="openai",
+            llm_model="gpt-4o",
+            llm_config=None,
+            llm_credential_id=None,
+        ),
+    )
+    assert scores["cl1"]["error"] == "classification_requires_jev_model"
+
+
+def test_evaluate_classification_kodekloud_uses_response_format(monkeypatch):
+    captured: dict = {}
+
+    def fake_generate_response(**kwargs):
+        captured.update(kwargs)
+        return {
+            "text": json.dumps(
+                {
+                    "noul": {"type": "noul", "noul": 0.88},
+                }
+            )
+        }
+
+    monkeypatch.setattr(
+        llm_service_module.llm_service,
+        "generate_response",
+        fake_generate_response,
+    )
+
+    metric = _make_metric(
+        name="Outcome",
+        metric_type="text",
+        custom_data_type="classification",
+        metric_id="cl1",
+        custom_config={
+            "noul": {
+                "enabled": True,
+                "instructions": "Resolved?",
+                "criteria": {"true": "Yes", "false": "No"},
+            },
+            "choice": {"enabled": False},
+            "score": {"enabled": False},
+        },
+    )
+
+    scores, _ = llm_evaluation.evaluate_with_llm(
+        transcription="Customer transcript",
+        llm_metrics=[metric],
+        ai_providers=[],
+        organization_id=uuid4(),
+        result_id="test",
+        db=None,
+        evaluator=SimpleNamespace(
+            llm_provider="openai",
+            llm_model="typesafe/jev-1.13.0",
+            llm_config=None,
+            llm_credential_id=None,
+        ),
+    )
+    assert captured["messages"] == [{"role": "user", "content": "Customer transcript"}]
+    rf = captured["completion_extra"]["response_format"]
+    assert rf["type"] == "questions"
+    assert rf["questions"]["noul"]["type"] == "noul"
+    assert scores["cl1"]["type"] == "classification"
+    assert scores["cl1"]["noul_probability"] == 0.88
+
+
 def test_evaluate_with_llm_uses_jev_payload_for_tev_model(monkeypatch):
     captured: dict = {}
 
@@ -1006,7 +1151,8 @@ def test_evaluate_with_llm_uses_jev_payload_for_tev_model(monkeypatch):
         }
 
     monkeypatch.setattr(
-        "app.services.ai.llm_service.llm_service.generate_response",
+        llm_service_module.llm_service,
+        "generate_response",
         fake_generate_response,
     )
 
@@ -1162,7 +1308,8 @@ def test_evaluate_with_llm_non_jev_model_uses_standard_prompt(monkeypatch):
         return {"text": '{"is_urgent": true}'}
 
     monkeypatch.setattr(
-        "app.services.ai.llm_service.llm_service.generate_response",
+        llm_service_module.llm_service,
+        "generate_response",
         fake_generate_response,
     )
 

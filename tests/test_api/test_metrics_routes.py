@@ -3,6 +3,34 @@
 import textwrap
 
 
+def test_create_classification_metric(authenticated_client):
+    payload = {
+        "name": "Call Outcome Classification",
+        "metric_type": "text",
+        "custom_data_type": "classification",
+        "custom_config": {
+            "noul": {
+                "enabled": True,
+                "instructions": "Was the issue resolved?",
+                "criteria": {
+                    "true": "Issue resolved with a clear action",
+                    "false": "Not resolved or customer left dissatisfied",
+                },
+            },
+            "choice": {"enabled": False},
+            "score": {"enabled": False},
+        },
+        "trigger": "always",
+        "enabled": True,
+    }
+    response = authenticated_client.post("/api/v1/metrics", json=payload)
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["custom_data_type"] == "classification"
+    assert body["metric_type"] == "text"
+    assert body["custom_config"]["noul"]["enabled"] is True
+
+
 def test_create_and_list_metrics(authenticated_client):
     payload = {
         "name": "Resolution Quality",

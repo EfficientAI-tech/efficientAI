@@ -359,3 +359,26 @@ def test_generate_response_azure_foundry_uses_openai_v1_routing(monkeypatch):
     assert captured["model"] == "openai/gpt-5-mini"
     assert captured["api_base"] == "https://eaitest-resource.openai.azure.com/openai/v1"
     assert "azure_endpoint" not in captured
+
+
+def test_normalize_openai_compatible_api_base_strips_chat_completions():
+    assert (
+        llm_module._normalize_openai_compatible_api_base(
+            "https://api.ai.kodekloud.com/v1/chat/completions"
+        )
+        == "https://api.ai.kodekloud.com/v1"
+    )
+
+
+def test_apply_direct_custom_provider_kwargs_sets_api_base_and_model():
+    provider = SimpleNamespace(
+        endpoint_url="https://api.ai.kodekloud.com/v1",
+        gateway_base_url=None,
+    )
+    out = llm_module._apply_direct_custom_provider_kwargs(
+        {"model": "custom/typesafe/jev-1.13.0", "api_key": "sekret"},
+        ai_provider=provider,
+    )
+    assert out["api_base"] == "https://api.ai.kodekloud.com/v1"
+    assert out["model"] == "openai/typesafe/jev-1.13.0"
+    assert out["custom_llm_provider"] == "openai"

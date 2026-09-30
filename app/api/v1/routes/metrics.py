@@ -1338,6 +1338,34 @@ def update_metric(
                 )
         metric.compare_transcripts = bool(metric_data.compare_transcripts)
 
+    from app.services.metric_classification_validation import (
+        is_classification_metric,
+        validate_classification_custom_config,
+    )
+
+    if is_classification_metric(custom_data_type=metric.custom_data_type):
+        if metric.parent_metric_id is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Classification metrics must be standalone.",
+            )
+        if metric.selection_mode is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Classification metrics cannot be parent category metrics.",
+            )
+        if metric.compare_transcripts:
+            raise HTTPException(
+                status_code=400,
+                detail="Classification metrics cannot use compare_transcripts.",
+            )
+        try:
+            metric.custom_config = validate_classification_custom_config(
+                metric.custom_config
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     db.commit()
     db.refresh(metric)
 

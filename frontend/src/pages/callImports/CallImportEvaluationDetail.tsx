@@ -66,7 +66,6 @@ import {
   resolveLLMModelForSubmit,
 } from '../../lib/llmModelOptions'
 import { useToast } from '../../hooks/useToast'
-import { useRecordingPresignedUrl } from '../../hooks/useRecordingPresignedUrl'
 import type {
   CallImportEvaluation,
   DiscoveredMetric,
@@ -99,15 +98,19 @@ import StatusBadge from '../../components/shared/StatusBadge'
 import { EvaluationAuditMeta } from '../../components/callImports/AuditMetaChips'
 import DiariseStatusPill from '../../components/callImports/DiariseStatusPill'
 import CallImportProgressBar from './components/CallImportProgressBar'
+import { CallRowSidePanel } from './components/CallRowSidePanel'
+import {
+  CallImportEvaluationRowSidePanelContent,
+  evaluationRowHasCallFlow,
+  type CallImportEvaluationRowSidePanelTabId,
+} from './components/CallImportEvaluationRowSidePanelContent'
 import MetricPromptImprovementsPanel from './components/MetricPromptImprovementsPanel'
 import TelephonyCredentialPicker, {
   credentialSelectionFromState,
   initialTelephonySelection,
   isCredentialSelectionValid,
 } from './components/TelephonyCredentialPicker'
-import MetricFlowChart, {
-  flowFromSequence,
-} from './components/MetricFlowChart'
+import MetricFlowChart from './components/MetricFlowChart'
 import {
   EVALUATION_BULK_OPERATION_POLL_MS,
   evaluationBulkOperationDescription,
@@ -118,6 +121,12 @@ import {
   formatApiErrorDetail,
   isReservedMetricScoreKey,
 } from './metricScoresMeta'
+import {
+  ClassificationScoreSummary,
+  formatClassificationScoreTooltip,
+  humanizeClassificationLabel,
+  type ClassificationScoreView,
+} from './classificationScoreDisplay'
 
 const PIE_COLORS = [
   '#6366f1',
@@ -622,6 +631,16 @@ export default function CallImportEvaluationDetail() {
   } | null>(null)
   const [tableFilterMetricId, setTableFilterMetricId] = useState('')
   const [tableFilterMetricValue, setTableFilterMetricValue] = useState('')
+  const [classificationTableYesNo, setClassificationTableYesNo] = useState('')
+  const [classificationTableChoice, setClassificationTableChoice] = useState('')
+  const [classificationTableLevel, setClassificationTableLevel] = useState('')
+  const [classificationMetricFilter, setClassificationMetricFilter] = useState<{
+    metricId: string
+    metricName: string
+    yesNo?: string | null
+    choice?: string | null
+    level?: string | null
+  } | null>(null)
   // ``flowFilter`` is set by clicking a node / edge in the Flow tab.
   // ``targetNodeId`` (and label) are populated only for edge clicks —
   // the backend then restricts to rows whose sequence has the
@@ -652,6 +671,8 @@ export default function CallImportEvaluationDetail() {
   // for the currently-selected row.
   const [detailRow, setDetailRow] =
     useState<CallImportEvaluationRow | null>(null)
+  const [evalPanelTab, setEvalPanelTab] =
+    useState<CallImportEvaluationRowSidePanelTabId>('scores')
 
   // Transient "✓ Copied" feedback on the per-row Copy button next to
   // the ``conversation_id`` cell. Same UX as the upstream rows table
@@ -743,6 +764,10 @@ export default function CallImportEvaluationDetail() {
     statusFilter,
     metricFilter?.metricId,
     metricFilter?.value,
+    classificationMetricFilter?.metricId,
+    classificationMetricFilter?.yesNo,
+    classificationMetricFilter?.choice,
+    classificationMetricFilter?.level,
     flowFilter?.parentId,
     flowFilter?.nodeId,
     flowFilter?.targetNodeId,
@@ -792,6 +817,7 @@ export default function CallImportEvaluationDetail() {
     !!searchQuery ||
     !!statusFilter ||
     !!metricFilter ||
+    !!classificationMetricFilter ||
     !!flowFilter ||
     !!discoveredFilter
 
@@ -858,6 +884,10 @@ export default function CallImportEvaluationDetail() {
       statusFilter,
       metricFilter?.metricId,
       metricFilter?.value,
+      classificationMetricFilter?.metricId,
+      classificationMetricFilter?.yesNo,
+      classificationMetricFilter?.choice,
+      classificationMetricFilter?.level,
       flowFilter?.parentId,
       flowFilter?.nodeId,
       flowFilter?.targetNodeId,
@@ -873,8 +903,15 @@ export default function CallImportEvaluationDetail() {
         page_size: ROWS_PAGE_SIZE,
         q: searchQuery || undefined,
         status: statusFilter || undefined,
-        metric_id: metricFilter?.metricId,
-        metric_value: metricFilter?.value,
+        metric_id:
+          classificationMetricFilter?.metricId || metricFilter?.metricId,
+        metric_value: classificationMetricFilter
+          ? undefined
+          : metricFilter?.value,
+        classification_yes_no: classificationMetricFilter?.yesNo || undefined,
+        classification_choice:
+          classificationMetricFilter?.choice || undefined,
+        classification_level: classificationMetricFilter?.level || undefined,
         flow_parent_id: flowFilter?.parentId,
         flow_node: flowFilter?.nodeId,
         flow_edge_target: flowFilter?.targetNodeId || undefined,
@@ -902,6 +939,14 @@ export default function CallImportEvaluationDetail() {
       return false
     },
   })
+
+  useEffect(() => {
+    if (!detailRow) return
+    const items = rowsQuery.data?.items ?? []
+    if (!items.some((r) => r.id === detailRow.id)) {
+      setDetailRow(null)
+    }
+  }, [rowsQuery.data?.items, detailRow])
 
   const pdfReportsQuery = useQuery({
     queryKey: ['call-import-evaluation-pdf-reports', activeWorkspaceId, id, evalId],
@@ -1526,19 +1571,53 @@ export default function CallImportEvaluationDetail() {
     childrenInGroups,
   ])
 
-  const tableMetricFilterValueOptions = useMemo(() => {
-    if (!tableFilterMetricId || !aggregateQuery.data) return []
-    const agg = aggregateQuery.data.metrics.find(
+  const tableFilterMetricAggregate = useMemo(() => {
+    if (!tableFilterMetricId || !aggregateQuery.data) return undefined
+    return aggregateQuery.data.metrics.find(
       (m) => m.metric_id === tableFilterMetricId,
     )
-    if (!agg?.value_counts?.length) return []
-    return [...agg.value_counts]
+  }, [aggregateQuery.data, tableFilterMetricId])
+
+  const tableMetricIsClassification = Boolean(
+    tableFilterMetricAggregate?.classification_facets,
+  )
+
+  const tableMetricFilterValueOptions = useMemo(() => {
+    if (!tableFilterMetricId || !tableFilterMetricAggregate) return []
+    if (tableMetricIsClassification) return []
+    if (!tableFilterMetricAggregate.value_counts?.length) return []
+    return [...tableFilterMetricAggregate.value_counts]
       .sort((a, b) => b.count - a.count)
       .map((vc) => ({
         value: String(vc.label),
         count: vc.count,
       }))
-  }, [aggregateQuery.data, tableFilterMetricId])
+  }, [tableFilterMetricAggregate, tableFilterMetricId, tableMetricIsClassification])
+
+  const applyClassificationTableFilter = (
+    metricId: string,
+    yesNo: string,
+    choice: string,
+    level: string,
+  ) => {
+    const hasAny = !!(yesNo || choice || level)
+    if (!metricId || !hasAny) {
+      setClassificationMetricFilter(null)
+      return
+    }
+    const metricName =
+      displayMetrics.find((m) => m.id === metricId)?.name ??
+      `Metric ${metricId.slice(0, 8)}`
+    setClassificationMetricFilter({
+      metricId,
+      metricName,
+      yesNo: yesNo || null,
+      choice: choice || null,
+      level: level || null,
+    })
+    setMetricFilter(null)
+    setFlowFilter(null)
+  }
 
   const filteredRowsSummary = useMemo(() => {
     const shown = rowsQuery.data?.total ?? 0
@@ -1596,11 +1675,15 @@ export default function CallImportEvaluationDetail() {
       setTableFilterMetricValue(flowFilter.nodeLabel)
       return
     }
-    if (!metricFilter && !flowFilter) {
+    if (classificationMetricFilter) {
+      setTableFilterMetricId(classificationMetricFilter.metricId)
+      return
+    }
+    if (!metricFilter && !flowFilter && !classificationMetricFilter) {
       setTableFilterMetricId('')
       setTableFilterMetricValue('')
     }
-  }, [metricFilter, flowFilter])
+  }, [metricFilter, flowFilter, classificationMetricFilter])
 
   // Parent metrics (selection_mode != null) and their enabled children
   // pulled straight from the run's metric summaries. The Flow tab uses
@@ -3000,6 +3083,10 @@ export default function CallImportEvaluationDetail() {
                   const nextId = e.target.value
                   setTableFilterMetricId(nextId)
                   setTableFilterMetricValue('')
+                  setClassificationTableYesNo('')
+                  setClassificationTableChoice('')
+                  setClassificationTableLevel('')
+                  setClassificationMetricFilter(null)
                   setMetricFilter(null)
                   if (!nextId || !flowFilter?.targetNodeId) {
                     setFlowFilter(null)
@@ -3015,7 +3102,94 @@ export default function CallImportEvaluationDetail() {
                   </option>
                 ))}
               </select>
-              {tableFilterMetricId ? (
+              {tableFilterMetricId && tableMetricIsClassification ? (
+                <>
+                  {tableFilterMetricAggregate?.classification_facets?.yes_no
+                    ?.length ? (
+                    <select
+                      value={classificationTableYesNo}
+                      onChange={(e) => {
+                        const next = e.target.value
+                        setClassificationTableYesNo(next)
+                        applyClassificationTableFilter(
+                          tableFilterMetricId,
+                          next,
+                          classificationTableChoice,
+                          classificationTableLevel,
+                        )
+                      }}
+                      disabled={aggregateQuery.isLoading}
+                      className="min-w-[120px] px-3 py-2 text-sm border border-gray-300 rounded-md shadow-sm bg-white focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-500 disabled:bg-gray-50"
+                      title="Filter by Yes/No"
+                    >
+                      <option value="">All Yes/No</option>
+                      {tableFilterMetricAggregate.classification_facets.yes_no.map(
+                        (vc) => (
+                          <option key={vc.label} value={vc.label}>
+                            {vc.label} ({vc.count})
+                          </option>
+                        ),
+                      )}
+                    </select>
+                  ) : null}
+                  {tableFilterMetricAggregate?.classification_facets?.choice
+                    ?.length ? (
+                    <select
+                      value={classificationTableChoice}
+                      onChange={(e) => {
+                        const next = e.target.value
+                        setClassificationTableChoice(next)
+                        applyClassificationTableFilter(
+                          tableFilterMetricId,
+                          classificationTableYesNo,
+                          next,
+                          classificationTableLevel,
+                        )
+                      }}
+                      disabled={aggregateQuery.isLoading}
+                      className="min-w-[160px] max-w-[280px] px-3 py-2 text-sm border border-gray-300 rounded-md shadow-sm bg-white focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-500 disabled:bg-gray-50"
+                      title="Filter by category"
+                    >
+                      <option value="">All categories</option>
+                      {tableFilterMetricAggregate.classification_facets.choice.map(
+                        (vc) => (
+                          <option key={vc.label} value={vc.label}>
+                            {humanizeClassificationLabel(vc.label)} ({vc.count})
+                          </option>
+                        ),
+                      )}
+                    </select>
+                  ) : null}
+                  {tableFilterMetricAggregate?.classification_facets?.level
+                    ?.length ? (
+                    <select
+                      value={classificationTableLevel}
+                      onChange={(e) => {
+                        const next = e.target.value
+                        setClassificationTableLevel(next)
+                        applyClassificationTableFilter(
+                          tableFilterMetricId,
+                          classificationTableYesNo,
+                          classificationTableChoice,
+                          next,
+                        )
+                      }}
+                      disabled={aggregateQuery.isLoading}
+                      className="min-w-[140px] max-w-[220px] px-3 py-2 text-sm border border-gray-300 rounded-md shadow-sm bg-white focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-500 disabled:bg-gray-50"
+                      title="Filter by level"
+                    >
+                      <option value="">All levels</option>
+                      {tableFilterMetricAggregate.classification_facets.level.map(
+                        (vc) => (
+                          <option key={vc.label} value={vc.label}>
+                            {vc.label} ({vc.count})
+                          </option>
+                        ),
+                      )}
+                    </select>
+                  ) : null}
+                </>
+              ) : tableFilterMetricId ? (
                 tableMetricFilterValueOptions.length > 0 ? (
                   <select
                     value={tableFilterMetricValue}
@@ -3093,6 +3267,48 @@ export default function CallImportEvaluationDetail() {
                     onClear={() => setMetricFilter(null)}
                   />
                 )}
+                {classificationMetricFilter?.yesNo && (
+                  <FilterChip
+                    label={`${classificationMetricFilter.metricName} · Yes/No: ${classificationMetricFilter.yesNo}`}
+                    onClear={() => {
+                      setClassificationTableYesNo('')
+                      applyClassificationTableFilter(
+                        classificationMetricFilter.metricId,
+                        '',
+                        classificationTableChoice,
+                        classificationTableLevel,
+                      )
+                    }}
+                  />
+                )}
+                {classificationMetricFilter?.choice && (
+                  <FilterChip
+                    label={`${classificationMetricFilter.metricName} · Category: ${humanizeClassificationLabel(classificationMetricFilter.choice)}`}
+                    onClear={() => {
+                      setClassificationTableChoice('')
+                      applyClassificationTableFilter(
+                        classificationMetricFilter.metricId,
+                        classificationTableYesNo,
+                        '',
+                        classificationTableLevel,
+                      )
+                    }}
+                  />
+                )}
+                {classificationMetricFilter?.level && (
+                  <FilterChip
+                    label={`${classificationMetricFilter.metricName} · Level: ${classificationMetricFilter.level}`}
+                    onClear={() => {
+                      setClassificationTableLevel('')
+                      applyClassificationTableFilter(
+                        classificationMetricFilter.metricId,
+                        classificationTableYesNo,
+                        classificationTableChoice,
+                        '',
+                      )
+                    }}
+                  />
+                )}
                 {flowFilter && (
                   <FilterChip
                     label={
@@ -3123,6 +3339,10 @@ export default function CallImportEvaluationDetail() {
                     setSearchQuery('')
                     setStatusFilter(null)
                     setMetricFilter(null)
+                    setClassificationMetricFilter(null)
+                    setClassificationTableYesNo('')
+                    setClassificationTableChoice('')
+                    setClassificationTableLevel('')
                     setFlowFilter(null)
                     setDiscoveredFilter(null)
                     setTableFilterMetricId('')
@@ -3599,8 +3819,14 @@ export default function CallImportEvaluationDetail() {
                   setSearchQuery('')
                   setStatusFilter(null)
                   setMetricFilter(null)
+                  setClassificationMetricFilter(null)
+                  setClassificationTableYesNo('')
+                  setClassificationTableChoice('')
+                  setClassificationTableLevel('')
                   setFlowFilter(null)
                   setDiscoveredFilter(null)
+                  setTableFilterMetricId('')
+                  setTableFilterMetricValue('')
                 }}
                 className="text-primary-600 hover:text-primary-700 underline underline-offset-2"
               >
@@ -3613,7 +3839,8 @@ export default function CallImportEvaluationDetail() {
             </p>
           )
         ) : (
-          <>
+          <div className="flex items-start gap-4">
+            <div className="min-w-0 flex-1">
             {totalMetricColumnCount > 3 && (
               <p className="mb-2 text-[11px] text-gray-500">
                 Scroll the table horizontally to see all{' '}
@@ -3786,7 +4013,13 @@ export default function CallImportEvaluationDetail() {
                   {itemsOf<CallImportEvaluationRow>(rowsQuery.data).map((row) => (
                       <tr
                         key={row.id}
-                        onClick={() => setDetailRow(row)}
+                        onClick={() => {
+                          setDetailRow((prev) => {
+                            if (prev?.id === row.id) return null
+                            setEvalPanelTab('scores')
+                            return row
+                          })
+                        }}
                         className={`hover:bg-primary-50/40 cursor-pointer transition ${
                           detailRow?.id === row.id ? 'bg-primary-50/60' : ''
                         }`}
@@ -3795,23 +4028,10 @@ export default function CallImportEvaluationDetail() {
                           {(row.row_index ?? 0) + 1}
                         </td>
                         {/*
-                          The conversation-id cell is the user-visible
-                          row identifier and the most common thing an
-                          operator wants to paste into Slack / a
-                          ticket. The parent ``<tr>`` already has an
-                          onClick to open the detail drawer; we stop
-                          propagation here so drag-selecting the text
-                          or hitting the inline Copy icon doesn't also
-                          open the drawer. ``select-text`` re-enables
-                          the native selection cursor that the row's
-                          ``cursor-pointer`` would otherwise mask.
+                          Conversation ID stays selectable; row click opens
+                          the docked panel. Copy stops propagation only.
                          */}
-                        <td
-                          className="px-3 py-2 text-sm font-mono text-primary-700 whitespace-nowrap"
-                          onClick={(e) => e.stopPropagation()}
-                          onMouseDown={(e) => e.stopPropagation()}
-                          onDoubleClick={(e) => e.stopPropagation()}
-                        >
+                        <td className="px-3 py-2 text-sm font-mono text-primary-700 whitespace-nowrap">
                           {row.conversation_id ? (
                             <span className="inline-flex items-center gap-2">
                               <span
@@ -3873,10 +4093,18 @@ export default function CallImportEvaluationDetail() {
                             typeof score.type === 'string'
                               ? score.type.toLowerCase()
                               : undefined
+                          const isClassificationRow =
+                            score &&
+                            typeof score === 'object' &&
+                            typeof (score as { type?: string }).type === 'string' &&
+                            (score as { type: string }).type.toLowerCase() ===
+                              'classification'
                           const isEmpty =
-                            value === undefined ||
-                            value === null ||
-                            value === ''
+                            !score ||
+                            (!isClassificationRow &&
+                              (value === undefined ||
+                                value === null ||
+                                value === ''))
                           const valueStr = isEmpty ? '' : String(value)
                           const isLongText =
                             scoreType === 'text' && valueStr.length > 80
@@ -3902,12 +4130,26 @@ export default function CallImportEvaluationDetail() {
                                   (score as { rationale: string }).rationale,
                                 )
                               : undefined
+                          const isClassification =
+                            scoreType === 'classification' || isClassificationRow
+                          const classificationTooltip =
+                            isClassification &&
+                            score &&
+                            typeof score === 'object'
+                              ? formatClassificationScoreTooltip(
+                                  score as ClassificationScoreView,
+                                )
+                              : undefined
                           const valueTooltip =
-                            errorText || (isLongText ? valueStr : undefined)
+                            errorText ||
+                            classificationTooltip ||
+                            (isLongText ? valueStr : undefined)
                           const valueCellClassName =
                             scoreType === 'text'
                               ? 'px-3 py-2 text-sm text-gray-700 align-top max-w-xs'
-                              : 'px-3 py-2 text-sm text-gray-700 whitespace-nowrap'
+                              : isClassification
+                                ? 'px-3 py-2 text-sm text-gray-700 align-top whitespace-normal min-w-[9rem] max-w-[16rem]'
+                                : 'px-3 py-2 text-sm text-gray-700 whitespace-nowrap'
                           const cells = [
                             <td
                               key={metric.id}
@@ -3916,6 +4158,12 @@ export default function CallImportEvaluationDetail() {
                             >
                               {isEmpty ? (
                                 '-'
+                              ) : isClassification &&
+                                score &&
+                                typeof score === 'object' ? (
+                                <ClassificationScoreSummary
+                                  score={score as ClassificationScoreView}
+                                />
                               ) : scoreType === 'text' ? (
                                 <span className="block whitespace-pre-wrap break-words leading-snug line-clamp-3">
                                   {valueStr}
@@ -4042,16 +4290,89 @@ export default function CallImportEvaluationDetail() {
               onPrev={() => setPage((p) => Math.max(1, p - 1))}
               onNext={() => setPage((p) => p + 1)}
             />
-          </>
+            </div>
+
+            {detailRow && evaluation ? (
+              <CallRowSidePanel
+                onClose={() => setDetailRow(null)}
+                title={
+                  detailRow.conversation_id ||
+                  `Row ${(detailRow.row_index ?? 0) + 1}`
+                }
+                headerMeta={
+                  <>
+                    <StatusBadge status={detailRow.status} size="sm" />
+                    <DiariseStatusPill status={detailRow.diarised_transcript_status} />
+                    {detailRow.row_index !== null && (
+                      <span className="text-xs text-gray-500">
+                        Row #{(detailRow.row_index ?? 0) + 1}
+                      </span>
+                    )}
+                    {detailRow.recording_date ? (
+                      <span className="text-xs text-gray-500">
+                        · Recorded {formatRecordingDate(detailRow.recording_date)}
+                      </span>
+                    ) : null}
+                    {detailRow.finished_at ? (
+                      <span className="text-xs text-gray-500">
+                        · Finished {formatDateTime(detailRow.finished_at)}
+                      </span>
+                    ) : null}
+                  </>
+                }
+                errorBanner={
+                  detailRow.error_message ? (
+                    <div className="bg-red-50 border border-red-200 rounded-md p-3 text-sm text-red-800 flex items-start gap-2">
+                      <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+                      <span>{detailRow.error_message}</span>
+                    </div>
+                  ) : undefined
+                }
+                recordingS3Key={detailRow.recording_s3_key}
+                recordingUrl={detailRow.recording_url}
+                tabs={(() => {
+                  const scoredSource = (
+                    evaluation.transcript_source || 'diarised'
+                  ).toLowerCase()
+                  const tabs: {
+                    id: string
+                    label: string
+                    hint?: string
+                  }[] = [
+                    {
+                      id: 'production',
+                      label: 'Production',
+                      hint: scoredSource === 'production' ? 'Scored' : undefined,
+                    },
+                    {
+                      id: 'diarised',
+                      label: 'Diarised',
+                      hint: scoredSource === 'diarised' ? 'Scored' : undefined,
+                    },
+                    { id: 'scores', label: 'Scores' },
+                  ]
+                  if (evaluationRowHasCallFlow(detailRow, parentMetrics)) {
+                    tabs.push({ id: 'flow', label: 'Call flow' })
+                  }
+                  tabs.push({ id: 'metadata', label: 'Metadata' })
+                  return tabs
+                })()}
+                activeTab={evalPanelTab}
+                onTabChange={(tabId) =>
+                  setEvalPanelTab(tabId as CallImportEvaluationRowSidePanelTabId)
+                }
+              >
+                <CallImportEvaluationRowSidePanelContent
+                  row={detailRow}
+                  activeTab={evalPanelTab}
+                  displayMetrics={displayMetrics}
+                  parentMetrics={parentMetrics}
+                />
+              </CallRowSidePanel>
+            ) : null}
+          </div>
         )}
       </div>
-
-      <RowDetailPanel
-        row={detailRow}
-        displayMetrics={displayMetrics}
-        parentMetrics={parentMetrics}
-        onClose={() => setDetailRow(null)}
-      />
 
       <ConfirmModal
         isOpen={pendingDeleteRow !== null}
@@ -5492,376 +5813,6 @@ function FilterChip({
       </button>
     </span>
   )
-}
-
-/** Pretty-print a metric score value for the side panel. */
-function formatScoreValue(value: unknown): string {
-  if (value === null || value === undefined || value === '') return '—'
-  if (typeof value === 'boolean') return value ? 'Yes' : 'No'
-  if (typeof value === 'number') {
-    return Number.isInteger(value) ? value.toString() : value.toFixed(2)
-  }
-  return String(value)
-}
-
-/**
- * Slide-in panel that shows everything we know about a single
- * evaluation row: the original CSV row (``raw_columns``), the
- * transcript, every metric score (with rationale where available),
- * and the recording (played back from our S3 copy via a presigned
- * URL). Triggered by clicking a table row.
- *
- * The backdrop matches the platform's standard modal overlay
- * (``bg-gray-500 bg-opacity-75``) so it reads as a proper modal
- * regardless of which page opens it. We portal into ``document.body``
- * so the overlay can't be clipped by an ancestor with ``overflow``.
- */
-function RowDetailPanel({
-  row,
-  displayMetrics,
-  parentMetrics,
-  onClose,
-}: {
-  row: CallImportEvaluationRow | null
-  displayMetrics: { id: string; name: string; hasRationale: boolean }[]
-  parentMetrics: {
-    id: string
-    name: string
-    selection_mode: 'single_choice' | 'multi_label' | null
-    children: { id: string; name: string }[]
-  }[]
-  onClose: () => void
-}) {
-  // Close on Escape so the panel feels like a proper drawer.
-  useEffect(() => {
-    if (!row) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [row, onClose])
-
-  // Resolve the downloaded recording (S3 object) into a short-lived
-  // presigned URL. We prefer this over ``row.recording_url`` because
-  // many provider URLs are time-limited / auth-gated and won't play
-  // back in an <audio> tag.
-  const recordingS3Key = row?.recording_s3_key || null
-  const {
-    data: presignedRecording,
-    isLoading: presignedLoading,
-    isError: presignedError,
-  } = useRecordingPresignedUrl(recordingS3Key)
-
-  if (!row) return null
-
-  const callId = row.conversation_id || `Row ${(row.row_index ?? 0) + 1}`
-  const playbackUrl = presignedRecording?.url || null
-
-  const panel = (
-    <div
-      className="fixed inset-0 z-[9999] flex justify-end bg-gray-500 bg-opacity-75"
-      role="dialog"
-      aria-modal="true"
-      onClick={onClose}
-    >
-      <aside
-        className="w-full max-w-xl bg-white shadow-2xl overflow-y-auto border-l border-gray-200 h-full"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="sticky top-0 z-10 bg-white border-b border-gray-200 px-5 py-3 flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-xs uppercase tracking-wider text-gray-500">
-              Call Details
-            </p>
-            <p
-              className="text-base font-semibold text-gray-900 font-mono truncate"
-              title={callId}
-            >
-              {callId}
-            </p>
-            <div className="mt-1 flex items-center gap-2 flex-wrap text-xs text-gray-500">
-              <StatusBadge status={row.status} size="sm" />
-              <DiariseStatusPill status={row.diarised_transcript_status} />
-              {row.row_index !== null && (
-                <span>Row #{(row.row_index ?? 0) + 1}</span>
-              )}
-              {row.recording_date && (
-                <span>· Recorded {formatRecordingDate(row.recording_date)}</span>
-              )}
-              {row.finished_at && (
-                <span>· Finished {formatDateTime(row.finished_at)}</span>
-              )}
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-1.5 rounded-md text-gray-400 hover:text-gray-700 hover:bg-gray-100"
-            aria-label="Close panel"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-
-        <div className="px-5 py-4 space-y-5">
-          {row.error_message && (
-            <div className="bg-red-50 border border-red-200 rounded-md p-3 text-sm text-red-800 flex items-start gap-2">
-              <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
-              <span>{row.error_message}</span>
-            </div>
-          )}
-
-          {/* Recording — play from our downloaded S3 copy (not the raw
-              provider URL) so playback works regardless of provider
-              URL expiry / auth requirements. */}
-          {recordingS3Key ? (
-            <section>
-              <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-                Recording
-              </h3>
-              {presignedLoading && !playbackUrl ? (
-                <div className="text-xs text-gray-500 inline-flex items-center gap-2">
-                  <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                  Loading audio…
-                </div>
-              ) : presignedError || !playbackUrl ? (
-                <div className="text-xs text-red-700 inline-flex items-center gap-2">
-                  <AlertCircle className="h-3.5 w-3.5" />
-                  Could not load recording from storage.
-                </div>
-              ) : (
-                <>
-                  <audio
-                    controls
-                    src={playbackUrl}
-                    className="w-full"
-                    preload="metadata"
-                  />
-                  <a
-                    href={playbackUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-1 inline-flex items-center gap-1 text-[11px] text-primary-600 hover:text-primary-700"
-                  >
-                    Open in new tab
-                    <ExternalLink className="h-3 w-3" />
-                  </a>
-                </>
-              )}
-            </section>
-          ) : row.recording_url ? (
-            // Fallback: no downloaded copy yet — show the provider URL
-            // as a link only (don't try to play it inline, which often
-            // fails on expired/auth-gated provider URLs).
-            <section>
-              <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-                Recording
-              </h3>
-              <p className="text-xs text-gray-500 mb-1">
-                Recording hasn't been downloaded to storage yet.
-              </p>
-              <a
-                href={row.recording_url}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1 text-[11px] text-primary-600 hover:text-primary-700"
-              >
-                Open source URL in new tab
-                <ExternalLink className="h-3 w-3" />
-              </a>
-            </section>
-          ) : null}
-
-          {/* Metric scores */}
-          <section>
-            <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-              Scores ({displayMetrics.length})
-            </h3>
-            {displayMetrics.length === 0 ? (
-              <p className="text-xs text-gray-400 italic">
-                No metric scores recorded.
-              </p>
-            ) : (
-              <div className="space-y-2">
-                {displayMetrics.map((metric) => {
-                  const score = (row.metric_scores || {})[metric.id]
-                  const hasScore =
-                    score !== undefined && score !== null && score !== ''
-                  const value =
-                    hasScore && typeof score === 'object'
-                      ? (score as any).value
-                      : score
-                  const rationale =
-                    hasScore &&
-                    typeof score === 'object' &&
-                    typeof (score as any).rationale === 'string'
-                      ? String((score as any).rationale)
-                      : undefined
-                  const errorText =
-                    hasScore &&
-                    typeof score === 'object' &&
-                    (score as any).error
-                      ? String((score as any).error)
-                      : undefined
-                  return (
-                    <div
-                      key={metric.id}
-                      className="border border-gray-200 rounded-md p-3"
-                    >
-                      <div className="flex items-baseline justify-between gap-3">
-                        <p className="text-sm font-medium text-gray-700 truncate">
-                          {metric.name}
-                        </p>
-                        <span
-                          className={`text-sm font-semibold ${
-                            hasScore ? 'text-gray-900' : 'text-gray-400'
-                          }`}
-                        >
-                          {hasScore ? formatScoreValue(value) : '—'}
-                        </span>
-                      </div>
-                      {rationale && (
-                        <p className="mt-1.5 text-xs text-gray-600 whitespace-pre-wrap leading-snug">
-                          {rationale}
-                        </p>
-                      )}
-                      {errorText && (
-                        <p className="mt-1.5 text-xs text-red-700 whitespace-pre-wrap leading-snug">
-                          {errorText}
-                        </p>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-          </section>
-
-          {/* Per-call flow diagrams — one per parent category metric.
-              Driven entirely by the ``sequence`` array the LLM
-              produced for this row, so it always matches the scores
-              above. */}
-          {parentMetrics.length > 0 && (() => {
-            const flowEntries = parentMetrics
-              .map((parent) => {
-                const score = (row.metric_scores || {})[parent.id]
-                if (!score || typeof score !== 'object') return null
-                const sequence = (score as any).sequence
-                if (!Array.isArray(sequence) || sequence.length === 0)
-                  return null
-                const childByKey: Record<string, { id: string; name: string }> =
-                  {}
-                for (const child of parent.children) {
-                  childByKey[child.id] = child
-                  childByKey[child.name] = child
-                  // The worker stores sequence entries as lower_snake_case
-                  // slugs of the child name (matching the LLM JSON key).
-                  // Accept that shape here so per-call flows render even
-                  // when the backend never round-tripped to UUIDs.
-                  childByKey[
-                    child.name.toLowerCase().replace(/\s+/g, '_')
-                  ] = child
-                }
-                const discovered = Array.isArray(
-                  (score as any).discovered_labels,
-                )
-                  ? ((score as any).discovered_labels as Array<{
-                      key?: string
-                      name?: string
-                    }>)
-                      .filter(
-                        (d): d is { key: string; name?: string } =>
-                          typeof d?.key === 'string' && d.key.length > 0,
-                      )
-                  : []
-                const data = flowFromSequence(
-                  parent.id,
-                  parent.name,
-                  sequence as string[],
-                  childByKey,
-                  parent.selection_mode,
-                  discovered,
-                )
-                if (data.nodes.length === 0) return null
-                return { parent, data }
-              })
-              .filter(
-                (entry): entry is { parent: typeof parentMetrics[number]; data: ReturnType<typeof flowFromSequence> } =>
-                  entry !== null,
-              )
-            if (flowEntries.length === 0) return null
-            return (
-              <section>
-                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-                  Call flow ({flowEntries.length})
-                </h3>
-                <div className="space-y-3">
-                  {flowEntries.map(({ parent, data }) => (
-                    <div
-                      key={parent.id}
-                      className="border border-gray-200 rounded-md p-2"
-                    >
-                      <p className="text-xs font-medium text-gray-700 mb-1.5">
-                        {parent.name}
-                      </p>
-                      <MetricFlowChart
-                        data={data}
-                        mode="per_call"
-                        height={220}
-                      />
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )
-          })()}
-
-          {/* Transcript */}
-          {row.transcript && (
-            <section>
-              <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-                Transcript
-              </h3>
-              <div className="bg-gray-50 border border-gray-200 rounded-md p-3 text-xs text-gray-800 whitespace-pre-wrap leading-relaxed max-h-72 overflow-y-auto">
-                {row.transcript}
-              </div>
-            </section>
-          )}
-
-          {/* Raw CSV columns */}
-          {row.raw_columns &&
-            Object.keys(row.raw_columns).length > 0 && (
-              <section>
-                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-                  CSV Row ({Object.keys(row.raw_columns).length} columns)
-                </h3>
-                <dl className="border border-gray-200 rounded-md divide-y divide-gray-200 overflow-hidden">
-                  {Object.entries(row.raw_columns).map(([key, value]) => (
-                    <div
-                      key={key}
-                      className="grid grid-cols-[140px_1fr] text-xs"
-                    >
-                      <dt className="bg-gray-50 px-3 py-1.5 font-medium text-gray-600 truncate border-r border-gray-200">
-                        {key}
-                      </dt>
-                      <dd className="px-3 py-1.5 text-gray-800 break-words">
-                        {value === null || value === undefined || value === ''
-                          ? '—'
-                          : String(value)}
-                      </dd>
-                    </div>
-                  ))}
-                </dl>
-              </section>
-            )}
-        </div>
-      </aside>
-    </div>
-  )
-
-  if (typeof document === 'undefined') return panel
-  return createPortal(panel, document.body)
 }
 
 // Light-themed tooltip styling shared by every recharts ``Tooltip``

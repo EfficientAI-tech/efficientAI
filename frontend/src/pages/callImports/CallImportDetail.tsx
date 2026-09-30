@@ -13,11 +13,8 @@ import {
   Activity,
   AlertCircle,
   ArrowLeft,
-  ArrowLeftRight,
-  AudioLines,
   BarChart3,
   Check,
-  ChevronRight,
   Copy,
   Database,
   Download,
@@ -26,16 +23,13 @@ import {
   Layers,
   ListTree,
   Mic,
-  MessageSquare,
   MicOff,
-  Pause,
   Play,
   RefreshCw,
   Search,
   Square,
   Trash2,
   Upload,
-  Volume2,
   X,
   XCircle,
   Loader2,
@@ -85,7 +79,11 @@ import TelephonyCredentialPicker, {
   credentialSelectionFromState,
   isCredentialSelectionValid,
 } from './components/TelephonyCredentialPicker'
-import TranscriptView from './components/TranscriptView'
+import { CallRowSidePanel } from './components/CallRowSidePanel'
+import {
+  CallImportRowSidePanelContent,
+  type CallImportRowSidePanelTabId,
+} from './components/CallImportRowSidePanelContent'
 import {
   EVALUATION_BULK_OPERATION_POLL_MS,
   evaluationBulkOperationLabel,
@@ -116,17 +114,20 @@ function renderModal(content: ReactNode) {
   return createPortal(content, document.body)
 }
 
-function formatBytes(bytes: number | null): string {
-  if (!bytes || bytes <= 0) return '\u2014'
-  const units = ['B', 'KB', 'MB', 'GB']
-  const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)))
-  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`
-}
-
-function formatRecordingDate(value: string | null | undefined): string {
-  if (!value) return '-'
-  const [year, month, day] = value.split('-')
-  return year && month && day ? `${day}/${month}/${year}` : value
+function getRawColumnEntries(row: CallImportRow): Array<[string, unknown]> {
+  const transcriptValue = (row.transcript || '').trim()
+  const recordingUrlValue = (row.recording_url || '').trim()
+  const conversationIdValue = (row.conversation_id || '').trim()
+  return Object.entries(row.raw_columns || {}).filter(([key, value]) => {
+    if (!key.trim()) return false
+    const stringValue = value === null || value === undefined ? '' : String(value)
+    const trimmedValue = stringValue.trim()
+    if (!trimmedValue) return true
+    if (transcriptValue && trimmedValue === transcriptValue) return false
+    if (recordingUrlValue && trimmedValue === recordingUrlValue) return false
+    if (conversationIdValue && trimmedValue === conversationIdValue) return false
+    return true
+  })
 }
 
 function isNonRetryableError(message: string | null | undefined): boolean {
@@ -320,7 +321,9 @@ export default function CallImportDetail() {
   }
 
   const [rowOffset, setRowOffset] = useState(0)
-  const [expandedRowIds, setExpandedRowIds] = useState<Set<string>>(new Set())
+  const [selectedRowId, setSelectedRowId] = useState<string | null>(null)
+  const [rowPanelTab, setRowPanelTab] =
+    useState<CallImportRowSidePanelTabId>('production')
   // Transient "✓ Copied" feedback on the per-row Copy button next to
   // the conversation_id. Keyed by row.id so the badge can flip on the
   // exact button that was clicked without affecting the rest of the
@@ -410,12 +413,6 @@ export default function CallImportDetail() {
     setError(message)
     showToast(message, 'error')
   }
-
-  const [playingRowId, setPlayingRowId] = useState<string | null>(null)
-  const [audioUrl, setAudioUrl] = useState<string | null>(null)
-  const [isPlaying, setIsPlaying] = useState(false)
-  const [loadingRowId, setLoadingRowId] = useState<string | null>(null)
-  const audioRef = useRef<HTMLAudioElement>(null)
 
   const [showDeleteImport, setShowDeleteImport] = useState(false)
   const [showAppendAudioModal, setShowAppendAudioModal] = useState(false)
@@ -1302,14 +1299,6 @@ export default function CallImportDetail() {
     },
   })
 
-  useEffect(() => {
-    return () => {
-      if (audioRef.current) {
-        audioRef.current.pause()
-      }
-    }
-  }, [])
-
   const totalRows = data?.total_rows ?? 0
   const failedImportRowsCount = data?.failed_rows ?? 0
   const diarisationInFlightCount =
@@ -1326,50 +1315,6 @@ export default function CallImportDetail() {
     : totalRows
   const rowPage = Math.floor(rowOffset / ROW_PAGE_SIZE) + 1
   const rowTotalPages = Math.max(1, Math.ceil(filteredTotalRows / ROW_PAGE_SIZE))
-
-  const handlePlay = async (row: CallImportRow) => {
-    if (!row.recording_s3_key) return
-
-    if (playingRowId === row.id && audioUrl) {
-      if (isPlaying) {
-        audioRef.current?.pause()
-        setIsPlaying(false)
-      } else {
-        audioRef.current?.play()
-        setIsPlaying(true)
-      }
-      return
-    }
-
-    if (audioRef.current) {
-      audioRef.current.pause()
-      audioRef.current.currentTime = 0
-    }
-
-    setLoadingRowId(row.id)
-    try {
-      const { url } = await apiClient.getS3PresignedUrl(row.recording_s3_key)
-      setAudioUrl(url)
-      setPlayingRowId(row.id)
-      setIsPlaying(true)
-      setLoadingRowId(null)
-      setTimeout(() => audioRef.current?.play(), 100)
-    } catch (e) {
-      console.error('Failed to load recording', e)
-      setLoadingRowId(null)
-      alert('Failed to load recording')
-    }
-  }
-
-  const handleStopAudio = () => {
-    if (audioRef.current) {
-      audioRef.current.pause()
-      audioRef.current.currentTime = 0
-    }
-    setIsPlaying(false)
-    setPlayingRowId(null)
-    setAudioUrl(null)
-  }
 
   const handleDownload = async (row: CallImportRow) => {
     if (!row.recording_s3_key) return
@@ -1453,6 +1398,14 @@ export default function CallImportDetail() {
     setShowTranscribeModal(true)
   }
 
+  useEffect(() => {
+    if (!selectedRowId || !data) return
+    const visibleRows = data.rows ?? []
+    if (!visibleRows.some((r) => r.id === selectedRowId)) {
+      setSelectedRowId(null)
+    }
+  }, [data, selectedRowId])
+
   if (!id) {
     return <div className="text-sm text-red-600">Missing import id.</div>
   }
@@ -1492,6 +1445,9 @@ export default function CallImportDetail() {
   }
 
   const rows = data.rows ?? []
+  const selectedRow =
+    rows.find((r) => r.id === selectedRowId) ?? null
+
   const pendingCredentialErrorCount = rows.filter(
     (row) =>
       row.status === 'pending' &&
@@ -2061,25 +2017,6 @@ export default function CallImportDetail() {
         <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
           <h2 className="text-lg font-semibold text-gray-900">Rows</h2>
           <div className="flex items-center gap-3 flex-wrap">
-            {rows.length > 0 && (
-              <Button
-                variant="ghost"
-                size="sm"
-                leftIcon={<ListTree className="h-4 w-4" />}
-                onClick={() => {
-                  const everyExpanded = rows.every((r) => expandedRowIds.has(r.id))
-                  setExpandedRowIds(
-                    everyExpanded
-                      ? new Set()
-                      : new Set(rows.map((r) => r.id)),
-                  )
-                }}
-              >
-                {rows.every((r) => expandedRowIds.has(r.id)) && rows.length > 0
-                  ? 'Collapse all'
-                  : 'Expand all'}
-              </Button>
-            )}
             <p className="text-sm text-gray-500">
               Showing {rows.length === 0 ? 0 : rowOffset + 1}&ndash;
               {rowOffset + rows.length} of {filteredTotalRows}
@@ -2211,7 +2148,8 @@ export default function CallImportDetail() {
             )}
           </div>
         ) : (
-          <div className="space-y-2">
+          <div className="flex items-start gap-4">
+            <div className="min-w-0 flex-1 space-y-2">
             <div className="flex items-center gap-3 px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 flex-wrap">
               <div className="flex items-center gap-2">
                 <input
@@ -2334,47 +2272,28 @@ export default function CallImportDetail() {
             />
             {rows.map((row) => {
               const hasRecording = !!row.recording_s3_key
-              const isThisPlaying = playingRowId === row.id && isPlaying
-              const isLoadingThis = loadingRowId === row.id
-              const isExpanded = expandedRowIds.has(row.id)
-              // Hide raw_columns entries that just duplicate fields we
-              // already render in dedicated UI (Conversation, Recording
-              // section, summary line). The backend always preserves the
-              // mapped CSV columns into raw_columns under their original
-              // header, so without this filter the user sees, e.g. a
-              // "transcript" cell containing the exact same conversation
-              // they're already reading as chat bubbles.
-              const transcriptValue = (row.transcript || '').trim()
-              const recordingUrlValue = (row.recording_url || '').trim()
-              const conversationIdValue = (row.conversation_id || '').trim()
-              // ``raw_columns`` cell values can be strings, numbers,
-              // booleans, or null after the staged flow's type
-              // coercion (legacy uploads were always strings). Coerce
-              // to a string before any string ops so non-string cells
-              // don't blow up ``.trim()``.
-              const rawColumnEntries = Object.entries(row.raw_columns || {}).filter(
-                ([key, value]) => {
-                  if (!key.trim()) return false
-                  const stringValue =
-                    value === null || value === undefined ? '' : String(value)
-                  const trimmedValue = stringValue.trim()
-                  if (!trimmedValue) return true
-                  if (transcriptValue && trimmedValue === transcriptValue) return false
-                  if (recordingUrlValue && trimmedValue === recordingUrlValue) return false
-                  if (conversationIdValue && trimmedValue === conversationIdValue) {
-                    return false
-                  }
-                  return true
-                },
-              )
+              const isPanelOpen = selectedRowId === row.id
               const isSelected = selectedRowIds.has(row.id)
               return (
                 <div
                   key={row.id}
-                  className={`border rounded-lg bg-white overflow-hidden transition-shadow hover:shadow-sm ${
-                    isSelected
-                      ? 'border-primary-400 bg-primary-50/30'
-                      : 'border-gray-200'
+                  role="button"
+                  tabIndex={0}
+                  onClick={() =>
+                    setSelectedRowId((prev) => (prev === row.id ? null : row.id))
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      setSelectedRowId((prev) => (prev === row.id ? null : row.id))
+                    }
+                  }}
+                  className={`border rounded-lg bg-white overflow-hidden transition-shadow hover:shadow-sm cursor-pointer ${
+                    isPanelOpen
+                      ? 'border-primary-500 ring-1 ring-primary-200'
+                      : isSelected
+                        ? 'border-primary-400 bg-primary-50/30'
+                        : 'border-gray-200'
                   }`}
                 >
                   <div className="flex items-center gap-2 px-3 py-2.5">
@@ -2392,52 +2311,18 @@ export default function CallImportDetail() {
                       }}
                       onClick={(e) => e.stopPropagation()}
                     />
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setExpandedRowIds((prev) => {
-                          const next = new Set(prev)
-                          if (next.has(row.id)) next.delete(row.id)
-                          else next.add(row.id)
-                          return next
-                        })
-                      }
-                      aria-expanded={isExpanded}
-                      aria-label={isExpanded ? 'Collapse row' : 'Expand row'}
-                      className="flex items-center gap-3 flex-1 min-w-0 text-left rounded hover:bg-gray-50 -mx-1 px-1 py-1 transition-colors"
-                    >
-                      <ChevronRight
-                        className={`h-4 w-4 flex-shrink-0 text-gray-400 transition-transform duration-150 ${
-                          isExpanded ? 'rotate-90' : ''
-                        }`}
-                      />
+                    <div className="flex items-center gap-3 flex-1 min-w-0 text-left -mx-1 px-1 py-1">
                       <span className="text-xs text-gray-400 w-10 tabular-nums flex-shrink-0">
                         #{row.row_index + 1}
                       </span>
                       {/*
-                        ``conversation_id`` is the user-visible row
-                        identifier. It used to sit inside the expand
-                        button untouched, which meant:
-                          (a) browsers default ``user-select: none`` on
-                              ``<button>`` contents, so drag-select
-                              didn't work, and
-                          (b) any mouse-up on the text triggered the
-                              expand toggle, swallowing accidental
-                              clicks that the user intended as a
-                              double-click-to-select-word.
-                        We now stop click + mousedown propagation on
-                        the span so the button's onClick never fires
-                        from interactions with the text, force
-                        ``user-select: text`` to re-enable drag-select,
-                        and expose a one-click Copy affordance next to
-                        it for the common case.
+                        Conversation ID stays selectable; a normal click
+                        still opens the docked detail panel on the row.
+                        Only the copy control stops propagation.
                        */}
                       <span
-                        className="font-mono text-sm text-gray-900 truncate flex-1 min-w-0 select-text cursor-text"
+                        className="font-mono text-sm text-gray-900 truncate flex-1 min-w-0 select-text"
                         title={row.conversation_id}
-                        onClick={(e) => e.stopPropagation()}
-                        onMouseDown={(e) => e.stopPropagation()}
-                        onDoubleClick={(e) => e.stopPropagation()}
                       >
                         {row.conversation_id}
                       </span>
@@ -2478,29 +2363,25 @@ export default function CallImportDetail() {
                       </span>
                       <StatusBadge status={row.status} size="sm" />
                       <DiariseStatusPill status={row.diarised_transcript_status} />
-                    </button>
+                    </div>
 
-                    <div className="flex items-center gap-1 flex-shrink-0">
+                    <div
+                      className="flex items-center gap-1 flex-shrink-0"
+                      onClick={(e) => e.stopPropagation()}
+                    >
                       {hasRecording ? (
                         <>
                           <button
                             type="button"
-                            onClick={() => handlePlay(row)}
-                            disabled={isLoadingThis}
-                            title={isThisPlaying ? 'Pause' : 'Play recording'}
-                            className={`p-1.5 rounded transition-colors disabled:opacity-50 ${
-                              isThisPlaying
+                            onClick={() => setSelectedRowId(row.id)}
+                            title="Open recording in side panel"
+                            className={`p-1.5 rounded transition-colors ${
+                              isPanelOpen
                                 ? 'text-green-600 bg-green-50 hover:bg-green-100'
                                 : 'text-blue-600 hover:bg-blue-50'
                             }`}
                           >
-                            {isLoadingThis ? (
-                              <RefreshCw className="h-4 w-4 animate-spin" />
-                            ) : isThisPlaying ? (
-                              <Pause className="h-4 w-4" />
-                            ) : (
-                              <Play className="h-4 w-4" />
-                            )}
+                            <Play className="h-4 w-4" />
                           </button>
                           <button
                             type="button"
@@ -2635,365 +2516,6 @@ export default function CallImportDetail() {
                       </div>
                     )}
 
-                  {isExpanded && (
-                    <div className="border-t border-gray-200 px-4 py-4 bg-gray-100 space-y-3">
-                      <div className="grid grid-cols-1 lg:grid-cols-5 gap-3">
-                        <section className="lg:col-span-3 min-w-0 space-y-3">
-                          {/* Production transcript (from CSV upload). */}
-                          <div className="bg-white border border-gray-200 rounded-lg shadow-sm">
-                            <header className="px-3 py-2 border-b border-gray-100 flex items-center justify-between gap-2">
-                              <div className="flex items-center gap-1.5 min-w-0">
-                                <MessageSquare className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
-                                <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wider">
-                                  Production Transcript
-                                </h4>
-                                {row.transcript ? (
-                                  <span className="ml-1 inline-flex items-center rounded-full bg-gray-100 text-gray-700 px-2 py-0.5 text-[10px] font-medium">
-                                    From CSV
-                                  </span>
-                                ) : (
-                                  <span className="ml-1 inline-flex items-center rounded-full bg-gray-50 text-gray-500 px-2 py-0.5 text-[10px] font-medium">
-                                    Not provided
-                                  </span>
-                                )}
-                              </div>
-                              {row.transcript && (
-                                <button
-                                  type="button"
-                                  onClick={(e) =>
-                                    handleCopyTranscript(row, 'production', e)
-                                  }
-                                  className="inline-flex items-center gap-1 text-[11px] font-medium text-gray-600 hover:text-gray-900"
-                                  title="Copy production transcript"
-                                >
-                                  {copiedTranscriptField?.rowId === row.id &&
-                                  copiedTranscriptField?.field === 'production' ? (
-                                    <>
-                                      <Check className="h-3 w-3 text-green-600" />
-                                      Copied
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Copy className="h-3 w-3" />
-                                      Copy
-                                    </>
-                                  )}
-                                </button>
-                              )}
-                            </header>
-                            <div className="p-3">
-                              {row.transcript ? (
-                                <TranscriptView
-                                  transcript={row.transcript}
-                                  compact
-                                />
-                              ) : (
-                                <p className="text-xs text-gray-500 italic">
-                                  No production transcript was uploaded for
-                                  this row. Map a CSV column to "Transcript"
-                                  next time, or run diarisation below.
-                                </p>
-                              )}
-                            </div>
-                          </div>
-
-                          {/* Diarised transcript (from the diarisation worker). */}
-                          <div className="bg-white border border-gray-200 rounded-lg shadow-sm">
-                            <header className="px-3 py-2 border-b border-gray-100 flex items-center justify-between gap-2">
-                              <div className="flex items-center gap-1.5 min-w-0">
-                                <AudioLines className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
-                                <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wider">
-                                  Diarised Transcript
-                                </h4>
-                                {row.diarised_transcript && (
-                                  <span className="ml-1 inline-flex items-center gap-1 rounded-full bg-purple-50 text-purple-700 px-2 py-0.5 text-[10px] font-medium">
-                                    <AudioLines className="h-3 w-3" />
-                                    Diarised
-                                    {row.diarised_transcript_provider && (
-                                      <span className="font-mono">
-                                        · {row.diarised_transcript_provider}
-                                        {row.diarised_transcript_model
-                                          ? `/${row.diarised_transcript_model}`
-                                          : ''}
-                                      </span>
-                                    )}
-                                  </span>
-                                )}
-                                {(row.diarised_transcript_status ===
-                                  'pending' ||
-                                  row.diarised_transcript_status ===
-                                    'running') && (
-                                  <span className="ml-1 inline-flex items-center gap-1 rounded-full bg-blue-50 text-blue-700 px-2 py-0.5 text-[10px] font-medium">
-                                    <RefreshCw className="h-3 w-3 animate-spin" />
-                                    Diarising…
-                                  </span>
-                                )}
-                                {row.diarised_transcript_status ===
-                                  'failed' && (
-                                  <span
-                                    className="ml-1 inline-flex items-center gap-1 rounded-full bg-red-50 text-red-700 px-2 py-0.5 text-[10px] font-medium"
-                                    title={formatDiarisationError(
-                                      row.diarised_transcript_error,
-                                    )}
-                                  >
-                                    <AlertCircle className="h-3 w-3" />
-                                    Diarisation failed
-                                  </span>
-                                )}
-                              </div>
-                              <div className="flex items-center gap-3">
-                                {row.diarised_transcript && (
-                                  <button
-                                    type="button"
-                                    onClick={(e) =>
-                                      handleCopyTranscript(row, 'diarised', e)
-                                    }
-                                    className="inline-flex items-center gap-1 text-[11px] font-medium text-purple-700 hover:text-purple-900"
-                                    title="Copy diarised transcript"
-                                  >
-                                    {copiedTranscriptField?.rowId === row.id &&
-                                    copiedTranscriptField?.field === 'diarised' ? (
-                                      <>
-                                        <Check className="h-3 w-3 text-green-600" />
-                                        Copied
-                                      </>
-                                    ) : (
-                                      <>
-                                        <Copy className="h-3 w-3" />
-                                        Copy
-                                      </>
-                                    )}
-                                  </button>
-                                )}
-                                {Array.isArray(row.diarised_segments) &&
-                                  row.diarised_segments.length > 0 && (
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        swapSpeakersMutation.mutate({
-                                          rowId: row.id,
-                                        })
-                                      }
-                                      disabled={
-                                        swappingRowId === row.id ||
-                                        row.diarised_transcript_status ===
-                                          'pending' ||
-                                        row.diarised_transcript_status ===
-                                          'running'
-                                      }
-                                      title={
-                                        row.diarised_speaker_swap
-                                          ? 'Speaker labels have been swapped. Click to revert to the diarisation default.'
-                                          : 'Swap user and agent labels on this row.'
-                                      }
-                                      className="inline-flex items-center gap-1 text-[11px] font-medium text-purple-700 hover:text-purple-900 disabled:opacity-50"
-                                    >
-                                      {swappingRowId === row.id ? (
-                                        <RefreshCw className="h-3 w-3 animate-spin" />
-                                      ) : (
-                                        <ArrowLeftRight className="h-3 w-3" />
-                                      )}
-                                      Swap user/agent
-                                      {row.diarised_speaker_swap && (
-                                        <span className="text-[9px] uppercase tracking-wider text-purple-500">
-                                          (swapped)
-                                        </span>
-                                      )}
-                                    </button>
-                                  )}
-                                {hasRecording && (
-                                  <button
-                                    type="button"
-                                    onClick={() => openTranscribeModal([row])}
-                                    disabled={
-                                      row.diarised_transcript_status ===
-                                        'pending' ||
-                                      row.diarised_transcript_status ===
-                                        'running'
-                                    }
-                                    className="text-[11px] font-medium text-purple-700 hover:text-purple-900 disabled:opacity-50"
-                                  >
-                                    {row.diarised_transcript
-                                      ? 'Re-diarise'
-                                      : 'Diarise'}
-                                  </button>
-                                )}
-                              </div>
-                            </header>
-                            {swapError && swappingRowId === null && (
-                              <div className="border-b border-red-100 bg-red-50 px-3 py-2 text-xs text-red-800 flex items-start gap-2">
-                                <AlertCircle className="h-3.5 w-3.5 text-red-600 flex-shrink-0 mt-0.5" />
-                                <div className="min-w-0 flex-1 break-words">
-                                  {swapError}
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => setSwapError(null)}
-                                  className="text-red-600 hover:text-red-800 flex-shrink-0"
-                                >
-                                  <X className="h-3.5 w-3.5" />
-                                </button>
-                              </div>
-                            )}
-                            {row.diarised_transcript_status === 'failed' &&
-                              row.diarised_transcript_error && (
-                                <div className="border-b border-red-100 bg-red-50 px-3 py-2 text-xs text-red-800 flex items-start gap-2">
-                                  <AlertCircle className="h-3.5 w-3.5 text-red-600 flex-shrink-0 mt-0.5" />
-                                  <div className="min-w-0 flex-1 break-words">
-                                    <span className="font-medium">
-                                      Diarisation failed:
-                                    </span>{' '}
-                                    {formatDiarisationError(row.diarised_transcript_error)}
-                                    {row.diarised_transcript_provider && (
-                                      <span className="ml-1 text-[10px] text-red-700/80 font-mono">
-                                        ({row.diarised_transcript_provider}
-                                        {row.diarised_transcript_model
-                                          ? `/${row.diarised_transcript_model}`
-                                          : ''}
-                                        )
-                                      </span>
-                                    )}
-                                  </div>
-                                </div>
-                              )}
-                            <div className="p-3">
-                              {row.diarised_transcript ? (
-                                <TranscriptView
-                                  transcript={row.diarised_transcript}
-                                  compact
-                                />
-                              ) : (
-                                <p className="text-xs text-gray-500 italic">
-                                  {hasRecording
-                                    ? 'No diarised transcript yet. Click Diarise to run STT on this recording.'
-                                    : 'No recording available for this row, so diarisation cannot run.'}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                        </section>
-
-                        <div className="lg:col-span-2 min-w-0 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 gap-3">
-                          <section className="bg-white border border-gray-200 rounded-lg shadow-sm">
-                            <header className="px-3 py-2 border-b border-gray-100 flex items-center gap-1.5">
-                              <Volume2 className="h-3.5 w-3.5 text-gray-400" />
-                              <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wider">
-                                Recording
-                              </h4>
-                            </header>
-                            <dl className="p-3 space-y-1.5 text-xs">
-                              <div className="flex justify-between gap-2">
-                                <dt className="text-gray-500">Size</dt>
-                                <dd className="text-gray-800 tabular-nums">
-                                  {formatBytes(row.recording_size_bytes)}
-                                </dd>
-                              </div>
-                              <div className="flex justify-between gap-2">
-                                <dt className="text-gray-500">Type</dt>
-                                <dd className="text-gray-800 truncate text-right">
-                                  {row.recording_content_type || '—'}
-                                </dd>
-                              </div>
-                              <div className="flex justify-between gap-2">
-                                <dt className="text-gray-500">Recording date</dt>
-                                <dd className="text-gray-800 text-right">
-                                  {formatRecordingDate(row.recording_date)}
-                                </dd>
-                              </div>
-                              {row.recording_url && (
-                                <div className="flex flex-col gap-0.5 pt-1 border-t border-gray-50">
-                                  <dt className="text-gray-500">Source URL</dt>
-                                  <dd className="min-w-0">
-                                    <a
-                                      href={row.recording_url}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="text-blue-700 hover:text-blue-800 underline break-all"
-                                      title={row.recording_url}
-                                    >
-                                      {row.recording_url}
-                                    </a>
-                                  </dd>
-                                </div>
-                              )}
-                            </dl>
-                          </section>
-
-                          <section className="bg-white border border-gray-200 rounded-lg shadow-sm">
-                            <header className="px-3 py-2 border-b border-gray-100 flex items-center gap-1.5">
-                              <RefreshCw className="h-3.5 w-3.5 text-gray-400" />
-                              <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wider">
-                                Run
-                              </h4>
-                            </header>
-                            <dl className="p-3 space-y-1.5 text-xs">
-                              <div className="flex justify-between gap-2">
-                                <dt className="text-gray-500">Attempts</dt>
-                                <dd className="text-gray-800 tabular-nums">
-                                  {row.attempts}
-                                </dd>
-                              </div>
-                              <div className="flex justify-between gap-2">
-                                <dt className="text-gray-500">Created</dt>
-                                <dd className="text-gray-800 text-right">
-                                  {new Date(row.created_at).toLocaleString()}
-                                </dd>
-                              </div>
-                              <div className="flex justify-between gap-2">
-                                <dt className="text-gray-500">Updated</dt>
-                                <dd className="text-gray-800 text-right">
-                                  {new Date(row.updated_at).toLocaleString()}
-                                </dd>
-                              </div>
-                            </dl>
-                          </section>
-                        </div>
-                      </div>
-
-                      {rawColumnEntries.length > 0 && (
-                        <section className="bg-white border border-gray-200 rounded-lg shadow-sm">
-                          <header className="px-3 py-2 border-b border-gray-100 flex items-center gap-1.5">
-                            <FileText className="h-3.5 w-3.5 text-gray-400" />
-                            <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wider">
-                              Imported columns
-                            </h4>
-                            <span className="ml-1 inline-flex items-center justify-center rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600">
-                              {rawColumnEntries.length}
-                            </span>
-                          </header>
-                          <dl className="p-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-xs">
-                            {rawColumnEntries.map(([key, value]) => {
-                              // Typed raw_columns cells (numbers /
-                              // booleans / nulls) need to be stringified
-                              // before any string ops or JSX render or
-                              // React throws on the non-string child.
-                              const stringValue =
-                                value === null || value === undefined
-                                  ? ''
-                                  : String(value)
-                              return (
-                                <div
-                                  key={key}
-                                  className="bg-gray-50 border border-gray-200 rounded px-2.5 py-1.5"
-                                >
-                                  <dt className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider truncate">
-                                    {key}
-                                  </dt>
-                                  <dd className="text-gray-800 break-words mt-0.5 whitespace-pre-wrap">
-                                    {stringValue.trim() ? (
-                                      stringValue
-                                    ) : (
-                                      <span className="italic text-gray-400">empty</span>
-                                    )}
-                                  </dd>
-                                </div>
-                              )
-                            })}
-                          </dl>
-                        </section>
-                      )}
-                    </div>
-                  )}
                 </div>
               )
             })}
@@ -3016,38 +2538,50 @@ export default function CallImportDetail() {
                 )
               }
             />
-          </div>
-        )}
-
-        {playingRowId && audioUrl && (
-          <div className="mt-4 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-4">
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-2">
-                <Volume2 className="h-5 w-5 text-blue-600" />
-                <span className="text-sm font-medium text-gray-700">Now Playing:</span>
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold text-gray-900 truncate">
-                  {rows.find((r) => r.id === playingRowId)?.conversation_id}
-                </p>
-              </div>
-              <button
-                onClick={handleStopAudio}
-                className="p-2 rounded-full bg-gray-200 text-gray-600 hover:bg-gray-300 transition-colors"
-                title="Stop"
-              >
-                <XCircle className="h-4 w-4" />
-              </button>
-              <audio
-                ref={audioRef}
-                src={audioUrl}
-                onEnded={() => setIsPlaying(false)}
-                onPause={() => setIsPlaying(false)}
-                onPlay={() => setIsPlaying(true)}
-                controls
-                className="h-8 flex-shrink-0"
-              />
             </div>
+
+            {selectedRow ? (
+              <CallRowSidePanel
+                onClose={() => setSelectedRowId(null)}
+                title={selectedRow.conversation_id}
+                headerMeta={
+                  <>
+                    <StatusBadge status={selectedRow.status} size="sm" />
+                    <DiariseStatusPill status={selectedRow.diarised_transcript_status} />
+                    <span className="text-xs text-gray-500">
+                      Row #{selectedRow.row_index + 1}
+                    </span>
+                  </>
+                }
+                recordingS3Key={selectedRow.recording_s3_key}
+                recordingUrl={selectedRow.recording_url}
+                tabs={[
+                  { id: 'production', label: 'Production' },
+                  { id: 'diarised', label: 'Diarised' },
+                  { id: 'metadata', label: 'Metadata' },
+                ]}
+                activeTab={rowPanelTab}
+                onTabChange={(tabId) =>
+                  setRowPanelTab(tabId as CallImportRowSidePanelTabId)
+                }
+              >
+                <CallImportRowSidePanelContent
+                  row={selectedRow}
+                  activeTab={rowPanelTab}
+                  rawColumnEntries={getRawColumnEntries(selectedRow)}
+                  hasRecording={!!selectedRow.recording_s3_key}
+                  copiedTranscriptField={copiedTranscriptField}
+                  onCopyTranscript={handleCopyTranscript}
+                  onDiarise={() => openTranscribeModal([selectedRow])}
+                  onSwapSpeakers={() =>
+                    swapSpeakersMutation.mutate({ rowId: selectedRow.id })
+                  }
+                  swappingRowId={swappingRowId}
+                  swapError={swapError}
+                  onDismissSwapError={() => setSwapError(null)}
+                />
+              </CallRowSidePanel>
+            ) : null}
           </div>
         )}
       </div>

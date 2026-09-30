@@ -11,6 +11,7 @@ Completions) automatically.
 import re
 import time
 from typing import Optional, Dict, Any, List, Tuple
+from urllib.parse import urlparse, urlunparse
 from uuid import UUID
 
 import litellm
@@ -261,6 +262,64 @@ def _build_azure_litellm_kwargs(
     )
 
 
+def _normalize_openai_compatible_api_base(raw: str) -> str:
+    """Normalize a user-supplied OpenAI-compatible base URL for LiteLLM."""
+    url = (raw or "").strip().rstrip("/")
+    if not url:
+        return url
+    for suffix in (
+        "/v1/chat/completions",
+        "/chat/completions",
+        "/v1/completions",
+        "/completions",
+    ):
+        if url.endswith(suffix):
+            url = url[: -len(suffix)].rstrip("/")
+            break
+    parsed = urlparse(url)
+    path = (parsed.path or "").rstrip("/")
+    if not path.endswith("/v1"):
+        if path in ("", "/"):
+            path = "/v1"
+        elif not path.endswith("/v1"):
+            path = f"{path}/v1"
+    return urlunparse(parsed._replace(path=path))
+
+
+def _openai_compatible_model_from_custom(model: str) -> str:
+    """Map ``custom/typesafe/jev-1.13.0`` to ``openai/typesafe/jev-1.13.0``."""
+    normalized = (model or "").strip()
+    if normalized.startswith("custom/"):
+        normalized = normalized[len("custom/") :]
+    if normalized.startswith("openai/"):
+        return normalized
+    return f"openai/{normalized}"
+
+
+def _apply_direct_custom_provider_kwargs(
+    call_kwargs: Dict[str, Any],
+    *,
+    ai_provider: AIProvider,
+) -> Dict[str, Any]:
+    """Apply ``endpoint_url`` for org Custom integrations (OpenAI-compatible)."""
+    if call_kwargs.get("api_base"):
+        return call_kwargs
+
+    endpoint = (getattr(ai_provider, "endpoint_url", None) or "").strip()
+    if not endpoint:
+        endpoint = (getattr(ai_provider, "gateway_base_url", None) or "").strip()
+    if not endpoint:
+        return call_kwargs
+
+    result = dict(call_kwargs)
+    result["api_base"] = _normalize_openai_compatible_api_base(endpoint)
+    model = str(result.get("model") or "")
+    if model.startswith("custom/") or "/" in model:
+        result["model"] = _openai_compatible_model_from_custom(model)
+        result["custom_llm_provider"] = "openai"
+    return result
+
+
 def _azure_deployment_name(catalog_model: str) -> str:
     """Map Azure catalog keys to LiteLLM deployment names.
 
@@ -382,6 +441,7 @@ class LLMService:
         override_llm_config: Optional[Dict[str, Any]] = None,
         task_defaults: Optional[Dict[str, Any]] = None,
         credential_id: Optional[UUID] = None,
+        completion_extra: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Generate a text response using the specified LLM via LiteLLM.
 
@@ -491,6 +551,18 @@ class LLMService:
             model=model_str,
             credential=credential_ctx,
         )
+
+        if provider_value == "custom" and ai_provider is not None:
+            call_kwargs = _apply_direct_custom_provider_kwargs(
+                call_kwargs,
+                ai_provider=ai_provider,
+            )
+            model_str = str(call_kwargs.get("model") or model_str)
+
+        if completion_extra:
+            for key, value in completion_extra.items():
+                if value is not None:
+                    call_kwargs[key] = value
 
         try:
             response = litellm.completion(**call_kwargs)

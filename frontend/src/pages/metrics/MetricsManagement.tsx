@@ -32,6 +32,7 @@ import { copyTextToClipboard, readTextFromClipboard } from '../../lib/clipboard'
 import {
   categoryFormFromMetricClipboard,
   parseMetricClipboardPayload,
+  pastedMetricName,
   serializeMetricToClipboard,
   singleFormFromMetricClipboard,
 } from './metricClipboardUtils'
@@ -39,6 +40,14 @@ import {
   buildSingleMetricValuePayload,
   formatMetricValuePayloadJson,
 } from './metricValuePayloadUtils'
+import ClassificationMetricFields from './components/ClassificationMetricFields'
+import {
+  buildClassificationPayload,
+  classificationFormFromMetric,
+  defaultClassificationForm,
+  validateClassificationForm,
+  type ClassificationFormState,
+} from './classificationMetricUtils'
 import {
   categoryChildrenFromPartial,
   createCategoryChildrenFromPartial,
@@ -70,7 +79,7 @@ interface Metric {
   metric_origin: 'default' | 'custom'
   supported_surfaces: Array<'agent' | 'voice_playground' | 'blind_test'>
   enabled_surfaces: Array<'agent' | 'voice_playground' | 'blind_test'>
-  custom_data_type?: 'boolean' | 'enum' | 'number_range' | null
+  custom_data_type?: 'boolean' | 'enum' | 'number_range' | 'classification' | null
   custom_config?: Record<string, any> | null
   tags?: string[] | null
   capture_rationale?: boolean
@@ -95,7 +104,7 @@ interface Metric {
 }
 
 type MetricSurface = 'agent' | 'voice_playground' | 'blind_test'
-type CustomDataType = 'boolean' | 'enum' | 'number_range'
+type CustomDataType = 'boolean' | 'enum' | 'number_range' | 'classification'
 
 // Quantitative: Raw acoustic measurements (Parselmouth - signal processing)
 // These are pure physical/mathematical measurements of the audio signal
@@ -216,8 +225,10 @@ export default function MetricsManagement({
   // active one with these tabs. Default is 'single' (the legacy
   // single-metric experience); 'category' opens the parent + sub-labels
   // builder.
-  type CreateMode = 'single' | 'category'
+  type CreateMode = 'single' | 'category' | 'classification'
   const [createMode, setCreateMode] = useState<CreateMode>('single')
+  const [classificationForm, setClassificationForm] =
+    useState<ClassificationFormState>(defaultClassificationForm)
   // Categorization Labels create form. Mirrors the "Manage Categorization
   // Labels" screen: name + description (acts as the LLM Prompt) + N
   // labels with name/definition/example, plus an "Enable LLM Rationale"
@@ -386,12 +397,29 @@ export default function MetricsManagement({
   })
 
   const singleMetricValuePayloadJson = useMemo(() => {
+    if (formData.custom_data_type === 'classification') {
+      return formatMetricValuePayloadJson({
+        type: 'classification',
+        metric_name: formData.name.trim() || '(unnamed metric)',
+        value: 'noul 0.92; billing (0.81); score 1.04',
+        answers: {
+          noul: { type: 'noul', noul: 0.92 },
+          choice: {
+            type: 'choice',
+            choice: 'billing',
+            confidence: 0.81,
+            probabilities: { billing: 0.87, other: 0.13 },
+          },
+        },
+      })
+    }
+    const customDataType = formData.custom_data_type
     return formatMetricValuePayloadJson(
       buildSingleMetricValuePayload({
         name: formData.name,
         description: formData.description,
         metric_type: formData.metric_type,
-        custom_data_type: formData.custom_data_type,
+        custom_data_type: customDataType,
         enum_options_csv: formData.enum_options_csv,
         number_min: formData.number_min,
         number_max: formData.number_max,
@@ -703,9 +731,14 @@ export default function MetricsManagement({
     }
   }, [createModalOnly, createModalOpen])
 
+  type MetricCreateBody = Parameters<typeof apiClient.createMetric>[0]
+  type MetricUpdateBody = Parameters<typeof apiClient.updateMetric>[1]
+
   const createMutation = useMutation({
-    mutationFn: (data: typeof formData) =>
-      draftMode ? apiClient.createMetricDraft(data as any) : apiClient.createMetric(data),
+    mutationFn: (data: MetricCreateBody) =>
+      draftMode
+        ? apiClient.createMetricDraft(data as any)
+        : apiClient.createMetric(data),
     onSuccess: (metric) => {
       queryClient.invalidateQueries({ queryKey: ['metrics'] })
       void refreshOssQuotaUsage()
@@ -722,7 +755,7 @@ export default function MetricsManagement({
   })
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Partial<typeof formData> }) =>
+    mutationFn: ({ id, data }: { id: string; data: MetricUpdateBody }) =>
       apiClient.updateMetric(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['metrics'] })
@@ -1000,6 +1033,10 @@ export default function MetricsManagement({
     })
   }
 
+  const resetClassificationForm = () => {
+    setClassificationForm(defaultClassificationForm())
+  }
+
   const handleToggleSurface = (metric: Metric, surface: MetricSurface) => {
     const current = new Set<MetricSurface>(metric.enabled_surfaces || [])
     if (current.has(surface)) {
@@ -1199,10 +1236,26 @@ export default function MetricsManagement({
         setCreateMode('category')
         setCategoryForm(categoryFormFromMetricClipboard(payload, targetScope))
         resetForm()
+        resetClassificationForm()
+      } else if (payload.custom_data_type === 'classification') {
+        setCreateMode('classification')
+        setClassificationForm(
+          classificationFormFromMetric({
+            name: pastedMetricName(payload.name),
+            description: payload.description,
+            supported_surfaces: payload.supported_surfaces,
+            enabled: true,
+            scope: targetScope,
+            custom_config: payload.custom_config ?? null,
+          }),
+        )
+        resetForm()
+        resetCategoryForm()
       } else {
         setCreateMode('single')
         setFormData(singleFormFromMetricClipboard(payload, targetScope))
         resetCategoryForm()
+        resetClassificationForm()
       }
       if (isAtLimit('user_metrics')) {
         showToast(limitMessage('user_metrics'), 'error')
@@ -1227,6 +1280,14 @@ export default function MetricsManagement({
       !!metric.selection_mode && !metric.parent_metric_id
     if (isParent) {
       handleEditCategory(metric)
+      return
+    }
+    if (metric.custom_data_type === 'classification') {
+      setEditingMetric(metric)
+      setIsEditingCategory(false)
+      setCreateMode('classification')
+      setClassificationForm(classificationFormFromMetric(metric))
+      setShowCreateModal(true)
       return
     }
     setEditingMetric(metric)
@@ -1414,9 +1475,34 @@ export default function MetricsManagement({
     resetForm()
     resetAIForm()
     resetCategoryForm()
+    resetClassificationForm()
     if (createModalOnly) {
       onCreateModalClose?.()
     }
+  }
+
+  const handleCreateClassification = () => {
+    const err = validateClassificationForm(classificationForm)
+    if (err) {
+      showToast(err, 'error')
+      return
+    }
+    createMutation.mutate(
+      buildClassificationPayload(classificationForm, false) as any,
+    )
+  }
+
+  const handleUpdateClassification = () => {
+    if (!editingMetric) return
+    const err = validateClassificationForm(classificationForm)
+    if (err) {
+      showToast(err, 'error')
+      return
+    }
+    updateMutation.mutate({
+      id: editingMetric.id,
+      data: buildClassificationPayload(classificationForm, true) as any,
+    })
   }
 
   const handleSort = (field: 'type' | 'method') => {
@@ -1732,6 +1818,14 @@ export default function MetricsManagement({
                                 </span>
                               </span>
                             )}
+                            {metric.custom_data_type === 'classification' && (
+                              <span
+                                className="px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide bg-teal-100 text-teal-800 rounded"
+                                title="Jev classification metric (Noul / Choice / Score)"
+                              >
+                                Classification
+                              </span>
+                            )}
                           </div>
                         </td>
                         <td className="px-6 py-4">
@@ -1952,7 +2046,7 @@ export default function MetricsManagement({
                   ? isEditingCategory
                     ? 'max-w-5xl'
                     : 'max-w-4xl'
-                  : createMode === 'category'
+                  : createMode === 'category' || createMode === 'classification'
                     ? 'max-w-5xl'
                     : 'max-w-4xl'
               } w-full p-6 max-h-[90vh] overflow-y-auto`}
@@ -1962,9 +2056,13 @@ export default function MetricsManagement({
                   {editingMetric
                     ? isEditingCategory
                       ? `Manage Categorization Labels for: ${editingMetric.name}`
-                      : 'Edit Metric'
+                      : editingMetric.custom_data_type === 'classification'
+                        ? 'Edit classification metric'
+                        : 'Edit Metric'
                     : createMode === 'category'
                       ? `Manage Categorization Labels${categoryForm.name.trim() ? ` for: ${categoryForm.name.trim()}` : ''}`
+                      : createMode === 'classification'
+                        ? 'Create classification metric'
                       : draftMode
                         ? isCustomMetricMode
                           ? 'Create draft custom metric'
@@ -2011,6 +2109,7 @@ export default function MetricsManagement({
                       [
                         { id: 'single', label: 'Single metric' },
                         { id: 'category', label: 'Categorization Labels' },
+                        { id: 'classification', label: 'Classification' },
                       ] as Array<{ id: CreateMode; label: string }>
                     ).map((tab) => (
                       <button
@@ -2030,13 +2129,17 @@ export default function MetricsManagement({
                   <p className="mt-2 text-[11px] text-gray-500">
                     {createMode === 'single'
                       ? 'Configure one custom metric end-to-end.'
-                      : 'Create a metric with N labels. On a CSV-import evaluation the metric becomes one column whose row value is the LLM-chosen label name.'}
+                      : createMode === 'category'
+                        ? 'Create a metric with N labels. On a CSV-import evaluation the metric becomes one column whose row value is the LLM-chosen label name.'
+                        : 'Configure Jev Noul, Choice, and/or Score questions with probabilities on call-import evaluations.'}
                   </p>
                 </div>
               )}
 
               {((createMode === 'single' && !editingMetric) ||
-                (editingMetric && !isEditingCategory)) && (
+                (editingMetric &&
+                  !isEditingCategory &&
+                  editingMetric.custom_data_type !== 'classification')) && (
               <div className="space-y-5">
                 {isCustomMetricMode && !editingMetric && (
                   <div className="border border-purple-200 rounded-xl bg-purple-50/40">
@@ -2641,6 +2744,52 @@ export default function MetricsManagement({
                 </div>
               </div>
               )}
+
+              {!editingMetric && createMode === 'classification' && (
+                <div className="space-y-5">
+                  <ClassificationMetricFields
+                    form={classificationForm}
+                    onChange={setClassificationForm}
+                    showScope
+                  />
+                  <div className="flex justify-end space-x-3 pt-2 border-t border-gray-100">
+                    <Button variant="ghost" onClick={closeModal}>
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="primary"
+                      onClick={handleCreateClassification}
+                      isLoading={createMutation.isPending}
+                    >
+                      Create
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {editingMetric &&
+                editingMetric.custom_data_type === 'classification' &&
+                !isEditingCategory && (
+                  <div className="space-y-5">
+                    <ClassificationMetricFields
+                      form={classificationForm}
+                      onChange={setClassificationForm}
+                      showScope={false}
+                    />
+                    <div className="flex justify-end space-x-3 pt-2 border-t border-gray-100">
+                      <Button variant="ghost" onClick={closeModal}>
+                        Cancel
+                      </Button>
+                      <Button
+                        variant="primary"
+                        onClick={handleUpdateClassification}
+                        isLoading={updateMutation.isPending}
+                      >
+                        Update
+                      </Button>
+                    </div>
+                  </div>
+                )}
 
               {!editingMetric && createMode === 'category' && (
                 <div className="space-y-5">

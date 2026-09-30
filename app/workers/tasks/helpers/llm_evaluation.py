@@ -50,6 +50,23 @@ def _get_custom_data_type(metric) -> Optional[str]:
     return str(raw).strip().lower() or None
 
 
+def _is_classification_metric(metric) -> bool:
+    return _get_custom_data_type(metric) == "classification"
+
+
+def _classification_metric_error_entry(
+    metric,
+    *,
+    error: str = "classification_requires_jev_model",
+) -> dict[str, Any]:
+    return {
+        "value": None,
+        "type": "classification",
+        "metric_name": getattr(metric, "name", ""),
+        "error": error,
+    }
+
+
 def _get_enum_options(metric) -> list[str]:
     """Return the list of allowed enum option labels for an enum custom metric."""
     cfg = getattr(metric, "custom_config", None) or {}
@@ -545,6 +562,8 @@ def _render_flat_metric_lines(metrics: list) -> str:
     """Render standalone (non-hierarchical) metric definition lines."""
     prompt = ""
     for metric in metrics:
+        if _is_classification_metric(metric):
+            continue
         metric_key = metric.name.lower().replace(" ", "_")
         metric_desc = metric.description or f"Evaluate {metric.name}"
         m_type = get_metric_type_value(metric)
@@ -1440,7 +1459,7 @@ def _build_jev_question_for_flat_metric(
     instructions = _jev_instructions(metric)
     question_key = _metric_key(metric)
 
-    if m_type == "text":
+    if _is_classification_metric(metric) or m_type == "text":
         return None
 
     if custom_type == "enum":
@@ -2013,6 +2032,305 @@ def _jev_call_specs(
     return specs
 
 
+def _partition_classification_metrics(
+    metrics: list,
+    metric_groups: list[MetricPromptGroup] | None,
+) -> tuple[list, list[MetricPromptGroup] | None]:
+    """Split classification metrics out of flat lists and prompt groups."""
+    class_metrics = [m for m in metrics if _is_classification_metric(m)]
+    other_metrics = [m for m in metrics if not _is_classification_metric(m)]
+    if metric_groups is None:
+        return class_metrics, None if not other_metrics else metric_groups
+
+    filtered_groups: list[MetricPromptGroup] = []
+    for group in metric_groups:
+        if group.parent_metric is not None:
+            filtered_groups.append(group)
+            continue
+        kept = [m for m in group.metrics if not _is_classification_metric(m)]
+        if kept:
+            filtered_groups.append(
+                MetricPromptGroup(None, kept, group.running_discovered)
+            )
+    if not other_metrics:
+        filtered_groups = []
+    return class_metrics, filtered_groups or None
+
+
+def _build_classification_jev_questions(metric) -> dict[str, dict[str, Any]]:
+    cfg = getattr(metric, "custom_config", None) or {}
+    if not isinstance(cfg, dict):
+        return {}
+    questions: dict[str, dict[str, Any]] = {}
+
+    noul = cfg.get("noul") if isinstance(cfg.get("noul"), dict) else {}
+    if noul.get("enabled"):
+        criteria = noul.get("criteria") if isinstance(noul.get("criteria"), dict) else {}
+        questions["noul"] = {
+            "type": "noul",
+            "instructions": str(noul.get("instructions") or "").strip(),
+            "criteria": {
+                "true": str(criteria.get("true") or "").strip(),
+                "false": str(criteria.get("false") or "").strip(),
+            },
+        }
+
+    choice = cfg.get("choice") if isinstance(cfg.get("choice"), dict) else {}
+    if choice.get("enabled"):
+        raw_criteria = choice.get("criteria")
+        criteria: dict[str, str] = {}
+        if isinstance(raw_criteria, dict):
+            for label, desc in raw_criteria.items():
+                label_str = str(label or "").strip()
+                desc_str = str(desc or "").strip()
+                if label_str and desc_str:
+                    criteria[label_str] = desc_str
+        questions["choice"] = {
+            "type": "choice",
+            "instructions": str(choice.get("instructions") or "").strip(),
+            "criteria": criteria,
+        }
+
+    score = cfg.get("score") if isinstance(cfg.get("score"), dict) else {}
+    if score.get("enabled"):
+        raw_levels = score.get("criteria")
+        levels = (
+            [str(x).strip() for x in raw_levels if str(x).strip()]
+            if isinstance(raw_levels, list)
+            else []
+        )
+        questions["score"] = {
+            "type": "score",
+            "instructions": str(score.get("instructions") or "").strip(),
+            "criteria": levels,
+        }
+
+    return questions
+
+
+def _format_classification_pct(probability: Any) -> str | None:
+    try:
+        p = float(probability)
+    except (TypeError, ValueError):
+        return None
+    if not 0.0 <= p <= 1.0:
+        return None
+    return f"{round(p * 100)}%"
+
+
+def _format_classification_display_value(answers: dict[str, Any]) -> str:
+    parts: list[str] = []
+    noul = answers.get("noul")
+    if isinstance(noul, dict) and noul.get("noul") is not None:
+        p = _format_classification_pct(noul.get("noul"))
+        if p is not None:
+            try:
+                yes = float(noul.get("noul"))
+                headline = "Likely yes" if yes >= 0.5 else "Likely no"
+                parts.append(f"{headline} ({p} yes)")
+            except (TypeError, ValueError):
+                parts.append(f"Yes/no: {p} yes")
+    choice = answers.get("choice")
+    if isinstance(choice, dict) and choice.get("choice") is not None:
+        label = str(choice.get("choice")).strip()
+        conf = _format_classification_pct(choice.get("confidence"))
+        if conf:
+            parts.append(f"Category: {label} ({conf} confidence)")
+        else:
+            parts.append(f"Category: {label}")
+    score = answers.get("score")
+    if isinstance(score, dict):
+        legend = score.get("legend") if isinstance(score.get("legend"), dict) else {}
+        probs = score.get("probabilities") if isinstance(score.get("probabilities"), dict) else {}
+        level_label: str | None = None
+        if probs:
+            best_key = max(probs, key=lambda k: float(probs[k] or 0), default=None)
+            if best_key is not None:
+                raw = legend.get(best_key) or legend.get(str(int(best_key))) if legend else None
+                level_label = str(raw) if raw is not None else str(best_key)
+        if level_label is None and score.get("score") is not None:
+            level_label = f"index {score.get('score')}"
+        if level_label:
+            conf = _format_classification_pct(score.get("confidence"))
+            if conf:
+                parts.append(f"Level: {level_label} ({conf} confidence)")
+            else:
+                parts.append(f"Level: {level_label}")
+    return " · ".join(parts) if parts else ""
+
+
+def _map_classification_jev_answers(metric, answers: dict[str, Any]) -> dict[str, Any]:
+    stored: dict[str, Any] = {}
+    for key in ("noul", "choice", "score"):
+        raw = answers.get(key)
+        if isinstance(raw, dict):
+            stored[key] = raw
+
+    entry: dict[str, Any] = {
+        "type": "classification",
+        "metric_name": metric.name,
+        "value": _format_classification_display_value(stored),
+        "answers": stored,
+    }
+    choice = stored.get("choice")
+    if isinstance(choice, dict):
+        if "confidence" in choice:
+            entry["confidence"] = choice.get("confidence")
+        if "probabilities" in choice:
+            entry["probabilities"] = choice.get("probabilities")
+    score = stored.get("score")
+    if isinstance(score, dict):
+        if "confidence" in score and "confidence" not in entry:
+            entry["confidence"] = score.get("confidence")
+        if "probabilities" in score and "probabilities" not in entry:
+            entry["probabilities"] = score.get("probabilities")
+        if "legend" in score:
+            entry["legend"] = score.get("legend")
+    noul = stored.get("noul")
+    if isinstance(noul, dict) and "noul" in noul:
+        entry["noul_probability"] = noul.get("noul")
+    if not entry["value"]:
+        entry["value"] = None
+        entry["error"] = "classification_empty_answers"
+    from app.services.classification_metric_scores import enrich_classification_metric_entry
+
+    return enrich_classification_metric_entry(entry)
+
+
+def _parse_kodekloud_jev_completion(
+    llm_result: dict[str, Any],
+    result_id: str,
+) -> dict[str, Any]:
+    text = (llm_result.get("text") or "").strip()
+    if text:
+        try:
+            parsed = _parse_llm_response(text, result_id)
+            return _extract_jev_answers(parsed)
+        except ValueError:
+            pass
+
+    raw = llm_result.get("raw_response")
+    if raw is not None and getattr(raw, "choices", None):
+        content = raw.choices[0].message.content if raw.choices else ""
+        if content:
+            try:
+                parsed = _parse_llm_response(content, result_id)
+                return _extract_jev_answers(parsed)
+            except ValueError:
+                pass
+    return {}
+
+
+def _evaluate_classification_metrics_kodekloud(
+    *,
+    classification_metrics: list,
+    transcription: str,
+    ai_providers: list,
+    organization_id: UUID,
+    result_id: str,
+    db,
+    evaluator=None,
+    all_columns_block: str | None = None,
+    comparison_pair: tuple[str, str] | None = None,
+    llm_provider: ModelProvider,
+    llm_model: str,
+) -> tuple[dict[str, dict[str, Any]], float]:
+    from app.services.ai.llm_service import llm_service
+
+    if _uses_tev1_together_format(llm_model):
+        return (
+            {
+                str(m.id): _classification_metric_error_entry(
+                    m, error="classification_unsupported_on_tev_model"
+                )
+                for m in classification_metrics
+            },
+            0.0,
+        )
+
+    state = _build_jev_state(
+        transcription,
+        comparison_pair=comparison_pair,
+        all_columns_block=all_columns_block,
+    )
+
+    chosen_provider = next(
+        (p for p in ai_providers if provider_matches(p.provider, llm_provider)),
+        None,
+    )
+    if not chosen_provider:
+        logger.warning(
+            f"[EvaluatorResult {result_id}] Provider {llm_provider.value} not configured, "
+            "classification evaluation may fail"
+        )
+
+    evaluator_llm_config = getattr(evaluator, "llm_config", None) if evaluator else None
+    evaluator_credential_id = getattr(evaluator, "llm_credential_id", None) if evaluator else None
+    parsed_credential_id = None
+    if evaluator_credential_id:
+        try:
+            parsed_credential_id = UUID(str(evaluator_credential_id))
+        except (TypeError, ValueError):
+            parsed_credential_id = None
+
+    metric_scores: dict[str, dict[str, Any]] = {}
+    start = time.time()
+
+    for metric in classification_metrics:
+        questions = _build_classification_jev_questions(metric)
+        if not questions:
+            metric_scores[str(metric.id)] = _classification_metric_error_entry(
+                metric, error="classification_missing_questions"
+            )
+            continue
+
+        messages = [{"role": "user", "content": state}]
+        response_format = {"type": "questions", "questions": questions}
+        try:
+            llm_result = llm_service.generate_response(
+                messages=messages,
+                llm_provider=llm_provider,
+                llm_model=llm_model,
+                organization_id=organization_id,
+                db=db,
+                llm_config=evaluator_llm_config,
+                override_llm_config={"temperature": 0.0, "max_tokens": 1024},
+                task_defaults={"temperature": 0.0, "max_tokens": 1024},
+                credential_id=parsed_credential_id,
+                completion_extra={"response_format": response_format},
+            )
+            answers = _parse_kodekloud_jev_completion(llm_result, result_id)
+            if not answers:
+                metric_scores[str(metric.id)] = _classification_metric_error_entry(
+                    metric, error="classification_answer_parse_failed"
+                )
+                continue
+            metric_scores[str(metric.id)] = _map_classification_jev_answers(
+                metric, answers
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "[EvaluatorResult {}] Classification Jev call failed for metric {}: {}",
+                result_id,
+                metric.id,
+                exc,
+            )
+            metric_scores[str(metric.id)] = _classification_metric_error_entry(
+                metric, error=str(exc)
+            )
+
+    return metric_scores, time.time() - start
+
+
+def _merge_metric_score_dicts(
+    *parts: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for part in parts:
+        merged.update(part)
+    return merged
+
+
 def _coerce_jev_scalar_answer(raw: Any, binding: JevQuestionBinding) -> dict[str, Any]:
     if isinstance(raw, dict):
         if raw.get("type") in {"noul", "choice", "score"}:
@@ -2335,6 +2653,31 @@ def _evaluate_with_jev_model(
     from app.services.ai.llm_service import llm_service
 
     groups = _normalize_jev_metric_groups(metric_groups, llm_metrics, parent_metric)
+    flat_for_partition = flatten_metric_groups(groups) if groups else list(llm_metrics)
+    class_metrics, groups = _partition_classification_metrics(
+        flat_for_partition,
+        groups,
+    )
+    class_scores: dict[str, dict[str, Any]] = {}
+    class_time = 0.0
+    if class_metrics:
+        class_scores, class_time = _evaluate_classification_metrics_kodekloud(
+            classification_metrics=class_metrics,
+            transcription=transcription,
+            ai_providers=ai_providers,
+            organization_id=organization_id,
+            result_id=result_id,
+            db=db,
+            evaluator=evaluator,
+            all_columns_block=all_columns_block,
+            comparison_pair=comparison_pair,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+        )
+
+    if not groups:
+        return class_scores, class_time or 0.0
+
     state = _build_jev_state(
         transcription,
         comparison_pair=comparison_pair,
@@ -2346,11 +2689,14 @@ def _evaluate_with_jev_model(
         metric_scores = {
             str(metric.id): _unsupported_jev_entry(metric) for metric in unsupported
         }
-        for group in groups:
+        for group in groups or []:
             if group.parent_metric is not None:
                 metric_scores[str(group.parent_metric.id)] = _unsupported_jev_entry(
                     group.parent_metric
                 )
+        if class_scores:
+            metric_scores = _merge_metric_score_dicts(class_scores, metric_scores)
+            return metric_scores, class_time
         return metric_scores, 0.0
 
     call_specs = _jev_call_specs(questions, bindings)
@@ -2487,6 +2833,10 @@ def _evaluate_with_jev_model(
         if existing is None or existing.get("value") is None:
             metric_scores[metric_id] = entry
 
+    if class_scores:
+        metric_scores = _merge_metric_score_dicts(class_scores, metric_scores)
+        evaluation_time += class_time
+
     return metric_scores, evaluation_time
 
 
@@ -2600,6 +2950,11 @@ def evaluate_with_llm(
     metrics_for_call = (
         flatten_metric_groups(metric_groups) if metric_groups is not None else llm_metrics
     )
+    class_metrics, filtered_groups = _partition_classification_metrics(
+        metrics_for_call,
+        metric_groups,
+    )
+    non_class_metrics = [m for m in metrics_for_call if not _is_classification_metric(m)]
 
     evaluator_llm_provider = getattr(evaluator, "llm_provider", None) if evaluator else None
     evaluator_llm_model = getattr(evaluator, "llm_model", None) if evaluator else None
@@ -2636,9 +2991,19 @@ def evaluate_with_llm(
             llm_model=llm_model,
         )
 
+    classification_scores: dict[str, dict[str, Any]] = {}
+    classification_time = 0.0
+    if class_metrics:
+        classification_scores = {
+            str(m.id): _classification_metric_error_entry(m) for m in class_metrics
+        }
+
+    if not non_class_metrics:
+        return classification_scores, classification_time or None
+
     evaluation_prompt = build_evaluation_prompt(
         transcription=transcription,
-        llm_metrics=metrics_for_call,
+        llm_metrics=non_class_metrics,
         evaluator=evaluator,
         agent=agent,
         persona=persona,
@@ -2650,7 +3015,7 @@ def evaluate_with_llm(
         comparison_pair=comparison_pair,
         discover_new_metrics=discover_new_metrics,
         running_discovered_metrics=running_discovered_metrics,
-        metric_groups=metric_groups,
+        metric_groups=filtered_groups,
     )
 
     chosen_provider = next(
@@ -2666,10 +3031,10 @@ def evaluate_with_llm(
         {
             "role": "system",
             "content": _build_system_message(
-                metrics_for_call,
+                non_class_metrics,
                 parent_metric=parent_metric,
                 discover_new_metrics=discover_new_metrics,
-                metric_groups=metric_groups,
+                metric_groups=filtered_groups,
             ),
         },
         {"role": "user", "content": evaluation_prompt},
@@ -2682,11 +3047,11 @@ def evaluate_with_llm(
     # 300 tokens per metric (covers value + rationale + comma/quotes),
     # clamped to a reasonable ceiling. ``llm_service`` will additionally
     # disable thinking and enforce a floor for Gemini 2.5.
-    metric_count = max(1, len(metrics_for_call))
-    rationale_count = sum(1 for m in metrics_for_call if _wants_rationale(m))
+    metric_count = max(1, len(non_class_metrics))
+    rationale_count = sum(1 for m in non_class_metrics if _wants_rationale(m))
     hierarchical_extra = 0
-    if metric_groups is not None:
-        for group in metric_groups:
+    if filtered_groups is not None:
+        for group in filtered_groups:
             if group.parent_metric is None:
                 continue
             parent = group.parent_metric
@@ -2741,10 +3106,14 @@ def evaluate_with_llm(
 
     metric_scores = _map_evaluation_to_metrics(
         evaluation_data,
-        metrics_for_call,
+        non_class_metrics,
         parent_metric=parent_metric,
-        metric_groups=metric_groups,
+        metric_groups=filtered_groups,
     )
+
+    if classification_scores:
+        metric_scores = _merge_metric_score_dicts(classification_scores, metric_scores)
+        evaluation_time += classification_time
 
     # Top-level metric discovery is independent of the per-row metric
     # mapping above — it lives at ``metric_scores["__discovered_metrics__"]``

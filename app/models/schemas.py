@@ -922,20 +922,6 @@ class IntegrationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class IntegrationVoiceAgentListItem(BaseModel):
-    id: str
-    name: str
-
-
-class ListIntegrationVoiceAgentsResponse(BaseModel):
-    agents: List[IntegrationVoiceAgentListItem]
-    platform: str
-    cached: bool
-    truncated: bool
-    list_supported: bool
-    message: Optional[str] = None
-
-
 # ============================================
 # DATA SOURCES SCHEMAS
 # ============================================
@@ -1974,6 +1960,27 @@ class MetricCreate(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def validate_classification_metric(self):
+        from app.services.metric_classification_validation import (
+            assert_classification_metric_shape,
+            is_classification_metric,
+        )
+
+        if not is_classification_metric(custom_data_type=self.custom_data_type):
+            return self
+        normalized = assert_classification_metric_shape(
+            custom_data_type=self.custom_data_type,
+            custom_config=self.custom_config,
+            metric_type=self.metric_type,
+            parent_metric_id=self.parent_metric_id,
+            selection_mode=self.selection_mode,
+            compare_transcripts=bool(self.compare_transcripts),
+        )
+        self.custom_config = normalized
+        self.metric_type = MetricType.TEXT
+        return self
+
     model_config = ConfigDict(json_schema_extra={
             "example": {
                 "name": "Professionalism",
@@ -2080,6 +2087,32 @@ class MetricUpdate(BaseModel):
                 "selection_mode must be cleared before enabling "
                 "compare_transcripts."
             )
+        return self
+
+    @model_validator(mode="after")
+    def validate_classification_metric_patch(self):
+        from app.services.metric_classification_validation import (
+            assert_classification_metric_shape,
+            is_classification_metric,
+        )
+
+        if not is_classification_metric(custom_data_type=self.custom_data_type):
+            return self
+        if self.custom_config is None:
+            raise ValueError(
+                "Updating custom_data_type to classification requires custom_config."
+            )
+        normalized = assert_classification_metric_shape(
+            custom_data_type=self.custom_data_type,
+            custom_config=self.custom_config,
+            metric_type=self.metric_type,
+            parent_metric_id=None,
+            selection_mode=self.selection_mode,
+            compare_transcripts=bool(self.compare_transcripts),
+        )
+        self.custom_config = normalized
+        if self.metric_type is not None and self.metric_type != MetricType.TEXT:
+            raise ValueError("Classification metrics must use metric_type 'text'.")
         return self
 
 
@@ -2428,10 +2461,7 @@ class EvaluatorResultResponse(BaseModel):
     provider_call_id: Optional[str] = None
     provider_platform: Optional[str] = None
     call_data: Optional[Dict[str, Any]] = None  # Full call details from provider
-    call_recording_source: Optional[str] = None  # playground | webhook when linked by call_short_id
-    synthetic_call_trace_id: Optional[UUID] = None
-    call_trace_status: Optional[str] = None
-
+    
     created_at: datetime
     updated_at: datetime
     created_by: Optional[str]
@@ -4343,6 +4373,8 @@ class CallImportEvaluationRowResponse(BaseModel):
     # ``call_import_rows.conversation_id`` column.
     conversation_id: Optional[str] = None
     transcript: Optional[str] = None
+    production_transcript: Optional[str] = None
+    diarised_transcript: Optional[str] = None
     raw_columns: Optional[Dict[str, Any]] = None
     recording_url: Optional[str] = None
     recording_date: Optional[date] = None
@@ -4749,6 +4781,14 @@ class CallImportMetricLabelPair(BaseModel):
     count: int
 
 
+class CallImportClassificationFacetCounts(BaseModel):
+    """Per-dimension value tallies for Jev classification metrics."""
+
+    yes_no: List[CallImportMetricValueCount] = Field(default_factory=list)
+    choice: List[CallImportMetricValueCount] = Field(default_factory=list)
+    level: List[CallImportMetricValueCount] = Field(default_factory=list)
+
+
 class CallImportMetricAggregate(BaseModel):
     """Per-metric aggregate computed from an evaluation run's rows.
 
@@ -4790,6 +4830,7 @@ class CallImportMetricAggregate(BaseModel):
     # symmetric matrix from these unordered pairs and renders the
     # co-occurrence heatmap chart type.
     co_occurrence: List[CallImportMetricLabelPair] = Field(default_factory=list)
+    classification_facets: Optional[CallImportClassificationFacetCounts] = None
 
 
 class MetricPeriodDelta(BaseModel):
