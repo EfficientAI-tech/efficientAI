@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import date
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -140,8 +139,19 @@ def seed_rates_from_models_json(
 
 
 def pricing_sync_on_startup_enabled() -> bool:
-    raw = os.environ.get("USAGE_PRICING_SYNC_ON_STARTUP", "true")
-    return raw.strip().lower() not in ("0", "false", "no", "off")
+    from app.config import settings
+
+    return bool(settings.USAGE_PRICING_SYNC_ON_STARTUP)
+
+
+def _models_with_later_rates(db: Session, *, effective_from: date) -> Set[str]:
+    """Models with a rate dated after ``effective_from`` (managed outside models.json)."""
+    table = _rates_table(db)
+    rows = db.execute(
+        text(f"SELECT DISTINCT model FROM {table} WHERE effective_from > CAST(:day AS date)"),
+        {"day": effective_from.isoformat()},
+    ).all()
+    return {row[0] for row in rows}
 
 
 def sync_rates_from_models_json(
@@ -150,16 +160,23 @@ def sync_rates_from_models_json(
     """Upsert only models.json rates that are missing from or differ in the DB.
 
     Rows that exist only in the database are left alone (usage history may
-    reference them). Commits, then invalidates the pricing cache so workers
-    see the new rates immediately.
+    reference them). Models that already have a later-dated rate are skipped:
+    runtime lookups prefer that row, so updating the default-dated row would not
+    change what usage is billed. Commits, then invalidates the pricing cache so
+    workers see the new rates immediately.
     """
-    report = diff_models_json_vs_db(db, effective_from=effective_from)
-    added = sorted({item["model"] for item in report["only_in_models_json"]})
-    updated = sorted({item["model"] for item in report["mismatches"]})
+    day = effective_from or DEFAULT_RATES_EFFECTIVE_FROM
+    report = diff_models_json_vs_db(db, effective_from=day)
+    new = {item["model"] for item in report["only_in_models_json"]}
+    changed = {item["model"] for item in report["mismatches"]}
+    later = _models_with_later_rates(db, effective_from=day) if new or changed else set()
+    skipped = sorted((new | changed) & later)
+    added = sorted(new - later)
+    updated = sorted(changed - later)
     if added or updated:
-        seed_pricing_rates(db, effective_from=effective_from, models=set(added) | set(updated))
+        seed_pricing_rates(db, effective_from=day, models=set(added) | set(updated))
         db.commit()
         # seed_pricing_rates invalidates before commit; a worker may have cached
         # a stale rate in between, so invalidate again once the rows are visible.
         invalidate_all_pricing_cache()
-    return {"added": added, "updated": updated}
+    return {"added": added, "updated": updated, "skipped": skipped}

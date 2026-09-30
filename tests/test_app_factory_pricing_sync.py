@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import app.database as database_mod
 import app.services.usage.pricing_ops as pricing_ops
 from app.app_factory import _sync_pricing_rates
+from app.config import settings
 
 
 def _patch_session(monkeypatch) -> MagicMock:
@@ -17,7 +18,7 @@ def _patch_session(monkeypatch) -> MagicMock:
 
 def test_sync_failure_does_not_block_startup(monkeypatch):
     session = _patch_session(monkeypatch)
-    monkeypatch.delenv("USAGE_PRICING_SYNC_ON_STARTUP", raising=False)
+    monkeypatch.setattr(settings, "USAGE_PRICING_SYNC_ON_STARTUP", True)
 
     def boom(_db):
         raise RuntimeError("rates table missing")
@@ -32,7 +33,7 @@ def test_sync_failure_does_not_block_startup(monkeypatch):
 
 def test_sync_skipped_when_disabled(monkeypatch):
     _patch_session(monkeypatch)
-    monkeypatch.setenv("USAGE_PRICING_SYNC_ON_STARTUP", "false")
+    monkeypatch.setattr(settings, "USAGE_PRICING_SYNC_ON_STARTUP", False)
     sync = MagicMock()
     monkeypatch.setattr(pricing_ops, "sync_rates_from_models_json", sync)
 

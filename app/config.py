@@ -85,6 +85,11 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: Optional[str] = None
     CELERY_RESULT_BACKEND: Optional[str] = None
 
+    # Upsert new/changed models.json rates into model_pricing_rates on API startup.
+    # Read via Settings (not os.environ) so a later load_dotenv(override=True)
+    # cannot flip an operator's opt-out.
+    USAGE_PRICING_SYNC_ON_STARTUP: bool = True
+
     # Call-import worker concurrency limits (Redis fair-share for evaluations)
     EVAL_WORKSPACE_INFLIGHT_LIMIT: int = 100
     EVAL_ORG_INFLIGHT_LIMIT: int = 128
