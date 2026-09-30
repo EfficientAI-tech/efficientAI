@@ -102,7 +102,10 @@ for (const [routePath, pathItem] of Object.entries(schema.paths ?? {})) {
     const operation = pathItem?.[method];
     if (!operation) continue;
 
-    const tags = Array.isArray(operation.tags) ? operation.tags.filter((tag) => curatedTagSet.has(tag)) : [];
+    const rawTags = Array.isArray(operation.tags) ? operation.tags : [];
+    const tags = rawTags
+      .map((tag) => (tag === 'observability-traces' ? 'observability' : tag))
+      .filter((tag) => curatedTagSet.has(tag));
     if (tags.length === 0) continue;
 
     const opKey = `${method.toUpperCase()} ${routePath}`;
@@ -167,6 +170,19 @@ output.servers = [
 ];
 
 pruneComponents(output);
+
+const requiredObservabilityPaths = [
+  '/api/v1/observability/traces',
+  '/api/v1/observability/traces/setup',
+  '/api/v1/observability/traces/sessions',
+  '/api/v1/observability/calls-hub',
+];
+const missingPaths = requiredObservabilityPaths.filter((p) => !output.paths[p]);
+if (missingPaths.length > 0) {
+  throw new Error(
+    `OpenAPI enrich: missing observability paths (re-run openapi:export from app): ${missingPaths.join(', ')}`,
+  );
+}
 
 fs.mkdirSync(path.dirname(outputSchemaPath), { recursive: true });
 fs.writeFileSync(outputSchemaPath, `${JSON.stringify(output, null, 2)}\n`, 'utf8');

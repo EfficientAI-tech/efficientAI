@@ -3,6 +3,7 @@
   "pages": [
     "usage",
     "calls",
+    "call-traces",
     "alerting",
     "cron-jobs"
   ]

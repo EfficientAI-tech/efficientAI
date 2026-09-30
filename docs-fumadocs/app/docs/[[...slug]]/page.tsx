@@ -7,6 +7,7 @@ import { createRelativeLink } from 'fumadocs-ui/mdx';
 import { ContributorsTocFooter } from '@/components/contributors';
 import { OpenAPIPage } from '@/components/api-page';
 import { CopyPageMarkdown } from '@/components/copy-page-markdown';
+import { readDocPageMarkdown } from '@/lib/read-page-markdown';
 import { CommunityContactFooter } from '@/components/community-contact-footer';
 import type { ComponentPropsWithoutRef, ComponentType } from 'react';
 import { ExternalLink } from 'lucide-react';
@@ -48,14 +49,16 @@ export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
     _openapi?: { method?: string };
   };
   const MDX = pageData.body;
+  const isEnterprisePage = (page.slugs[0] ?? '') === 'enterprise';
   const markdownPath =
     page.slugs[0] === 'api-reference' && page.slugs.length > 2 && pageData._openapi?.method
       ? `/api-md/${page.slugs.slice(1).join('/')}.md`
       : null;
-  const isEnterprisePage = (page.slugs[0] ?? '') === 'enterprise';
+  const pageMarkdown =
+    !markdownPath && !isEnterprisePage ? readDocPageMarkdown(page.slugs) : null;
   const showToc = !isEnterprisePage;
   const toc = showToc ? pageData.toc : undefined;
-  const full = isEnterprisePage || Boolean(pageData.full);
+  const full = isEnterprisePage ? false : Boolean(pageData.full);
 
   return (
     <DocsPage
@@ -78,21 +81,23 @@ export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
       }
     >
       <DocsBody className={isEnterprisePage ? 'enterprise-doc' : undefined}>
-        {markdownPath ? (
-          <div className="not-prose mb-4 flex justify-end">
-            <CopyPageMarkdown mdPath={markdownPath} />
-          </div>
-        ) : null}
-        <MDX
-          components={getMDXComponents({
-            // this allows you to link to other pages with relative file paths
-            a: (props) => <DocsRelativeLink {...props} resolver={createRelativeLink(source, page)} />,
-            OpenAPIPage: async (props) => (
-              <OpenAPIPage {...(await openapi.preloadOpenAPIPage(page))} {...props} />
-            ),
-          })}
-        />
-        {!isEnterprisePage ? <CommunityContactFooter /> : null}
+        <div className={isEnterprisePage ? 'enterprise-doc-shell' : undefined}>
+          {markdownPath || pageMarkdown ? (
+            <div className="not-prose mb-4 flex justify-end">
+              <CopyPageMarkdown mdPath={markdownPath ?? undefined} markdown={pageMarkdown} />
+            </div>
+          ) : null}
+          <MDX
+            components={getMDXComponents({
+              // this allows you to link to other pages with relative file paths
+              a: (props) => <DocsRelativeLink {...props} resolver={createRelativeLink(source, page)} />,
+              OpenAPIPage: async (props) => (
+                <OpenAPIPage {...(await openapi.preloadOpenAPIPage(page))} {...props} />
+              ),
+            })}
+          />
+          {!isEnterprisePage ? <CommunityContactFooter /> : null}
+        </div>
       </DocsBody>
     </DocsPage>
   );

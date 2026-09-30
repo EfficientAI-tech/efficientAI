@@ -1,9 +1,10 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
 import {
-  DollarSign, MessageSquare, TrendingUp, Activity, Server, CheckCircle, XCircle, Clock, Zap, Loader
+  DollarSign, MessageSquare, TrendingUp, Activity, Server, CheckCircle, XCircle, Clock, Zap, Download, Loader
 } from 'lucide-react'
 import { apiClient } from '../../lib/api'
-import RecordingAudioPlayer from '../audio/RecordingAudioPlayer'
+import { formatMessageTiming } from '../../lib/callTranscriptTiming'
+import { transcriptBubbleClass, transcriptMetaClass } from './transcriptBubbleStyles'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell
@@ -108,11 +109,19 @@ interface ElevenLabsCallDetailsProps {
   callData: ElevenLabsCallData
   callShortId?: string
   hideTranscript?: boolean
+  hideAudio?: boolean
+  embedded?: boolean
 }
 
 const COLORS = ['#10b981', '#06b6d4', '#f59e0b', '#ef4444', '#8b5cf6']
 
-export default function ElevenLabsCallDetails({ callData, callShortId, hideTranscript = false }: ElevenLabsCallDetailsProps) {
+export default function ElevenLabsCallDetails({
+  callData,
+  callShortId,
+  hideTranscript = false,
+  hideAudio = false,
+  embedded = false,
+}: ElevenLabsCallDetailsProps) {
   const [activeTab, setActiveTab] = useState<'overview' | 'transcript'>('overview')
   const [audioBlobUrl, setAudioBlobUrl] = useState<string | null>(null)
   const [audioLoading, setAudioLoading] = useState(false)
@@ -123,7 +132,13 @@ export default function ElevenLabsCallDetails({ callData, callShortId, hideTrans
   const hasAudio = !!(callData.recording_urls?.conversation_audio)
 
   useEffect(() => {
-    if (!callShortId || !hasAudio || audioFetched.current) return
+    audioFetched.current = false
+    setAudioBlobUrl(null)
+    setAudioError(false)
+  }, [callShortId])
+
+  useEffect(() => {
+    if (hideAudio || !callShortId || !hasAudio || audioFetched.current) return
     audioFetched.current = true
     setAudioLoading(true)
     apiClient.getCallRecordingAudioUrl(callShortId)
@@ -135,9 +150,12 @@ export default function ElevenLabsCallDetails({ callData, callShortId, hideTrans
       .finally(() => setAudioLoading(false))
 
     return () => {
-      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current)
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current)
+        blobUrlRef.current = null
+      }
     }
-  }, [callShortId, hasAudio])
+  }, [callShortId, hasAudio, hideAudio])
 
   const formatDuration = (seconds?: number) => {
     if (!seconds) return 'N/A'
@@ -312,9 +330,10 @@ export default function ElevenLabsCallDetails({ callData, callShortId, hideTrans
   }
 
   const TranscriptCard = () => (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col h-[600px]">
-      <div className="flex items-center justify-between mb-4 flex-shrink-0">
-        <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+    <div className={embedded ? 'space-y-3' : 'flex h-[600px] flex-col rounded-xl border border-gray-200 bg-white p-6 shadow-sm'}>
+      {!embedded ? (
+      <div className="mb-4 flex flex-shrink-0 items-center justify-between">
+        <h3 className="flex items-center gap-2 text-lg font-semibold text-gray-900">
           <MessageSquare className="h-5 w-5 text-emerald-600" />
           Transcript
         </h3>
@@ -325,41 +344,37 @@ export default function ElevenLabsCallDetails({ callData, callShortId, hideTrans
             </span>
           )}
           {audioLoading && (
-            <Loader className="h-4 w-4 text-gray-400 animate-spin" />
+            <Loader className="h-4 w-4 animate-spin text-gray-400" />
+          )}
+          {audioBlobUrl && (
+            <div className="flex items-center gap-2 rounded-full bg-gray-100 px-3 py-1">
+              <audio controls src={audioBlobUrl} className="h-8 w-64" />
+              <a href={audioBlobUrl} download={`call_${callShortId || 'recording'}.mp3`} className="p-1 text-gray-500 hover:text-emerald-600">
+                <Download className="h-4 w-4" />
+              </a>
+            </div>
           )}
           {audioError && hasAudio && (
             <span className="text-xs text-gray-400">Audio unavailable</span>
           )}
         </div>
       </div>
-      {audioBlobUrl && (
-        <div className="mb-4 flex-shrink-0">
-          <RecordingAudioPlayer
-            src={audioBlobUrl}
-            downloadUrl={audioBlobUrl}
-          />
-        </div>
-      )}
+      ) : null}
 
-      <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
+      <div className={embedded ? 'space-y-3' : 'custom-scrollbar flex-1 space-y-4 overflow-y-auto pr-2'}>
         {transcriptEntries.length > 0 ? (
           transcriptEntries.map((entry, idx) => {
             const isUser = entry.speaker === 'User'
             return (
               <div key={idx} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[80%] rounded-2xl px-4 py-3 ${isUser
-                  ? 'bg-emerald-600 text-white rounded-br-none'
-                  : 'bg-gray-100 text-gray-800 rounded-bl-none'
-                  }`}>
-                  <div className="flex items-center gap-2 mb-1 opacity-80">
-                    <span className="text-xs font-semibold uppercase tracking-wider">
-                      {isUser ? 'User' : (rawData?.agent_name || 'Agent')}
-                    </span>
-                    {entry.start > 0 && (
-                      <span className="text-[10px]">
-                        {entry.start.toFixed(0)}s
+                <div className={transcriptBubbleClass(isUser, '80')}>
+                  <div className={`${transcriptMetaClass(isUser)} opacity-90`}>
+                    <span>{isUser ? 'User' : (rawData?.agent_name || 'Agent')}</span>
+                    {entry.start > 0 || entry.end > entry.start ? (
+                      <span className="font-normal normal-case tracking-normal tabular-nums">
+                        {formatMessageTiming(entry.start, entry.end)}
                       </span>
-                    )}
+                    ) : null}
                   </div>
                   <p className="text-sm leading-relaxed whitespace-pre-wrap">{entry.text}</p>
                 </div>
@@ -627,6 +642,17 @@ export default function ElevenLabsCallDetails({ callData, callShortId, hideTrans
       </div>
     </div>
   )
+
+  if (embedded) {
+    if (hideTranscript) {
+      return (
+        <div className="space-y-4">
+          <SummaryCard />
+        </div>
+      )
+    }
+    return <TranscriptCard />
+  }
 
   if (hideTranscript) {
     return (

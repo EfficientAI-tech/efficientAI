@@ -1,0 +1,30 @@
+{
+  "title": "Personas",
+  "description": "Persona management endpoints.",
+  "pages": [
+    "list_personas_api_v1_personas_get",
+    "create_persona_api_v1_personas_post",
+    "getPersonaVoiceOptions",
+    "getPersonaAgentPromptSources",
+    "generatePersonaPrompt",
+    "listPersonaCustomVoices",
+    "createPersonaCustomVoice",
+    "deletePersonaCustomVoice",
+    "updatePersonaCustomVoice",
+    "listAmbientPresets",
+    "previewAmbientPreset",
+    "listAmbientLibrary",
+    "uploadAmbientLibraryAsset",
+    "updateAmbientLibraryAsset",
+    "deleteAmbientLibraryAsset",
+    "previewAmbientLibraryAsset",
+    "getAmbientLibraryPreviewUrl",
+    "get_persona_api_v1_personas__persona_id__get",
+    "delete_persona_api_v1_personas__persona_id__delete",
+    "update_persona_api_v1_personas__persona_id__put",
+    "clone_persona_api_v1_personas__persona_id__clone_post",
+    "uploadPersonaAmbientAudio",
+    "deletePersonaAmbientAudio",
+    "seed_demo_data_api_v1_personas_seed_data_post"
+  ]
+}

@@ -5,7 +5,7 @@ import MetricsStudioAudioPlayer from './MetricsStudioAudioPlayer'
 import MetricsStudioTranscriptPanel from './MetricsStudioTranscriptPanel'
 import { formatStudioModelLabel, type StudioRunModelInfo } from './MetricsStudioRunHeader'
 
-type StudioRunResult = {
+export type StudioRunResult = {
   id: string
   source_kind: string
   source_ref: string

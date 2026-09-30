@@ -511,13 +511,16 @@ def _patch_blob_storage_download(monkeypatch, *, audio_bytes: bytes = b"fake-aud
     fake = SimpleNamespace(
         is_enabled=lambda: True,
         download_file_by_key=lambda _key: audio_bytes,
+        iter_file_chunks_by_key=lambda _key, chunk_size=8192: iter([audio_bytes]),
         upload_file_by_key=lambda *_args, **_kwargs: None,
     )
     blob_module = importlib.import_module("app.services.storage.blob_storage_service")
+    audio_delivery_module = importlib.import_module("app.services.storage.audio_delivery")
     s3_module = importlib.import_module("app.services.storage.s3_service")
     # Patch the lazy s3_service alias first so undo restores the real singleton.
     monkeypatch.setattr(s3_module, "s3_service", fake, raising=False)
     monkeypatch.setattr(blob_module, "blob_storage_service", fake)
+    monkeypatch.setattr(audio_delivery_module, "blob_storage_service", fake)
     return fake
 
 

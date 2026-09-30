@@ -69,14 +69,22 @@ def apply_playground_scope_filter(
 
     if playground is True:
         if test_agents_only is True:
-            query = query.filter(
-                or_(
-                    EvaluatorResult.id.in_(playground_ids),
-                    and_(
-                        EvaluatorResult.evaluator_id.is_(None),
-                        EvaluatorResult.provider_platform.is_(None),
-                    ),
+            # Internal test-agent (voice bundle) runs — includes persona/scenario evaluators,
+            # excludes Voice AI provider eval runs (Retell/Vapi/ElevenLabs on EvaluatorResult).
+            voice_bundle_eval_ids = (
+                db.query(CallRecording.evaluator_result_id)
+                .filter(
+                    CallRecording.source == CallRecordingSource.PLAYGROUND,
+                    CallRecording.provider_platform == "voice_bundle",
+                    CallRecording.evaluator_result_id.isnot(None),
                 )
+            )
+            query = query.filter(
+                EvaluatorResult.provider_platform.is_(None),
+                or_(
+                    EvaluatorResult.evaluator_id.is_(None),
+                    EvaluatorResult.id.in_(voice_bundle_eval_ids),
+                ),
             )
         else:
             query = query.filter(
@@ -251,6 +259,7 @@ def serialize_evaluator_result_row(
         "provider_call_id": result.provider_call_id,
         "provider_platform": result.provider_platform,
         "call_data": enrich_evaluator_result_live_telephony(db, result, result.call_data),
+        "synthetic_call_trace_id": result.synthetic_call_trace_id,
         "created_at": result.created_at,
         "updated_at": result.updated_at,
         "created_by": result.created_by,
@@ -275,6 +284,21 @@ def serialize_evaluator_result_row(
                     "tts_model": voice_bundle.tts_model if voice_bundle.bundle_type == "stt_llm_tts" else None,
                 }
         result_dict["agent"] = agent_data
+
+    call_short_id = None
+    call_data = result_dict.get("call_data")
+    if isinstance(call_data, dict):
+        call_short_id = call_data.get("call_short_id")
+
+    from app.services.synthetic_traces.trace_service import lookup_call_trace_status
+
+    result_dict["call_trace_status"] = lookup_call_trace_status(
+        db,
+        organization_id=result.organization_id,
+        workspace_id=result.workspace_id,
+        synthetic_call_trace_id=result.synthetic_call_trace_id,
+        call_short_id=call_short_id,
+    )
 
     return EvaluatorResultResponse(**result_dict)
 

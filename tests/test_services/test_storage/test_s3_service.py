@@ -113,6 +113,15 @@ def test_list_audio_files_filters_non_audio_extensions(configured_s3):
     assert files[0]["filename"] == "one.mp3"
 
 
+def test_browse_folder_root_lists_audio_and_traces_trees(configured_s3):
+    service, _ = configured_s3
+    result = service.browse_folder(organization_id="org-1", path="")
+
+    assert result["organization_id"] == "org-1"
+    names = {folder["name"] for folder in result["folders"]}
+    assert names == {"audio", "traces"}
+
+
 def test_browse_folder_returns_folders_and_files(configured_s3):
     service, _ = configured_s3
     result = service.browse_folder(organization_id="org-1", path="audio")
@@ -120,6 +129,116 @@ def test_browse_folder_returns_folders_and_files(configured_s3):
     assert result["organization_id"] == "org-1"
     assert len(result["folders"]) == 1
     assert len(result["files"]) == 1
+
+
+def test_browse_folder_merges_workspace_traces_from_audio_and_traces_prefixes(
+    configured_s3,
+    monkeypatch,
+):
+    service, fake_client = configured_s3
+    monkeypatch.setattr(s3_module.settings, "TRACES_S3_PREFIX", "traces/", raising=False)
+    ws = "ws-1"
+    path = f"workspaces/{ws}/traces"
+
+    def list_objects_v2(**kwargs):
+        prefix = kwargs.get("Prefix", "")
+        if prefix == f"traces/organizations/org-1/{path}/":
+            return {
+                "CommonPrefixes": [
+                    {"Prefix": f"traces/organizations/org-1/{path}/new-trace/"},
+                ],
+                "Contents": [],
+            }
+        if prefix == f"organizations/org-1/{path}/":
+            return {
+                "CommonPrefixes": [
+                    {"Prefix": f"organizations/org-1/{path}/old-trace/"},
+                ],
+                "Contents": [],
+            }
+        return {"CommonPrefixes": [], "Contents": []}
+
+    fake_client.list_objects_v2 = list_objects_v2
+
+    result = service.browse_folder(organization_id="org-1", path=path)
+    names = {folder["name"] for folder in result["folders"]}
+    assert names == {"new-trace", "old-trace"}
+    assert result["current_path"] == path
+
+
+def test_browse_folder_merges_workspace_ids_from_audio_and_traces_trees(
+    configured_s3,
+    monkeypatch,
+):
+    service, fake_client = configured_s3
+    monkeypatch.setattr(s3_module.settings, "S3_PREFIX", "audio/", raising=False)
+    monkeypatch.setattr(s3_module.settings, "TRACES_S3_PREFIX", "traces/", raising=False)
+    audio_ws = "a323d9fb-b15e-4684-9c22-48baef807116"
+    traces_only_ws = "6b95719a-9df1-42e2-b0ba-cab2a155553b"
+
+    def list_objects_v2(**kwargs):
+        prefix = kwargs.get("Prefix", "")
+        if prefix == f"audio/organizations/org-1/workspaces/":
+            return {"CommonPrefixes": [{"Prefix": f"audio/organizations/org-1/workspaces/{audio_ws}/"}], "Contents": []}
+        if prefix == f"traces/organizations/org-1/workspaces/":
+            return {
+                "CommonPrefixes": [
+                    {"Prefix": f"traces/organizations/org-1/workspaces/{audio_ws}/"},
+                    {"Prefix": f"traces/organizations/org-1/workspaces/{traces_only_ws}/"},
+                ],
+                "Contents": [],
+            }
+        return {"CommonPrefixes": [], "Contents": []}
+
+    fake_client.list_objects_v2 = list_objects_v2
+
+    result = service.browse_folder(organization_id="org-1", path="workspaces")
+    names = {folder["name"] for folder in result["folders"]}
+    assert names == {audio_ws, traces_only_ws}
+    traces_only = next(f for f in result["folders"] if f["name"] == traces_only_ws)
+    assert traces_only["path"] == f"workspaces/{traces_only_ws}"
+
+
+def test_browse_folder_traces_root_prefixes_child_paths(configured_s3, monkeypatch):
+    service, fake_client = configured_s3
+    monkeypatch.setattr(s3_module.settings, "TRACES_S3_PREFIX", "traces/", raising=False)
+
+    def list_objects_v2(**kwargs):
+        prefix = kwargs.get("Prefix", "")
+        if prefix == "traces/organizations/org-1/":
+            return {"CommonPrefixes": [{"Prefix": "traces/organizations/org-1/workspaces/"}], "Contents": []}
+        return {"CommonPrefixes": [], "Contents": []}
+
+    fake_client.list_objects_v2 = list_objects_v2
+
+    result = service.browse_folder(organization_id="org-1", path="traces")
+    assert result["folders"][0]["path"] == "traces/workspaces"
+
+
+def test_browse_folder_injects_traces_folder_under_workspace(configured_s3, monkeypatch):
+    service, fake_client = configured_s3
+    monkeypatch.setattr(s3_module.settings, "TRACES_S3_PREFIX", "traces/", raising=False)
+    ws = "ws-1"
+    path = f"audio/workspaces/{ws}"
+
+    def list_objects_v2(**kwargs):
+        prefix = kwargs.get("Prefix", "")
+        if prefix == f"organizations/org-1/workspaces/{ws}/":
+            return {
+                "CommonPrefixes": [
+                    {"Prefix": f"organizations/org-1/workspaces/{ws}/report_branding/"},
+                ],
+                "Contents": [],
+            }
+        return {"CommonPrefixes": [], "Contents": []}
+
+    fake_client.list_objects_v2 = list_objects_v2
+
+    result = service.browse_folder(organization_id="org-1", path=path)
+    names = {folder["name"] for folder in result["folders"]}
+    assert "traces" in names
+    traces_folder = next(f for f in result["folders"] if f["name"] == "traces")
+    assert traces_folder["path"] == f"audio/workspaces/{ws}/traces"
 
 
 # ---------------------------------------------------------------------------

@@ -35,6 +35,19 @@ from efficientai.utils.tracing.service_attributes import (
 from efficientai.utils.tracing.setup import is_tracing_available
 from efficientai.utils.tracing.turn_context_provider import get_current_turn_context
 
+
+def _stamp_correlation_attributes(span) -> None:
+    if span is None:
+        return
+    try:
+        from efficientai.utils.tracing.correlation_context_provider import (
+            get_correlation_attributes,
+        )
+    except ImportError:
+        return
+    for key, value in get_correlation_attributes().items():
+        span.set_attribute(key, value)
+
 if is_tracing_available():
     from opentelemetry import context as context_api
     from opentelemetry import trace
@@ -152,6 +165,7 @@ def traced_tts(func: Optional[Callable] = None, *, name: Optional[str] = None) -
             tracer = trace.get_tracer("efficientai")
             with tracer.start_as_current_span(span_name, context=parent_context) as span:
                 try:
+                    _stamp_correlation_attributes(span)
                     add_tts_span_attributes(
                         span=span,
                         service_name=service_class_name,
@@ -261,6 +275,7 @@ def traced_stt(func: Optional[Callable] = None, *, name: Optional[str] = None) -
                     span_name, context=parent_context
                 ) as current_span:
                     try:
+                        _stamp_correlation_attributes(current_span)
                         # Get TTFB metric if available
                         ttfb: Optional[float] = getattr(
                             getattr(self, "_metrics", None), "ttfb", None
@@ -343,6 +358,7 @@ def traced_llm(func: Optional[Callable] = None, *, name: Optional[str] = None) -
                     span_name, context=parent_context
                 ) as current_span:
                     try:
+                        _stamp_correlation_attributes(current_span)
                         # Store original method and output aggregator
                         original_push_frame = self.push_frame
                         output_text = ""  # Simple string accumulation

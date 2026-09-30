@@ -1,0 +1,11 @@
+{
+  "title": "Scenarios",
+  "description": "Scenario creation and management endpoints.",
+  "pages": [
+    "list_scenarios_api_v1_scenarios_get",
+    "create_scenario_api_v1_scenarios_post",
+    "get_scenario_api_v1_scenarios__scenario_id__get",
+    "delete_scenario_api_v1_scenarios__scenario_id__delete",
+    "update_scenario_api_v1_scenarios__scenario_id__put"
+  ]
+}

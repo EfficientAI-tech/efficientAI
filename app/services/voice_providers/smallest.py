@@ -261,6 +261,53 @@ class SmallestVoiceProvider(BaseVoiceProvider):
     def get_agent_workflow(self, agent_id: str) -> Dict[str, Any]:
         return self._request("GET", f"/agent/{agent_id}/workflow", timeout=30.0)
 
+    @staticmethod
+    def _build_latency_stats(data: Dict[str, Any]) -> Dict[str, Any]:
+        latency_stats = data.get("latencyStats")
+        if isinstance(latency_stats, dict) and latency_stats:
+            return latency_stats
+
+        built: Dict[str, Any] = {}
+        for key in (
+            "average_transcriber_latency",
+            "average_agent_latency",
+            "average_synthesizer_latency",
+        ):
+            value = data.get(key)
+            if value is not None:
+                built[key] = value
+        return built
+
+    @staticmethod
+    def _extract_cost(data: Dict[str, Any]) -> Optional[float]:
+        call_cost = data.get("callCost")
+        if isinstance(call_cost, dict):
+            for key in ("total", "totalCredits"):
+                value = call_cost.get(key)
+                if value is not None:
+                    parsed = SmallestVoiceProvider._to_seconds(value)
+                    if parsed is not None:
+                        return parsed
+            call_charge = SmallestVoiceProvider._to_seconds(call_cost.get("callCharge"))
+            llm_charge = SmallestVoiceProvider._to_seconds(call_cost.get("llmCharge"))
+            if call_charge is not None or llm_charge is not None:
+                return (call_charge or 0) + (llm_charge or 0)
+        direct = data.get("cost")
+        parsed = SmallestVoiceProvider._to_seconds(direct)
+        return parsed
+
+    @staticmethod
+    def _count_interruptions(data: Dict[str, Any]) -> int:
+        events = data.get("events")
+        if not isinstance(events, list):
+            return 0
+        return sum(
+            1
+            for event in events
+            if isinstance(event, dict)
+            and "interrupt" in str(event.get("eventType") or "").lower()
+        )
+
     def retrieve_call_metrics(self, call_id: str) -> Dict[str, Any]:
         data = self._get_conversation(call_id)
 
@@ -351,10 +398,11 @@ class SmallestVoiceProvider(BaseVoiceProvider):
             "transcript_object": transcript_segments,
             "recording_url": recording_url,
             "analysis": {
-                "summary": data.get("summary"),
-                "latency_stats": data.get("latencyStats") or {},
-                "cost": data.get("cost"),
-            },
+            "summary": data.get("summary"),
+            "latency_stats": self._build_latency_stats(data),
+            "cost": self._extract_cost(data),
+            "interruption_count": self._count_interruptions(data),
+        },
             "agent_id": data.get("agentId"),
             "raw_data": data,
         }

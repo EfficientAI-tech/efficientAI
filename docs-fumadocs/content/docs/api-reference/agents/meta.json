@@ -1,0 +1,18 @@
+{
+  "title": "Agents",
+  "description": "Agent configuration and lifecycle endpoints.",
+  "pages": [
+    "generate_agent_description_api_v1_agents_generate_description_post",
+    "generate_test_prompt_api_v1_agents_generate_test_prompt_post",
+    "generate_scenarios_from_prompt_api_v1_agents_generate_scenarios_from_prompt_post",
+    "generate_test_setup_api_v1_agents_generate_test_setup_post",
+    "list_agents_api_v1_agents_get",
+    "create_agent_api_v1_agents_post",
+    "check_phone_assignment_api_v1_agents_check_phone_assignment_get",
+    "get_agent_api_v1_agents__agent_id__get",
+    "delete_agent_api_v1_agents__agent_id__delete",
+    "update_agent_api_v1_agents__agent_id__put",
+    "sync_agent_provider_prompt_api_v1_agents__agent_id__sync_provider_prompt_post",
+    "get_agent_delete_impact_api_v1_agents__agent_id__delete_impact_get"
+  ]
+}

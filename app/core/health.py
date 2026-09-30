@@ -6,6 +6,7 @@ import time
 
 from app.config import settings
 from app.core.migrations import check_migrations_status
+from app.services.clickhouse.client import clickhouse_enabled, ping
 
 _readiness_cached_at: float = 0.0
 _readiness_cached_status: tuple[bool, list[str]] = (True, [])
@@ -33,19 +34,33 @@ def build_liveness_status() -> tuple[dict, int]:
 def build_readiness_status(*, detailed: bool) -> tuple[dict, int]:
     """Readiness probe for load balancers: migrations must be current."""
     is_up_to_date, pending = _migration_status_cached()
+    clickhouse_ok = True
+    if clickhouse_enabled():
+        clickhouse_ok = ping()
 
-    if is_up_to_date:
+    if is_up_to_date and clickhouse_ok:
         if detailed:
-            return {"status": "healthy", "migrations": "up_to_date"}, 200
+            payload = {"status": "healthy", "migrations": "up_to_date"}
+            if clickhouse_enabled():
+                payload["clickhouse"] = "ok"
+            return payload, 200
         return {"status": "healthy"}, 200
 
     if detailed:
-        return {
+        payload = {
             "status": "degraded",
-            "migrations": "pending",
-            "pending_migrations": pending,
-            "message": f"{len(pending)} migration(s) pending: {', '.join(pending)}",
-        }, 503
+        }
+        if not is_up_to_date:
+            payload["migrations"] = "pending"
+            payload["pending_migrations"] = pending
+            payload["message"] = f"{len(pending)} migration(s) pending: {', '.join(pending)}"
+        if clickhouse_enabled() and not clickhouse_ok:
+            payload["clickhouse"] = "unavailable"
+            payload.setdefault(
+                "message",
+                "ClickHouse is unavailable",
+            )
+        return payload, 503
 
     return {"status": "degraded"}, 503
 

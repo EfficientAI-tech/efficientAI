@@ -13,6 +13,7 @@ import {
   X,
 } from 'lucide-react'
 import { apiClient } from '../../lib/api'
+import { itemsOf } from '../../lib/safeData'
 import { getApiErrorMessage } from '../../lib/apiErrors'
 import { useToast } from '../../hooks/useToast'
 import type {
@@ -691,7 +692,7 @@ export default function CallImportSchemasPage() {
     queryKey: ['call-import-schemas'],
     queryFn: () => apiClient.listCallImportSchemas(),
   })
-  const schemas: CallImportSchema[] = schemasResponse?.items ?? []
+  const schemas: CallImportSchema[] = itemsOf(schemasResponse)
 
   const deleteMutation = useMutation({
     mutationFn: ({

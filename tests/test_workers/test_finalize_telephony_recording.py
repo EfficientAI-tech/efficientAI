@@ -37,7 +37,6 @@ def test_finalize_telephony_recording_task_wires_merge_persist(
         organization_id="org-1",
         evaluator_id="eval-1",
         result_id="res-1",
-        call_direction=None,
     )
     mock_persist.assert_called_once_with(
         db,
@@ -46,6 +45,7 @@ def test_finalize_telephony_recording_task_wires_merge_persist(
         transcript_text="user: hi",
         s3_key="org/eval/audio.wav",
         duration=42.5,
+        trace_turns=None,
     )
     assert result["status"] == "ok"
     assert result["s3_key"] == "org/eval/audio.wav"

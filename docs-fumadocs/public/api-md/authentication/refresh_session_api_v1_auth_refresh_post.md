@@ -6,6 +6,10 @@ Refresh Session
 - Tags: `Authentication`
 - Auth: Public
 
+## Parameters
+
+- `Authorization` (header, optional)
+
 ## Request Body
 
 See schema in API reference UI.

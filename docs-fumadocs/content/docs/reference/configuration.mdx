@@ -97,6 +97,23 @@ api:
   key_header: "X-API-Key"
   rate_limit_per_minute: 60
 
+# Call traces / OTLP observability
+traces:
+  async_ingest_enabled: true
+  defer_parse_to_worker: true    # S3 WAL + worker parse when clickhouse is set
+  rate_limit_per_minute: 120
+  idle_close_seconds: 120
+  s3_prefix: "audio/"
+  live_turns_ttl_seconds: 180
+  api_key_cache_ttl_seconds: 300
+
+# ClickHouse (call traces serving store; required for S3 WAL path)
+clickhouse:
+  url: "http://clickhouse:8123"
+  database: "efficientai"
+  user: "default"
+  password: ""
+
 # ---------------------------------------------------------------------------
 # Authentication (see the dedicated Authentication guide for full details)
 # ---------------------------------------------------------------------------

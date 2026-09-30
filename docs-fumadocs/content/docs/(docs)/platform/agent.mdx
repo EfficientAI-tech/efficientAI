@@ -6,16 +6,10 @@ description: What an agent is in EfficientAI, how call mediums differ, and how t
 
 # Agent
 
-## What an agent is
+Agents in EAI are test agents you use to evaluate your production agent.
 
-In EfficientAI, an **agent** is the system under test. It captures the conversation context,
-the prompt behavior, and the execution path used for every evaluation run.
-
-An agent can point at one of two execution paths: internal (EfficientAI voice bundle) or external (provider platform mapping).
-
-Use the **internal path** when you want to isolate and A/B individual model layers. Use the
-**external path** when you want to evaluate the exact agent that serves production traffic on
-a provider platform.
+Each one holds your production prompt and how EfficientAI reaches that bot when you run a test—not
+the live bot your customers use on its own.
 
 ## Telephony vs WebRTC
 
@@ -54,7 +48,7 @@ EfficientAI uses during evaluations.
 
 ### Prompt surfaces
 
-- `provider_prompt`: production prompt used by the external/system agent.
+- `provider_prompt`: production prompt used by your production agent on the external platform.
 - `description`: test prompt generated or authored for evaluator-driven simulations.
 
 Use **Generate test prompt** to bootstrap the test prompt from your production prompt, then
@@ -101,12 +95,10 @@ Then configure your phone integration in [Integrations](/docs/integrations/).
 
 If your provider is missing, open an issue on [GitHub](https://github.com/EfficientAI-tech/efficientAI/issues/new).
 
-### Prompt setup
+### Prompt
 
-You can either:
-
-1. Paste your production prompt and use **Generate test prompt** with provider/model/context settings to produce an adversarial prompt, or
-2. Write the test prompt manually.
+You can copy and paste the prompt you have set for your production agent here. EfficientAI can create an
+adversarial prompt when you choose an AI provider, LLM model, and provide additional context.
 
 For first message behavior, choose:
 
@@ -125,6 +117,8 @@ For the EfficientAI system prompt, define:
 
 ### Voice bundle
 
-For voice bundle setup, see [Setup](/docs/platform/setup/) and [Persona](/docs/platform/persona/).
+Select the voice bundle you want for the EAI test agent.
+
+For how to create bundles, see [Setup](/docs/platform/setup/) and [Persona](/docs/platform/persona/).
 
 Create the agent to finish setup. Editing flow and custom agent testing docs are coming soon.

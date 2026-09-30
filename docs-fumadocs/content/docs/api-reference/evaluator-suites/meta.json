@@ -1,0 +1,20 @@
+{
+  "title": "Evaluator Suites",
+  "description": "Suite-level test combination management endpoints.",
+  "pages": [
+    "list_suites_api_v1_evaluator_suites_get",
+    "create_suite_api_v1_evaluator_suites_post",
+    "get_suite_api_v1_evaluator_suites__suite_id__get",
+    "delete_suite_api_v1_evaluator_suites__suite_id__delete",
+    "update_suite_api_v1_evaluator_suites__suite_id__put",
+    "add_scenarios_api_v1_evaluator_suites__suite_id__scenarios_post",
+    "remove_scenario_api_v1_evaluator_suites__suite_id__scenarios__scenario_id__delete",
+    "add_personas_api_v1_evaluator_suites__suite_id__personas_post",
+    "replace_personas_api_v1_evaluator_suites__suite_id__personas_put",
+    "remove_persona_api_v1_evaluator_suites__suite_id__personas__persona_id__delete",
+    "activate_suite_api_v1_evaluator_suites__suite_id__activate_post",
+    "run_suite_api_v1_evaluator_suites__suite_id__run_post",
+    "choose_next_combination_api_v1_evaluator_suites__suite_id__choose_next_post",
+    "run_next_combination_api_v1_evaluator_suites__suite_id__run_next_post"
+  ]
+}

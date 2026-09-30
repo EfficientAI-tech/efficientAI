@@ -53,6 +53,7 @@ def main() -> None:
 
     os.environ.setdefault("DEBUG", "true")
     os.environ.setdefault("SERVICE_MODE", "api")
+    os.environ.setdefault("UPLOAD_DIR", str(docs_root / ".openapi-export" / "uploads"))
 
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))

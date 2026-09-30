@@ -6,14 +6,8 @@ description: What evaluators and metrics are, the metric families available, and
 
 # Evaluator
 
-## What an evaluator is
-
-An **evaluator** is the engine that executes runs and applies metrics to score them. It is the
-piece that brings every other object together:
-
-Because the inputs are fixed configuration, an evaluator gives you controlled comparisons: hold
-the agent constant and vary the model, or hold the model constant and vary the prompt, and the
-score delta is attributable.
+Evaluators in EAI are a way to create an evaluator suite that combines a production agent, persona, and
+scenario to run simulation testing.
 
 ## What metrics are
 
@@ -22,14 +16,16 @@ and you enable the ones that match your quality goals per workspace/agent contex
 
 | Family | Measures | Examples |
 |---|---|---|
-| LLM-evaluated conversation | Whether the agent behaved correctly in dialogue | Instruction following, professionalism |
+| LLM-evaluated conversation | Whether the production agent behaved correctly in dialogue | Instruction following, professionalism |
 | Acoustic | Raw signal quality of the audio | Jitter, shimmer, pitch variance |
 | AI voice quality | Perceived voice naturalness and consistency | MOS-style scores, consistency signals |
 | Custom | Anything specific to your product | `boolean`, `enum`, `number_range`, `text`, `rating` |
 
 Custom metrics are the escape hatch: when a business rule matters to you and to nobody else —
-"did the agent quote the correct policy number?" — define it as a custom metric with the return
+"did the production agent quote the correct policy number?" — define it as a custom metric with the return
 type that fits, and it is scored alongside the built-ins.
+
+See [Metrics](/docs/platform/metrics/) for full configuration.
 
 ## Configure an evaluator
 
@@ -42,7 +38,7 @@ type that fits, and it is scored alongside the built-ins.
 ### Recommended flow
 
 1. Enable metrics that match your quality goals.
-2. Group agent/persona/scenario combinations into
+2. Group production agent/persona/scenario combinations into
    [evaluation suites](/docs/platform/evaluation-suite/).
 3. Run and inspect evaluator results.
 
@@ -55,7 +51,7 @@ See also: [How It Works](/docs/platform/) for the full evaluation lifecycle.
 
 1. Open [Evaluators](/docs/platform/evaluation-suite/) under **Evaluations**.
 2. Click **Create Suite** in the top-right.
-3. Select agent and persona.
+3. Select production agent and persona.
 4. Select one or more scenarios.
 
 ![Evaluator suite setup](/screenshots/Evaluator/Evaluator_suite.png)
@@ -75,7 +71,3 @@ See also: [How It Works](/docs/platform/) for the full evaluation lifecycle.
 ![Evaluation results](/screenshots/Evaluator/Evaluation_results.png)
 
 Results appear in the **Evaluation Results** section once runs complete.
-
-## Judge alignment
-
-Judge alignment is available under **Evaluations > Judge Alignment**. Detailed public documentation is pending.

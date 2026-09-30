@@ -6,22 +6,15 @@ description: What a scenario is, how it shapes a simulated call, and how to conf
 
 # Scenario
 
-## What a scenario is
-
-A **scenario** defines the goal and context for a conversation test. Where a
-[persona](/docs/platform/persona/) says *who* is calling, the scenario says *why* they are
-calling and what a good outcome looks like.
-
-The scenario feeds two places at once: it shapes the simulation prompt that drives the caller,
-and its `required_info` gives the metric engine concrete expectations to validate against. That
-is what keeps scoring consistent across repeated runs while the conversation itself still flows
-naturally.
+Scenarios in EAI are test cases created to help the EAI agent and persona test your production
+agent in different situations, see how it responds, and improve over time. They are used for
+synthetic testing.
 
 ## Configure a scenario
 
 ### Creation paths
 
-- Generate from agent prompt
+- Generate from production agent prompt
 - Generate from call data
 - Create manually
 
@@ -32,7 +25,7 @@ naturally.
 | `name` | Scenario title. |
 | `description` | Conversation intent, flow, and success expectation. |
 | `required_info` | Structured key/value expectations for validation. |
-| `agent_id` | Optional linked agent for context and filtering. |
+| `agent_id` | Optional linked production agent for context and filtering. |
 
 ### Recommended flow
 
@@ -54,7 +47,7 @@ EfficientAI supports three creation paths:
 
 ### A) Generate from test agent
 
-1. Select the target agent.
+1. Select the target production agent.
 2. Choose how many scenarios to generate.
 3. Select AI provider.
 4. Select model.
@@ -67,5 +60,5 @@ This path is currently in beta.
 ### C) Generate manually
 
 1. Enter scenario name.
-2. Link the scenario to an agent.
-3. Enter manual description or paste the agent prompt.
+2. Link the scenario to a production agent.
+3. Enter manual description or paste the production agent prompt.

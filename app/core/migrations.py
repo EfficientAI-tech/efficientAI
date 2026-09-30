@@ -65,6 +65,19 @@ def _is_catalog_engine_url(engine_url) -> bool:
         return str(engine_url) == str(catalog_url)
 
 
+def _engine_role_for_url(engine_url) -> str:
+    """Return ``catalog`` or ``shard`` for a SQLAlchemy engine URL."""
+    from sqlalchemy.engine import URL
+
+    from app.config import settings
+
+    if not getattr(settings, "DB_SHARDING_ENABLED", False):
+        return "catalog"
+    if not isinstance(engine_url, URL):
+        return "shard"
+    return "catalog" if _is_catalog_engine_url(engine_url) else "shard"
+
+
 def _migration_applies_to_engine(
     migration_file: Path,
     *,

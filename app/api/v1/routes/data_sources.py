@@ -6,6 +6,7 @@ from typing import Optional
 from pydantic import BaseModel
 import io
 
+from app.config import settings
 from app.dependencies import get_api_key, get_organization_id
 from app.models.schemas import MessageResponse, S3ListFilesResponse, S3FileInfo, S3BrowseResponse, S3FolderInfo
 from app.services.storage.blob_paths import assert_key_belongs_to_org
@@ -14,6 +15,16 @@ from app.core.exceptions import StorageError
 from uuid import UUID
 
 router = APIRouter(prefix="/data-sources/s3", tags=["Data Sources"])
+
+
+def _validate_org_file_key(file_key: str, organization_id: UUID, *, decode: bool = False) -> str:
+    return assert_key_belongs_to_org(
+        file_key,
+        organization_id,
+        storage_prefix=s3_service.prefix,
+        decode=decode,
+        extra_storage_prefixes=[settings.TRACES_S3_PREFIX],
+    )
 
 
 class S3StatusResponse(BaseModel):
@@ -220,11 +231,7 @@ async def download_from_s3(
         )
     
     try:
-        validated_key = assert_key_belongs_to_org(
-            file_key,
-            organization_id,
-            storage_prefix=s3_service.prefix,
-        )
+        validated_key = _validate_org_file_key(file_key, organization_id)
         file_bytes = s3_service.download_file_by_key(validated_key)
         filename = validated_key.split("/")[-1]
         return StreamingResponse(
@@ -272,12 +279,7 @@ async def get_s3_presigned_url(
         )
     
     try:
-        validated_key = assert_key_belongs_to_org(
-            file_key,
-            organization_id,
-            storage_prefix=s3_service.prefix,
-            decode=True,
-        )
+        validated_key = _validate_org_file_key(file_key, organization_id, decode=True)
         url = s3_service.generate_presigned_url_by_key(validated_key, expiration=expiration)
         return PresignedUrlResponse(url=url, expires_in=expiration)
     except HTTPException:
@@ -313,11 +315,7 @@ async def delete_from_s3(
         )
     
     try:
-        validated_key = assert_key_belongs_to_org(
-            file_key,
-            organization_id,
-            storage_prefix=s3_service.prefix,
-        )
+        validated_key = _validate_org_file_key(file_key, organization_id)
         s3_service.delete_file_by_key(validated_key)
         return {"message": "File deleted successfully."}
     except HTTPException:

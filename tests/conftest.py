@@ -248,7 +248,9 @@ def _worker_database_url(base_url: str, worker_id: str) -> str:
 
 def _ensure_postgres_database(admin_url: str, database_name: str) -> None:
     """Create ``database_name`` if missing (connects via the admin database)."""
-    admin = make_url(admin_url).set(database="postgres")
+    from app.db_sharding.pool_manager import postgresql_engine_url
+
+    admin = postgresql_engine_url(make_url(admin_url).set(database="postgres"))
     bootstrap = create_engine(admin, isolation_level="AUTOCOMMIT")
     try:
         with bootstrap.connect() as conn:
@@ -312,8 +314,10 @@ def test_engine(worker_id):
         if parsed.drivername.startswith("postgresql"):
             _ensure_postgres_database(base_database_url, parsed.database)
         _bind_runtime_database_url(database_url)
+        from app.db_sharding.pool_manager import postgresql_engine_url
+
         engine = create_engine(
-            database_url,
+            postgresql_engine_url(database_url),
             **_postgres_engine_kwargs(parallel=parallel_postgres),
         )
         drop_schema_on_teardown = not parallel_postgres
