@@ -39,6 +39,8 @@ class VobizAgentContext:
     llm_api_key: Optional[str]
     llm_endpoint_url: Optional[str] = None
     llm_base_url: Optional[str] = None
+    stt_elevenlabs_api_base_url: Optional[str] = None
+    tts_elevenlabs_api_base_url: Optional[str] = None
 
 
 def _resolve_azure_endpoint_for_provider(
@@ -273,15 +275,27 @@ def resolve_vobiz_agent_context(
     model_name = None
     stt_api_key = None
     tts_api_key = None
+    stt_elevenlabs_api_base_url = None
+    tts_elevenlabs_api_base_url = None
     llm_api_key = None
     llm_endpoint_url = None
     llm_base_url = None
 
     if use_voice_bundle_pipeline and voice_bundle:
+        from app.services.credentials.elevenlabs_inference import (
+            resolve_elevenlabs_api_base_url_for_voice_bundle_leg,
+        )
+
         if voice_bundle.stt_provider:
             stt_api_key = _resolve_api_key_for_provider(db, organization_id, voice_bundle.stt_provider)
+            stt_elevenlabs_api_base_url = resolve_elevenlabs_api_base_url_for_voice_bundle_leg(
+                db, organization_id, voice_bundle, "stt"
+            )
         if voice_bundle.tts_provider:
             tts_api_key = _resolve_api_key_for_provider(db, organization_id, voice_bundle.tts_provider)
+            tts_elevenlabs_api_base_url = resolve_elevenlabs_api_base_url_for_voice_bundle_leg(
+                db, organization_id, voice_bundle, "tts"
+            )
         if voice_bundle.llm_provider:
             llm_api_key = _resolve_api_key_for_provider(db, organization_id, voice_bundle.llm_provider)
             llm_endpoint_url, llm_base_url = _resolve_voice_llm_urls(
@@ -330,6 +344,8 @@ def resolve_vobiz_agent_context(
         model_name=model_name,
         stt_api_key=stt_api_key,
         tts_api_key=tts_api_key,
+        stt_elevenlabs_api_base_url=stt_elevenlabs_api_base_url,
+        tts_elevenlabs_api_base_url=tts_elevenlabs_api_base_url,
         llm_api_key=llm_api_key,
         llm_endpoint_url=llm_endpoint_url,
         llm_base_url=llm_base_url,

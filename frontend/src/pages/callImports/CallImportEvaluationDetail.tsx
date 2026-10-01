@@ -98,6 +98,7 @@ import StatusBadge from '../../components/shared/StatusBadge'
 import { EvaluationAuditMeta } from '../../components/callImports/AuditMetaChips'
 import DiariseStatusPill from '../../components/callImports/DiariseStatusPill'
 import CallImportProgressBar from './components/CallImportProgressBar'
+import { CallRowDetailSplitLayout } from './components/CallRowDetailSplitLayout'
 import { CallRowSidePanel } from './components/CallRowSidePanel'
 import {
   CallImportEvaluationRowSidePanelContent,
@@ -3839,8 +3840,10 @@ export default function CallImportEvaluationDetail() {
             </p>
           )
         ) : (
-          <div className="flex items-start gap-4">
-            <div className="min-w-0 flex-1">
+          <CallRowDetailSplitLayout
+            panelOpen={!!(detailRow && evaluation)}
+            list={
+            <div className="min-w-0">
             {totalMetricColumnCount > 3 && (
               <p className="mb-2 text-[11px] text-gray-500">
                 Scroll the table horizontally to see all{' '}
@@ -4291,8 +4294,9 @@ export default function CallImportEvaluationDetail() {
               onNext={() => setPage((p) => p + 1)}
             />
             </div>
-
-            {detailRow && evaluation ? (
+            }
+            panel={
+              detailRow && evaluation ? (
               <CallRowSidePanel
                 onClose={() => setDetailRow(null)}
                 title={
@@ -4369,8 +4373,9 @@ export default function CallImportEvaluationDetail() {
                   parentMetrics={parentMetrics}
                 />
               </CallRowSidePanel>
-            ) : null}
-          </div>
+              ) : null
+            }
+          />
         )}
       </div>
 

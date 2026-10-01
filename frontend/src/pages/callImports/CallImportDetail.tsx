@@ -79,6 +79,7 @@ import TelephonyCredentialPicker, {
   credentialSelectionFromState,
   isCredentialSelectionValid,
 } from './components/TelephonyCredentialPicker'
+import { CallRowDetailSplitLayout } from './components/CallRowDetailSplitLayout'
 import { CallRowSidePanel } from './components/CallRowSidePanel'
 import {
   CallImportRowSidePanelContent,
@@ -2148,8 +2149,10 @@ export default function CallImportDetail() {
             )}
           </div>
         ) : (
-          <div className="flex items-start gap-4">
-            <div className="min-w-0 flex-1 space-y-2">
+          <CallRowDetailSplitLayout
+            panelOpen={!!selectedRow}
+            list={
+            <div className="space-y-2">
             <div className="flex items-center gap-3 px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 flex-wrap">
               <div className="flex items-center gap-2">
                 <input
@@ -2539,8 +2542,9 @@ export default function CallImportDetail() {
               }
             />
             </div>
-
-            {selectedRow ? (
+            }
+            panel={
+              selectedRow ? (
               <CallRowSidePanel
                 onClose={() => setSelectedRowId(null)}
                 title={selectedRow.conversation_id}
@@ -2581,8 +2585,9 @@ export default function CallImportDetail() {
                   onDismissSwapError={() => setSwapError(null)}
                 />
               </CallRowSidePanel>
-            ) : null}
-          </div>
+              ) : null
+            }
+          />
         )}
       </div>
       )}

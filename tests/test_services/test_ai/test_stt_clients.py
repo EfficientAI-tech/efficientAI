@@ -147,7 +147,10 @@ def test_transcribe_elevenlabs_uses_httpx_client(monkeypatch, tmp_path):
     monkeypatch.setattr(elevenlabs_module, "httpx", fake)
 
     result = elevenlabs_module.transcribe_elevenlabs(
-        str(audio), "scribe_v2", "key-1"
+        str(audio),
+        "scribe_v2",
+        "key-1",
+        base_url="https://api.in.residency.elevenlabs.io",
     )
 
     assert result["text"] == "transcribed"
@@ -155,7 +158,10 @@ def test_transcribe_elevenlabs_uses_httpx_client(monkeypatch, tmp_path):
     assert result["segments"] == []
     # The URL the wrapper hit is preserved on the fake so we can sanity
     # check we didn't accidentally regress to a different endpoint.
-    assert fake._captured["calls"][0]["url"] == elevenlabs_module.ELEVENLABS_STT_URL
+    assert (
+        fake._captured["calls"][0]["url"]
+        == "https://api.in.residency.elevenlabs.io/v1/speech-to-text"
+    )
 
 
 def test_transcribe_smallest_extracts_transcript_field(monkeypatch, tmp_path):

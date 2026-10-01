@@ -121,13 +121,11 @@ class TestAgentBridgeService:
         # Handle platform being either enum or string
         platform_value = integration.platform.value if hasattr(integration.platform, "value") else integration.platform
         try:
-            provider_class = get_voice_provider(platform_value)
-            # For Vapi, pass the public_key as well (needed for web call creation)
+            from app.services.voice_providers.prompt_sync import build_voice_provider_from_integration
+
             if platform_value.lower() == "vapi":
                 logger.info(f"[Bridge] Creating Vapi provider with public_key={'set' if integration.public_key else 'NOT SET (will fail!)'}")
-                provider = provider_class(api_key=api_key, public_key=integration.public_key)
-            else:
-                provider = provider_class(api_key=api_key)
+            provider = build_voice_provider_from_integration(integration, decrypted_key=api_key)
         except ValueError:
             raise ValueError(f"Unsupported voice provider platform: {platform_value}")
 
@@ -579,6 +577,17 @@ class TestAgentBridgeService:
             tts_api_key = resolve_api_key_for_provider(
                 tts_model_provider, credential_id=tts_credential_id
             )
+            tts_elevenlabs_api_base_url = None
+            if tts_provider_str == "elevenlabs":
+                from app.services.credentials.elevenlabs_inference import (
+                    resolve_elevenlabs_api_base_url,
+                )
+
+                tts_elevenlabs_api_base_url = resolve_elevenlabs_api_base_url(
+                    db,
+                    organization_id,
+                    credential_id=tts_credential_id,
+                )
 
             logger.info(f"[Bridge WebRTC] API keys found: OpenAI={'yes' if llm_api_key else 'no'}, {tts_provider_str}={'yes' if tts_api_key else 'no'}")
 
@@ -652,6 +661,7 @@ class TestAgentBridgeService:
                     llm_temperature=getattr(persona, "llm_temperature", None),
                     llm_max_tokens=getattr(persona, "llm_max_tokens", None),
                     tts_api_key=tts_api_key,
+                    tts_elevenlabs_api_base_url=tts_elevenlabs_api_base_url,
                     tts_provider=tts_provider_str,
                     tts_voice_id=tts_voice_id,
                     tts_model=tts_model,

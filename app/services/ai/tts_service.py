@@ -80,6 +80,36 @@ class TTSService:
 
         return ai_provider
 
+    def _resolve_elevenlabs_base_url(
+        self,
+        provider: ModelProvider,
+        db: Session,
+        organization_id: UUID,
+    ) -> Optional[str]:
+        from app.services.credentials.elevenlabs_inference import (
+            resolve_elevenlabs_api_base_url_for_provider,
+        )
+
+        return resolve_elevenlabs_api_base_url_for_provider(
+            db, organization_id, provider
+        )
+
+    def _elevenlabs_handler_kwargs(
+        self,
+        provider: ModelProvider,
+        db: Session,
+        organization_id: UUID,
+    ) -> Dict[str, Any]:
+        provider_key = (
+            provider.value if hasattr(provider, "value") else str(provider)
+        ).lower()
+        if provider_key != "elevenlabs":
+            return {}
+        base_url = self._resolve_elevenlabs_base_url(provider, db, organization_id)
+        if not base_url:
+            return {}
+        return {"base_url": base_url}
+
     def _get_api_key_for_provider(
         self, provider: ModelProvider, db: Session, organization_id: UUID
     ) -> str:
@@ -129,9 +159,17 @@ class TTSService:
 
     def _synthesize_with_elevenlabs(
         self, text: str, model: str, api_key: str,
-        voice: Optional[str] = None, config: Optional[Dict[str, Any]] = None
+        voice: Optional[str] = None, config: Optional[Dict[str, Any]] = None,
+        base_url: Optional[str] = None,
     ) -> Tuple[bytes, float]:
-        return synthesize_elevenlabs_bytes(text=text, model=model, api_key=api_key, voice=voice, config=config)
+        return synthesize_elevenlabs_bytes(
+            text=text,
+            model=model,
+            api_key=api_key,
+            voice=voice,
+            config=config,
+            base_url=base_url,
+        )
 
     # ------------------------------------------------------------------
     # Cartesia
@@ -261,7 +299,8 @@ class TTSService:
         """
         api_key = self._get_api_key_for_provider(tts_provider, db, organization_id)
         handler = self._get_tts_handler(tts_provider)
-        audio_bytes, _ttfb_ms = handler(text, tts_model, api_key, voice, config)
+        handler_kwargs = self._elevenlabs_handler_kwargs(tts_provider, db, organization_id)
+        audio_bytes, _ttfb_ms = handler(text, tts_model, api_key, voice, config, **handler_kwargs)
         self._record_tts_usage(
             text=text,
             tts_model=tts_model,
@@ -282,8 +321,9 @@ class TTSService:
         """Synthesize and return (audio_bytes, total_latency_ms, ttfb_ms)."""
         api_key = self._get_api_key_for_provider(tts_provider, db, organization_id)
         handler = self._get_tts_handler(tts_provider)
+        handler_kwargs = self._elevenlabs_handler_kwargs(tts_provider, db, organization_id)
         start = time.time()
-        audio_bytes, ttfb_ms = handler(text, tts_model, api_key, voice, config)
+        audio_bytes, ttfb_ms = handler(text, tts_model, api_key, voice, config, **handler_kwargs)
         total_latency_ms = (time.time() - start) * 1000
         self._record_tts_usage(
             text=text,

@@ -521,6 +521,24 @@ async def websocket_endpoint(
                     if llm_provider and voice_bundle
                     else None
                 )
+                from app.services.credentials.elevenlabs_inference import (
+                    resolve_elevenlabs_api_base_url_for_voice_bundle_leg,
+                )
+
+                stt_elevenlabs_api_base_url = (
+                    resolve_elevenlabs_api_base_url_for_voice_bundle_leg(
+                        db, organization_id, voice_bundle, "stt"
+                    )
+                    if voice_bundle
+                    else None
+                )
+                tts_elevenlabs_api_base_url = (
+                    resolve_elevenlabs_api_base_url_for_voice_bundle_leg(
+                        db, organization_id, voice_bundle, "tts"
+                    )
+                    if voice_bundle
+                    else None
+                )
 
                 # If in bridge mode, we need to bridge test agent to Retell call
                 # For now, we'll run the voice bundle normally and note that bridging
@@ -550,6 +568,8 @@ async def websocket_endpoint(
                     persona=persona,
                     stt_api_key=stt_api_key,
                     tts_api_key=tts_api_key,
+                    stt_elevenlabs_api_base_url=stt_elevenlabs_api_base_url,
+                    tts_elevenlabs_api_base_url=tts_elevenlabs_api_base_url,
                     llm_api_key=llm_api_key,
                     llm_endpoint_url=llm_endpoint_url,
                     llm_base_url=llm_base_url,

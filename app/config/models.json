@@ -782,6 +782,258 @@
       "tts_per_1m_characters": 2.5
     }
   },
+  "azure-openai-gpt4": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI deployment for GPT-4 (legacy). Catalog key maps to deployment name gpt-4.",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 30.0,
+      "output_per_1m": 60.0
+    }
+  },
+  "azure-gpt-4o": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-4o — deployment name must match gpt-4o in your resource.",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.5,
+      "output_per_1m": 10.0,
+      "cache_read_per_1m": 1.25
+    }
+  },
+  "azure-gpt-4o-mini": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-4o mini — fast, cost-efficient chat and vision.",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.15,
+      "output_per_1m": 0.6,
+      "cache_read_per_1m": 0.075
+    }
+  },
+  "azure-gpt-4.1": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-4.1 — strong non-reasoning model with large context.",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.0,
+      "output_per_1m": 8.0,
+      "cache_read_per_1m": 0.5
+    }
+  },
+  "azure-gpt-4.1-mini": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-4.1 mini — smaller, faster GPT-4.1 tier.",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.4,
+      "output_per_1m": 1.6,
+      "cache_read_per_1m": 0.1
+    }
+  },
+  "azure-gpt-5": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-5 — reasoning and agentic workloads.",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.25,
+      "output_per_1m": 10.0,
+      "cache_read_per_1m": 0.125
+    }
+  },
+  "azure-gpt-5-mini": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-5 mini — near-frontier quality at lower cost and latency.",
+    "featured": true,
+    "featured_rank": 2,
+    "highlights": [
+      "Cost-efficient",
+      "Low latency",
+      "Azure deployment"
+    ],
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.25,
+      "output_per_1m": 2.0,
+      "cache_read_per_1m": 0.025
+    }
+  },
+  "azure-gpt-5-nano": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-5 nano — fastest, most cost-efficient GPT-5 class model.",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.05,
+      "output_per_1m": 0.4,
+      "cache_read_per_1m": 0.005
+    }
+  },
+  "azure-gpt-5.1": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-5.1 — coding and agentic tasks with configurable reasoning.",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.25,
+      "output_per_1m": 10.0,
+      "cache_read_per_1m": 0.125
+    }
+  },
+  "azure-gpt-5.2": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-5.2 — professional work with configurable reasoning.",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.75,
+      "output_per_1m": 14.0,
+      "cache_read_per_1m": 0.175
+    }
+  },
+  "azure-gpt-5.4": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-5.4 — affordable frontier model for coding and professional work.",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.5,
+      "output_per_1m": 15.0,
+      "cache_read_per_1m": 0.25
+    }
+  },
+  "azure-gpt-5.4-mini": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-5.4 mini — strong mini tier for coding and subagents.",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.75,
+      "output_per_1m": 4.5,
+      "cache_read_per_1m": 0.075
+    }
+  },
+  "azure-gpt-5.6-sol": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-5.6 Sol — flagship reasoning, agentic coding, and computer use.",
+    "featured": true,
+    "featured_rank": 1,
+    "highlights": [
+      "Flagship",
+      "1M context",
+      "Azure deployment"
+    ],
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 5.0,
+      "output_per_1m": 30.0,
+      "cache_read_per_1m": 0.5,
+      "cache_write_per_1m": 6.25
+    }
+  },
+  "azure-gpt-5.6-terra": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-5.6 Terra — balanced everyday performance at lower cost than Sol.",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.0,
+      "output_per_1m": 12.0,
+      "cache_read_per_1m": 0.2,
+      "cache_write_per_1m": 2.5
+    }
+  },
+  "azure-gpt-5.6-luna": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-5.6 Luna — fast, low-cost tier for high-volume tasks.",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.2,
+      "output_per_1m": 1.2,
+      "cache_read_per_1m": 0.02,
+      "cache_write_per_1m": 0.25
+    }
+  },
+  "azure-gpt-5.3-codex": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-5.3 Codex — agentic coding and long-horizon dev tasks.",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.75,
+      "output_per_1m": 14.0,
+      "cache_read_per_1m": 0.175
+    }
+  },
+  "azure-o3": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI o3 — reasoning model for complex multi-step tasks.",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.0,
+      "output_per_1m": 8.0,
+      "cache_read_per_1m": 0.5
+    }
+  },
+  "azure-o4-mini": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI o4-mini — fast, cost-efficient reasoning model.",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.1,
+      "output_per_1m": 4.4,
+      "cache_read_per_1m": 0.275
+    }
+  },
+  "azure-speech-v1": {
+    "provider": "azure",
+    "model_type": "stt",
+    "description": "Azure Speech Services batch speech-to-text (catalog pricing; STT runtime not yet wired).",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "stt",
+      "audio_per_minute": 0.0167
+    }
+  },
+  "azure-tts-v1": {
+    "provider": "azure",
+    "model_type": "tts",
+    "description": "Azure Speech Services neural text-to-speech (catalog pricing; TTS runtime not yet wired).",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 15.0
+    }
+  },
   "claude-sonnet-4.5": {
     "provider": "anthropic",
     "model_type": "llm",
@@ -996,7 +1248,9 @@
   "kimi-k2p6": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "Kimi K2.6 — native multimodal agentic model for long-horizon coding",
+    "description": "Deprecated (Fireworks serverless). Use kimi-k3 or glm-5p3.",
+    "deprecated": true,
+    "replaced_by": "kimi-k3",
     "pricing": {
       "source": "litellm_import",
       "usage_kind": "llm",
@@ -1078,13 +1332,62 @@
   "deepseek-v4-flash-0731": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "deepseek v4 flash 0731 via Fireworks",
+    "description": "Deprecated (Fireworks serverless). Use deepseek-v4p1-flash.",
+    "deprecated": true,
+    "replaced_by": "deepseek-v4p1-flash",
     "pricing": {
       "source": "litellm_import",
       "usage_kind": "llm",
       "input_per_1m": 0.14,
       "output_per_1m": 0.28,
       "cache_read_per_1m": 0.028
+    }
+  },
+  "deepseek-v4p1-flash": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "DeepSeek V4.1 Flash — multimodal reasoning and agentic coding (replaces V4 Flash 0731 / Pro 0813 / Vision Exp on serverless)",
+    "featured": true,
+    "featured_rank": 8,
+    "highlights": [
+      "Multimodal",
+      "1M context",
+      "Serverless"
+    ],
+    "pricing": {
+      "source": "fireworks.ai serverless listing",
+      "usage_kind": "llm",
+      "input_per_1m": 0.22,
+      "output_per_1m": 0.66,
+      "cache_read_per_1m": 0.007
+    }
+  },
+  "deepseek-v4-pro-0813": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "Deprecated (Fireworks serverless). Use deepseek-v4p1-flash.",
+    "deprecated": true,
+    "replaced_by": "deepseek-v4p1-flash",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.32,
+      "output_per_1m": 3.96,
+      "cache_read_per_1m": 0.044
+    }
+  },
+  "deepseek-v4-flash-vision-exp": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "Deprecated (Fireworks serverless). Use deepseek-v4p1-flash (includes vision).",
+    "deprecated": true,
+    "replaced_by": "deepseek-v4p1-flash",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.22,
+      "output_per_1m": 0.66,
+      "cache_read_per_1m": 0.007
     }
   },
   "glm-4p7": {
@@ -1111,10 +1414,43 @@
       "cache_read_per_1m": 0.52
     }
   },
+  "glm-5p3": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "GLM 5.3 — frontier open model for reasoning and agentic workflows (replaces GLM 5.2 serverless)",
+    "pricing": {
+      "source": "fireworks.ai serverless listing",
+      "usage_kind": "llm",
+      "input_per_1m": 1.0,
+      "output_per_1m": 4.0,
+      "cache_read_per_1m": 0.14
+    }
+  },
+  "glm-5p3-flash": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "GLM 5.3 Flash — multimodal fast tier (replaces GLM 5.2 Fast serverless variants)",
+    "featured": true,
+    "featured_rank": 9,
+    "highlights": [
+      "Multimodal",
+      "Low cost",
+      "1M context"
+    ],
+    "pricing": {
+      "source": "fireworks.ai serverless listing",
+      "usage_kind": "llm",
+      "input_per_1m": 0.15,
+      "output_per_1m": 0.5,
+      "cache_read_per_1m": 0.029
+    }
+  },
   "glm-5p2": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "glm 5p2 via Fireworks",
+    "description": "Deprecated (Fireworks serverless). Use glm-5p3.",
+    "deprecated": true,
+    "replaced_by": "glm-5p3",
     "pricing": {
       "source": "litellm_import",
       "usage_kind": "llm",
@@ -1126,7 +1462,9 @@
   "glm-5p2-fast": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "glm 5p2 fast via Fireworks",
+    "description": "Deprecated (Fireworks serverless). Use glm-5p3-flash.",
+    "deprecated": true,
+    "replaced_by": "glm-5p3-flash",
     "pricing": {
       "source": "litellm_import",
       "usage_kind": "llm",
@@ -1138,7 +1476,9 @@
   "glm-5p2-fast-us": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "glm 5p2 fast us via Fireworks",
+    "description": "Deprecated (Fireworks serverless). Use glm-5p3-flash.",
+    "deprecated": true,
+    "replaced_by": "glm-5p3-flash",
     "pricing": {
       "source": "litellm_import",
       "usage_kind": "llm",
@@ -1150,7 +1490,9 @@
   "kimi-k2p6-fast": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "kimi k2p6 fast via Fireworks",
+    "description": "Deprecated (Fireworks serverless). Use kimi-k3-fast or glm-5p3-flash.",
+    "deprecated": true,
+    "replaced_by": "kimi-k3-fast",
     "pricing": {
       "source": "litellm_import",
       "usage_kind": "llm",
@@ -1162,7 +1504,9 @@
   "kimi-k2p7-code": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "kimi k2p7 code via Fireworks",
+    "description": "Deprecated (Fireworks serverless). Use kimi-k3 or glm-5p3.",
+    "deprecated": true,
+    "replaced_by": "kimi-k3",
     "pricing": {
       "source": "litellm_import",
       "usage_kind": "llm",
@@ -1174,7 +1518,9 @@
   "kimi-k2p7-code-fast": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "kimi k2p7 code fast via Fireworks",
+    "description": "Deprecated (Fireworks serverless). Use kimi-k3-fast or glm-5p3-flash.",
+    "deprecated": true,
+    "replaced_by": "kimi-k3-fast",
     "pricing": {
       "source": "litellm_import",
       "usage_kind": "llm",
@@ -1268,7 +1614,9 @@
   "muse-glimmer-30b": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "muse glimmer 30b via Fireworks",
+    "description": "Deprecated (Fireworks serverless). Use nemotron-lightning-3p5-30b-a3b.",
+    "deprecated": true,
+    "replaced_by": "nemotron-lightning-3p5-30b-a3b",
     "pricing": {
       "source": "litellm_import",
       "usage_kind": "llm",
@@ -2714,6 +3062,42 @@
       "tts_per_1m_characters": 180.0
     }
   },
+  "eleven_v4": {
+    "provider": "elevenlabs",
+    "model_type": "tts",
+    "description": "Most expressive ElevenLabs TTS — audio tags, 90+ languages, up to 10k characters per request",
+    "languages": "90+ languages",
+    "featured": true,
+    "featured_rank": 1,
+    "highlights": [
+      "Flagship quality",
+      "Audio tags",
+      "90+ languages"
+    ],
+    "pricing": {
+      "source": "elevenlabs.com API pricing (same list rate as v3)",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 180.0
+    }
+  },
+  "eleven_v4_turbo": {
+    "provider": "elevenlabs",
+    "model_type": "tts",
+    "description": "Low-latency Eleven v4 for realtime voice agents (~100ms inference; Text to Dialogue WebSocket)",
+    "languages": "90+ languages",
+    "featured": true,
+    "featured_rank": 2,
+    "highlights": [
+      "Realtime agents",
+      "~100ms inference",
+      "v4 expressiveness"
+    ],
+    "pricing": {
+      "source": "elevenlabs.com API pricing (same list rate as v3)",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 180.0
+    }
+  },
   "eleven_ttv_v3": {
     "provider": "elevenlabs",
     "model_type": "tts",
@@ -2742,7 +3126,7 @@
     "description": "Ultra-fast model optimized for real-time use (~75ms)",
     "languages": "en, ja, zh, de, hi, fr, ko, pt, it, es, id, nl, tr, fil, pl, sv, bg, ro, ar, cs, el, fi, hr, ms, sk, da, ta, uk, ru, hu, no, vi",
     "featured": true,
-    "featured_rank": 2,
+    "featured_rank": 3,
     "highlights": [
       "~75ms latency",
       "Real-time",

@@ -676,6 +676,8 @@ class Integration(Base):
     name = Column(String, nullable=True)  # Optional friendly name
     api_key = Column(String, nullable=False)  # Encrypted Private API key for the platform
     public_key = Column(String, nullable=True)  # Optional Public API key (e.g. for Vapi)
+    # ElevenLabs data-residency API origin (e.g. https://api.eu.residency.elevenlabs.io)
+    api_base_url = Column(String, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     # Multiple credentials per (org, platform) are allowed. is_default marks
     # the row used when a caller does not explicitly select a credential.

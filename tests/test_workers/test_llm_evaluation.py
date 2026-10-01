@@ -5,12 +5,28 @@ introduced for custom-data-type aware metric evaluation. They exercise pure-func
 behavior - no DB session and no LLM calls required.
 """
 
+import importlib
 import json
+import sys
 from types import SimpleNamespace
 from uuid import uuid4
 
-from app.services.ai import llm_service as llm_service_module
+import pytest
+
 from app.workers.tasks.helpers import llm_evaluation
+
+
+@pytest.fixture(autouse=True)
+def _load_real_llm_service_module():
+    """Use the real ``llm_service.py`` (conftest stubs a lightweight fake for API tests)."""
+    qual = "app.services.ai.llm_service"
+    sys.modules.pop(qual, None)
+    importlib.import_module(qual)
+
+
+def _patch_llm_generate_response(monkeypatch, replacement):
+    mod = importlib.import_module("app.services.ai.llm_service")
+    monkeypatch.setattr(mod.llm_service, "generate_response", replacement, raising=False)
 
 
 def _make_metric(
@@ -1034,7 +1050,7 @@ def test_map_classification_jev_answers_builds_display_and_probabilities():
     }
     entry = llm_evaluation._map_classification_jev_answers(metric, answers)
     assert entry["type"] == "classification"
-    assert "0.92" in entry["value"]
+    assert "92%" in entry["value"]
     assert entry["answers"]["choice"]["probabilities"]["billing"] == 0.9
     assert entry["noul_probability"] == 0.92
 
@@ -1059,11 +1075,7 @@ def test_evaluate_with_llm_classification_requires_jev_model(monkeypatch):
     def fail_generate(**kwargs):
         raise AssertionError("LLM should not be called for classification on non-Jev model")
 
-    monkeypatch.setattr(
-        llm_service_module.llm_service,
-        "generate_response",
-        fail_generate,
-    )
+    _patch_llm_generate_response(monkeypatch, fail_generate)
 
     scores, _ = llm_evaluation.evaluate_with_llm(
         transcription="hello",
@@ -1095,11 +1107,7 @@ def test_evaluate_classification_kodekloud_uses_response_format(monkeypatch):
             )
         }
 
-    monkeypatch.setattr(
-        llm_service_module.llm_service,
-        "generate_response",
-        fake_generate_response,
-    )
+    _patch_llm_generate_response(monkeypatch, fake_generate_response)
 
     metric = _make_metric(
         name="Outcome",
@@ -1144,17 +1152,10 @@ def test_evaluate_with_llm_uses_jev_payload_for_tev_model(monkeypatch):
 
     def fake_generate_response(**kwargs):
         captured["messages"] = kwargs["messages"]
-        return {
-            "text": json.dumps(
-                {"answers": {"is_urgent": {"type": "noul", "noul": 1.0}}}
-            )
-        }
+        # Tev1 models answer with a single option letter, not Jev JSON.
+        return {"text": "A"}
 
-    monkeypatch.setattr(
-        llm_service_module.llm_service,
-        "generate_response",
-        fake_generate_response,
-    )
+    _patch_llm_generate_response(monkeypatch, fake_generate_response)
 
     metric = _make_metric(name="Is Urgent", metric_type="boolean", metric_id="b1")
     scores, _ = llm_evaluation.evaluate_with_llm(
@@ -1173,7 +1174,8 @@ def test_evaluate_with_llm_uses_jev_payload_for_tev_model(monkeypatch):
     )
     user_content = json.loads(captured["messages"][1]["content"])
     assert "Customer needs help ASAP" in user_content["state"]
-    assert user_content["questions"]["is_urgent"]["type"] == "noul"
+    assert user_content["question"]
+    assert len(user_content["options"]) == 2
     assert scores["b1"]["value"] is True
 
 
@@ -1307,11 +1309,7 @@ def test_evaluate_with_llm_non_jev_model_uses_standard_prompt(monkeypatch):
         captured["messages"] = kwargs["messages"]
         return {"text": '{"is_urgent": true}'}
 
-    monkeypatch.setattr(
-        llm_service_module.llm_service,
-        "generate_response",
-        fake_generate_response,
-    )
+    _patch_llm_generate_response(monkeypatch, fake_generate_response)
 
     metric = _make_metric(name="Is Urgent", metric_type="boolean", metric_id="b1")
     llm_evaluation.evaluate_with_llm(

@@ -80,6 +80,7 @@ class TestAgentConfig:
     # TTS config
     tts_provider: str = "cartesia"
     tts_api_key: Optional[str] = None
+    tts_elevenlabs_api_base_url: Optional[str] = None
     tts_voice_id: Optional[str] = None
     tts_model: Optional[str] = None
     tts_config: Optional[Dict[str, Any]] = None
@@ -610,8 +611,11 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
         if settings.get("apply_text_normalization") is not None:
             request_json["apply_text_normalization"] = settings["apply_text_normalization"]
 
+        from app.services.voice_providers.elevenlabs_api_url import elevenlabs_http_origin
+
+        origin = elevenlabs_http_origin(self.config.tts_elevenlabs_api_base_url)
         async with httpx.AsyncClient() as client:
-            url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format={pcm_format}"
+            url = f"{origin.rstrip('/')}/v1/text-to-speech/{voice_id}?output_format={pcm_format}"
             if settings.get("optimize_streaming_latency") is not None:
                 url += f"&optimize_streaming_latency={int(settings['optimize_streaming_latency'])}"
             response = await client.post(

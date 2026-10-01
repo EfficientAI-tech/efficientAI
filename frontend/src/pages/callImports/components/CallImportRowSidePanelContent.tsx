@@ -103,9 +103,9 @@ export function CallImportRowSidePanelContent({
             </button>
           ) : null}
         </header>
-        <div className="p-3 max-h-[min(28rem,calc(100vh-20rem))] overflow-y-auto">
+        <div className="p-3 max-h-[min(38rem,calc(100vh-12rem))] overflow-y-auto">
           {row.transcript ? (
-            <TranscriptView transcript={row.transcript} compact />
+            <TranscriptView transcript={row.transcript} compact embedded />
           ) : (
             <p className="text-xs text-gray-500 italic">
               No production transcript was uploaded for this row. Map a CSV column to &quot;Transcript&quot;
@@ -241,9 +241,9 @@ export function CallImportRowSidePanelContent({
             </div>
           </div>
         ) : null}
-        <div className="p-3 max-h-[min(28rem,calc(100vh-20rem))] overflow-y-auto">
+        <div className="p-3 max-h-[min(38rem,calc(100vh-12rem))] overflow-y-auto">
           {row.diarised_transcript ? (
-            <TranscriptView transcript={row.diarised_transcript} compact />
+            <TranscriptView transcript={row.diarised_transcript} compact embedded />
           ) : (
             <p className="text-xs text-gray-500 italic">
               {hasRecording

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
 MODELS_JSON = REPO_ROOT / "app" / "config" / "models.json"
 MANUAL_JSON = REPO_ROOT / "app" / "config" / "pricing_manual.json"
 OUTPUT_JSON = REPO_ROOT / "app" / "config" / "pricing_catalog.json"
@@ -51,6 +52,9 @@ EXPLICIT_LITELLM_KEYS: Dict[str, str] = {
     "deepgram-flux": "deepgram/nova-3",
     "deepgram-nova-3-general-preview-12-2025": "deepgram/nova-3-general",
     "minimax-m2p5": "fireworks_ai/minimax-m2p7",
+    "deepseek-v4p1-flash": "fireworks_ai/accounts/fireworks/models/deepseek-v4p1-flash",
+    "glm-5p3": "fireworks_ai/accounts/fireworks/models/glm-5p3",
+    "glm-5p3-flash": "fireworks_ai/accounts/fireworks/models/glm-5p3-flash",
     "qwen3p6-plus": "openrouter/qwen/qwen3.6-plus",
     "grok-build-0.1": "xai/grok-3",
     "grok-4.20-0309-non-reasoning": "xai/grok-4-fast-non-reasoning",
@@ -60,6 +64,8 @@ EXPLICIT_LITELLM_KEYS: Dict[str, str] = {
     "scribe_v2_realtime": "elevenlabs/scribe_v1",
     "eleven_flash_v2_5": "elevenlabs/eleven_multilingual_v2",
     "eleven_turbo_v2_5": "elevenlabs/eleven_multilingual_v2",
+    "eleven_v4": "elevenlabs/eleven_v3",
+    "eleven_v4_turbo": "elevenlabs/eleven_flash_v2_5",
     "eleven_ttv_v3": "elevenlabs/eleven_v3",
     "eleven_multilingual_ttv_v2": "elevenlabs/eleven_multilingual_v2",
     "eleven_english_sts_v2": "elevenlabs/eleven_multilingual_v2",

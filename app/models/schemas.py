@@ -865,6 +865,10 @@ class IntegrationCreate(BaseModel):
     platform: IntegrationPlatform
     api_key: str = Field(..., description="Private API key for the platform")
     public_key: Optional[str] = Field(None, description="Optional public API key (e.g. for Vapi)")
+    api_base_url: Optional[str] = Field(
+        None,
+        description="Optional ElevenLabs API origin for data-residency stacks (https host only)",
+    )
     name: Optional[str] = Field(None, description="Optional friendly name for the integration")
     routing_mode: CredentialRoutingMode = Field(
         CredentialRoutingMode.INHERIT,
@@ -884,6 +888,7 @@ class IntegrationUpdate(BaseModel):
     name: Optional[str] = None
     api_key: Optional[str] = None
     public_key: Optional[str] = None
+    api_base_url: Optional[str] = None
     is_active: Optional[bool] = None
     routing_mode: Optional[CredentialRoutingMode] = None
 
@@ -895,6 +900,7 @@ class IntegrationResponse(BaseModel):
     platform: IntegrationPlatform
     name: Optional[str]
     public_key: Optional[str] = None
+    api_base_url: Optional[str] = None
     is_active: bool
     is_default: bool = False
     routing_mode: CredentialRoutingMode = CredentialRoutingMode.INHERIT

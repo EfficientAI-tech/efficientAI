@@ -103,6 +103,16 @@ def disable_cookie_sessions_in_tests(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def disable_api_key_auth_cache(monkeypatch):
+    """Avoid stale Redis principals (wrong user_id/org) breaking isolated DB tests."""
+    import app.core.auth.api_key as api_key_auth
+
+    monkeypatch.setattr(api_key_auth, "_read_api_key_cache", lambda _key: None)
+    monkeypatch.setattr(api_key_auth, "_write_api_key_cache", lambda _key, _principal: None)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def disable_api_rate_limits_in_tests(monkeypatch, request):
     """Avoid flaky 429s from shared Redis counters across the full test suite."""
     fspath = str(getattr(request.node, "fspath", ""))
@@ -511,11 +521,14 @@ def _install_static_stubs():
                 return {"transcript": "test transcript", "processing_time": 0.1}
 
         fake_model_config_module.model_config_service = _FakeModelConfigService()
-        fake_llm_module.llm_service = _FakeLLMService()
+        fake_llm_singleton = _FakeLLMService()
+        fake_llm_module.llm_service = fake_llm_singleton
+        fake_llm_module.LLMService = _FakeLLMService
         fake_llm_module._resolve_azure_endpoint_from_provider = lambda *_args, **_kwargs: None
         fake_transcription_module.transcription_service = _FakeTranscriptionService()
         fake_ai_pkg.model_config_service = fake_model_config_module
-        fake_ai_pkg.llm_service = fake_llm_module
+        # Match real package export: ``from app.services.ai import llm_service`` is the singleton.
+        fake_ai_pkg.llm_service = fake_llm_singleton
         fake_ai_pkg.transcription_service = fake_transcription_module
         sys.modules["app.services.ai"] = fake_ai_pkg
         sys.modules["app.services.ai.model_config_service"] = fake_model_config_module
@@ -1176,6 +1189,10 @@ def authenticated_client(client, api_key, db_session, org_id):
             )
         )
         db_session.commit()
+
+    from app.services.workspace_rbac import backfill_org_workspace_memberships
+
+    backfill_org_workspace_memberships(db_session, organization_id=org_id)
 
     client.headers.update({"X-API-Key": api_key})
     return client

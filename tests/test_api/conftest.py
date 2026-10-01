@@ -35,6 +35,44 @@ from app.models.database import (
 from app.models.enums import EvaluationStatus, IntegrationPlatform, MetricTrigger, MetricType, RoleEnum
 
 
+def ensure_test_organization(db_session, org_id, *, name: str = "Test Org") -> Organization:
+    org = db_session.query(Organization).filter(Organization.id == org_id).first()
+    if org is None:
+        org = Organization(id=org_id, name=name)
+        db_session.add(org)
+        db_session.flush()
+    return org
+
+
+def ensure_test_default_workspace(db_session, org_id):
+    """Ensure org + Default workspace exist (Postgres enforces FKs on call imports)."""
+    ensure_test_organization(db_session, org_id)
+    ws = (
+        db_session.query(Workspace)
+        .filter(
+            Workspace.organization_id == org_id,
+            Workspace.is_default.is_(True),
+        )
+        .first()
+    )
+    if ws is None:
+        ws = Workspace(
+            organization_id=org_id,
+            name="Default",
+            slug="default",
+            is_default=True,
+        )
+        db_session.add(ws)
+        db_session.commit()
+        db_session.refresh(ws)
+    return ws
+
+
+@pytest.fixture(autouse=True)
+def _ensure_org_and_default_workspace(db_session, org_id):
+    ensure_test_default_workspace(db_session, org_id)
+
+
 @pytest.fixture
 def seed_org(db_session, org_id):
     org = db_session.query(Organization).filter(Organization.id == org_id).first()
@@ -315,6 +353,9 @@ def user_context(db_session, org_id, api_key, seed_org, make_user):
         if existing_key.name != "Owner API Key":
             existing_key.name = "Owner API Key"
         db_session.commit()
+        from app.services.workspace_rbac import backfill_org_workspace_memberships
+
+        backfill_org_workspace_memberships(db_session, organization_id=org_id)
         return {"user": user, "membership": membership, "api_key_record": existing_key}
 
     user = make_user(email="owner@example.com", name="Org Owner")
@@ -335,6 +376,11 @@ def user_context(db_session, org_id, api_key, seed_org, make_user):
     db_session.add(membership)
     db_session.add(key)
     db_session.commit()
+
+    from app.services.workspace_rbac import backfill_org_workspace_memberships
+
+    backfill_org_workspace_memberships(db_session, organization_id=org_id)
+
     return {"user": user, "membership": membership, "api_key_record": key}
 
 

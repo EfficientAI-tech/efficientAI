@@ -7,16 +7,17 @@ import requests
 from loguru import logger
 
 from app.services.voice_providers.base import BaseVoiceProvider
+from app.services.voice_providers.elevenlabs_api_url import elevenlabs_api_v1_base
 
-ELEVENLABS_API_URL = "https://api.elevenlabs.io/v1"
+ELEVENLABS_API_URL = elevenlabs_api_v1_base(None)
 
 
 class ElevenLabsVoiceProvider(BaseVoiceProvider):
     """ElevenLabs voice provider implementation for Conversational AI."""
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, base_url: Optional[str] = None):
         super().__init__(api_key)
-        self.api_url = ELEVENLABS_API_URL
+        self.api_url = elevenlabs_api_v1_base(base_url)
 
     def create_web_call(
         self,
@@ -331,13 +332,19 @@ class ElevenLabsVoiceProvider(BaseVoiceProvider):
                 params=params,
                 timeout=25,
             )
-            if response.status_code == 401:
-                raise ValueError("Invalid API key")
             if response.status_code != 200:
                 try:
                     detail = response.json()
                 except Exception:
-                    detail = response.text[:200]
+                    detail = response.text[:500]
+                if response.status_code == 401:
+                    if isinstance(detail, dict):
+                        nested = detail.get("detail")
+                        if isinstance(nested, dict) and nested.get("message"):
+                            raise ValueError(nested["message"])
+                        if isinstance(nested, str) and nested.strip():
+                            raise ValueError(nested)
+                    raise ValueError(f"ElevenLabs API error (401): {detail}")
                 raise ValueError(f"ElevenLabs API error ({response.status_code}): {detail}")
 
             data = response.json()

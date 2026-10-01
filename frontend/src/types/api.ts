@@ -364,6 +364,7 @@ export interface Integration {
   platform: IntegrationPlatform
   name?: string | null
   public_key?: string | null
+  api_base_url?: string | null
   is_active: boolean
   /** True if this row is the default credential for (org, platform). */
   is_default?: boolean
@@ -378,6 +379,7 @@ export interface IntegrationCreate {
   platform: IntegrationPlatform
   api_key: string
   public_key?: string
+  api_base_url?: string | null
   name?: string | null
   routing_mode?: CredentialRoutingMode
   /** Mark the new credential as the default for (org, platform). */

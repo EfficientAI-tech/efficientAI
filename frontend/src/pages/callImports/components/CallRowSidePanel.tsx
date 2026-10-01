@@ -27,8 +27,8 @@ export interface CallRowSidePanelProps {
 }
 
 /**
- * Docked right-hand panel: sticky header, shared recording player, sub-tabs.
- * Used beside row lists on Call Import detail and evaluation result tables.
+ * Call-detail panel for the right column in {@link CallRowDetailSplitLayout}.
+ * Fills the pinned column height; only the list scrolls beside it.
  */
 export function CallRowSidePanel({
   onClose,
@@ -61,8 +61,9 @@ export function CallRowSidePanel({
 
   return (
     <aside
-      className={`w-full max-w-[42rem] shrink-0 flex flex-col rounded-lg border border-gray-200 bg-white shadow-lg overflow-hidden sticky top-4 max-h-[calc(100vh-2rem)] ${className}`}
+      className={`flex flex-col h-full min-h-0 rounded-lg border border-gray-200 bg-white shadow-lg overflow-hidden ${className}`}
       aria-label="Call row details"
+      role="complementary"
     >
       <div className="shrink-0 border-b border-gray-200 bg-white px-4 py-3 flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -82,7 +83,7 @@ export function CallRowSidePanel({
         </button>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto">
+      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
         <div className="px-4 py-4 space-y-4">
           {errorBanner}
 
@@ -96,7 +97,7 @@ export function CallRowSidePanel({
 
           {tabs.length > 0 ? (
             <>
-              <div className="border-b border-gray-100 flex items-center gap-0 flex-wrap">
+              <div className="border-b border-gray-100 flex items-center gap-0 flex-wrap sticky top-0 bg-white z-[1] pb-px">
                 {tabs.map((tab) => {
                   const active = activeTab === tab.id
                   return (

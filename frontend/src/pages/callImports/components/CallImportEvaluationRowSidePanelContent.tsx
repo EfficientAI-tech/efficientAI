@@ -56,9 +56,9 @@ export function CallImportEvaluationRowSidePanelContent({
 
   if (activeTab === 'production') {
     return (
-      <div className="max-h-[min(28rem,calc(100vh-20rem))] overflow-y-auto">
+      <div className="max-h-[min(38rem,calc(100vh-12rem))] overflow-y-auto">
         {productionText ? (
-          <TranscriptView transcript={productionText} compact />
+          <TranscriptView transcript={productionText} compact embedded />
         ) : (
           <p className="text-xs text-gray-500 italic">No production transcript on the source row.</p>
         )}
@@ -77,9 +77,9 @@ export function CallImportEvaluationRowSidePanelContent({
             ) : null}
           </p>
         ) : null}
-        <div className="max-h-[min(28rem,calc(100vh-20rem))] overflow-y-auto">
+        <div className="max-h-[min(38rem,calc(100vh-12rem))] overflow-y-auto">
           {diarisedText ? (
-            <TranscriptView transcript={diarisedText} compact />
+            <TranscriptView transcript={diarisedText} compact embedded />
           ) : (
             <p className="text-xs text-gray-500 italic">No diarised transcript on the source row.</p>
           )}
