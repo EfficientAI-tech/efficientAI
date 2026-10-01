@@ -1,11 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { apiClient } from '../../../lib/api'
 import type { EvaluatorResultRow, ListEvaluatorResultsParams } from '../../../types/api'
 import ResultsHierarchyNav, { type HierarchyCrumb } from './ResultsHierarchyNav'
 import ResultsCountCards from './ResultsCountCards'
 import Button from '../../../components/Button'
+import ConfirmModal from '../../../components/ConfirmModal'
 import {
   Clock,
   Eye,
@@ -13,11 +14,12 @@ import {
   RotateCcw,
   Trash2,
 } from 'lucide-react'
-import { AnimatePresence, motion } from 'framer-motion'
 import {
   displayEvaluatorResultStatus,
   isEvaluatorResultInProgress,
 } from './evaluatorResultStatus'
+import { isChatEvalResult } from '../../../lib/agentMedium'
+import { evalRunTypeLabel } from '../components/evaluatorUi'
 import { formatDuration, formatTimestamp, getStatusConfig } from './resultsFormatting'
 import { itemsOf } from '../../../lib/safeData'
 
@@ -63,6 +65,7 @@ export default function ResultsRunsList({
   const [selectedResults, setSelectedResults] = useState<Set<string>>(new Set())
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [reEvaluatingIds, setReEvaluatingIds] = useState<Set<string>>(new Set())
+  const [runMediumFilter, setRunMediumFilter] = useState<'all' | 'voice' | 'chat'>('all')
 
   const apiStatus =
     statusFilter === 'all'
@@ -96,6 +99,12 @@ export default function ResultsRunsList({
   })
 
   const items = itemsOf<EvaluatorResultRow>(data)
+  const filteredItems = useMemo(() => {
+    if (runMediumFilter === 'all') return items
+    return items.filter((r) =>
+      runMediumFilter === 'chat' ? isChatEvalResult(r) : !isChatEvalResult(r),
+    )
+  }, [items, runMediumFilter])
   const total = data?.total ?? 0
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
@@ -184,6 +193,28 @@ export default function ResultsRunsList({
               </button>
             ))}
           </div>
+          <div className="flex gap-1 border-l border-gray-200 pl-3">
+            {(
+              [
+                ['all', 'All runs'],
+                ['voice', 'Voice'],
+                ['chat', 'Chat'],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setRunMediumFilter(key)}
+                className={`px-3 py-1.5 text-xs font-medium rounded-lg ${
+                  runMediumFilter === key
+                    ? 'bg-violet-100 text-violet-900 border border-violet-200'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           {selectedResults.size > 0 && (
             <Button variant="danger" size="sm" onClick={() => setShowDeleteModal(true)}>
               <Trash2 className="w-4 h-4 mr-1" />
@@ -194,7 +225,7 @@ export default function ResultsRunsList({
 
         {isLoading ? (
           <p className="p-8 text-center text-gray-500">Loading runs…</p>
-        ) : items.length === 0 ? (
+        ) : filteredItems.length === 0 ? (
           <p className="p-8 text-center text-gray-500">No runs match this view.</p>
         ) : (
           <div className="overflow-x-auto">
@@ -204,6 +235,7 @@ export default function ResultsRunsList({
                   <th className="px-4 py-3 w-10" />
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Result ID</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Run type</th>
                   {showAgentColumn && (
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Agent</th>
                   )}
@@ -220,9 +252,10 @@ export default function ResultsRunsList({
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {items.map((result: EvaluatorResultRow) => {
+                {filteredItems.map((result: EvaluatorResultRow) => {
                   const displayStatus = displayEvaluatorResultStatus(result)
-                  const statusConfig = getStatusConfig(displayStatus)
+                  const chatSim = isChatEvalResult(result)
+                  const statusConfig = getStatusConfig(displayStatus, { chatSimulation: chatSim })
                   return (
                     <tr
                       key={result.id}
@@ -244,11 +277,18 @@ export default function ResultsRunsList({
                       </td>
                       <td className="px-4 py-3 font-mono text-sm text-primary-600">{result.result_id}</td>
                       <td className="px-4 py-3 text-sm text-gray-900">{result.name}</td>
+                      <td className="px-4 py-3 text-sm font-medium text-gray-700">
+                        {evalRunTypeLabel(result)}
+                      </td>
                       {showAgentColumn && (
-                        <td className="px-4 py-3 text-sm text-gray-600">{result.agent?.name ?? '—'}</td>
+                        <td className="px-4 py-3 text-sm text-gray-600">
+                          {result.agent?.name ?? '—'}
+                        </td>
                       )}
                       {showPersonaColumn && (
-                        <td className="px-4 py-3 text-sm text-gray-600">{result.persona?.name ?? '—'}</td>
+                        <td className="px-4 py-3 text-sm text-gray-600">
+                          {chatSim ? '—' : (result.persona?.name ?? '—')}
+                        </td>
                       )}
                       {showScenarioColumn && (
                         <td className="px-4 py-3 text-sm text-gray-600">{result.scenario?.name ?? '—'}</td>
@@ -321,32 +361,19 @@ export default function ResultsRunsList({
         )}
       </div>
 
-      <AnimatePresence>
-        {showDeleteModal && (
-          <motion.div className="fixed inset-0 z-50 flex items-center justify-center" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <div className="absolute inset-0 bg-gray-500/75" onClick={() => setShowDeleteModal(false)} />
-            <div className="relative bg-white rounded-xl p-6 max-w-md mx-4 shadow-xl">
-              <p className="text-gray-900 font-medium">Delete {selectedResults.size} result(s)?</p>
-              <div className="mt-4 flex justify-end gap-2">
-                <Button variant="ghost" onClick={() => setShowDeleteModal(false)}>
-                  Cancel
-                </Button>
-                <Button
-                  variant="danger"
-                  isLoading={deleteBulkMutation.isPending}
-                  onClick={() =>
-                    deleteBulkMutation.mutate(Array.from(selectedResults), {
-                      onSuccess: () => setShowDeleteModal(false),
-                    })
-                  }
-                >
-                  Delete
-                </Button>
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <ConfirmModal
+        isOpen={showDeleteModal}
+        title={`Delete ${selectedResults.size} result${selectedResults.size !== 1 ? 's' : ''}?`}
+        confirmLabel="Delete"
+        onConfirm={() =>
+          deleteBulkMutation.mutate(Array.from(selectedResults), {
+            onSuccess: () => setShowDeleteModal(false),
+          })
+        }
+        onCancel={() => setShowDeleteModal(false)}
+        isLoading={deleteBulkMutation.isPending}
+        variant="danger"
+      />
     </div>
   )
 }

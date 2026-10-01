@@ -35,6 +35,14 @@ def test_create_web_call_starts_webcall_without_phone_number(monkeypatch):
     assert result["host"] == "wss://atoms.example.livekit.cloud"
 
 
+def test_extract_error_message_skips_null_message():
+    response = requests.Response()
+    response.status_code = 400
+    response._content = b'{"message": null, "detail": "bad agent"}'
+    msg = SmallestVoiceProvider._extract_error_message(response)
+    assert msg == "bad agent"
+
+
 def test_create_web_call_uses_outbound_when_phone_number_present(monkeypatch):
     provider = SmallestVoiceProvider(api_key="key")
     calls = {}

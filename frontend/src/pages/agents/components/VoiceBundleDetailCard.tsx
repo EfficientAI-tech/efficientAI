@@ -1,4 +1,4 @@
-import { Mic, Edit, ExternalLink } from 'lucide-react'
+import { Brain, Mic, Edit, ExternalLink } from 'lucide-react'
 import { VoiceBundle, VoiceBundleType } from '../../../types/api'
 import Button from '../../../components/Button'
 import { useToast } from '../../../hooks/useToast'
@@ -15,6 +15,8 @@ interface VoiceBundleDetailCardProps {
    */
   allowParamTuning?: boolean
   paramTuningMode?: VoiceBundleParamsMode
+  /** Chat evals use only the bundle LLM; hide STT/TTS in the summary/editor. */
+  pipelineScope?: 'full' | 'chat_llm'
 }
 
 export default function VoiceBundleDetailCard({
@@ -23,6 +25,7 @@ export default function VoiceBundleDetailCard({
   onManageInVoiceBundles,
   allowParamTuning,
   paramTuningMode,
+  pipelineScope = 'full',
 }: VoiceBundleDetailCardProps) {
   const { showToast } = useToast()
 
@@ -30,11 +33,20 @@ export default function VoiceBundleDetailCard({
     paramTuningMode ?? (allowParamTuning === false ? 'readonly' : allowParamTuning ? 'collapsible' : 'readonly')
 
   if (!bundle) {
+    const EmptyIcon = pipelineScope === 'chat_llm' ? Brain : Mic
     return (
       <div className="border border-dashed border-gray-300 rounded-lg p-8 text-center bg-gray-50">
-        <Mic className="h-10 w-10 text-gray-300 mx-auto mb-3" />
-        <p className="text-sm text-gray-500">No voice bundle configured for this test agent.</p>
-        <p className="text-xs text-gray-400 mt-1">Assign a bundle in edit mode to enable test calls.</p>
+        <EmptyIcon className="h-10 w-10 text-gray-300 mx-auto mb-3" />
+        <p className="text-sm text-gray-500">
+          {pipelineScope === 'chat_llm'
+            ? 'No test bundle linked for chat evals.'
+            : 'No voice bundle configured for this test agent.'}
+        </p>
+        <p className="text-xs text-gray-400 mt-1">
+          {pipelineScope === 'chat_llm'
+            ? 'Select a voice bundle above — chat simulation uses its LLM only.'
+            : 'Assign a bundle in edit mode to enable test calls.'}
+        </p>
       </div>
     )
   }
@@ -48,7 +60,11 @@ export default function VoiceBundleDetailCard({
             <p className="text-sm text-gray-500 mt-0.5 truncate">{bundle.description}</p>
           )}
           <p className="text-xs text-gray-400 mt-0.5 capitalize">
-            {bundle.bundle_type === VoiceBundleType.S2S ? 'Speech-to-Speech' : 'STT + LLM + TTS'}
+            {pipelineScope === 'chat_llm'
+              ? 'Chat test customer · LLM from bundle'
+              : bundle.bundle_type === VoiceBundleType.S2S
+                ? 'Speech-to-Speech'
+                : 'STT + LLM + TTS'}
             {!bundle.is_active && ' · Inactive'}
           </p>
         </div>
@@ -73,7 +89,12 @@ export default function VoiceBundleDetailCard({
       </div>
 
       <div className="p-4">
-        <VoiceBundleParamsModal bundle={bundle} showToast={showToast} mode={paramsMode} />
+        <VoiceBundleParamsModal
+          bundle={bundle}
+          showToast={showToast}
+          mode={paramsMode}
+          pipelineScope={pipelineScope}
+        />
       </div>
     </div>
   )

@@ -199,7 +199,12 @@ class VapiVoiceProvider(BaseVoiceProvider):
         except requests.exceptions.RequestException as e:
             raise ValueError(f"Failed to get Vapi agent: {str(e)}")
 
-    def extract_agent_prompt(self, agent_id: str) -> Optional[str]:
+    def extract_agent_prompt(
+        self,
+        agent_id: str,
+        *,
+        agent_channel: Optional[str] = None,
+    ) -> Optional[str]:
         """Extract the system prompt from a Vapi assistant."""
         try:
             data = self.get_agent(agent_id)

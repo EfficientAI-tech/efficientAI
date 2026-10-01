@@ -109,6 +109,12 @@ export default function DeleteAgentModal({
                     This agent has dependent records
                   </p>
                   <ul className="text-xs text-amber-700 space-y-1 mb-3">
+                    {deleteDependencies.evaluator_suites && (
+                      <li>
+                        {deleteDependencies.evaluator_suites} evaluator suite
+                        {deleteDependencies.evaluator_suites !== 1 ? 's' : ''}
+                      </li>
+                    )}
                     {deleteDependencies.evaluators && (
                       <li>{deleteDependencies.evaluators} evaluator{deleteDependencies.evaluators !== 1 ? 's' : ''}</li>
                     )}

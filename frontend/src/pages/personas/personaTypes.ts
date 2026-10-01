@@ -1,6 +1,7 @@
 export interface Persona {
   id: string
   name: string
+  simulation_medium?: 'voice' | 'text' | null
   gender: string
   tts_provider?: string | null
   tts_voice_id?: string | null
@@ -117,9 +118,10 @@ export function personaToFormData(persona: Persona): PersonaFormData {
   }
 }
 
-export function personaPayload(data: PersonaFormData) {
+export function personaPayload(data: PersonaFormData, simulationMedium: 'voice' | 'text' = 'voice') {
   return {
     name: data.name,
+    simulation_medium: simulationMedium,
     gender: data.gender,
     tts_provider: data.tts_provider || undefined,
     tts_voice_id: data.tts_voice_id || undefined,

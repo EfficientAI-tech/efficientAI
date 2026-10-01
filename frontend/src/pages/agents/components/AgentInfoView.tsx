@@ -12,7 +12,11 @@ import {
   PhoneCall,
   Radio,
   Hash,
+  MessagesSquare,
 } from 'lucide-react'
+import { agentProductionTabLabel, isChatMedium } from '../../../lib/agentMedium'
+import { connectionTypeLabel } from './create/chatAgentFormUtils'
+import { CallTypeBadge } from '../../evaluators/components/evaluatorUi'
 import ParamSlider from './ParamSlider'
 import {
   AGENT_LANGUAGE_LABELS,
@@ -26,15 +30,19 @@ import {
 import { VoiceBundle, Integration, IntegrationPlatform, TestAgent } from '../../../types/api'
 import { getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../../config/providers'
 import VoiceBundleDetailCard from './VoiceBundleDetailCard'
+import ChatTestAgentLlmDetailCard, {
+  chatTestAgentLlmConfigured,
+} from './ChatTestAgentLlmDetailCard'
 import AgentPromptVisualization from './AgentPromptVisualization'
 import Button from '../../../components/Button'
-import type { AgentTalkMode } from './AgentTalkSidebar'
 import { agentProviderPromptTag } from './agentFlowchartUtils'
 import TestAgentSubTabNav, { type TestAgentSubTab } from './TestAgentSubTabNav'
 import {
   PRODUCTION_FIRST_MESSAGE_OPTIONS,
   callerFirstMessageHelperText,
   templateFromApi,
+  isTemplateFilled,
+  assembleTestAgentPrompt,
 } from './agentTestSetupConstants'
 
 function stripCodeFences(text: string): string {
@@ -55,7 +63,8 @@ interface AgentInfoViewProps {
   activeTab: AgentDetailTab
   onSyncProviderPrompt?: () => void
   isSyncingPrompt?: boolean
-  onTalk?: (mode: AgentTalkMode) => void
+  /** Live web call to production voice platform (Retell/Vapi) — voice agents only. */
+  onTalkToProduction?: () => void
   onEditVoiceBundle?: (bundleId: string) => void
 }
 
@@ -102,7 +111,7 @@ export default function AgentInfoView({
   activeTab,
   onSyncProviderPrompt,
   isSyncingPrompt,
-  onTalk,
+  onTalkToProduction,
   onEditVoiceBundle,
 }: AgentInfoViewProps) {
   const navigate = useNavigate()
@@ -123,6 +132,7 @@ export default function AgentInfoView({
   const providerPromptText = agent.provider_prompt ? stripCodeFences(agent.provider_prompt) : ''
 
   if (activeTab === 'overview') {
+    const isChatAgent = isChatMedium(agent.call_medium)
     const silenceSecs = agent.silence_hangup_secs ?? 15
     const hasVoiceBundle = Boolean(agent.voice_bundle_id && linkedBundle)
     const testAgentConfigured = hasVoiceBundle && linkedBundle!.is_active !== false
@@ -131,6 +141,20 @@ export default function AgentInfoView({
     const hasVoiceAiIntegration = Boolean(voiceAiIntegrationId && voiceIntegration)
     const hasVoiceAiAgentId = Boolean(voiceAiAgentId)
     const voiceAiConfigured = hasVoiceAiIntegration && hasVoiceAiAgentId
+    const chatTestLlmConfigured = chatTestAgentLlmConfigured(agent)
+    const chatTestPromptConfigured = Boolean(
+      (agent.test_agent_template && isTemplateFilled(templateFromApi(agent.test_agent_template))) ||
+        (agent.description && agent.description.trim().split(/\s+/).length >= 10),
+    )
+    const chatConn = isChatAgent
+      ? (agent.chat_connection_type || 'internal_llm').toLowerCase()
+      : ''
+    const chatProductionConfigured =
+      chatConn === 'provider_chat'
+        ? voiceAiConfigured && Boolean(providerPromptText)
+        : chatConn === 'internal_llm'
+          ? Boolean(providerPromptText && agent.main_llm_model)
+          : Boolean(providerPromptText)
 
     const voiceBundleLabel = linkedBundle
       ? linkedBundle.name
@@ -154,9 +178,11 @@ export default function AgentInfoView({
       <div className="space-y-5 w-full min-w-0">
         <div>
           <h2 className="text-lg font-semibold text-gray-900 tracking-tight">Overview</h2>
-          <p className="text-sm text-gray-500 mt-1">
-            Identity, call routing, voice stacks, and session behavior.
-          </p>
+          {!isChatAgent ? (
+            <p className="text-sm text-gray-500 mt-1">
+              Identity, call routing, voice stacks, and session behavior.
+            </p>
+          ) : null}
         </div>
 
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-5 items-start">
@@ -173,44 +199,83 @@ export default function AgentInfoView({
               </div>
             </OverviewSection>
 
-            <OverviewSection title="Call setup" description="Medium, direction, and phone number.">
+            <OverviewSection
+              title={isChatAgent ? 'Chat setup' : 'Call setup'}
+              description={isChatAgent ? undefined : 'Medium, direction, and phone number.'}
+            >
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 <OverviewStatCard
-                  icon={PhoneCall}
-                  label="Call medium"
-                  value={agent.call_medium === 'phone_call' ? 'Phone call' : 'Web call'}
+                  icon={isChatAgent ? MessagesSquare : PhoneCall}
+                  label="Medium"
+                  value={
+                    isChatAgent ? (
+                      <CallTypeBadge medium={agent.call_medium} callType={agent.call_type} />
+                    ) : (
+                      agent.call_medium === 'phone_call' ? 'Phone call' : 'Web call'
+                    )
+                  }
                   accent="emerald"
                 />
-                <OverviewStatCard
-                  icon={Phone}
-                  label="Call type"
-                  value={<span className="capitalize">{agent.call_type}</span>}
-                />
-                <OverviewStatCard
-                  icon={Hash}
-                  label="Phone number"
-                  value={agent.phone_number?.trim() || OVERVIEW_NOT_CONFIGURED}
-                />
+                {!isChatAgent ? (
+                  <>
+                    <OverviewStatCard
+                      icon={Phone}
+                      label="Call type"
+                      value={<span className="capitalize">{agent.call_type}</span>}
+                    />
+                    <OverviewStatCard
+                      icon={Hash}
+                      label="Phone number"
+                      value={agent.phone_number?.trim() || OVERVIEW_NOT_CONFIGURED}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <OverviewStatCard
+                      icon={Globe}
+                      label="Connection"
+                      value={connectionTypeLabel(agent.chat_connection_type)}
+                      accent="violet"
+                    />
+                    {agent.main_llm_model ? (
+                      <OverviewStatCard
+                        icon={Radio}
+                        label="Main model"
+                        value={agent.main_llm_model}
+                        accent="primary"
+                      />
+                    ) : null}
+                    {agent.test_llm_model ? (
+                      <OverviewStatCard
+                        icon={Radio}
+                        label="Test model"
+                        value={agent.test_llm_model}
+                      />
+                    ) : null}
+                  </>
+                )}
               </div>
             </OverviewSection>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-              <OverviewSection
-                title="Live session"
-                description="Automatic hangup when the line stays silent."
-              >
-                <ParamSlider
-                  label="End call after silence"
-                  helpText={`${formatSilenceHangupLabel(silenceSecs)} · Resets when either side speaks. Set to 0 to disable. Use Edit to change.`}
-                  min={0}
-                  max={600}
-                  step={1}
-                  integer
-                  value={silenceSecs}
-                  onChange={() => {}}
-                  disabled
-                />
-              </OverviewSection>
+            <div className={`grid grid-cols-1 ${isChatAgent ? '' : 'lg:grid-cols-2'} gap-5`}>
+              {!isChatAgent ? (
+                <OverviewSection
+                  title="Live session"
+                  description="Automatic hangup when the line stays silent."
+                >
+                  <ParamSlider
+                    label="End call after silence"
+                    helpText={`${formatSilenceHangupLabel(silenceSecs)} · Resets when either side speaks. Set to 0 to disable. Use Edit to change.`}
+                    min={0}
+                    max={600}
+                    step={1}
+                    integer
+                    value={silenceSecs}
+                    onChange={() => {}}
+                    disabled
+                  />
+                </OverviewSection>
+              ) : null}
 
               <OverviewSection title="Timeline">
                 <div className="space-y-1">
@@ -230,39 +295,85 @@ export default function AgentInfoView({
           <div className="space-y-5 min-w-0">
             <OverviewSection
               title="Test agent (EfficientAI)"
-              description="Internal voice stack for playground and evaluator runs."
+              description={
+                isChatAgent
+                  ? 'Test agent template — simulated customer in evals.'
+                  : 'Internal voice stack for playground and evaluator runs.'
+              }
             >
               <dl>
                 <OverviewDetailRow
                   label="Status"
-                  value={<OverviewConfigBadge configured={testAgentConfigured} />}
+                  value={
+                    <OverviewConfigBadge
+                      configured={
+                        isChatAgent
+                          ? chatTestLlmConfigured && chatTestPromptConfigured
+                          : testAgentConfigured
+                      }
+                    />
+                  }
                 />
-                <OverviewDetailRow label="Voice bundle" value={voiceBundleLabel} />
+                {isChatAgent ? (
+                  <>
+                    <OverviewDetailRow
+                      label="Test LLM"
+                      value={
+                        chatTestLlmConfigured && agent.test_llm_model
+                          ? `${agent.test_llm_provider || '?'} / ${agent.test_llm_model}`
+                          : OVERVIEW_NOT_CONFIGURED
+                      }
+                    />
+                    <OverviewDetailRow
+                      label="Test prompt"
+                      value={chatTestPromptConfigured ? 'Configured' : OVERVIEW_NOT_CONFIGURED}
+                    />
+                  </>
+                ) : (
+                  <OverviewDetailRow label="Voice bundle" value={voiceBundleLabel} />
+                )}
               </dl>
             </OverviewSection>
 
             <OverviewSection
-              title="Voice AI agent"
-              description="External provider agent for side-by-side evaluation."
+              title={agentProductionTabLabel(agent.call_medium)}
+              description={
+                isChatAgent
+                  ? 'Production agent under evaluation.'
+                  : 'Provider agent under evaluation.'
+              }
             >
               <dl>
                 <OverviewDetailRow
                   label="Status"
-                  value={<OverviewConfigBadge configured={voiceAiConfigured} />}
-                />
-                <OverviewDetailRow label="Integration" value={voiceAiIntegrationLabel} />
-                <OverviewDetailRow
-                  label="Provider agent ID"
                   value={
-                    hasVoiceAiAgentId ? (
-                      <span className="font-mono text-xs font-semibold text-primary-700">
-                        {voiceAiAgentId}
-                      </span>
-                    ) : (
-                      OVERVIEW_NOT_CONFIGURED
-                    )
+                    <OverviewConfigBadge
+                      configured={isChatAgent ? chatProductionConfigured : voiceAiConfigured}
+                    />
                   }
                 />
+                {isChatAgent && chatConn !== 'provider_chat' ? (
+                  <OverviewDetailRow
+                    label="Connection"
+                    value={connectionTypeLabel(agent.chat_connection_type)}
+                  />
+                ) : (
+                  <OverviewDetailRow label="Integration" value={voiceAiIntegrationLabel} />
+                )}
+                {chatConn === 'provider_chat' || !isChatAgent ? (
+                  <OverviewDetailRow
+                    label="Provider agent ID"
+                    value={
+                      hasVoiceAiAgentId ? (
+                        <span className="font-mono text-xs font-semibold text-primary-700">
+                          {voiceAiAgentId}
+                        </span>
+                      ) : (
+                        OVERVIEW_NOT_CONFIGURED
+                      )
+                    }
+                  />
+                ) : null}
               </dl>
             </OverviewSection>
           </div>
@@ -272,7 +383,74 @@ export default function AgentInfoView({
   }
 
   if (activeTab === 'test_agent') {
-    const canTalk = !!agent.voice_bundle_id
+    const isChatAgent = isChatMedium(agent.call_medium)
+
+    if (isChatAgent) {
+      const template = agent.test_agent_template ? templateFromApi(agent.test_agent_template) : null
+      const testPromptText =
+        (template && assembleTestAgentPrompt(template.sections)) ||
+        agent.description?.trim() ||
+        ''
+      const chatTestConfigured = chatTestAgentLlmConfigured(agent)
+      return (
+        <div className="space-y-4">
+          <TestAgentSubTabNav value={testAgentSubTab} onChange={setTestAgentSubTab} />
+
+          {testAgentSubTab === 'configuration' && (
+            <>
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">Test Agent Configuration</h3>
+                <p className="text-sm text-gray-500 mt-0.5">Model and credential for the test agent.</p>
+              </div>
+              <ChatTestAgentLlmDetailCard agent={agent} />
+              {!chatTestConfigured ? (
+                <p className="text-sm text-amber-700">Configure a model in Edit → Test Agent.</p>
+              ) : null}
+            </>
+          )}
+
+          {testAgentSubTab === 'prompt' && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div>
+                  <h3 className="text-base font-semibold text-gray-900">Test Agent Prompt</h3>
+                  <p className="text-sm text-gray-500 mt-0.5">
+                    Customer persona and scenario for chat evals.
+                  </p>
+                </div>
+                <PromptViewToggle view={testPromptView} onChange={setTestPromptView} />
+              </div>
+              {testPromptView === 'text' ? (
+                <section className="rounded-lg border border-gray-200 overflow-hidden bg-gray-50">
+                  <div className="border-b border-gray-200 bg-white px-4 py-3">
+                    <h4 className="text-sm font-semibold text-gray-900">System prompt</h4>
+                  </div>
+                  <div className="p-5 max-h-[60vh] overflow-y-auto">
+                    {testPromptText ? (
+                      <div className={PROSE}>
+                        <ReactMarkdown>{testPromptText}</ReactMarkdown>
+                      </div>
+                    ) : (
+                      <p className="text-sm text-gray-400 italic">
+                        No prompt configured. Use Edit to add one.
+                      </p>
+                    )}
+                  </div>
+                </section>
+              ) : (
+                <AgentPromptVisualization
+                  agentId={agent.id}
+                  agentName={agent.name}
+                  promptContent={testPromptText}
+                  partialNameLabel="System Prompt"
+                />
+              )}
+            </div>
+          )}
+        </div>
+      )
+    }
+
     return (
       <div className="space-y-4">
         <TestAgentSubTabNav value={testAgentSubTab} onChange={setTestAgentSubTab} />
@@ -282,7 +460,7 @@ export default function AgentInfoView({
             <div>
               <h3 className="text-base font-semibold text-gray-900">Test Agent Configuration</h3>
               <p className="text-sm text-gray-500 mt-0.5">
-                Voice stack for EfficientAI test caller, evaluator runs, and playground.
+                Voice stack for EfficientAI test caller and evaluator runs.
               </p>
             </div>
 
@@ -306,21 +484,7 @@ export default function AgentInfoView({
                   First-message behavior and caller system prompt for test runs.
                 </p>
               </div>
-              <div className="flex items-center gap-2">
-                {onTalk && (
-                  <Button
-                    type="button"
-                    variant="primary"
-                    onClick={() => onTalk('test_agent')}
-                    disabled={!canTalk}
-                    leftIcon={<Phone className="h-4 w-4" />}
-                    title={canTalk ? 'Talk to test agent' : 'Configure a voice bundle first'}
-                  >
-                    Talk
-                  </Button>
-                )}
-                <PromptViewToggle view={testPromptView} onChange={setTestPromptView} />
-              </div>
+              <PromptViewToggle view={testPromptView} onChange={setTestPromptView} />
             </div>
 
             {testPromptView === 'text' ? (
@@ -398,28 +562,36 @@ export default function AgentInfoView({
     )
   }
 
+  const isChatProductionTab = isChatMedium(agent.call_medium)
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h3 className="text-lg font-semibold text-gray-900">Voice AI Agent</h3>
+          <h3 className="text-lg font-semibold text-gray-900">
+            {agentProductionTabLabel(agent.call_medium)}
+          </h3>
           <p className="text-sm text-gray-500 mt-0.5">
-            {hasPlatformLink
-              ? 'External voice platform agent (Retell, Vapi, ElevenLabs, Smallest).'
-              : 'Production prompt used to evaluate and generate the test agent.'}
+            {isChatProductionTab
+              ? hasPlatformLink
+                ? 'External platform chat agent (Retell, Vapi, ElevenLabs, Smallest).'
+                : 'Production prompt and connection for the agent under test.'
+              : hasPlatformLink
+                ? 'External voice platform agent (Retell, Vapi, ElevenLabs, Smallest).'
+                : 'Production prompt used to evaluate and generate the test agent.'}
           </p>
         </div>
-        {onTalk && hasPlatformLink && (
+        {!isChatProductionTab && onTalkToProduction && hasPlatformLink ? (
           <Button
             type="button"
             variant="primary"
-            onClick={() => onTalk('voice_ai_agent')}
+            onClick={onTalkToProduction}
             leftIcon={<Phone className="h-4 w-4" />}
-            title="Talk to voice AI agent"
+            title="Talk to production voice agent (Retell, Vapi, …)"
           >
             Talk
           </Button>
-        )}
+        ) : null}
       </div>
 
       {hasPlatformLink && (

@@ -40,7 +40,7 @@ def generate_evaluation_metric_clusters_task(
         _metrics_for_clustering,
     )
     from app.services.metric_failure_policy import effective_policies
-    from app.services.ai.llm_resolver import get_llm_provider_and_model
+    from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
 
     db = SessionLocal()
     evaluation: CallImportEvaluation | None = None
@@ -61,7 +61,7 @@ def generate_evaluation_metric_clusters_task(
             )
             return
 
-        provider_enum, model_str = get_llm_provider_and_model(
+        provider_enum, model_str = get_llm_provider_and_model_for_request(
             evaluation.organization_id,
             db,
             provider,

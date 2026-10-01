@@ -31,7 +31,7 @@ function getCategory(metricName: string): 'acoustic' | 'ai_voice' | 'llm' {
   return METRIC_CATEGORIES[metricName] ?? 'llm'
 }
 
-function formatMetricValue(value: unknown, type: string | undefined, _metricName: string): ReactNode {
+function formatMetricValue(value: unknown, type: string | null | undefined, _metricName: string): ReactNode {
   if (value === null || value === undefined) return <span className="text-gray-300">—</span>
 
   const normalizedType = type?.toLowerCase()

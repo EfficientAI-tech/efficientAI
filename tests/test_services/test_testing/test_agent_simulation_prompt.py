@@ -11,6 +11,7 @@ from app.services.testing.test_agent_simulation_prompt import (
     get_agent_base_prompt,
     merge_generated_description_with_scenario_appendix,
     build_test_agent_system_prompt,
+    build_test_agent_chat_system_prompt,
     build_live_test_agent_system_prompt,
     build_persona_description_for_bridge,
     resolve_persona_max_turns,
@@ -123,6 +124,14 @@ def test_resolve_persona_max_turns_uses_persona_value():
 def test_build_test_agent_system_prompt_uses_persona_max_turns():
     prompt = build_test_agent_system_prompt(_agent(), _persona(max_turns=3), _scenario())
     assert "After 3 exchanges" in prompt
+
+
+def test_build_test_agent_chat_system_prompt_uses_chat_framing():
+    agent = _agent(call_medium="chat", provider_prompt="You are a clinic scheduling bot.")
+    prompt = build_test_agent_chat_system_prompt(agent, _persona(), _scenario(), max_turns=6)
+    assert "real user in a text chat" in prompt
+    assert "on a phone call" not in prompt.lower()
+    assert "interpret that as a chat customer" in prompt.lower()
 
 
 def test_build_live_test_agent_system_prompt_combines_template_persona_scenario():

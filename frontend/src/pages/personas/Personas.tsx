@@ -37,6 +37,7 @@ import {
   PERSONA_TILE_TABS,
   type PersonaTileTab,
 } from './personaTypes'
+import { filterPersonasByMedium } from '../../lib/personaMedium'
 
 export default function Personas() {
   const queryClient = useQueryClient()
@@ -109,10 +110,14 @@ export default function Personas() {
   )
 
   const userPersonas = useMemo(() => personas as Persona[], [personas])
+  const displayedPersonas = useMemo(
+    () => filterPersonasByMedium(userPersonas, 'voice'),
+    [userPersonas],
+  )
 
   // Mutations
   const createMutation = useMutation({
-    mutationFn: (data: PersonaFormData) => apiClient.createPersona(personaPayload(data)),
+    mutationFn: (data: PersonaFormData) => apiClient.createPersona(personaPayload(data, 'voice')),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['personas'] })
       showToast('Persona created successfully!', 'success')
@@ -334,9 +339,9 @@ export default function Personas() {
         {/* Header */}
         <div className="flex items-center justify-between gap-4">
           <div className="min-w-0">
-            <h1 className="text-3xl font-bold text-gray-900">Test Personas</h1>
+            <h1 className="text-3xl font-bold text-gray-900">Personas</h1>
             <p className="text-gray-600 mt-1">
-              Configure test caller personas — prompt, voice, TTS, behavior, and environment
+              Caller personas for voice simulation — prompt, voice, TTS, behavior, and environment.
             </p>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2 pr-2">
@@ -369,7 +374,6 @@ export default function Personas() {
           </div>
         </div>
 
-        {/* Tab Nav */}
         <div className="border-b border-gray-200">
           <nav className="-mb-px flex gap-6" aria-label="Tabs">
             <button
@@ -382,11 +386,11 @@ export default function Personas() {
             >
               <UserPlus className="h-4 w-4" />
               Personas
-              {userPersonas.length > 0 && (
+              {displayedPersonas.length > 0 && (
                 <span className={`ml-1 rounded-full px-2 py-0.5 text-xs font-medium ${
                   activeTab === 'personas' ? 'bg-primary-100 text-primary-700' : 'bg-gray-100 text-gray-600'
                 }`}>
-                  {userPersonas.length}
+                  {displayedPersonas.length}
                 </span>
               )}
             </button>
@@ -432,18 +436,18 @@ export default function Personas() {
         {/* ===================== PERSONAS TAB ===================== */}
         {activeTab === 'personas' && (
           <>
-            {personas.length === 0 ? (
+            {displayedPersonas.length === 0 ? (
               <div className="bg-white rounded-lg shadow p-12 text-center">
                 <Users className="w-12 h-12 text-gray-400 mx-auto mb-4" />
                 <h3 className="text-lg font-medium text-gray-900 mb-2">No personas yet</h3>
-                <p className="text-gray-500 mb-4">Create your first voice persona to get started</p>
+                <p className="text-gray-500 mb-4">Create your first voice persona to get started.</p>
                 <Button variant="ghost" onClick={openCreateModal}>
                   Create Persona
                 </Button>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                {userPersonas.map((persona) => (
+                {displayedPersonas.map((persona) => (
                   <PersonaTile
                     key={persona.id}
                     persona={persona}

@@ -7,7 +7,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.core.auth.principal import Principal
+from app.core.auth.principal import AuthMethod, Principal
 from app.services.synthetic_traces.otlp_ingest import parse_otlp_body
 from app.services.synthetic_traces.otlp_mapper import extract_correlation_ids
 from app.services.synthetic_traces.trace_service import get_trace_by_call_short_id
@@ -36,6 +36,11 @@ def peek_otlp_correlation(
         except (ValueError, TypeError):
             workspace_id = None
     return call_short_id, workspace_id
+
+
+def _principal_may_reconcile_trace_workspace(principal: Principal) -> bool:
+    """Unbound org API keys (SDK bots) may align ingest to an existing trace workspace."""
+    return principal.auth_method == AuthMethod.API_KEY and principal.user_id is None
 
 
 def resolve_otlp_ingest_workspace_id(
@@ -69,12 +74,25 @@ def resolve_otlp_ingest_workspace_id(
             db,
             organization_id=organization_id,
             call_short_id=call_short_id,
-            workspace_id=None,
+            workspace_id=request_workspace_id,
         )
+        if trace is None and _principal_may_reconcile_trace_workspace(principal):
+            trace = get_trace_by_call_short_id(
+                db,
+                organization_id=organization_id,
+                call_short_id=call_short_id,
+                workspace_id=None,
+            )
         if trace is not None and trace.workspace_id is not None:
-            return trace.workspace_id
+            if trace.workspace_id == request_workspace_id:
+                return trace.workspace_id
+            if _principal_may_reconcile_trace_workspace(principal):
+                return trace.workspace_id
 
     if span_workspace_id is not None:
-        return span_workspace_id
+        if span_workspace_id == request_workspace_id:
+            return span_workspace_id
+        if _principal_may_reconcile_trace_workspace(principal):
+            return span_workspace_id
 
     return request_workspace_id

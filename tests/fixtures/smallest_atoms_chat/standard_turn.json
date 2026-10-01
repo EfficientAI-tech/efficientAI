@@ -1,0 +1,14 @@
+[
+  {
+    "type": "session.started",
+    "call_id": "call_fixture_001"
+  },
+  {
+    "type": "transcript",
+    "role": "assistant",
+    "text": "Hello, how can I help you today?"
+  },
+  {
+    "type": "agent_stop_talking"
+  }
+]

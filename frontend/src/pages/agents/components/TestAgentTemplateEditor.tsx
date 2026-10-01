@@ -9,6 +9,7 @@ import {
   TestAgentTemplateInput,
   TestPromptSectionKey,
   assembleTestAgentPrompt,
+  CHAT_TEST_SECTION_HINTS,
   callerFirstMessageHelperText,
   deriveCallerFirstMessage,
   normalizeProductionMode,
@@ -22,6 +23,8 @@ interface TestAgentTemplateEditorProps {
   showLegacy?: boolean
   /** Expanded layout for agent workspace edit — taller editors, full-width. */
   variant?: 'default' | 'workspace'
+  /** Chat evals use template sections only; first-message block is voice/playground. */
+  simulationMedium?: 'chat' | 'voice'
 }
 
 function FirstMessageFields({
@@ -108,7 +111,9 @@ export default function TestAgentTemplateEditor({
   legacyDescription,
   showLegacy = false,
   variant = 'default',
+  simulationMedium = 'voice',
 }: TestAgentTemplateEditorProps) {
+  const isChat = simulationMedium === 'chat'
   const [activeSection, setActiveSection] = useState<TestPromptSectionKey>('complementary_goal')
   const [viewMode, setViewMode] = useState<'edit' | 'preview'>('edit')
   const isWorkspace = variant === 'workspace'
@@ -148,27 +153,33 @@ export default function TestAgentTemplateEditor({
         </div>
       ) : null}
 
-      <section className="rounded-lg border border-indigo-200 bg-indigo-50/40 overflow-hidden">
-        <div className="border-b border-indigo-100 bg-indigo-50/80 px-4 py-3">
-          <h3 className="text-sm font-semibold text-gray-900">First message</h3>
-          <p className="text-xs text-gray-600 mt-0.5">
-            Whether the production agent or the simulated test caller opens the call — separate from
-            the caller system prompt below.
-          </p>
-        </div>
-        <div className="p-4 bg-white/60">
-          <FirstMessageFields
-            firstMessage={template.first_message}
-            onChange={updateFirstMessage}
-          />
-        </div>
-      </section>
+      {!isChat ? (
+        <section className="rounded-lg border border-indigo-200 bg-indigo-50/40 overflow-hidden">
+          <div className="border-b border-indigo-100 bg-indigo-50/80 px-4 py-3">
+            <h3 className="text-sm font-semibold text-gray-900">First message</h3>
+            <p className="text-xs text-gray-600 mt-0.5">
+              Whether the production agent or the simulated test caller opens the call — separate from
+              the caller system prompt below.
+            </p>
+          </div>
+          <div className="p-4 bg-white/60">
+            <FirstMessageFields
+              firstMessage={template.first_message}
+              onChange={updateFirstMessage}
+            />
+          </div>
+        </section>
+      ) : null}
 
       <section className="rounded-lg border border-gray-200 bg-white overflow-hidden">
         <div className="border-b border-gray-200 bg-gray-50 px-4 py-3">
-          <h3 className="text-sm font-semibold text-gray-900">System prompt</h3>
-          <p className="text-xs text-gray-600 mt-0.5">
-            Caller persona and scenario behavior — assembled into the live test agent prompt.
+          <h3 className="text-sm font-semibold text-gray-900">
+            {isChat ? 'Test agent prompt' : 'Simulated customer prompt'}
+          </h3>
+          <p className="text-xs text-gray-500 mt-0.5">
+            {isChat
+              ? 'System instructions for the customer role.'
+              : 'Caller persona and scenario — assembled into the live test agent prompt.'}
           </p>
         </div>
 
@@ -191,9 +202,14 @@ export default function TestAgentTemplateEditor({
 
         <div className="p-4">
           <div className="flex items-center justify-between mb-2">
-            <label className="text-sm font-medium text-gray-700">
-              {activeSectionDraft?.title || 'Section'}
-            </label>
+            <div>
+              <label className="text-sm font-medium text-gray-700">
+                {activeSectionDraft?.title || 'Section'}
+              </label>
+              {isChat && activeSection ? (
+                <p className="text-xs text-gray-500 mt-0.5">{CHAT_TEST_SECTION_HINTS[activeSection]}</p>
+              ) : null}
+            </div>
             <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
               <button
                 type="button"
@@ -284,6 +300,7 @@ export function applyGeneratedTemplate(
           }
         })
       : current.sections,
+    generated_from_production: true,
     first_message: {
       production_mode: productionMode,
       production_message:

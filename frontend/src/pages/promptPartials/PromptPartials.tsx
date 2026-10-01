@@ -1880,7 +1880,7 @@ function AIGenerateModal({
                   <p className="text-xs text-amber-800">
                     {aiProvider
                       ? `Using ${PROVIDER_LABELS[aiProvider] || aiProvider}${aiModel ? ` / ${aiModel}` : ''} to generate your prompt.`
-                      : 'Auto-detect will use the first available LLM credential (AI Providers or Integrations).'}
+                      : 'Select a credential and model from your enabled list.'}
                     {' '}You can review and edit before saving.
                   </p>
                 </div>

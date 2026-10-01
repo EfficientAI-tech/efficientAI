@@ -11,6 +11,7 @@ import type {
   LLMGatewayType,
 } from '../../lib/api'
 import Button from '../../components/Button'
+import TelephonyProviderBrand from '../../components/TelephonyProviderBrand'
 import { useToast } from '../../hooks/useToast'
 import {
   getProviderLabel,
@@ -1641,14 +1642,7 @@ export default function Integrations() {
                         return (
                           <button key={tp} type="button" disabled={isEditMode} onClick={() => setSelectedTelephonyProvider(tp)}
                             className={`text-left rounded-lg border p-3 transition ${selectedTelephonyProvider === tp ? 'border-green-500 bg-green-50' : 'border-gray-200 hover:border-gray-300'} ${isEditMode ? 'opacity-75 cursor-not-allowed' : ''}`}>
-                            <div className="flex items-center gap-2">
-                              {meta?.logo ? (
-                                <img src={meta.logo} alt={meta.label} className="w-5 h-5 object-contain" />
-                              ) : (
-                                <Phone className="h-4 w-4 text-green-600" />
-                              )}
-                              <span className="font-medium text-gray-900">{meta?.label || tp}</span>
-                            </div>
+                            <TelephonyProviderBrand provider={tp} size="sm" />
                             <p className="text-xs text-gray-600 mt-1">{meta?.description}</p>
                           </button>
                         )
@@ -1670,7 +1664,7 @@ export default function Integrations() {
                         </div>
                         <div>
                           <label className="block text-sm font-medium text-gray-700 mb-1">
-                            {selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'API Key' : 'Auth ID'} {isEditMode && <span className="text-gray-500 font-normal">(leave blank to keep current)</span>}
+                        {selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'API Key' : selectedTelephonyProvider === TelephonyProvider.TWILIO ? 'Account SID' : 'Auth ID'} {isEditMode && <span className="text-gray-500 font-normal">(leave blank to keep current)</span>}
                           </label>
                           <input type="password" value={telephonyAuthId} onChange={(e) => setTelephonyAuthId(e.target.value)} required={!isEditMode}
                             placeholder={isEditMode ? 'Leave blank to keep current' : selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'Enter API Key' : 'Enter Auth ID'} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500" />

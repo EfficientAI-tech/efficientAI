@@ -193,14 +193,6 @@ export interface LLMSelectionValue {
   credential_id?: string | null
 }
 
-const DEFAULT_LLM_MODELS: Record<string, string> = {
-  openai: 'gpt-5-mini',
-  anthropic: 'claude-sonnet-4.6',
-  google: 'gemini-2.5-flash',
-  sarvam: 'sarvam-30b',
-  fireworks: 'gpt-oss-20b',
-}
-
 function resolveCredentialForSelection(
   selection: LLMSelectionValue,
   aiProviders: AIProvider[],
@@ -268,10 +260,6 @@ export function resolveLLMModelForSubmit(
   if (routesViaGateway(credential)) {
     const gatewayModel = credential.gateway_model?.trim()
     if (gatewayModel) return gatewayModel
-    const providerKey = (credential.provider || selection.provider || '')
-      .toLowerCase()
-      .trim()
-    return DEFAULT_LLM_MODELS[providerKey] ?? null
   }
 
   return null

@@ -21,7 +21,7 @@ from app.services.billing.flexprice_service import record_agent_test_setup_gener
 from app.models.database import (
     Agent, ConversationEvaluation, TestAgentConversation, VoiceBundle,
     AIProvider, Integration, IntegrationPlatform, CallMediumEnum,
-    Evaluator, EvaluatorResult, CallRecording, Scenario,
+    Evaluator, EvaluatorResult, EvaluatorSuite, CallRecording, Scenario,
 )
 from sqlalchemy import and_
 from app.models.schemas import (
@@ -53,6 +53,38 @@ from app.services.testing.test_agent_template import (
 )
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+
+def _stored_chat_connection_config(config, *, previous=None, connection_type=None):
+    from app.config import settings
+    from app.services.agents.chat_connection_config_store import (
+        enrich_chat_connection_config_for_storage,
+    )
+    from app.services.agents.chat_outbound_urls import assert_chat_connection_urls_safe
+    from app.services.telephony.recording_download import ExotelInvalidContentError
+
+    try:
+        assert_chat_connection_urls_safe(config, allow_loopback=bool(settings.DEBUG))
+    except ExotelInvalidContentError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    return enrich_chat_connection_config_for_storage(
+        config,
+        connection_type=connection_type,
+        previous=previous,
+    )
+
+
+def _chat_eval_mode_for_create(agent: AgentCreate, is_chat_agent: bool):
+    from app.models.enums import ChatConnectionTypeEnum
+    from app.services.agents.chat_preprod_scope import default_chat_eval_mode_for_connection
+
+    if not is_chat_agent:
+        return None
+    conn = agent.chat_connection_type or ChatConnectionTypeEnum.INTERNAL_LLM
+    return default_chat_eval_mode_for_connection(conn)
 
 
 def _first_message_response(first_message: TestAgentFirstMessage) -> TestAgentFirstMessageResponse:
@@ -100,9 +132,11 @@ def _validate_agent_phone_assignment(
     exclude_agent_id: Optional[UUID] = None,
 ) -> None:
     """Raise HTTPException if phone assignment conflicts with another agent."""
-    if call_medium != CallMediumEnum.PHONE_CALL:
+    if call_medium not in (CallMediumEnum.PHONE_CALL, CallMediumEnum.CHAT):
         return
-    if not phone_number and not telephony_phone_number_id:
+    if call_medium == CallMediumEnum.PHONE_CALL and not phone_number and not telephony_phone_number_id:
+        return
+    if call_medium == CallMediumEnum.CHAT and not telephony_phone_number_id:
         return
 
     from app.services.telephony.phone_routing import find_agent_phone_assignment_conflict
@@ -189,7 +223,7 @@ GENERATE_AGENT_DESCRIPTION_SYSTEM = (
 )
 
 
-from app.services.ai.llm_resolver import get_llm_provider_and_model as _get_llm_provider_and_model
+from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request as _get_llm_provider_and_model
 
 
 @router.post("/generate-description")
@@ -368,6 +402,20 @@ async def generate_test_prompt(
         )
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+    except RuntimeError as e:
+        detail = str(e)
+        lower = detail.lower()
+        if "non-serverless" in lower or "model_not_available" in lower:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "The selected Together model is not available on serverless inference. "
+                    "Choose another AI provider/model in the generator dropdown, or update "
+                    "your default AI provider under Settings → AI Providers."
+                ),
+            ) from e
+        logger.error(f"[Agents] Test prompt generation failed: {repr(e)}")
+        raise HTTPException(500, f"AI generation failed: {detail}") from e
     except Exception as e:
         logger.error(f"[Agents] Test prompt generation failed: {repr(e)}")
         raise HTTPException(500, f"AI generation failed: {str(e)}") from e
@@ -413,6 +461,7 @@ async def generate_scenarios_from_prompt(
                 scenario_count=data.scenario_count,
                 language=data.language,
                 call_type=data.call_type,
+                call_medium=data.call_medium,
                 additional_context=data.additional_context,
                 llm_provider=provider_enum,
                 llm_model=model_str,
@@ -496,6 +545,7 @@ async def generate_test_setup(
                 scenario_count=data.scenario_count,
                 language=data.language,
                 call_type=data.call_type,
+                call_medium=getattr(data, "call_medium", None),
                 additional_context=data.additional_context,
                 llm_provider=provider_enum,
                 llm_model=model_str,
@@ -543,7 +593,12 @@ def generate_unique_agent_id(db: Session) -> str:
     )
 
 
-def get_agent_dependencies(db: Session, organization_id: UUID, agent_uuid: UUID) -> dict:
+def get_agent_dependencies(
+    db: Session,
+    organization_id: UUID,
+    agent_uuid: UUID,
+    workspace_id: Optional[UUID] = None,
+) -> dict:
     """Return dependency counts that block non-force delete."""
     evaluators_count = db.query(Evaluator).filter(
         Evaluator.agent_id == agent_uuid,
@@ -570,7 +625,17 @@ def get_agent_dependencies(db: Session, organization_id: UUID, agent_uuid: UUID)
         TestAgentConversation.organization_id == organization_id,
     ).count()
 
+    suite_filters = [
+        EvaluatorSuite.agent_id == agent_uuid,
+        EvaluatorSuite.organization_id == organization_id,
+    ]
+    if workspace_id is not None:
+        suite_filters.append(EvaluatorSuite.workspace_id == workspace_id)
+    evaluator_suites_count = db.query(EvaluatorSuite).filter(*suite_filters).count()
+
     dependencies = {}
+    if evaluator_suites_count > 0:
+        dependencies["evaluator_suites"] = evaluator_suites_count
     if evaluators_count > 0:
         dependencies["evaluators"] = evaluators_count
     if evaluator_results_count > 0:
@@ -606,19 +671,59 @@ async def create_agent(
             detail="phone_number is required when call_medium is phone_call"
         )
     
-    # Validate voice_bundle_id exists, is active, and belongs to organization
-    voice_bundle = db.query(VoiceBundle).filter(
-        and_(
-            VoiceBundle.id == agent.voice_bundle_id,
-            VoiceBundle.organization_id == organization_id,
-            VoiceBundle.is_active == True,
-        )
-    ).first()
-    if not voice_bundle:
+    from app.models.enums import ChatConnectionTypeEnum
+
+    is_chat_agent = agent.call_medium == CallMediumEnumSchema.CHAT
+
+    if is_chat_agent:
+        from app.services.agents.chat_preprod_scope import apply_preprod_chat_create
+
+        apply_preprod_chat_create(agent)
+
+    if agent.voice_bundle_id:
+        voice_bundle = db.query(VoiceBundle).filter(
+            and_(
+                VoiceBundle.id == agent.voice_bundle_id,
+                VoiceBundle.organization_id == organization_id,
+                VoiceBundle.is_active == True,
+            )
+        ).first()
+        if not voice_bundle:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Active voice bundle not found",
+            )
+    elif not is_chat_agent:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Active voice bundle not found",
+            detail="voice_bundle_id is required for voice agents",
         )
+
+    if is_chat_agent:
+        from app.api.v1.routes.voicebundles import _validate_credential
+
+        conn = agent.chat_connection_type or ChatConnectionTypeEnum.INTERNAL_LLM
+        if agent.main_llm_provider:
+            _validate_credential(
+                db,
+                organization_id,
+                agent.main_llm_provider,
+                agent.main_llm_credential_id,
+                "llm",
+            )
+        if agent.test_llm_provider:
+            _validate_credential(
+                db,
+                organization_id,
+                agent.test_llm_provider,
+                agent.test_llm_credential_id,
+                "llm",
+            )
+        if conn == ChatConnectionTypeEnum.PROVIDER_CHAT and not agent.voice_ai_integration_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="voice_ai_integration_id is required for provider_chat agents",
+            )
     
     # Validate voice_ai_integration_id exists and belongs to organization
     if agent.voice_ai_integration_id:
@@ -681,6 +786,36 @@ async def create_agent(
         call_medium=agent.call_medium,
         telephony_phone_number_id=agent.telephony_phone_number_id,
         voice_bundle_id=agent.voice_bundle_id,
+        chat_connection_type=(
+            agent.chat_connection_type.value
+            if agent.chat_connection_type
+            else (ChatConnectionTypeEnum.INTERNAL_LLM.value if is_chat_agent else None)
+        ),
+        main_llm_provider=(
+            agent.main_llm_provider.value
+            if agent.main_llm_provider and hasattr(agent.main_llm_provider, "value")
+            else agent.main_llm_provider
+        ),
+        main_llm_model=agent.main_llm_model,
+        main_llm_credential_id=agent.main_llm_credential_id,
+        main_llm_config=agent.main_llm_config,
+        test_llm_provider=(
+            agent.test_llm_provider.value
+            if agent.test_llm_provider and hasattr(agent.test_llm_provider, "value")
+            else agent.test_llm_provider
+        ),
+        test_llm_model=agent.test_llm_model,
+        test_llm_credential_id=agent.test_llm_credential_id,
+        test_llm_config=agent.test_llm_config,
+        chat_connection_config=_stored_chat_connection_config(
+            agent.chat_connection_config,
+            connection_type=(
+                agent.chat_connection_type.value
+                if agent.chat_connection_type and hasattr(agent.chat_connection_type, "value")
+                else agent.chat_connection_type
+            ),
+        ),
+        chat_eval_mode=_chat_eval_mode_for_create(agent, is_chat_agent),
         ai_provider_id=agent.ai_provider_id,
         voice_ai_integration_id=agent.voice_ai_integration_id,
         voice_ai_agent_id=agent.voice_ai_agent_id,
@@ -906,6 +1041,34 @@ async def update_agent(
 
     update_data = agent_update.model_dump(exclude_unset=True, exclude_none=False)
 
+    if "chat_connection_config" in update_data:
+        conn_for_storage = update_data.get("chat_connection_type") or db_agent.chat_connection_type
+        update_data["chat_connection_config"] = _stored_chat_connection_config(
+            update_data.get("chat_connection_config"),
+            previous=db_agent.chat_connection_config,
+            connection_type=conn_for_storage,
+        )
+    if "chat_eval_mode" in update_data and update_data["chat_eval_mode"] is not None:
+        update_data["chat_eval_mode"] = (
+            update_data["chat_eval_mode"].value
+            if hasattr(update_data["chat_eval_mode"], "value")
+            else update_data["chat_eval_mode"]
+        )
+    if "chat_connection_type" in update_data and update_data["chat_connection_type"] is not None:
+        from app.services.agents.chat_connection import coerce_chat_connection_type
+
+        update_data["chat_connection_type"] = coerce_chat_connection_type(
+            update_data["chat_connection_type"]
+        )
+
+    from app.services.agents.chat_preprod_scope import apply_preprod_chat_update
+
+    apply_preprod_chat_update(
+        update_data,
+        db_call_medium=db_agent.call_medium,
+        db_connection_type=db_agent.chat_connection_type,
+    )
+
     if "test_agent_template" in update_data:
         template_input = agent_update.test_agent_template
         assembled_description, template_dict = _apply_test_agent_template_fields(
@@ -944,6 +1107,49 @@ async def update_agent(
     # Apply updates
     for field, value in update_data.items():
         setattr(db_agent, field, value)
+
+    effective_medium = db_agent.call_medium
+    if effective_medium == CallMediumEnum.PHONE_CALL:
+        if not db_agent.phone_number:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="phone_number is required when call_medium is phone_call",
+            )
+
+    if effective_medium == CallMediumEnum.CHAT:
+        from app.api.v1.routes.voicebundles import _validate_credential
+        from app.models.enums import ChatConnectionTypeEnum
+        from app.services.agents.chat_connection import (
+            coerce_chat_connection_type,
+            validate_chat_connection_for_agent,
+        )
+
+        db_agent.chat_connection_type = coerce_chat_connection_type(db_agent.chat_connection_type)
+        conn = db_agent.chat_connection_type
+        if db_agent.main_llm_provider:
+            _validate_credential(
+                db,
+                organization_id,
+                db_agent.main_llm_provider,
+                db_agent.main_llm_credential_id,
+                "llm",
+            )
+        if db_agent.test_llm_provider:
+            _validate_credential(
+                db,
+                organization_id,
+                db_agent.test_llm_provider,
+                db_agent.test_llm_credential_id,
+                "llm",
+            )
+        if conn == ChatConnectionTypeEnum.PROVIDER_CHAT.value and not db_agent.voice_ai_integration_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="voice_ai_integration_id is required for provider_chat agents",
+            )
+        chat_err = validate_chat_connection_for_agent(db_agent)
+        if chat_err:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=chat_err)
     
     db.commit()
     db.refresh(db_agent)
@@ -1067,10 +1273,14 @@ async def delete_agent(
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
     
     agent_uuid = db_agent.id
-    dependencies = get_agent_dependencies(db, organization_id, agent_uuid)
+    dependencies = get_agent_dependencies(
+        db, organization_id, agent_uuid, workspace_id=workspace_id
+    )
 
     if dependencies and not force:
         parts = []
+        if dependencies.get("evaluator_suites"):
+            parts.append(f"{dependencies['evaluator_suites']} evaluator suite(s)")
         if dependencies.get("evaluators"):
             parts.append(f"{dependencies['evaluators']} evaluator(s)")
         if dependencies.get("evaluator_results"):
@@ -1098,22 +1308,31 @@ async def delete_agent(
             EvaluatorResult.agent_id == agent_uuid,
         ).delete(synchronize_session=False)
 
-        # 2. Evaluators (references agents)
+        # 2. Evaluators (references agents; may also reference suites)
         db.query(Evaluator).filter(
             Evaluator.agent_id == agent_uuid,
+            Evaluator.organization_id == organization_id,
         ).delete(synchronize_session=False)
 
-        # 3. Nullify call recordings (keep recordings, unlink agent)
+        # 3. Evaluator suites (references agents; evaluators may already be removed)
+        suite_delete_filters = [
+            EvaluatorSuite.agent_id == agent_uuid,
+            EvaluatorSuite.organization_id == organization_id,
+            EvaluatorSuite.workspace_id == workspace_id,
+        ]
+        db.query(EvaluatorSuite).filter(*suite_delete_filters).delete(synchronize_session=False)
+
+        # 4. Nullify call recordings (keep recordings, unlink agent)
         db.query(CallRecording).filter(
             CallRecording.agent_id == agent_uuid,
         ).update({CallRecording.agent_id: None}, synchronize_session=False)
 
-        # 4. ConversationEvaluations
+        # 5. ConversationEvaluations
         db.query(ConversationEvaluation).filter(
             ConversationEvaluation.agent_id == agent_uuid,
         ).delete(synchronize_session=False)
 
-        # 5. TestAgentConversations
+        # 6. TestAgentConversations
         db.query(TestAgentConversation).filter(
             TestAgentConversation.agent_id == agent_uuid,
         ).delete(synchronize_session=False)
@@ -1162,13 +1381,118 @@ async def get_agent_delete_impact(
     if not db_agent:
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
 
-    dependencies = get_agent_dependencies(db, organization_id, db_agent.id)
+    dependencies = get_agent_dependencies(
+        db, organization_id, db_agent.id, workspace_id=workspace_id
+    )
     return {
         "agent_id": str(db_agent.id),
         "agent_name": db_agent.name,
         "dependencies": dependencies,
         "can_delete_without_force": len(dependencies) == 0,
     }
+
+
+@router.post("/{agent_id}/chat-import-setup")
+async def setup_chat_import_for_agent(
+    agent_id: str,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Ensure a chat-transcript import schema exists for post-prod evaluation."""
+    from app.models.enums import CallMediumEnum as CallMediumEnumDb
+    from app.services.agents.chat_post_prod_import import ensure_chat_transcript_import_schema
+
+    db_agent = _get_agent_for_org_workspace(db, agent_id, organization_id, workspace_id)
+    if (db_agent.call_medium or "").lower() != CallMediumEnumDb.CHAT.value:
+        raise HTTPException(status_code=400, detail="Agent is not a chat agent")
+
+    schema = ensure_chat_transcript_import_schema(
+        db, organization_id=organization_id, workspace_id=workspace_id
+    )
+    return {
+        "schema_id": str(schema.id),
+        "schema_name": schema.name,
+        "content_modality": "chat",
+        "imports_path": "/chat-imports",
+    }
+
+
+class ChatMessagingTestTwilioSmsRequest(BaseModel):
+    messaging_recipient: Optional[str] = None
+    twilio_from: Optional[str] = None
+    twilio_sms_trial_body_template: Optional[str] = None
+
+
+@router.post("/{agent_id}/chat-messaging/test-twilio-sms")
+async def test_chat_messaging_twilio_sms(
+    agent_id: str,
+    body: ChatMessagingTestTwilioSmsRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Send one Twilio SMS using saved credentials (does not run an eval turn)."""
+    import httpx
+
+    from app.models.enums import ChatConnectionTypeEnum
+    from app.services.agents.chat_connection import normalized_chat_connection_type
+    from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
+    from app.services.agents.messaging_channel_chat import (
+        _twilio_api_error_detail,
+        test_twilio_sms_send,
+    )
+
+    db_agent = _get_agent_for_org_workspace(db, agent_id, organization_id, workspace_id)
+    conn = normalized_chat_connection_type(db_agent)
+    if conn != ChatConnectionTypeEnum.MESSAGING_CHANNELS.value:
+        raise HTTPException(status_code=400, detail="Agent is not a messaging chat agent")
+
+    cfg = chat_connection_config_for_runtime(db_agent.chat_connection_config)
+    raw = body.model_dump()
+    overrides: dict[str, str] = {}
+    if raw.get("twilio_sms_trial_body_template") is not None:
+        overrides["twilio_sms_trial_body_template"] = str(
+            raw["twilio_sms_trial_body_template"] or ""
+        ).strip()
+    for key in ("messaging_recipient", "twilio_from"):
+        val = raw.get(key)
+        if isinstance(val, str) and val.strip():
+            overrides[key] = val.strip()
+    try:
+        result = test_twilio_sms_send(
+            db,
+            organization_id=organization_id,
+            cfg=cfg,
+            overrides=overrides or None,
+            telephony_phone_number_id=db_agent.telephony_phone_number_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except httpx.HTTPStatusError as exc:
+        detail = _twilio_api_error_detail(exc.response)
+        raise HTTPException(status_code=502, detail=detail) from exc
+
+    return {"ok": True, **result}
+
+
+def _get_agent_for_org_workspace(db, agent_id: str, organization_id: UUID, workspace_id: UUID) -> Agent:
+    try:
+        agent_uuid = UUID(agent_id)
+        db_agent = db.query(Agent).filter(
+            Agent.id == agent_uuid,
+            Agent.organization_id == organization_id,
+            Agent.workspace_id == workspace_id,
+        ).first()
+    except ValueError:
+        db_agent = db.query(Agent).filter(
+            Agent.agent_id == agent_id,
+            Agent.organization_id == organization_id,
+            Agent.workspace_id == workspace_id,
+        ).first()
+    if not db_agent:
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+    return db_agent
 
 
 from app.core.auth.capabilities import SIM_MANAGE, SIM_VIEW

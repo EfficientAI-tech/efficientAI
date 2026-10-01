@@ -38,6 +38,142 @@ def _retell_agent_list_page(raw: Any) -> tuple[List[Any], bool, Optional[str]]:
     )
 
 
+def _retell_row_channel(item: dict[str, Any]) -> str:
+    return str(item.get("channel") or "").strip().lower()
+
+
+def _retell_row_looks_voice_only(item: dict[str, Any]) -> bool:
+    channel = _retell_row_channel(item)
+    if channel == "chat":
+        return False
+    if channel == "voice":
+        return True
+    voice_id = item.get("voice_id")
+    if isinstance(voice_id, str) and voice_id.strip():
+        return True
+    return False
+
+
+def _retell_sdk_to_dict(raw: Any) -> Optional[dict[str, Any]]:
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    if hasattr(raw, "model_dump"):
+        try:
+            dumped = raw.model_dump()
+            if isinstance(dumped, dict):
+                return dumped
+        except Exception:
+            pass
+    if hasattr(raw, "dict"):
+        try:
+            dumped = raw.dict()
+            if isinstance(dumped, dict):
+                return dumped
+        except Exception:
+            pass
+    return None
+
+
+def _retell_nonempty_prompt(*candidates: Any) -> Optional[str]:
+    for item in candidates:
+        if isinstance(item, str) and item.strip():
+            return item.strip()
+    return None
+
+
+def _retell_prompt_from_llm_payload(llm: dict[str, Any]) -> Optional[str]:
+    general = _retell_nonempty_prompt(llm.get("general_prompt"))
+    state_parts: list[str] = []
+    states = llm.get("states")
+    if isinstance(states, list):
+        for state in states:
+            if not isinstance(state, dict):
+                continue
+            part = _retell_nonempty_prompt(state.get("state_prompt"))
+            if part:
+                state_parts.append(part)
+    if general and state_parts:
+        return f"{general}\n\n" + "\n\n".join(state_parts)
+    if general:
+        return general
+    if state_parts:
+        return "\n\n".join(state_parts)
+    return _retell_nonempty_prompt(
+        llm.get("system_prompt"),
+        llm.get("prompt"),
+    )
+
+
+def _retell_normalize_engine_type(raw: Any) -> str:
+    return str(raw or "").strip().lower().replace("_", "-")
+
+
+def _retell_agent_direct_prompt(agent: dict[str, Any]) -> Optional[str]:
+    return _retell_nonempty_prompt(
+        agent.get("general_prompt"),
+        agent.get("global_prompt"),
+        agent.get("system_prompt"),
+        agent.get("prompt"),
+    )
+
+
+def _retell_prompt_from_flow_nodes(flow: dict[str, Any]) -> Optional[str]:
+    nodes = flow.get("nodes")
+    if not isinstance(nodes, list):
+        return None
+    chunks: list[str] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        instruction = node.get("instruction")
+        if isinstance(instruction, str):
+            part = _retell_nonempty_prompt(instruction)
+            if part:
+                chunks.append(part)
+                continue
+        if isinstance(instruction, dict):
+            part = _retell_nonempty_prompt(
+                instruction.get("prompt"),
+                instruction.get("text"),
+            )
+            if part:
+                chunks.append(part)
+                continue
+        part = _retell_nonempty_prompt(
+            node.get("global_prompt"),
+            node.get("prompt"),
+            node.get("text"),
+        )
+        if part:
+            chunks.append(part)
+    if not chunks:
+        return None
+    return "\n\n".join(chunks)
+
+
+def _retell_prompt_from_conversation_flow(flow: dict[str, Any]) -> Optional[str]:
+    prompt = _retell_nonempty_prompt(flow.get("global_prompt"))
+    if prompt:
+        return prompt
+    from_nodes = _retell_prompt_from_flow_nodes(flow)
+    if from_nodes:
+        return from_nodes
+    components = flow.get("components")
+    if isinstance(components, list):
+        for component in components:
+            if not isinstance(component, dict):
+                continue
+            nested = _retell_prompt_from_conversation_flow(component)
+            if nested:
+                return nested
+            part = _retell_prompt_from_flow_nodes(component)
+            if part:
+                return part
+    return None
+
+
 class RetellVoiceProvider(BaseVoiceProvider):
     """Retell AI voice provider implementation."""
     
@@ -244,35 +380,38 @@ class RetellVoiceProvider(BaseVoiceProvider):
         except Exception as e:
             raise ValueError(f"Failed to register Retell call: {str(e)}")
     
-    def get_agent(self, agent_id: str) -> Dict[str, Any]:
-        """
-        Get Retell agent details.
-        
-        Args:
-            agent_id: Retell agent ID
-            
-        Returns:
-            Dictionary containing agent information
-        """
+    def _retrieve_voice_agent_record(self, agent_id: str) -> Optional[dict[str, Any]]:
         try:
             agent_response = self.client.agent.retrieve(agent_id=agent_id)
-            
-            # Convert the response to a dictionary
-            if isinstance(agent_response, dict):
-                return agent_response
-            elif hasattr(agent_response, "model_dump"):
-                return agent_response.model_dump()
-            elif hasattr(agent_response, "dict"):
-                return agent_response.dict()
-            else:
-                return {
-                    "agent_id": getattr(agent_response, "agent_id", agent_id),
-                    "agent_name": getattr(agent_response, "agent_name", None),
-                    "voice_id": getattr(agent_response, "voice_id", None),
-                    "response_engine": getattr(agent_response, "response_engine", None),
-                }
-        except Exception as e:
-            raise ValueError(f"Failed to get Retell agent: {str(e)}")
+            return _retell_sdk_to_dict(agent_response)
+        except Exception as exc:
+            logger.debug("[RetellProvider] agent.retrieve failed for {}: {}", agent_id, exc)
+            return None
+
+    def _retrieve_chat_agent_record(self, agent_id: str) -> Optional[dict[str, Any]]:
+        chat_api = getattr(self.client, "chat_agent", None)
+        if chat_api is None:
+            return None
+        try:
+            agent_response = chat_api.retrieve(agent_id=agent_id)
+            record = _retell_sdk_to_dict(agent_response)
+            if record is not None:
+                record.setdefault("agent_id", agent_id)
+                record["channel"] = "chat"
+            return record
+        except Exception as exc:
+            logger.debug("[RetellProvider] chat_agent.retrieve failed for {}: {}", agent_id, exc)
+            return None
+
+    def get_agent(self, agent_id: str) -> Dict[str, Any]:
+        """Get Retell voice or chat agent details."""
+        voice = self._retrieve_voice_agent_record(agent_id)
+        if voice:
+            return voice
+        chat = self._retrieve_chat_agent_record(agent_id)
+        if chat:
+            return chat
+        raise ValueError(f"Failed to get Retell agent: {agent_id}")
     
     def retrieve_call_metrics(self, call_id: str) -> Dict[str, Any]:
         """
@@ -309,83 +448,137 @@ class RetellVoiceProvider(BaseVoiceProvider):
         except Exception as e:
             raise ValueError(f"Failed to retrieve Retell call metrics: {str(e)}")
 
-    def extract_agent_prompt(self, agent_id: str) -> Optional[str]:
-        """Extract the system prompt from a Retell agent.
-
-        Handles all three response engine types:
-        - retell-llm: fetch LLM by llm_id, read general_prompt
-        - conversation-flow: fetch flow by conversation_flow_id, read global_prompt
-        - custom-llm: no extractable prompt (websocket-based)
-        """
+    def _retrieve_conversation_flow_once(
+        self,
+        flow_id: str,
+        version: Any,
+    ) -> Optional[dict[str, Any]]:
+        retrieve_kwargs: dict[str, Any] = {"conversation_flow_id": flow_id}
+        if version is not None:
+            retrieve_kwargs["version"] = version
         try:
-            agent_response = self.client.agent.retrieve(agent_id=agent_id)
+            flow_response = self.client.conversation_flow.retrieve(**retrieve_kwargs)
+            return _retell_sdk_to_dict(flow_response) or {}
+        except Exception as exc:
+            logger.debug(
+                "[RetellProvider] conversation_flow.retrieve {} version={}: {}",
+                flow_id,
+                version,
+                exc,
+            )
+            return None
 
-            response_engine = getattr(agent_response, "response_engine", None)
-            if response_engine is None:
-                logger.warning("[RetellProvider] No response_engine on agent")
-                return None
+    def _retrieve_conversation_flow(self, flow_id: str, version: Any) -> Optional[dict[str, Any]]:
+        versions_to_try: list[Any] = []
+        if version is not None:
+            versions_to_try.append(version)
+            try:
+                versions_to_try.append(int(version))
+            except (TypeError, ValueError):
+                pass
+            try:
+                versions_to_try.append(float(version))
+            except (TypeError, ValueError):
+                pass
+        versions_to_try.append(None)
+        seen: set[str] = set()
+        for ver in versions_to_try:
+            key = repr(ver)
+            if key in seen:
+                continue
+            seen.add(key)
+            flow = self._retrieve_conversation_flow_once(flow_id, ver)
+            if flow:
+                prompt = _retell_prompt_from_conversation_flow(flow)
+                if prompt or flow.get("global_prompt") is not None or flow.get("nodes"):
+                    return flow
+        return None
 
-            engine_type = getattr(response_engine, "type", None)
-            if isinstance(response_engine, dict):
-                engine_type = response_engine.get("type")
+    def _extract_prompt_from_agent_record(
+        self,
+        agent: dict[str, Any],
+        agent_id: str,
+    ) -> Optional[str]:
+        direct = _retell_agent_direct_prompt(agent)
+        if direct:
+            return direct
 
-            logger.debug(f"[RetellProvider] response_engine type={engine_type}")
+        response_engine = _retell_sdk_to_dict(agent.get("response_engine"))
+        if not response_engine:
+            logger.warning("[RetellProvider] No response_engine on agent {}", agent_id)
+            return None
 
-            # --- retell-llm: fetch the LLM and read general_prompt ---
-            llm_id = getattr(response_engine, "llm_id", None)
-            if isinstance(response_engine, dict):
-                llm_id = response_engine.get("llm_id", llm_id)  
+        engine_type = _retell_normalize_engine_type(response_engine.get("type"))
+        logger.debug("[RetellProvider] agent {} response_engine type={}", agent_id, engine_type)
 
-            if llm_id:
-                logger.debug(f"[RetellProvider] Fetching LLM {llm_id}")
-                llm_response = self.client.llm.retrieve(llm_id=llm_id)
+        flow_id = (
+            response_engine.get("conversation_flow_id")
+            or response_engine.get("conversation_flow")
+            or agent.get("conversation_flow_id")
+            or ""
+        )
+        flow_id = str(flow_id).strip()
+        llm_id = str(response_engine.get("llm_id") or "").strip()
 
-                prompt = getattr(llm_response, "general_prompt", None)
-                if isinstance(llm_response, dict):
-                    prompt = llm_response.get("general_prompt", prompt)
+        if flow_id:
+            logger.debug("[RetellProvider] Fetching conversation flow {}", flow_id)
+            version = response_engine.get("version")
+            flow = self._retrieve_conversation_flow(flow_id, version)
+            if flow:
+                prompt = _retell_prompt_from_conversation_flow(flow)
                 if prompt:
                     return prompt
+            logger.warning(
+                "[RetellProvider] Conversation flow {} returned no global_prompt or node prompts",
+                flow_id,
+            )
 
-                if hasattr(llm_response, "model_dump"):
-                    prompt = llm_response.model_dump().get("general_prompt")
-                    if prompt:
-                        return prompt
+        if llm_id:
+            logger.debug("[RetellProvider] Fetching LLM {}", llm_id)
+            llm_response = self.client.llm.retrieve(llm_id=llm_id)
+            llm = _retell_sdk_to_dict(llm_response) or {}
+            prompt = _retell_prompt_from_llm_payload(llm)
+            if prompt:
+                return prompt
+            logger.warning("[RetellProvider] LLM {} returned no general/state prompt", llm_id)
 
-                logger.warning(f"[RetellProvider] LLM {llm_id} returned no general_prompt")
-                return None
+        prompt = _retell_nonempty_prompt(
+            response_engine.get("general_prompt"),
+            response_engine.get("global_prompt"),
+            response_engine.get("system_prompt"),
+        )
+        if prompt:
+            return prompt
 
-            # --- conversation-flow: fetch the flow and read global_prompt ---
-            flow_id = getattr(response_engine, "conversation_flow_id", None)
-            if isinstance(response_engine, dict):
-                flow_id = response_engine.get("conversation_flow_id", flow_id)
+        if engine_type == "custom-llm":
+            logger.warning("[RetellProvider] custom-llm agents have no importable prompt")
+        return None
 
-            if flow_id:
-                logger.debug(f"[RetellProvider] Fetching conversation flow {flow_id}")
-                flow_response = self.client.conversation_flow.retrieve(
-                    conversation_flow_id=flow_id
-                )
+    def extract_agent_prompt(
+        self,
+        agent_id: str,
+        *,
+        agent_channel: Optional[str] = None,
+    ) -> Optional[str]:
+        """Extract the system prompt from a Retell voice or chat agent."""
+        channel = (agent_channel or "").strip().lower()
+        voice_record = self._retrieve_voice_agent_record(agent_id)
+        chat_record = self._retrieve_chat_agent_record(agent_id)
+        if channel == "chat":
+            records = [chat_record, voice_record]
+        else:
+            records = [voice_record, chat_record]
 
-                prompt = getattr(flow_response, "global_prompt", None)
-                if isinstance(flow_response, dict):
-                    prompt = flow_response.get("global_prompt", prompt)
+        try:
+            for agent in records:
+                if not agent:
+                    continue
+                prompt = self._extract_prompt_from_agent_record(agent, agent_id)
                 if prompt:
                     return prompt
-
-                if hasattr(flow_response, "model_dump"):
-                    prompt = flow_response.model_dump().get("global_prompt")
-                    if prompt:
-                        return prompt
-
-                logger.warning(f"[RetellProvider] Conversation flow {flow_id} returned no global_prompt")
-                return None
-
-            # --- custom-llm or unknown: try system_prompt fallback ---
-            if isinstance(response_engine, dict):
-                return response_engine.get("system_prompt")
-            return getattr(response_engine, "system_prompt", None)
-
+            return None
         except Exception as e:
-            logger.warning(f"[RetellProvider] Failed to extract agent prompt: {e}")
+            logger.warning("[RetellProvider] Failed to extract agent prompt for {}: {}", agent_id, e)
             return None
 
     def update_agent_prompt(self, agent_id: str, system_prompt: str, **kwargs) -> Dict[str, Any]:
@@ -443,39 +636,111 @@ class RetellVoiceProvider(BaseVoiceProvider):
         except Exception as e:
             raise ValueError(f"Retell connection test failed: {str(e)}")
 
-    def list_agents(self, *, search: Optional[str] = None) -> List[Dict[str, str]]:
-        """List Retell agents."""
-        try:
-            collected: List[Any] = []
-            pagination_key: Optional[str] = None
-            for _ in range(50):
-                list_params: Dict[str, Any] = {"limit": 100}
-                if pagination_key:
-                    list_params["pagination_key"] = pagination_key
-                raw = self.client.agent.list(**list_params)
-                page_items, has_more, pagination_key = _retell_agent_list_page(raw)
-                collected.extend(page_items)
-                if not has_more or not pagination_key:
-                    break
+    def _fetch_agent_pages(self, list_filter: Optional[dict[str, Any]] = None) -> List[Any]:
+        collected: List[Any] = []
+        pagination_key: Optional[str] = None
+        for _ in range(50):
+            list_params: Dict[str, Any] = {"limit": 100}
+            if list_filter:
+                list_params.update(list_filter)
+            if pagination_key:
+                list_params["pagination_key"] = pagination_key
+            raw = self.client.agent.list(**list_params)
+            page_items, has_more, pagination_key = _retell_agent_list_page(raw)
+            collected.extend(page_items)
+            if not has_more or not pagination_key:
+                break
+        return collected
 
-            agents: List[Dict[str, str]] = []
-            needle = (search or "").strip().lower()
-            for item in collected:
-                if hasattr(item, "model_dump"):
-                    item = item.model_dump()
-                elif hasattr(item, "dict"):
-                    item = item.dict()
-                if not isinstance(item, dict):
+    def _list_agents_by_channel(
+        self,
+        *,
+        channel: str,
+        search: Optional[str] = None,
+    ) -> List[Dict[str, str]]:
+        """POST /v2/list-agents via SDK with filter_criteria.channel (voice | chat)."""
+        list_filter = {
+            "filter_criteria": {
+                "channel": {"type": "string", "op": "eq", "value": channel},
+            },
+        }
+        if search and str(search).strip():
+            list_filter["filter_criteria"]["query"] = str(search).strip()
+
+        collected = self._fetch_agent_pages(list_filter)
+        agents = self._parse_retell_agent_list_items(collected, channel=channel, search=search)
+
+        if channel == "chat":
+            # Some accounts return chat agents only on an unfiltered pass with channel=chat on rows.
+            by_id = {row["id"]: row for row in agents}
+            fallback_collected = self._fetch_agent_pages(None)
+            for row in self._parse_retell_agent_list_items(
+                fallback_collected,
+                channel="chat",
+                search=search,
+                require_explicit_chat_channel=True,
+            ):
+                by_id.setdefault(row["id"], row)
+            agents = list(by_id.values())
+
+        agents.sort(key=lambda row: row["name"].lower())
+        return agents
+
+    def _parse_retell_agent_list_items(
+        self,
+        collected: List[Any],
+        *,
+        channel: str,
+        search: Optional[str] = None,
+        require_explicit_chat_channel: bool = False,
+    ) -> List[Dict[str, str]]:
+        """Parse list-agents rows; Retell often omits channel when the API already filtered by channel."""
+        agents: List[Dict[str, str]] = []
+        needle = (search or "").strip().lower()
+        for item in collected:
+            if hasattr(item, "model_dump"):
+                item = item.model_dump()
+            elif hasattr(item, "dict"):
+                item = item.dict()
+            if not isinstance(item, dict):
+                continue
+            agent_id = str(
+                item.get("agent_id") or item.get("chat_agent_id") or item.get("id") or ""
+            ).strip()
+            if not agent_id:
+                continue
+            name = str(
+                item.get("agent_name") or item.get("name") or item.get("chat_agent_name") or agent_id
+            ).strip()
+            item_channel = str(item.get("channel") or "").strip().lower()
+            if require_explicit_chat_channel:
+                if item_channel != "chat":
                     continue
-                agent_id = str(item.get("agent_id") or item.get("id") or "").strip()
-                if not agent_id:
+            elif channel == "chat":
+                if item_channel == "voice" or _retell_row_looks_voice_only(item):
                     continue
-                name = str(item.get("agent_name") or item.get("name") or agent_id).strip()
-                if needle and needle not in name.lower() and needle not in agent_id.lower():
+                if item_channel in ("voice", "chat") and item_channel != channel:
                     continue
-                agents.append({"id": agent_id, "name": name})
-            agents.sort(key=lambda row: row["name"].lower())
-            return agents
+            elif item_channel in ("voice", "chat") and item_channel != channel:
+                continue
+            if channel == "chat" and item_channel == "chat" and "chat" not in name.lower():
+                name = f"{name} · chat"
+            if needle and needle not in name.lower() and needle not in agent_id.lower():
+                continue
+            agents.append({"id": agent_id, "name": name})
+        return agents
+
+    def list_agents(self, *, search: Optional[str] = None) -> List[Dict[str, str]]:
+        """List Retell voice-channel agents (web/phone calls)."""
+        try:
+            return self._list_agents_by_channel(channel="voice", search=search)
         except Exception as e:
-            raise ValueError(f"Failed to list Retell agents: {str(e)}")
+            raise ValueError(f"Failed to list Retell agents: {str(e)}") from e
+
+    def list_chat_agents(self, *, search: Optional[str] = None) -> List[Dict[str, str]]:
+        """List Retell chat-channel agents (required for /create-chat)."""
+        try:
+            return self._list_agents_by_channel(channel="chat", search=search)
+        except Exception as e:
+            raise ValueError(f"Failed to list Retell chat agents: {str(e)}") from e
 

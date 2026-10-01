@@ -36,16 +36,36 @@ def test_assert_key_belongs_to_org_rejects_path_traversal():
 
 def test_assert_key_belongs_to_org_accepts_extra_storage_prefix():
     org_id = uuid4()
-    key = f"traces/organizations/{org_id}/workspaces/ws-1/traces/trace-1/spans.json"
+    ws_id = uuid4()
+    key = f"traces/organizations/{org_id}/workspaces/{ws_id}/traces/trace-1/spans.json"
     assert (
         assert_key_belongs_to_org(
             key,
             org_id,
             storage_prefix="audio/",
             extra_storage_prefixes=["traces/"],
+            active_workspace_id=ws_id,
+            traces_s3_prefix="traces/",
         )
         == key
     )
+
+
+def test_assert_key_belongs_to_org_rejects_trace_key_for_other_workspace():
+    org_id = uuid4()
+    ws_id = uuid4()
+    other_ws = uuid4()
+    key = f"traces/organizations/{org_id}/workspaces/{other_ws}/traces/trace-1/spans.json"
+    with pytest.raises(HTTPException) as exc_info:
+        assert_key_belongs_to_org(
+            key,
+            org_id,
+            storage_prefix="audio/",
+            extra_storage_prefixes=["traces/"],
+            active_workspace_id=ws_id,
+            traces_s3_prefix="traces/",
+        )
+    assert exc_info.value.status_code == 403
 
 
 def test_assert_key_belongs_to_org_decodes_percent_encoded_key():

@@ -285,7 +285,7 @@ export default function MetricPromptImprovementsPanel({
           <div className="rounded-md border border-gray-200 bg-gray-50 p-2.5">
             <p className="text-[11px] text-gray-500 mb-2">
               Choose the LLM used to generate improvement suggestions. Leave unset to
-              auto-detect your organization&apos;s first active provider.
+              select a provider and model explicitly.
             </p>
             <AIProviderModelPicker
               provider={pickerProvider}

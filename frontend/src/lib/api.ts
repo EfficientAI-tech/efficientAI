@@ -1304,6 +1304,32 @@ class ApiClient {
   }
 
   // Agents endpoints
+  async getMessagingPublicBaseUrl(): Promise<{ public_base_url: string }> {
+    const response = await this.client.get('/api/v1/chat/messaging/public-base-url')
+    return response.data
+  }
+
+  async testAgentTwilioSms(
+    agentId: string,
+    overrides?: {
+      messaging_recipient?: string
+      twilio_from?: string
+      twilio_sms_trial_body_template?: string
+    },
+  ): Promise<{
+    ok: boolean
+    message_sid: string
+    to: string
+    from: string
+    body_sent: string
+  }> {
+    const response = await this.client.post(
+      `/api/v1/agents/${agentId}/chat-messaging/test-twilio-sms`,
+      overrides ?? {},
+    )
+    return response.data
+  }
+
   async createAgent(data: {
     name: string
     phone_number?: string
@@ -1313,6 +1339,15 @@ class ApiClient {
     call_type: string
     call_medium: string
     voice_bundle_id?: string
+    chat_connection_type?: string
+    main_llm_provider?: string
+    main_llm_model?: string
+    main_llm_credential_id?: string
+    test_llm_provider?: string
+    test_llm_model?: string
+    test_llm_credential_id?: string
+    chat_connection_config?: Record<string, unknown>
+    chat_eval_mode?: string
     ai_provider_id?: string
     voice_ai_integration_id?: string
     voice_ai_agent_id?: string
@@ -1332,6 +1367,16 @@ class ApiClient {
 
   async getAgent(agentId: string): Promise<TestAgent> {
     const response = await this.client.get(`/api/v1/agents/${agentId}`)
+    return response.data
+  }
+
+  async setupChatImportForAgent(agentId: string): Promise<{
+    schema_id: string
+    schema_name: string
+    content_modality: string
+    imports_path: string
+  }> {
+    const response = await this.client.post(`/api/v1/agents/${agentId}/chat-import-setup`)
     return response.data
   }
 
@@ -1365,6 +1410,16 @@ class ApiClient {
     voice_ai_agent_id?: string | null
     provider_prompt?: string | null
     prompt_variables?: Record<string, string>
+    test_agent_template?: unknown
+    chat_connection_type?: string
+    main_llm_provider?: string
+    main_llm_model?: string
+    main_llm_credential_id?: string
+    test_llm_provider?: string
+    test_llm_model?: string
+    test_llm_credential_id?: string
+    chat_connection_config?: Record<string, unknown> | null
+    chat_eval_mode?: string
   }): Promise<TestAgent> {
     const response = await this.client.put(`/api/v1/agents/${agentId}`, data)
     return response.data
@@ -1911,17 +1966,21 @@ class ApiClient {
   async previewIntegrationAgentPrompt(
     integrationId: string,
     voiceAiAgentId: string,
+    options?: { agentChannel?: 'voice' | 'chat' },
   ): Promise<{ provider_prompt: string }> {
     const response = await this.client.post(
       `/api/v1/integrations/${integrationId}/preview-agent-prompt`,
-      { voice_ai_agent_id: voiceAiAgentId },
+      {
+        voice_ai_agent_id: voiceAiAgentId,
+        ...(options?.agentChannel ? { agent_channel: options.agentChannel } : {}),
+      },
     )
     return response.data
   }
 
   async listIntegrationVoiceAgents(
     integrationId: string,
-    options?: { refresh?: boolean; search?: string },
+    options?: { refresh?: boolean; search?: string; agentKind?: 'voice' | 'chat' },
   ): Promise<ListIntegrationVoiceAgentsResponse> {
     const response = await this.client.get(
       `/api/v1/integrations/${integrationId}/voice-agents`,
@@ -1929,6 +1988,7 @@ class ApiClient {
         params: {
           ...(options?.refresh ? { refresh: true } : {}),
           ...(options?.search ? { search: options.search } : {}),
+          ...(options?.agentKind ? { agent_kind: options.agentKind } : {}),
         },
       },
     )
@@ -2250,6 +2310,8 @@ class ApiClient {
        * select the schema dropdown.
        */
       schemaId?: string | null
+      /** Set to `chat` for post-prod transcript-only imports. */
+      contentModality?: 'chat' | 'voice'
     },
   ): Promise<CallImport> {
     const formData = new FormData()
@@ -2262,6 +2324,9 @@ class ApiClient {
     }
     if (options.schemaId) {
       formData.append('schema_id', options.schemaId)
+    }
+    if (options.contentModality) {
+      formData.append('content_modality', options.contentModality)
     }
     const response = await this.client.post('/api/v1/call-imports', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
@@ -2511,6 +2576,7 @@ class ApiClient {
       dataset?: string
       tag_id?: string[]
       source_format?: string
+      content_modality?: string
     } = {}
   ): Promise<CallImportListResponse> {
     // Send tag_id repeated rather than as a JSON array.
@@ -2520,6 +2586,7 @@ class ApiClient {
     if (params.status) search.set('status', params.status)
     if (params.dataset !== undefined) search.set('dataset', params.dataset)
     if (params.source_format) search.set('source_format', params.source_format)
+    if (params.content_modality) search.set('content_modality', params.content_modality)
     for (const tag of params.tag_id || []) search.append('tag_id', tag)
     const response = await this.client.get('/api/v1/call-imports', { params: search })
     return response.data
@@ -2702,9 +2769,8 @@ class ApiClient {
    *
    * - Pass ``regenerate: true`` to force a fresh LLM call even when a
    *   cached summary exists at the current ``completed_rows`` watermark.
-   * - Pass ``provider`` + ``model`` to pin a specific LLM. Omit both to
-   *   let the backend auto-detect the org's first active OpenAI /
-   *   Anthropic / Google credential (mirroring Prompt Partials).
+   * - Pass ``provider``, ``model``, and optional ``credential_id`` to run
+   *   insights with an explicit LLM selection.
    */
   async generateCallImportEvaluationInsights(
     callImportId: string,
@@ -4619,7 +4685,12 @@ class ApiClient {
 
   async runEvaluatorSuite(
     suiteId: string,
-    data: { runs_per_combination: number; to_number?: string; from_number?: string },
+    data: {
+      runs_per_combination: number
+      to_number?: string
+      from_number?: string
+      twilio_sms_trial_body_template?: string
+    },
   ): Promise<RunEvaluatorSuiteResponse> {
     const response = await this.client.post(`/api/v1/evaluator-suites/${suiteId}/run`, data)
     return response.data
@@ -5307,7 +5378,7 @@ class ApiClient {
 
   async generateMetric(data: {
     mode: 'description' | 'examples'
-    surface: 'agent' | 'voice_playground' | 'blind_test'
+    surface: 'agent' | 'chat_agent' | 'voice_playground'
     description?: string
     examples?: Array<{ transcript: string; rating: any; notes?: string }>
     provider?: string
@@ -5332,7 +5403,7 @@ class ApiClient {
 
   async parseBulkMetric(data: {
     prompt: string
-    surface: 'agent' | 'voice_playground' | 'blind_test'
+    surface: 'agent' | 'chat_agent' | 'voice_playground'
     /** When set, the response includes a ``parent`` block + all labels are children. */
     parent_name?: string
     parent_description?: string

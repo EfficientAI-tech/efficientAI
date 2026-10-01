@@ -280,6 +280,9 @@ class Settings(BaseSettings):
     PLIVO_VERIFY_APP_UUID: str = ""
     PLIVO_WEBHOOK_BASE_URL: str = ""
 
+    # Twilio SMS inbound webhooks (chat eval; public API host, optional override)
+    TWILIO_WEBHOOK_BASE_URL: str = ""
+
     # Vobiz Telephony (platform-level, optional)
     VOBIZ_AUTH_ID: str = ""
     VOBIZ_AUTH_TOKEN: str = ""
@@ -982,6 +985,11 @@ def load_config_from_file(config_path: str) -> None:
         exotel_cfg = config_data["exotel"]
         if exotel_cfg.get("outbound_pool"):
             settings.EXOTEL_OUTBOUND_POOL = list(exotel_cfg["outbound_pool"])
+
+    if "twilio" in config_data:
+        twilio_cfg = config_data["twilio"]
+        if twilio_cfg.get("webhook_base_url"):
+            settings.TWILIO_WEBHOOK_BASE_URL = str(twilio_cfg["webhook_base_url"]).strip()
 
     if "vobiz" in config_data:
         vobiz_cfg = config_data["vobiz"]

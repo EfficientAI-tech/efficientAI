@@ -185,7 +185,7 @@ IMPROVE_PROMPT_SYSTEM = (
 # under the original name for backwards compatibility with any external
 # patches in tests.
 from app.services.ai.llm_resolver import (
-    get_llm_provider_and_model as _get_llm_provider_and_model,
+    get_llm_provider_and_model_for_request as _get_llm_provider_and_model,
 )
 
 

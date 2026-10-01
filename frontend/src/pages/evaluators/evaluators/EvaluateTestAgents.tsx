@@ -17,15 +17,33 @@ import {
   PhoneIncoming,
   PhoneOutgoing,
   ChevronRight,
+  MessagesSquare,
 } from 'lucide-react'
 import { useToast } from '../../../hooks/useToast'
 import { useWalkthroughSectionState } from '../../../context/WalkthroughContext'
 import WalkthroughToggleButton from '../../../components/walkthrough/WalkthroughToggleButton'
-import { formatSuitePersonaLabel } from '../components/evaluatorSuitePersonas'
+import {
+  formatSuiteDisplayName,
+  formatSuitePersonaLabel,
+  isChatEvaluatorSuite,
+} from '../components/evaluatorSuitePersonas'
 import EvaluatorSuiteWizard from '../components/EvaluatorSuiteWizard'
 import EvaluatorSmartRunModal from '../components/EvaluatorSmartRunModal'
 import { CallTypeBadge, StatCard } from '../components/evaluatorUi'
 import { countDisplayMetrics, type MetricRow } from '../components/metricSelectionUtils'
+
+type SuiteMediumFilter = 'all' | 'chat' | 'phone' | 'web' | 'inbound'
+
+function suiteMatchesMediumFilter(suite: EvaluatorSuite, filter: SuiteMediumFilter): boolean {
+  if (filter === 'all') return true
+  if (filter === 'chat') return suite.agent_call_medium === 'chat'
+  if (filter === 'inbound') return suite.agent_call_type === 'inbound'
+  if (filter === 'phone') {
+    return suite.agent_call_medium === 'phone_call' && suite.agent_call_type !== 'inbound'
+  }
+  if (filter === 'web') return suite.agent_call_medium === 'web_call'
+  return true
+}
 
 export default function EvaluateTestAgents() {
   const navigate = useNavigate()
@@ -37,6 +55,7 @@ export default function EvaluateTestAgents() {
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [collapsedAgentIds, setCollapsedAgentIds] = useState<Set<string>>(new Set())
+  const [suiteMediumFilter, setSuiteMediumFilter] = useState<SuiteMediumFilter>('all')
 
   useWalkthroughSectionState(
     'evaluators',
@@ -76,8 +95,9 @@ export default function EvaluateTestAgents() {
       (s) => s.agent_call_medium === 'phone_call' && s.agent_call_type !== 'inbound',
     ).length
     const web = suites.filter((s) => s.agent_call_medium === 'web_call').length
+    const chat = suites.filter((s) => s.agent_call_medium === 'chat').length
     const combinations = suites.reduce((sum, s) => sum + s.combination_count, 0)
-    return { total: suites.length, inbound, outbound, web, combinations }
+    return { total: suites.length, inbound, outbound, web, chat, combinations }
   }, [suites])
 
   const sortedSuites = useMemo(() => {
@@ -91,7 +111,8 @@ export default function EvaluateTestAgents() {
 
   const suiteGroups = useMemo(() => {
     const map = new Map<string, EvaluatorSuite[]>()
-    for (const suite of sortedSuites) {
+    const visibleSuites = sortedSuites.filter((suite) => suiteMatchesMediumFilter(suite, suiteMediumFilter))
+    for (const suite of visibleSuites) {
       const list = map.get(suite.agent_id) ?? []
       list.push(suite)
       map.set(suite.agent_id, list)
@@ -101,7 +122,12 @@ export default function EvaluateTestAgents() {
       agentName: groupSuites[0]?.agent_name || 'Unknown agent',
       suites: groupSuites,
     }))
-  }, [sortedSuites])
+  }, [sortedSuites, suiteMediumFilter])
+
+  const filteredSuiteCount = useMemo(
+    () => sortedSuites.filter((suite) => suiteMatchesMediumFilter(suite, suiteMediumFilter)).length,
+    [sortedSuites, suiteMediumFilter],
+  )
 
   const toggleAgentCollapsed = (agentId: string) => {
     setCollapsedAgentIds((prev) => {
@@ -130,6 +156,10 @@ export default function EvaluateTestAgents() {
   const selectedSuites = suites.filter((s) => selectedSuiteIds.has(s.id))
   const selectedSuite = selectedSuites.length === 1 ? selectedSuites[0] : null
   const selectedIsInbound = selectedSuite?.agent_call_type === 'inbound'
+  const showPersonaColumn = useMemo(
+    () => suites.some((s) => !isChatEvaluatorSuite(s)),
+    [suites],
+  )
 
   const handleDeleteSelected = async () => {
     setIsDeleting(true)
@@ -156,7 +186,7 @@ export default function EvaluateTestAgents() {
         <div className="min-w-0">
           <h1 className="text-3xl font-bold text-gray-900">Evaluators</h1>
           <p className="mt-2 text-sm text-gray-600">
-            Configure agent + persona + scenario combinations for automated post-call evaluation
+            Run automated evaluations against your agents and scenarios
           </p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2 pr-2">
@@ -210,7 +240,7 @@ export default function EvaluateTestAgents() {
       {/* Summary stats */}
       {!isLoading && suites.length > 0 && (
         <motion.div
-          className="grid grid-cols-2 md:grid-cols-4 gap-4"
+          className={`grid grid-cols-2 gap-4 ${stats.chat > 0 ? 'md:grid-cols-5' : 'md:grid-cols-4'}`}
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.3 }}
@@ -247,18 +277,28 @@ export default function EvaluateTestAgents() {
             iconClass="text-amber-500"
             icon={<PhoneIncoming className="w-5 h-5" />}
           />
+          {stats.chat > 0 ? (
+            <StatCard
+              label="Chat"
+              value={stats.chat}
+              accentClass="text-violet-700"
+              iconBgClass="bg-violet-50"
+              iconClass="text-violet-600"
+              icon={<MessagesSquare className="w-5 h-5" />}
+            />
+          ) : null}
         </motion.div>
       )}
 
       {/* Table */}
       <div className="bg-white shadow rounded-lg overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+        <div className="px-6 py-4 border-b border-gray-200 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <FlaskConical className="h-5 w-5 text-primary-600" />
             <h2 className="text-lg font-semibold text-gray-900">Evaluator Suites</h2>
             {suites.length > 0 && (
               <span className="px-2 py-0.5 text-xs font-medium text-primary-700 bg-primary-50 rounded-full border border-primary-100">
-                {suites.length}
+                {filteredSuiteCount}
               </span>
             )}
             {suites.length > 0 && suiteGroups.some((g) => g.suites.length > 1) && (
@@ -277,6 +317,32 @@ export default function EvaluateTestAgents() {
               </button>
             )}
           </div>
+          {suites.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {(
+                [
+                  ['all', 'All'],
+                  ['phone', 'Phone'],
+                  ['web', 'Web voice'],
+                  ['chat', 'Chat'],
+                  ['inbound', 'Inbound'],
+                ] as const
+              ).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setSuiteMediumFilter(key)}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-lg ${
+                    suiteMediumFilter === key
+                      ? 'bg-primary-100 text-primary-900 border border-primary-200'
+                      : 'text-gray-600 hover:bg-gray-100 border border-transparent'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
 
         {isLoading ? (
@@ -289,7 +355,7 @@ export default function EvaluateTestAgents() {
             <FlaskConical className="w-12 h-12 text-gray-400 mx-auto mb-4" />
             <h3 className="text-lg font-medium text-gray-900 mb-2">No evaluator suites yet</h3>
             <p className="text-gray-500 mb-6 max-w-md mx-auto">
-              Create a suite to pair an agent, persona, and scenarios for automated evaluation runs.
+              Create a suite, choose scenarios and metrics, then run evaluations.
             </p>
             <Button
               variant="primary"
@@ -298,6 +364,17 @@ export default function EvaluateTestAgents() {
             >
               Create your first suite
             </Button>
+          </div>
+        ) : filteredSuiteCount === 0 ? (
+          <div className="p-12 text-center text-gray-500">
+            No suites match this filter.{' '}
+            <button
+              type="button"
+              className="text-primary-600 font-medium hover:text-primary-800"
+              onClick={() => setSuiteMediumFilter('all')}
+            >
+              Show all
+            </button>
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -315,7 +392,11 @@ export default function EvaluateTestAgents() {
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Agent</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Persona</th>
+                  {showPersonaColumn ? (
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Persona
+                    </th>
+                  ) : null}
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Scenarios</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Metrics</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
@@ -358,13 +439,17 @@ export default function EvaluateTestAgents() {
                           onClick={() => navigate(`/evaluate-test-agents/${suite.id}`)}
                           className="text-sm font-medium text-primary-700 hover:text-primary-800 hover:underline text-left"
                         >
-                          {suite.name || `${suite.agent_name || 'Suite'} · ${suite.persona_name || 'Persona'}`}
+                          {formatSuiteDisplayName(suite)}
                         </button>
                       </td>
                       <td className={`${cellClass} text-sm text-gray-900`}>
                         {suite.agent_name || group.agentName || '—'}
                       </td>
-                      <td className={`${cellClass} text-sm text-gray-900`}>{formatSuitePersonaLabel(suite)}</td>
+                      {showPersonaColumn ? (
+                        <td className={`${cellClass} text-sm text-gray-900`}>
+                          {formatSuitePersonaLabel(suite)}
+                        </td>
+                      ) : null}
                       <td className={cellClass}>
                         <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-100">
                           {suite.combination_count}
@@ -449,14 +534,16 @@ export default function EvaluateTestAgents() {
                           </div>
                           {collapsed && (
                             <p className="text-xs text-gray-500 mt-1 pl-8 truncate">
-                              Active: {activeSuite.name || activeSuite.persona_name || '—'}
+                              Active: {formatSuiteDisplayName(activeSuite)}
                               {activeSuite.is_active ? '' : ' (none marked active)'}
                             </p>
                           )}
                         </td>
-                        <td className="px-6 py-3 text-sm text-gray-600">
-                          {collapsed ? activeSuite.persona_name || '—' : ''}
-                        </td>
+                        {showPersonaColumn ? (
+                          <td className="px-6 py-3 text-sm text-gray-600">
+                            {collapsed ? formatSuitePersonaLabel(activeSuite) : ''}
+                          </td>
+                        ) : null}
                         <td className="px-6 py-3">
                           {collapsed && (
                             <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-100">
