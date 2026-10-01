@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from app.services.storage.audio_delivery import (
     collect_evaluator_result_audio_keys,
     stream_audio_from_keys,
+    stream_audio_from_provider_url,
 )
 
 
@@ -64,3 +65,41 @@ def test_stream_audio_from_keys_returns_none_when_all_missing(monkeypatch):
     )
 
     assert stream_audio_from_keys(["a.wav"], filename="call_1") is None
+
+
+def test_stream_audio_from_provider_url_forwards_range(monkeypatch):
+    import app.services.telephony.recording_download as recording_download
+
+    monkeypatch.setattr(
+        recording_download.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(None, None, None, None, ("52.0.0.1", 0))],
+    )
+    captured = {}
+
+    class FakeResponse:
+        status_code = 206
+        headers = {
+            "content-type": "audio/wav",
+            "Content-Range": "bytes 0-1023/2048",
+            "Accept-Ranges": "bytes",
+        }
+
+        def iter_content(self, chunk_size=8192):
+            yield b"partial"
+
+    def fake_get(url, headers=None, stream=True, timeout=60):
+        captured["headers"] = headers
+        return FakeResponse()
+
+    monkeypatch.setattr("requests.get", fake_get)
+
+    response = stream_audio_from_provider_url(
+        "https://example.com/recording.wav",
+        filename="call_1",
+        range_header="bytes=0-1023",
+    )
+
+    assert response.status_code == 206
+    assert captured["headers"]["Range"] == "bytes=0-1023"
+    assert response.headers["Content-Range"] == "bytes 0-1023/2048"

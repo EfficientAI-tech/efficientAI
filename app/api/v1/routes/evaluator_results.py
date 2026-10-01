@@ -846,15 +846,15 @@ def get_evaluator_result_otel_correlation(
 
 
 @router.get("/{id}/audio")
-async def stream_evaluator_result_audio(
+def stream_evaluator_result_audio(
     id: str,
+    request: Request,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
     """Stream evaluator result audio from S3 or proxy auth-gated provider URLs."""
-    import requests as http_requests
     from fastapi.responses import RedirectResponse, StreamingResponse
 
     from app.core.encryption import decrypt_api_key
@@ -862,6 +862,7 @@ async def stream_evaluator_result_audio(
         collect_call_data_audio_keys,
         collect_evaluator_result_audio_keys,
         stream_audio_from_keys,
+        stream_audio_from_provider_url,
     )
     from app.services.voice_providers.vapi_recording import is_presigned_storage_url
     from app.workers.tasks.process_evaluator_result import _extract_audio_url
@@ -966,20 +967,15 @@ async def stream_evaluator_result_audio(
     if platform == "elevenlabs" and not headers:
         raise HTTPException(status_code=400, detail="Agent integration not found for ElevenLabs audio")
 
+    range_header = request.headers.get("range")
+    filename = f"result_{result.result_id}"
+
     def _stream_provider_audio(url: str, req_headers: Optional[dict]) -> StreamingResponse:
-        upstream = http_requests.get(url, headers=req_headers, stream=True, timeout=60)
-        if upstream.status_code != 200:
-            raise HTTPException(
-                status_code=upstream.status_code,
-                detail=f"Provider audio fetch failed ({upstream.status_code})",
-            )
-        content_type = upstream.headers.get("content-type", "audio/mpeg")
-        return StreamingResponse(
-            upstream.iter_content(chunk_size=8192),
-            media_type=content_type,
-            headers={
-                "Content-Disposition": f'inline; filename="result_{result.result_id}.mp3"',
-            },
+        return stream_audio_from_provider_url(
+            url,
+            filename=filename,
+            headers=req_headers,
+            range_header=range_header,
         )
 
     try:
