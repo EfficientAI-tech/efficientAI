@@ -45,9 +45,10 @@ export function shouldHideMetricScore(
   metricId: string,
   metric: MetricScoreEntry,
   childMetricIds: Set<string>,
+  options?: { skipParentMetricIdOnScore?: boolean },
 ): boolean {
   return Boolean(
-    metric.parent_metric_id ||
+    (!options?.skipParentMetricIdOnScore && metric.parent_metric_id) ||
       childMetricIds.has(metricId) ||
       isLegacyCategoryLabelMetric(metric),
   )

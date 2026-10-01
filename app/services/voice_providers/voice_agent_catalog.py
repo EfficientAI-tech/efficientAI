@@ -80,7 +80,10 @@ def list_integration_voice_agents(
         if platform_val.lower() == "elevenlabs":
             truncated = bool(getattr(provider, "last_list_truncated", False))
             if truncated:
-                message = "Showing the first 1,000 ElevenLabs agents. Use search to narrow results."
+                trunc_note = (
+                    "Showing the first 1,000 ElevenLabs agents. Use search to narrow results."
+                )
+                message = trunc_note if not message else f"{message} {trunc_note}"
     except NotImplementedError:
         agents = []
         list_supported = False

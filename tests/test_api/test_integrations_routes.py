@@ -232,4 +232,4 @@ def test_list_integration_voice_agents_passes_agent_kind_for_vapi(
 
     assert response.status_code == 200
     assert captured.get("agent_kind") == "chat"
-    assert "Provider unavailable" in response.json()["detail"]
+    assert response.json()["agents"][0]["id"] == "asst_1"

@@ -14,24 +14,10 @@ import { resolveTraceDrawerTargets } from '../../../lib/callDetailRouting'
 import TraceDetailDrawer from '../../../components/call-recordings/TraceDetailDrawer'
 import { isChatEvalResult } from '../../../lib/agentMedium'
 import { EvalRunKindBadge } from '../components/evaluatorUi'
-
-const LEGACY_CATEGORY_LABEL_METRIC_NAMES = new Set([
-  'yes',
-  'no',
-  'true',
-  'false',
-  'same',
-  'different',
-])
-
-function isLegacyCategoryLabelMetric(metric: {
-  type?: string | null
-  metric_name?: string | null
-}): boolean {
-  if ((metric.type || '').toLowerCase() !== 'boolean') return false
-  const name = (metric.metric_name || '').trim().toLowerCase()
-  return LEGACY_CATEGORY_LABEL_METRIC_NAMES.has(name)
-}
+import {
+  buildChildMetricIds,
+  shouldHideMetricScore as hideMetricScore,
+} from '../../metrics/utils/metricScoreFilters'
 
 // Comprehensive metric information with descriptions and ideal values
 const METRIC_INFO: Record<string, { 
@@ -393,20 +379,13 @@ export default function EvaluatorResultDetailPage({
     queryFn: () => apiClient.listMetrics(),
   })
 
-  const childMetricIds = useMemo(() => {
-    const ids = new Set<string>()
-    const visit = (metric: { id?: string; parent_metric_id?: string | null; children?: any[] }) => {
-      if (metric.parent_metric_id && metric.id) ids.add(metric.id)
-      for (const child of metric.children || []) {
-        if (child?.id) ids.add(child.id)
-        visit(child)
-      }
-    }
-    for (const metric of metrics as Array<{ id?: string; parent_metric_id?: string | null; children?: any[] }>) {
-      visit(metric)
-    }
-    return ids
-  }, [metrics])
+  const childMetricIds = useMemo(
+    () =>
+      buildChildMetricIds(
+        metrics as Array<{ id?: string; parent_metric_id?: string | null; children?: any[] }>,
+      ),
+    [metrics],
+  )
 
   const hierarchyCrumbs = useMemo(() => {
     if (embedded || isFromPlayground || !result) return null
@@ -444,10 +423,12 @@ export default function EvaluatorResultDetailPage({
 
   const shouldHideMetricScore = (
     metricId: string,
-    metric: { type?: string | null; metric_name?: string | null },
-  ) => {
-    return Boolean(childMetricIds.has(metricId) || isLegacyCategoryLabelMetric(metric))
-  }
+    metric: {
+      parent_metric_id?: string | null
+      type?: string | null
+      metric_name?: string | null
+    },
+  ) => hideMetricScore(metricId, metric, childMetricIds)
 
   const reEvaluateMutation = useMutation({
     mutationFn: (resultId: string) => apiClient.reEvaluateResult(resultId),
@@ -930,7 +911,10 @@ export default function EvaluatorResultDetailPage({
                 totalVisible === 0
                   ? Object.entries(resultData.metric_scores).filter(
                       ([metricId, metric]) =>
-                        hasValidValue(metric) && !shouldHideMetricScore(metricId, metric),
+                        hasValidValue(metric) &&
+                        !hideMetricScore(metricId, metric, childMetricIds, {
+                          skipParentMetricIdOnScore: true,
+                        }),
                     )
                   : []
 

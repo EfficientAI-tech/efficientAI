@@ -19,6 +19,7 @@ def _integration(platform: str):
 def test_chat_kind_uses_list_agents_for_unified_platforms(monkeypatch, platform):
     provider = MagicMock()
     provider.list_agents.return_value = [{"id": "a1", "name": "Unified Bot"}]
+    provider.last_list_truncated = False
     provider.list_chat_agents = MagicMock(side_effect=AssertionError("should not call list_chat_agents"))
 
     monkeypatch.setattr(catalog, "_build_voice_provider", lambda _i: provider)
