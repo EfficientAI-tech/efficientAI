@@ -80,6 +80,16 @@ def test_provider_recording_redirect_hook_rejects_blocked_destination():
         validate(httpx.Request("GET", "http://169.254.169.254/latest/meta-data/"))
 
 
+def test_provider_recording_redirect_hook_credentialed_rejects_shared_storage():
+    validate = module._provider_recording_redirect_hooks(
+        allowed_suffixes=list(module._CREDENTIALED_ALLOWED_HOST_SUFFIXES),
+    )["request"][0]
+    with pytest.raises(ExotelInvalidContentError, match="not allowlisted"):
+        validate(
+            httpx.Request("GET", "https://bucket.s3.amazonaws.com/recording.wav"),
+        )
+
+
 def test_allowed_host_suffixes_merges_configured_extras(monkeypatch):
     monkeypatch.setattr(
         module.settings,

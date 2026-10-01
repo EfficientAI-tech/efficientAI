@@ -114,7 +114,10 @@ def stream_audio_from_provider_url(
 ) -> StreamingResponse:
     """Fetch a provider/presigned recording URL server-side and stream to the client."""
     from app.services.telephony.exotel_client import ExotelInvalidContentError
-    from app.services.telephony.recording_download import open_provider_recording_stream
+    from app.services.telephony.recording_download import (
+        ProviderRecordingUpstreamError,
+        open_provider_recording_stream,
+    )
 
     try:
         status_code, upstream_headers, chunk_iter = open_provider_recording_stream(
@@ -122,6 +125,8 @@ def stream_audio_from_provider_url(
             headers=headers,
             range_header=range_header,
         )
+    except ProviderRecordingUpstreamError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except ExotelInvalidContentError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
@@ -129,7 +134,10 @@ def stream_audio_from_provider_url(
     response_headers: Dict[str, str] = {
         "Content-Disposition": f'inline; filename="{filename}"',
     }
-    for name in ("Accept-Ranges", "Content-Range", "Content-Length"):
+    passthrough = ("Accept-Ranges", "Content-Range")
+    if not upstream_headers.get("content-encoding"):
+        passthrough = (*passthrough, "Content-Length")
+    for name in passthrough:
         value = upstream_headers.get(name)
         if value:
             response_headers[name] = value
