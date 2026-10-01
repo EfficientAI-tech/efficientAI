@@ -16,6 +16,7 @@ from app.services.usage.pricing import (
     _rates_table,
     seed_pricing_rates,
 )
+from app.services.usage.pricing_cache import invalidate_all_pricing_cache
 
 _MODELS_JSON_PATH = (
     Path(__file__).resolve().parent.parent.parent / "config" / "models.json"
@@ -135,3 +136,58 @@ def seed_rates_from_models_json(
     db: Session, *, effective_from: Optional[date] = None
 ) -> int:
     return seed_pricing_rates(db, effective_from=effective_from)
+
+
+def pricing_sync_on_startup_enabled() -> bool:
+    from app.config import settings
+
+    return bool(settings.USAGE_PRICING_SYNC_ON_STARTUP)
+
+
+def _later_rate_starts(db: Session, *, effective_from: date) -> Dict[Tuple[str, str], date]:
+    """Earliest rate dated after ``effective_from`` per (model, usage_kind)."""
+    table = _rates_table(db)
+    rows = db.execute(
+        text(
+            f"SELECT model, usage_kind, MIN(effective_from) FROM {table} "
+            "WHERE effective_from > CAST(:day AS date) GROUP BY model, usage_kind"
+        ),
+        {"day": effective_from.isoformat()},
+    ).all()
+    return {(row[0], row[1]): row[2] for row in rows}
+
+
+def sync_rates_from_models_json(
+    db: Session, *, effective_from: Optional[date] = None
+) -> Dict[str, List[str]]:
+    """Upsert models.json baseline rates that are missing from or differ in the DB.
+
+    Baseline rows (dated ``effective_from``) always follow models.json. A
+    later-dated row for the same (model, usage_kind) still takes precedence from
+    its own date at runtime, so those keys are reported as ``shadowed`` rather
+    than implying usage is now billed at the models.json price. Rows that exist
+    only in the database are left alone (usage history may reference them).
+    Commits, then invalidates the pricing cache so workers see the new rates.
+    """
+    day = effective_from or DEFAULT_RATES_EFFECTIVE_FROM
+    report = diff_models_json_vs_db(db, effective_from=day)
+    new = {(item["model"], item["usage_kind"]) for item in report["only_in_models_json"]}
+    changed = {(item["model"], item["usage_kind"]) for item in report["mismatches"]}
+    synced = new | changed
+    if not synced:
+        return {"added": [], "updated": [], "shadowed": []}
+
+    later = _later_rate_starts(db, effective_from=day)
+    seed_pricing_rates(db, effective_from=day, models={model for model, _ in synced})
+    db.commit()
+    # seed_pricing_rates invalidates before commit; a worker may have cached
+    # a stale rate in between, so invalidate again once the rows are visible.
+    invalidate_all_pricing_cache()
+    return {
+        "added": sorted(model for model, _ in new),
+        "updated": sorted(model for model, _ in changed),
+        "shadowed": [
+            f"{model} ({kind}) from {later[(model, kind)].isoformat()}"
+            for model, kind in sorted(synced & later.keys())
+        ],
+    }
