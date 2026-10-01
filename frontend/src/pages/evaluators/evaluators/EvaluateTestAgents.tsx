@@ -32,6 +32,19 @@ import EvaluatorSmartRunModal from '../components/EvaluatorSmartRunModal'
 import { CallTypeBadge, StatCard } from '../components/evaluatorUi'
 import { countDisplayMetrics, type MetricRow } from '../components/metricSelectionUtils'
 
+type SuiteMediumFilter = 'all' | 'chat' | 'phone' | 'web' | 'inbound'
+
+function suiteMatchesMediumFilter(suite: EvaluatorSuite, filter: SuiteMediumFilter): boolean {
+  if (filter === 'all') return true
+  if (filter === 'chat') return suite.agent_call_medium === 'chat'
+  if (filter === 'inbound') return suite.agent_call_type === 'inbound'
+  if (filter === 'phone') {
+    return suite.agent_call_medium === 'phone_call' && suite.agent_call_type !== 'inbound'
+  }
+  if (filter === 'web') return suite.agent_call_medium === 'web_call'
+  return true
+}
+
 export default function EvaluateTestAgents() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -42,6 +55,7 @@ export default function EvaluateTestAgents() {
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [collapsedAgentIds, setCollapsedAgentIds] = useState<Set<string>>(new Set())
+  const [suiteMediumFilter, setSuiteMediumFilter] = useState<SuiteMediumFilter>('all')
 
   useWalkthroughSectionState(
     'evaluators',
@@ -97,7 +111,8 @@ export default function EvaluateTestAgents() {
 
   const suiteGroups = useMemo(() => {
     const map = new Map<string, EvaluatorSuite[]>()
-    for (const suite of sortedSuites) {
+    const visibleSuites = sortedSuites.filter((suite) => suiteMatchesMediumFilter(suite, suiteMediumFilter))
+    for (const suite of visibleSuites) {
       const list = map.get(suite.agent_id) ?? []
       list.push(suite)
       map.set(suite.agent_id, list)
@@ -107,7 +122,12 @@ export default function EvaluateTestAgents() {
       agentName: groupSuites[0]?.agent_name || 'Unknown agent',
       suites: groupSuites,
     }))
-  }, [sortedSuites])
+  }, [sortedSuites, suiteMediumFilter])
+
+  const filteredSuiteCount = useMemo(
+    () => sortedSuites.filter((suite) => suiteMatchesMediumFilter(suite, suiteMediumFilter)).length,
+    [sortedSuites, suiteMediumFilter],
+  )
 
   const toggleAgentCollapsed = (agentId: string) => {
     setCollapsedAgentIds((prev) => {
@@ -272,13 +292,13 @@ export default function EvaluateTestAgents() {
 
       {/* Table */}
       <div className="bg-white shadow rounded-lg overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+        <div className="px-6 py-4 border-b border-gray-200 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <FlaskConical className="h-5 w-5 text-primary-600" />
             <h2 className="text-lg font-semibold text-gray-900">Evaluator Suites</h2>
             {suites.length > 0 && (
               <span className="px-2 py-0.5 text-xs font-medium text-primary-700 bg-primary-50 rounded-full border border-primary-100">
-                {suites.length}
+                {filteredSuiteCount}
               </span>
             )}
             {suites.length > 0 && suiteGroups.some((g) => g.suites.length > 1) && (
@@ -297,6 +317,32 @@ export default function EvaluateTestAgents() {
               </button>
             )}
           </div>
+          {suites.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {(
+                [
+                  ['all', 'All'],
+                  ['phone', 'Phone'],
+                  ['web', 'Web voice'],
+                  ['chat', 'Chat'],
+                  ['inbound', 'Inbound'],
+                ] as const
+              ).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setSuiteMediumFilter(key)}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-lg ${
+                    suiteMediumFilter === key
+                      ? 'bg-primary-100 text-primary-900 border border-primary-200'
+                      : 'text-gray-600 hover:bg-gray-100 border border-transparent'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
 
         {isLoading ? (
@@ -318,6 +364,17 @@ export default function EvaluateTestAgents() {
             >
               Create your first suite
             </Button>
+          </div>
+        ) : filteredSuiteCount === 0 ? (
+          <div className="p-12 text-center text-gray-500">
+            No suites match this filter.{' '}
+            <button
+              type="button"
+              className="text-primary-600 font-medium hover:text-primary-800"
+              onClick={() => setSuiteMediumFilter('all')}
+            >
+              Show all
+            </button>
           </div>
         ) : (
           <div className="overflow-x-auto">

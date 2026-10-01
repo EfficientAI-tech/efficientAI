@@ -444,13 +444,9 @@ export default function EvaluatorResultDetailPage({
 
   const shouldHideMetricScore = (
     metricId: string,
-    metric: { parent_metric_id?: string | null; type?: string | null; metric_name?: string | null },
+    metric: { type?: string | null; metric_name?: string | null },
   ) => {
-    return Boolean(
-      metric.parent_metric_id ||
-        childMetricIds.has(metricId) ||
-        isLegacyCategoryLabelMetric(metric),
-    )
+    return Boolean(childMetricIds.has(metricId) || isLegacyCategoryLabelMetric(metric))
   }
 
   const reEvaluateMutation = useMutation({
@@ -927,11 +923,59 @@ export default function EvaluatorResultDetailPage({
                   return !info || info.category === 'llm'
                 }
               )
+
+              const totalVisible =
+                llmMetrics.length + aiVoiceMetrics.length + acousticMetrics.length
+              const fallbackMetrics =
+                totalVisible === 0
+                  ? Object.entries(resultData.metric_scores).filter(
+                      ([metricId, metric]) =>
+                        hasValidValue(metric) && !shouldHideMetricScore(metricId, metric),
+                    )
+                  : []
+
+              const renderMetricCards = (
+                entries: [string, (typeof resultData.metric_scores)[string]][],
+                borderClass: string,
+                titleClass: string,
+              ) => (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                  {entries.map(([metricId, metric]) => (
+                    <div key={metricId} className={`min-w-0 border rounded-lg p-4 ${borderClass}`}>
+                      <div
+                        className={`text-xs font-bold uppercase mb-2 flex min-w-0 items-start gap-1.5 ${titleClass}`}
+                      >
+                        <span className="min-w-0 flex-1 whitespace-normal break-words leading-snug">
+                          {metric.metric_name || metricId}
+                        </span>
+                        <MetricTooltip metricName={metric.metric_name || metricId} />
+                      </div>
+                      <div>{formatMetricValue(metric.value, metric.type, metric.metric_name)}</div>
+                      {renderMetricRationale(metric)}
+                    </div>
+                  ))}
+                </div>
+              )
               
               return (
                 <div className="space-y-8">
+                  {fallbackMetrics.length > 0 ? (
+                    <div>
+                      <div className="flex items-center gap-2 mb-3">
+                        <Brain className="w-4 h-4 text-emerald-600" />
+                        <h3 className="text-sm font-semibold text-emerald-800 uppercase tracking-wide">
+                          Evaluation scores
+                        </h3>
+                      </div>
+                      {renderMetricCards(
+                        fallbackMetrics,
+                        'border-gray-200',
+                        'text-gray-700',
+                      )}
+                    </div>
+                  ) : null}
                   {/* AI Voice Quality Metrics */}
-                  {!isChatRun && aiVoiceMetrics.length > 0 && (
+                  {!isChatRun && fallbackMetrics.length === 0 && aiVoiceMetrics.length > 0 && (
                     <div>
                       <div className="flex items-center gap-2 mb-3">
                         <Sparkles className="w-4 h-4 text-purple-600" />
@@ -954,7 +998,7 @@ export default function EvaluatorResultDetailPage({
                   )}
                   
                   {/* Acoustic Metrics */}
-                  {!isChatRun && acousticMetrics.length > 0 && (
+                  {!isChatRun && fallbackMetrics.length === 0 && acousticMetrics.length > 0 && (
                     <div>
                       <div className="flex items-center gap-2 mb-3">
                         <AudioWaveform className="w-4 h-4 text-violet-600" />
@@ -977,7 +1021,7 @@ export default function EvaluatorResultDetailPage({
                   )}
                   
                   {/* LLM Conversation Metrics */}
-                  {llmMetrics.length > 0 && (
+                  {fallbackMetrics.length === 0 && llmMetrics.length > 0 && (
                     <div>
                       <div className="flex items-center gap-2 mb-3">
                         <Brain className="w-4 h-4 text-emerald-600" />

@@ -103,11 +103,7 @@ export default function VoicePlatformConnectGrid({
                         platformLogo={logo}
                         value={voiceAiAgentId}
                         onChange={onAgentIdChange}
-                        agentKind={
-                          remoteAgentKind === 'chat' && platform === IntegrationPlatform.RETELL
-                            ? 'chat'
-                            : 'voice'
-                        }
+                        agentKind={remoteAgentKind === 'chat' ? 'chat' : 'voice'}
                       />
                     ) : null}
                   </>

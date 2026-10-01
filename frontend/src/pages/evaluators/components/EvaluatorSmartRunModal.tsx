@@ -20,8 +20,6 @@ interface Props {
   onToNumberChange?: (value: string) => void
   trialSmsTemplate?: string
   onTrialSmsTemplateChange?: (value: string) => void
-  fromNumber?: string
-  onFromNumberChange?: (value: string) => void
 }
 
 export default function EvaluatorSmartRunModal({
@@ -33,20 +31,14 @@ export default function EvaluatorSmartRunModal({
   onToNumberChange,
   trialSmsTemplate: controlledTrialSmsTemplate,
   onTrialSmsTemplateChange,
-  fromNumber: controlledFromNumber,
-  onFromNumberChange,
 }: Props) {
   const queryClient = useQueryClient()
   const [runsPerCombination, setRunsPerCombination] = useState(1)
   const [internalToNumber, setInternalToNumber] = useState('')
   const [internalTrialSmsTemplate, setInternalTrialSmsTemplate] = useState('')
-  const [internalFromNumber, setInternalFromNumber] = useState('')
   const isControlled = onToNumberChange !== undefined
   const toNumber = isControlled ? (controlledToNumber ?? '') : internalToNumber
   const setToNumber = isControlled ? onToNumberChange : setInternalToNumber
-  const fromControlled = onFromNumberChange !== undefined
-  const fromNumber = fromControlled ? (controlledFromNumber ?? '') : internalFromNumber
-  const setFromNumber = fromControlled ? onFromNumberChange : setInternalFromNumber
   const trialTemplateControlled = onTrialSmsTemplateChange !== undefined
   const trialSmsTemplate = trialTemplateControlled
     ? (controlledTrialSmsTemplate ?? '')
@@ -80,14 +72,12 @@ export default function EvaluatorSmartRunModal({
   const chatRunContextFailed = needsChatAgentContext && runAgentError && !runAgentPending
 
   const isMessagingChat = runAgent?.chat_connection_type === 'messaging_channels'
-  const needsRecipientNumber =
-    isPhoneOutbound || isMessagingChat || chatRunContextLoading || chatRunContextFailed
+  const needsRecipientNumber = isPhoneOutbound || isMessagingChat
 
   useEffect(() => {
     if (!open) return
     if (!isControlled) {
       setInternalToNumber('')
-      setInternalFromNumber('')
       setInternalTrialSmsTemplate('')
     }
   }, [open, singleSuite?.id, isControlled])
@@ -111,7 +101,6 @@ export default function EvaluatorSmartRunModal({
       apiClient.runEvaluatorSuite(suiteId, {
         runs_per_combination: runs,
         to_number: toNumber || undefined,
-        from_number: fromNumber.trim() || undefined,
         ...(isMessagingChat
           ? { twilio_sms_trial_body_template: trialSmsTemplate.trim() }
           : {}),
@@ -144,7 +133,7 @@ export default function EvaluatorSmartRunModal({
     chatRunContextLoading ||
     chatRunContextFailed ||
     (isPhoneOutbound && !toNumber.trim()) ||
-    ((isMessagingChat || chatRunContextFailed) && !toNumber.trim())
+    (isMessagingChat && !toNumber.trim())
 
   const modal = (
     <div className="fixed inset-0 z-[9999] overflow-y-auto">
@@ -220,7 +209,7 @@ export default function EvaluatorSmartRunModal({
                 {needsRecipientNumber && !chatRunContextLoading && (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                      {isMessagingChat || chatRunContextFailed ? 'Recipient number *' : 'To number *'}
+                      {isMessagingChat ? 'Recipient number *' : 'To number *'}
                     </label>
                     <input
                       type="tel"
@@ -244,27 +233,30 @@ export default function EvaluatorSmartRunModal({
                   </div>
                 )}
 
-                {isPhoneOutbound && !chatRunContextLoading && (
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                      From number (optional)
-                    </label>
-                    <input
-                      type="tel"
-                      value={fromNumber}
-                      onChange={(e) => setFromNumber(e.target.value)}
-                      placeholder="Org caller ID (defaults to agent number)"
-                      className={MODERN_INPUT_CLASS}
-                    />
-                  </div>
-                )}
-
                 {isMessagingChat && !chatRunContextLoading && (
                   <EvaluatorMessagingTrialTemplateField
                     value={trialSmsTemplate}
                     onChange={setTrialSmsTemplate}
                   />
                 )}
+
+                {isChat &&
+                  !isMessagingChat &&
+                  !chatRunContextLoading &&
+                  !chatRunContextFailed &&
+                  runAgent && (
+                    <p className="text-sm text-gray-600 rounded-lg bg-gray-50 border border-gray-100 p-3">
+                      {runAgent.chat_connection_type === 'provider_chat'
+                        ? 'Runs use live platform chat (Retell/Vapi/ElevenLabs/Smallest) for production replies and your test-agent LLM as the customer.'
+                        : runAgent.chat_connection_type === 'customer_api'
+                          ? 'Runs POST each turn to your configured customer API; test-agent LLM plays the customer.'
+                          : runAgent.chat_connection_type === 'customer_websocket'
+                            ? 'Runs use your WebSocket chat session for production; test-agent LLM plays the customer.'
+                            : runAgent.chat_connection_type === 'internal_llm'
+                              ? 'Runs simulate both sides with LLMs (production main LLM + test-agent customer LLM).'
+                              : 'Chat simulation uses your agent connection settings; test-agent LLM plays the customer.'}
+                    </p>
+                  )}
 
                 {isWeb && (
                   <p className="text-sm text-gray-600 rounded-lg bg-gray-50 border border-gray-100 p-3">

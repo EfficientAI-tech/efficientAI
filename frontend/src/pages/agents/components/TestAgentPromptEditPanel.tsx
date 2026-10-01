@@ -172,7 +172,10 @@ export default function TestAgentPromptEditPanel({
               type="button"
               onClick={() => generateMutation.mutate()}
               disabled={
-                generateMutation.isPending || !formData.provider_prompt?.trim()
+                generateMutation.isPending ||
+                !formData.provider_prompt?.trim() ||
+                !aiCredentialId ||
+                !(aiModel.trim() || gatewayDirectModel)
               }
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-amber-600 text-white rounded-lg disabled:opacity-50"
             >

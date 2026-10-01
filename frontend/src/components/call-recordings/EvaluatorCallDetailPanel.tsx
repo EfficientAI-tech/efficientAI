@@ -170,6 +170,13 @@ export default function EvaluatorCallDetailPanel({
   const callShortIdFromData =
     typeof result?.call_data?.call_short_id === 'string' ? result.call_data.call_short_id : undefined
 
+  const chatEval = useMemo(() => (result ? isChatEvalResult(result) : false), [result])
+  const transcriptOnlyEval = useMemo(
+    () => (result ? isTranscriptOnlyEvalResult(result) : false),
+    [result],
+  )
+  const skipPipelineTraceProbe = chatEval || transcriptOnlyEval
+
   const { data: traceFallback } = useQuery({
     queryKey: ['synthetic-call-trace', syntheticTraceId, 'transcript-fallback'],
     queryFn: () => apiClient.getSyntheticCallTrace(syntheticTraceId!, false),
@@ -211,7 +218,7 @@ export default function EvaluatorCallDetailPanel({
       }
       return false
     },
-    enabled: Boolean(evaluatorResultId && result),
+    enabled: Boolean(evaluatorResultId && result && !skipPipelineTraceProbe),
     retry: false,
     staleTime: 60_000,
   })
@@ -348,12 +355,6 @@ export default function EvaluatorCallDetailPanel({
       evaluatorResultId,
     })
   }, [result, callShortIdFromData, evaluatorResultId])
-
-  const transcriptOnlyEval = useMemo(
-    () => (result ? isTranscriptOnlyEvalResult(result) : false),
-    [result],
-  )
-  const chatEval = useMemo(() => (result ? isChatEvalResult(result) : false), [result])
 
   useEffect(() => {
     if (!result || transcriptOnlyEval) return

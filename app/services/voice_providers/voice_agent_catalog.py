@@ -56,15 +56,24 @@ def list_integration_voice_agents(
     list_supported = True
 
     try:
-        if kind == "chat" and platform_val.lower() == "retell":
-            list_chat = getattr(provider, "list_chat_agents", None)
-            if not callable(list_chat):
-                raise NotImplementedError("Retell chat agent listing is unavailable")
-            agents = list_chat(search=search)
-            if not agents:
+        if kind == "chat":
+            if platform_val.lower() == "retell":
+                list_chat = getattr(provider, "list_chat_agents", None)
+                if not callable(list_chat):
+                    raise NotImplementedError("Retell chat agent listing is unavailable")
+                agents = list_chat(search=search)
+                if not agents:
+                    message = (
+                        "No chat-channel agents returned from Retell. Create a chat agent in Retell "
+                        "or enter a chat agent ID manually (not a voice-only agent ID)."
+                    )
+            else:
+                agents = provider.list_agents(search=search)
                 message = (
-                    "No chat-channel agents returned from Retell. Create a chat agent in Retell "
-                    "or enter a chat agent ID manually (not a voice-only agent ID)."
+                    "This platform uses the same agent for voice and chat. "
+                    "Pick the agent that handles your chat channel."
+                    if agents
+                    else None
                 )
         else:
             agents = provider.list_agents(search=search)

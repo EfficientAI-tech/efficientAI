@@ -76,7 +76,12 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
             has_voice_ai_integration=has_voice_ai_integration,
         )
 
-        if has_voice_bundle and has_voice_ai_integration and not use_llm_text_simulation:
+        if (
+            call_medium != "chat"
+            and has_voice_bundle
+            and has_voice_ai_integration
+            and not use_llm_text_simulation
+        ):
             try:
                 result.status = EvaluatorResultStatus.CALL_INITIATING.value
                 result.call_event = "task_started"
@@ -134,10 +139,20 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
         elif use_llm_text_simulation:
             from app.models.database import Persona, Scenario
             from app.models.enums import ChatEvalModeEnum
+            from app.services.agents.chat_connection import validate_chat_connection_for_agent
             from app.services.agents.chat_production_leg import normalized_chat_eval_mode
             from app.services.testing.llm_to_llm_evaluator_simulation import (
                 run_llm_to_llm_evaluator_simulation,
             )
+
+            if call_medium == "chat":
+                chat_config_err = validate_chat_connection_for_agent(agent)
+                if chat_config_err:
+                    result.status = EvaluatorResultStatus.FAILED.value
+                    result.error_message = chat_config_err
+                    result.call_event = "chat_configuration_error"
+                    db.commit()
+                    return {"error": chat_config_err}
 
             if call_medium == "chat" and normalized_chat_eval_mode(agent) == ChatEvalModeEnum.POST_PROD_IMPORT.value:
                 result.status = EvaluatorResultStatus.FAILED.value

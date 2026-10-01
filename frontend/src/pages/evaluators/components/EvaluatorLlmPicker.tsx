@@ -128,7 +128,7 @@ export default function EvaluatorLlmPicker({
         <h4 className="text-sm font-semibold text-gray-900">Evaluation LLM</h4>
       </div>
       <p className="text-xs text-gray-500">
-        Select the provider and model used for post-call transcript evaluation.
+        Required — select the provider and model used for post-call transcript evaluation.
       </p>
 
       {credentialsLoading ? (

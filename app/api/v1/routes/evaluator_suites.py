@@ -211,6 +211,14 @@ def run_suite(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
+    call_medium = (agent.call_medium or "phone_call").lower()
+    if call_medium == "chat":
+        from app.services.agents.chat_connection import validate_chat_connection_for_agent
+
+        chat_err = validate_chat_connection_for_agent(agent)
+        if chat_err:
+            raise HTTPException(status_code=400, detail=chat_err)
+
     combinations = load_suite_combinations(db, suite.id, organization_id, workspace_id)
     if not combinations:
         raise HTTPException(status_code=400, detail="Suite has no scenario combinations")

@@ -38,6 +38,22 @@ def _retell_agent_list_page(raw: Any) -> tuple[List[Any], bool, Optional[str]]:
     )
 
 
+def _retell_row_channel(item: dict[str, Any]) -> str:
+    return str(item.get("channel") or "").strip().lower()
+
+
+def _retell_row_looks_voice_only(item: dict[str, Any]) -> bool:
+    channel = _retell_row_channel(item)
+    if channel == "chat":
+        return False
+    if channel == "voice":
+        return True
+    voice_id = item.get("voice_id")
+    if isinstance(voice_id, str) and voice_id.strip():
+        return True
+    return False
+
+
 def _retell_sdk_to_dict(raw: Any) -> Optional[dict[str, Any]]:
     if raw is None:
         return None
@@ -620,6 +636,22 @@ class RetellVoiceProvider(BaseVoiceProvider):
         except Exception as e:
             raise ValueError(f"Retell connection test failed: {str(e)}")
 
+    def _fetch_agent_pages(self, list_filter: Optional[dict[str, Any]] = None) -> List[Any]:
+        collected: List[Any] = []
+        pagination_key: Optional[str] = None
+        for _ in range(50):
+            list_params: Dict[str, Any] = {"limit": 100}
+            if list_filter:
+                list_params.update(list_filter)
+            if pagination_key:
+                list_params["pagination_key"] = pagination_key
+            raw = self.client.agent.list(**list_params)
+            page_items, has_more, pagination_key = _retell_agent_list_page(raw)
+            collected.extend(page_items)
+            if not has_more or not pagination_key:
+                break
+        return collected
+
     def _list_agents_by_channel(
         self,
         *,
@@ -632,18 +664,37 @@ class RetellVoiceProvider(BaseVoiceProvider):
                 "channel": {"type": "string", "op": "eq", "value": channel},
             },
         }
-        collected: List[Any] = []
-        pagination_key: Optional[str] = None
-        for _ in range(50):
-            list_params: Dict[str, Any] = {"limit": 100, **list_filter}
-            if pagination_key:
-                list_params["pagination_key"] = pagination_key
-            raw = self.client.agent.list(**list_params)
-            page_items, has_more, pagination_key = _retell_agent_list_page(raw)
-            collected.extend(page_items)
-            if not has_more or not pagination_key:
-                break
+        if search and str(search).strip():
+            list_filter["filter_criteria"]["query"] = str(search).strip()
 
+        collected = self._fetch_agent_pages(list_filter)
+        agents = self._parse_retell_agent_list_items(collected, channel=channel, search=search)
+
+        if channel == "chat":
+            # Some accounts return chat agents only on an unfiltered pass with channel=chat on rows.
+            by_id = {row["id"]: row for row in agents}
+            fallback_collected = self._fetch_agent_pages(None)
+            for row in self._parse_retell_agent_list_items(
+                fallback_collected,
+                channel="chat",
+                search=search,
+                require_explicit_chat_channel=True,
+            ):
+                by_id.setdefault(row["id"], row)
+            agents = list(by_id.values())
+
+        agents.sort(key=lambda row: row["name"].lower())
+        return agents
+
+    def _parse_retell_agent_list_items(
+        self,
+        collected: List[Any],
+        *,
+        channel: str,
+        search: Optional[str] = None,
+        require_explicit_chat_channel: bool = False,
+    ) -> List[Dict[str, str]]:
+        """Parse list-agents rows; Retell often omits channel when the API already filtered by channel."""
         agents: List[Dict[str, str]] = []
         needle = (search or "").strip().lower()
         for item in collected:
@@ -662,14 +713,21 @@ class RetellVoiceProvider(BaseVoiceProvider):
                 item.get("agent_name") or item.get("name") or item.get("chat_agent_name") or agent_id
             ).strip()
             item_channel = str(item.get("channel") or "").strip().lower()
-            if item_channel in ("voice", "chat") and item_channel != channel:
+            if require_explicit_chat_channel:
+                if item_channel != "chat":
+                    continue
+            elif channel == "chat":
+                if item_channel == "voice" or _retell_row_looks_voice_only(item):
+                    continue
+                if item_channel in ("voice", "chat") and item_channel != channel:
+                    continue
+            elif item_channel in ("voice", "chat") and item_channel != channel:
                 continue
             if channel == "chat" and item_channel == "chat" and "chat" not in name.lower():
                 name = f"{name} · chat"
             if needle and needle not in name.lower() and needle not in agent_id.lower():
                 continue
             agents.append({"id": agent_id, "name": name})
-        agents.sort(key=lambda row: row["name"].lower())
         return agents
 
     def list_agents(self, *, search: Optional[str] = None) -> List[Dict[str, str]]:

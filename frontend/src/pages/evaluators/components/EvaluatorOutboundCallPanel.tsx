@@ -18,8 +18,6 @@ interface Props {
   showToast: (message: string, type: 'success' | 'error') => void
   toNumber: string
   onToNumberChange: (value: string) => void
-  fromNumber?: string
-  onFromNumberChange?: (value: string) => void
 }
 
 export default function EvaluatorOutboundCallPanel({
@@ -36,8 +34,6 @@ export default function EvaluatorOutboundCallPanel({
   showToast,
   toNumber,
   onToNumberChange,
-  fromNumber = '',
-  onFromNumberChange,
 }: Props) {
   if (callMedium !== 'phone_call' || callType === 'inbound') return null
 
@@ -73,8 +69,6 @@ export default function EvaluatorOutboundCallPanel({
           scenarioName={scenarioName}
           toNumber={toNumber}
           onToNumberChange={onToNumberChange}
-          fromNumber={fromNumber}
-          onFromNumberChange={onFromNumberChange}
           disabled={callBlocked}
           showToast={showToast}
         />

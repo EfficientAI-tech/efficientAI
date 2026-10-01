@@ -21,6 +21,7 @@ import {
   type AgentMediumFilter,
 } from '../../../lib/agentMedium'
 import { filterPersonasByMedium } from '../../../lib/personaMedium'
+import { isLLMSelectionComplete } from '../../../lib/llmModelOptions'
 import ScenarioAgentMediumTabs from '../../scenarios/ScenarioAgentMediumTabs'
 
 const VOICE_SUITE_STEPS = ['Agent & personas', 'Scenarios', 'Metrics', 'Review'] as const
@@ -102,6 +103,11 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
     queryFn: () => apiClient.listMetrics('agent', true),
     enabled: open,
   })
+  const { data: aiProviders = [] } = useQuery({
+    queryKey: ['ai-providers'],
+    queryFn: () => apiClient.listAIProviders(),
+    enabled: open,
+  })
 
   const selectedAgentObj = (agents as any[]).find((a) => a.id === modalAgentId)
   const isChatFlow = suiteMediumFilter === 'chat'
@@ -173,6 +179,13 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
       return selectedPersonaIds.length > 0
     }
     if (step === 1) return selectedScenarioIds.length > 0
+    if (step === 2) {
+      if (!llmProvider || !llmModel.trim()) return false
+      return isLLMSelectionComplete(
+        { provider: llmProvider, model: llmModel, credential_id: null },
+        aiProviders,
+      )
+    }
     return true
   }
 
@@ -192,7 +205,7 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
       scenario_ids: selectedScenarioIds,
       metric_ids: normalizedMetrics.length > 0 ? normalizedMetrics : undefined,
       llm_provider: llmProvider || undefined,
-      llm_model: llmProvider && llmModel ? llmModel : undefined,
+      llm_model: llmModel.trim() || undefined,
       default_runs_per_combination: defaultRuns,
     })
   }

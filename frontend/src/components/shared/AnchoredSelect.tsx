@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronDown } from 'lucide-react'
 import { useAnchoredMenuPosition } from '../../hooks/useAnchoredMenuPosition'
@@ -13,6 +13,7 @@ export type AnchoredSelectOption = {
 type Props = {
   id?: string
   label: string
+  labelSuffix?: ReactNode
   value: string
   options: AnchoredSelectOption[]
   onChange: (value: string) => void
@@ -31,6 +32,7 @@ function eventInside(node: HTMLElement | null, event: MouseEvent): boolean {
 export default function AnchoredSelect({
   id: idProp,
   label,
+  labelSuffix,
   value,
   options,
   onChange,
@@ -62,9 +64,12 @@ export default function AnchoredSelect({
 
   return (
     <div ref={rootRef} className="min-w-0">
-      <label htmlFor={id} className="block text-xs font-medium text-gray-700 mb-1.5">
-        {label}
-      </label>
+      <div className="mb-1.5 flex items-center gap-1.5">
+        <label htmlFor={id} className="text-xs font-medium text-gray-700">
+          {label}
+        </label>
+        {labelSuffix}
+      </div>
       <button
         id={id}
         ref={anchorRef}

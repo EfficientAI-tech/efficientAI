@@ -73,7 +73,6 @@ export default function EvaluatorDetail() {
   const [showRunModal, setShowRunModal] = useState(false)
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [runToNumber, setRunToNumber] = useState('')
-  const [runFromNumber, setRunFromNumber] = useState('')
   const [runTrialSmsTemplate, setRunTrialSmsTemplate] = useState('')
 
   const { data: suite, isLoading, error } = useQuery<EvaluatorSuite>({
@@ -586,8 +585,6 @@ export default function EvaluatorDetail() {
           showToast={showToast}
           toNumber={runToNumber}
           onToNumberChange={setRunToNumber}
-          fromNumber={runFromNumber}
-          onFromNumberChange={setRunFromNumber}
         />
       ) : null}
       {isMessagingChat && firstCombo ? (
@@ -719,8 +716,6 @@ export default function EvaluatorDetail() {
           showToast={showToast}
           toNumber={runToNumberOnPage ? runToNumber : undefined}
           onToNumberChange={runToNumberOnPage ? setRunToNumber : undefined}
-          fromNumber={isPhoneOutbound ? runFromNumber : undefined}
-          onFromNumberChange={isPhoneOutbound ? setRunFromNumber : undefined}
           trialSmsTemplate={isMessagingChat ? runTrialSmsTemplate : undefined}
           onTrialSmsTemplateChange={isMessagingChat ? setRunTrialSmsTemplate : undefined}
         />
