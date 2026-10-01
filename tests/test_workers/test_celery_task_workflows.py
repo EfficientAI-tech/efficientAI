@@ -717,7 +717,15 @@ def test_run_evaluator_chat_agent_never_uses_voice_bridge(db_session, monkeypatc
     db_session.add(voice_bundle)
     db_session.add(integration)
     db_session.flush()
-    db_session.add_all([agent, persona, scenario, evaluator, eval_result])
+    db_session.add(agent)
+    db_session.flush()
+    db_session.add(persona)
+    db_session.flush()
+    db_session.add(scenario)
+    db_session.flush()
+    db_session.add(evaluator)
+    db_session.flush()
+    db_session.add(eval_result)
     db_session.commit()
 
     bridge_called = {"v": False}

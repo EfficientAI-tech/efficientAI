@@ -460,7 +460,7 @@ export default function ChatConnectionDetailsStep({
           icon={MessagesSquare}
           headerIcon={
             channel === 'whatsapp' ? (
-              <WhatsAppIcon className="h-5 w-5 text-primary-700" />
+              <WhatsAppIcon className="h-5 w-5 text-primary-700" decorative />
             ) : undefined
           }
           title="Messaging"
@@ -471,7 +471,7 @@ export default function ChatConnectionDetailsStep({
             <div className="flex gap-2">
               <ChannelOption
                 label="WhatsApp"
-                icon={<WhatsAppIcon className="h-4 w-4" />}
+                icon={<WhatsAppIcon className="h-4 w-4" decorative />}
                 selected={channel === 'whatsapp'}
                 onSelect={() => onConfigChange({ messagingChannel: 'whatsapp' })}
               />
