@@ -1,5 +1,8 @@
 import pytest
 from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import httpx
 
 from app.services.storage.audio_delivery import (
     collect_evaluator_result_audio_keys,
@@ -79,20 +82,31 @@ def test_stream_audio_from_provider_url_forwards_range(monkeypatch):
 
     class FakeResponse:
         status_code = 206
-        headers = {
-            "content-type": "audio/wav",
-            "Content-Range": "bytes 0-1023/2048",
-            "Accept-Ranges": "bytes",
-        }
+        headers = httpx.Headers(
+            {
+                "content-type": "audio/wav",
+                "content-range": "bytes 0-1023/2048",
+                "accept-ranges": "bytes",
+            }
+        )
 
-        def iter_content(self, chunk_size=8192):
+        def iter_bytes(self, chunk_size=8192):
             yield b"partial"
 
-    def fake_get(url, headers=None, stream=True, timeout=60):
-        captured["headers"] = headers
-        return FakeResponse()
+    fake_resp = FakeResponse()
+    stream_cm = MagicMock()
+    stream_cm.__enter__.return_value = fake_resp
+    stream_cm.__exit__.return_value = False
 
-    monkeypatch.setattr("requests.get", fake_get)
+    mock_client = MagicMock()
+
+    def fake_stream(method, url, headers=None):
+        captured["headers"] = headers
+        return stream_cm
+
+    mock_client.stream = fake_stream
+    mock_client.close = MagicMock()
+    monkeypatch.setattr(recording_download.httpx, "Client", lambda **kwargs: mock_client)
 
     response = stream_audio_from_provider_url(
         "https://bucket.s3.amazonaws.com/recording.wav",
@@ -102,4 +116,4 @@ def test_stream_audio_from_provider_url_forwards_range(monkeypatch):
 
     assert response.status_code == 206
     assert captured["headers"]["Range"] == "bytes=0-1023"
-    assert response.headers["Content-Range"] == "bytes 0-1023/2048"
+    assert response.headers["content-range"] == "bytes 0-1023/2048"

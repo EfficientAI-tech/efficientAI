@@ -113,37 +113,29 @@ def stream_audio_from_provider_url(
     range_header: Optional[str] = None,
 ) -> StreamingResponse:
     """Fetch a provider/presigned recording URL server-side and stream to the client."""
-    import requests as http_requests
-
     from app.services.telephony.exotel_client import ExotelInvalidContentError
-    from app.services.telephony.recording_download import assert_safe_provider_recording_url
+    from app.services.telephony.recording_download import open_provider_recording_stream
 
     try:
-        assert_safe_provider_recording_url(str(url))
+        status_code, upstream_headers, chunk_iter = open_provider_recording_stream(
+            str(url),
+            headers=headers,
+            range_header=range_header,
+        )
     except ExotelInvalidContentError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    req_headers = dict(headers or {})
-    if range_header:
-        req_headers["Range"] = range_header
-
-    upstream = http_requests.get(url, headers=req_headers, stream=True, timeout=60)
-    if upstream.status_code not in (200, 206):
-        raise HTTPException(
-            status_code=upstream.status_code,
-            detail=f"Recording audio fetch failed ({upstream.status_code})",
-        )
-    content_type = upstream.headers.get("content-type", "audio/mpeg")
+    content_type = upstream_headers.get("content-type", "audio/mpeg")
     response_headers: Dict[str, str] = {
         "Content-Disposition": f'inline; filename="{filename}"',
     }
     for name in ("Accept-Ranges", "Content-Range", "Content-Length"):
-        value = upstream.headers.get(name)
+        value = upstream_headers.get(name)
         if value:
             response_headers[name] = value
     return StreamingResponse(
-        upstream.iter_content(chunk_size=8192),
-        status_code=upstream.status_code,
+        chunk_iter,
+        status_code=status_code,
         media_type=content_type,
         headers=response_headers,
     )

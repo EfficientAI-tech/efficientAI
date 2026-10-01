@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import ipaddress
 import socket
-from typing import Callable, List, Optional, Tuple, Union
+from collections.abc import Callable, Iterator
+from typing import Dict, List, Optional, Tuple, Union
 from urllib.parse import urlparse
 
 import httpx
@@ -186,6 +187,65 @@ def assert_safe_provider_recording_url(recording_url: str) -> None:
     assert_recording_url_safe(recording_url, user_supplied=False)
 
 
+def _provider_recording_redirect_hooks() -> dict[str, list[Callable[..., None]]]:
+    allowed_suffixes = _allowed_host_suffixes()
+
+    def _validate_redirect(request: httpx.Request) -> None:
+        assert_recording_url_safe(
+            str(request.url),
+            user_supplied=False,
+            allowed_suffixes=allowed_suffixes,
+        )
+
+    return {"request": [_validate_redirect]}
+
+
+def open_provider_recording_stream(
+    recording_url: str,
+    *,
+    headers: Optional[Dict[str, str]] = None,
+    range_header: Optional[str] = None,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    chunk_size: int = 8192,
+) -> tuple[int, httpx.Headers, Iterator[bytes]]:
+    """Open a streaming GET to a provider recording URL with redirect SSRF checks."""
+    if not recording_url:
+        raise ExotelInvalidContentError("recording_url is empty")
+
+    assert_safe_provider_recording_url(recording_url)
+
+    req_headers = dict(headers or {})
+    if range_header:
+        req_headers["Range"] = range_header
+
+    client = httpx.Client(
+        timeout=timeout_seconds,
+        follow_redirects=True,
+        event_hooks=_provider_recording_redirect_hooks(),
+    )
+    stream_cm = client.stream("GET", recording_url, headers=req_headers)
+    resp = stream_cm.__enter__()
+
+    if resp.status_code not in (200, 206):
+        stream_cm.__exit__(None, None, None)
+        client.close()
+        raise ExotelInvalidContentError(
+            f"Recording fetch failed ({resp.status_code})"
+        )
+
+    status_code = resp.status_code
+    response_headers = resp.headers
+
+    def iter_chunks() -> Iterator[bytes]:
+        try:
+            yield from resp.iter_bytes(chunk_size)
+        finally:
+            stream_cm.__exit__(None, None, None)
+            client.close()
+
+    return status_code, response_headers, iter_chunks()
+
+
 def assert_outbound_http_url_safe(url: str, *, allow_loopback: bool = False) -> None:
     """Block SSRF to private/metadata networks for operator-configured URLs."""
     parsed = urlparse(url.strip())
@@ -244,15 +304,7 @@ def download_recording_url(
 
     request_hooks: Optional[dict[str, List[Callable[..., None]]]] = None
     if not user_supplied:
-
-        def _validate_redirect(request: httpx.Request) -> None:
-            assert_recording_url_safe(
-                str(request.url),
-                user_supplied=False,
-                allowed_suffixes=allowed_suffixes,
-            )
-
-        request_hooks = {"request": [_validate_redirect]}
+        request_hooks = _provider_recording_redirect_hooks()
 
     follow_redirects = not user_supplied
 

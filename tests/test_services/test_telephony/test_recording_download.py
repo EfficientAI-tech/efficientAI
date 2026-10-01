@@ -74,6 +74,12 @@ def test_assert_recording_url_safe_allows_cloudflare_r2(monkeypatch):
         )
 
 
+def test_provider_recording_redirect_hook_rejects_blocked_destination():
+    validate = module._provider_recording_redirect_hooks()["request"][0]
+    with pytest.raises(ExotelInvalidContentError, match="blocked network address"):
+        validate(httpx.Request("GET", "http://169.254.169.254/latest/meta-data/"))
+
+
 def test_allowed_host_suffixes_merges_configured_extras(monkeypatch):
     monkeypatch.setattr(
         module.settings,
