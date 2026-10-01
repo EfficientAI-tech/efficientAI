@@ -6,12 +6,12 @@ import {
   Copy,
   Globe,
   Loader2,
-  MessageCircle,
   MessagesSquare,
   RefreshCw,
   Smartphone,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
+import WhatsAppIcon from '../../../../components/icons/WhatsAppIcon'
 import { Integration, IntegrationPlatform } from '../../../../types/api'
 import { apiClient } from '../../../../lib/api'
 import { CHAT_CONFIG_SECRET_MASK, isStoredChatSecret } from '../../../../lib/chatConnectionSecrets'
@@ -108,11 +108,13 @@ function ConfigPanel({
   title,
   children,
   variant = 'wizard',
+  headerIcon,
 }: {
   icon: LucideIcon
   title: string
   children: ReactNode
   variant?: 'wizard' | 'workspace'
+  headerIcon?: ReactNode
 }) {
   if (variant === 'workspace') {
     return <div className="space-y-4">{children}</div>
@@ -121,7 +123,7 @@ function ConfigPanel({
     <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
       <div className="flex items-center gap-2.5 px-4 py-3 border-b border-gray-100 bg-gray-50/80">
         <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary-50 text-primary-700">
-          <Icon className="h-5 w-5" strokeWidth={1.75} />
+          {headerIcon ?? <Icon className="h-5 w-5" strokeWidth={1.75} />}
         </span>
         <h3 className="text-sm font-semibold text-gray-900">{title}</h3>
       </div>
@@ -155,12 +157,12 @@ function AdvancedFields({
 
 function ChannelOption({
   label,
-  icon: Icon,
+  icon,
   selected,
   onSelect,
 }: {
   label: string
-  icon: LucideIcon
+  icon: ReactNode
   selected: boolean
   onSelect: () => void
 }) {
@@ -174,7 +176,7 @@ function ChannelOption({
           : 'border-gray-200 text-gray-700 hover:border-gray-300 bg-white'
       }`}
     >
-      <Icon className="h-4 w-4" strokeWidth={1.75} />
+      {icon}
       {label}
     </button>
   )
@@ -454,19 +456,28 @@ export default function ChatConnectionDetailsStep({
 
     return (
       <div className={sectionClass}>
-        <ConfigPanel icon={MessagesSquare} title="Messaging" variant={variant}>
+        <ConfigPanel
+          icon={MessagesSquare}
+          headerIcon={
+            channel === 'whatsapp' ? (
+              <WhatsAppIcon className="h-5 w-5 text-primary-700" />
+            ) : undefined
+          }
+          title="Messaging"
+          variant={variant}
+        >
           <div>
             <label className={labelClass}>Channel *</label>
             <div className="flex gap-2">
               <ChannelOption
                 label="WhatsApp"
-                icon={MessageCircle}
+                icon={<WhatsAppIcon className="h-4 w-4" />}
                 selected={channel === 'whatsapp'}
                 onSelect={() => onConfigChange({ messagingChannel: 'whatsapp' })}
               />
               <ChannelOption
                 label="SMS"
-                icon={Smartphone}
+                icon={<Smartphone className="h-4 w-4" strokeWidth={1.75} />}
                 selected={channel === 'sms'}
                 onSelect={() => onConfigChange({ messagingChannel: 'sms' })}
               />
