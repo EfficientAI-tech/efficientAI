@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from unittest.mock import MagicMock
 
 import pytest
@@ -48,7 +49,7 @@ def test_sync_rates_seeds_only_new_and_changed_models(monkeypatch):
         return len(models)
 
     monkeypatch.setattr(pricing_ops, "seed_pricing_rates", fake_seed)
-    monkeypatch.setattr(pricing_ops, "_models_with_later_rates", lambda _db, effective_from: set())
+    monkeypatch.setattr(pricing_ops, "_later_rate_starts", lambda _db, effective_from: {})
     monkeypatch.setattr(
         pricing_ops, "invalidate_all_pricing_cache", lambda: calls.append("invalidate")
     )
@@ -58,7 +59,7 @@ def test_sync_rates_seeds_only_new_and_changed_models(monkeypatch):
     assert result == {
         "added": ["claude-opus-5-5"],
         "updated": ["claude-fable-5-1"],
-        "skipped": [],
+        "shadowed": [],
     }
     assert seeded["models"] == {"claude-opus-5-5", "claude-fable-5-1"}
     # Cache must be cleared after the rows are committed, not before.
@@ -77,28 +78,31 @@ def test_sync_rates_is_noop_when_in_sync(monkeypatch):
     monkeypatch.setattr(pricing_ops, "seed_pricing_rates", seed)
     monkeypatch.setattr(pricing_ops, "invalidate_all_pricing_cache", invalidate)
 
-    assert sync_rates_from_models_json(db) == {"added": [], "updated": [], "skipped": []}
+    assert sync_rates_from_models_json(db) == {"added": [], "updated": [], "shadowed": []}
     seed.assert_not_called()
     db.commit.assert_not_called()
     invalidate.assert_not_called()
 
 
-def test_sync_rates_skips_models_with_later_dated_rates(monkeypatch):
-    # A later-dated row wins at runtime, so updating the default row would be a no-op
-    # that reports success; those models must be skipped and reported instead.
+def test_sync_rates_seeds_baseline_even_with_later_dated_rates(monkeypatch):
+    # Baseline rows price usage dated before any later rate, so they are always
+    # seeded; later-dated rows only get reported as shadowing from their date.
     db = MagicMock()
     monkeypatch.setattr(
         pricing_ops,
         "diff_models_json_vs_db",
         lambda _db, effective_from=None: _diff_report(
-            only_in_json=["new-model", "dated-new-model"],
-            mismatched=["claude-opus-5-5", "claude-fable-5-1"],
+            only_in_json=["dated-new-model"], mismatched=["claude-opus-5-5"]
         ),
     )
     monkeypatch.setattr(
         pricing_ops,
-        "_models_with_later_rates",
-        lambda _db, effective_from: {"claude-opus-5-5", "dated-new-model", "unrelated"},
+        "_later_rate_starts",
+        lambda _db, effective_from: {
+            ("dated-new-model", "llm"): date(2026, 6, 1),
+            ("claude-opus-5-5", "llm"): date(2026, 7, 1),
+            ("unrelated", "llm"): date(2026, 1, 1),
+        },
     )
     seed = MagicMock()
     monkeypatch.setattr(pricing_ops, "seed_pricing_rates", seed)
@@ -106,12 +110,38 @@ def test_sync_rates_skips_models_with_later_dated_rates(monkeypatch):
 
     result = sync_rates_from_models_json(db)
 
+    assert seed.call_args.kwargs["models"] == {"dated-new-model", "claude-opus-5-5"}
     assert result == {
-        "added": ["new-model"],
-        "updated": ["claude-fable-5-1"],
-        "skipped": ["claude-opus-5-5", "dated-new-model"],
+        "added": ["dated-new-model"],
+        "updated": ["claude-opus-5-5"],
+        "shadowed": [
+            "claude-opus-5-5 (llm) from 2026-07-01",
+            "dated-new-model (llm) from 2026-06-01",
+        ],
     }
-    assert seed.call_args.kwargs["models"] == {"new-model", "claude-fable-5-1"}
+
+
+def test_sync_rates_shadowing_is_per_usage_kind(monkeypatch):
+    # A later-dated STT rate must not affect (or be reported against) the LLM rate.
+    db = MagicMock()
+    monkeypatch.setattr(
+        pricing_ops,
+        "diff_models_json_vs_db",
+        lambda _db, effective_from=None: _diff_report(mismatched=["multi-kind-model"]),
+    )
+    monkeypatch.setattr(
+        pricing_ops,
+        "_later_rate_starts",
+        lambda _db, effective_from: {("multi-kind-model", "stt"): date(2026, 6, 1)},
+    )
+    seed = MagicMock()
+    monkeypatch.setattr(pricing_ops, "seed_pricing_rates", seed)
+    monkeypatch.setattr(pricing_ops, "invalidate_all_pricing_cache", lambda: None)
+
+    result = sync_rates_from_models_json(db)
+
+    assert seed.call_args.kwargs["models"] == {"multi-kind-model"}
+    assert result == {"added": [], "updated": ["multi-kind-model"], "shadowed": []}
 
 
 def test_seed_pricing_rates_models_filter(monkeypatch):

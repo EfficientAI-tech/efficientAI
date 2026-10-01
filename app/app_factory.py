@@ -72,13 +72,13 @@ def _sync_pricing_rates() -> None:
                 result["added"],
                 result["updated"],
             )
-        elif not result["skipped"]:
+        else:
             logger.info("Pricing rates already match models.json")
-        if result["skipped"]:
+        if result["shadowed"]:
             logger.warning(
-                "Pricing sync skipped models with later-dated rates (manage via "
-                "`eai usage seed-rates --effective-from`): %s",
-                result["skipped"],
+                "Synced baseline rates are overridden by later-dated rates from the "
+                "listed dates (update via `eai usage seed-rates --effective-from`): %s",
+                result["shadowed"],
             )
     except Exception as e:
         # Stale pricing should not block startup; `eai usage seed-rates` fixes it manually.
