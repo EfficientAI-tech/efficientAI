@@ -20,6 +20,8 @@ interface Props {
   onToNumberChange?: (value: string) => void
   trialSmsTemplate?: string
   onTrialSmsTemplateChange?: (value: string) => void
+  fromNumber?: string
+  onFromNumberChange?: (value: string) => void
 }
 
 export default function EvaluatorSmartRunModal({
@@ -31,14 +33,20 @@ export default function EvaluatorSmartRunModal({
   onToNumberChange,
   trialSmsTemplate: controlledTrialSmsTemplate,
   onTrialSmsTemplateChange,
+  fromNumber: controlledFromNumber,
+  onFromNumberChange,
 }: Props) {
   const queryClient = useQueryClient()
   const [runsPerCombination, setRunsPerCombination] = useState(1)
   const [internalToNumber, setInternalToNumber] = useState('')
   const [internalTrialSmsTemplate, setInternalTrialSmsTemplate] = useState('')
+  const [internalFromNumber, setInternalFromNumber] = useState('')
   const isControlled = onToNumberChange !== undefined
   const toNumber = isControlled ? (controlledToNumber ?? '') : internalToNumber
   const setToNumber = isControlled ? onToNumberChange : setInternalToNumber
+  const fromControlled = onFromNumberChange !== undefined
+  const fromNumber = fromControlled ? (controlledFromNumber ?? '') : internalFromNumber
+  const setFromNumber = fromControlled ? onFromNumberChange : setInternalFromNumber
   const trialTemplateControlled = onTrialSmsTemplateChange !== undefined
   const trialSmsTemplate = trialTemplateControlled
     ? (controlledTrialSmsTemplate ?? '')
@@ -55,7 +63,7 @@ export default function EvaluatorSmartRunModal({
   const isChat = singleSuite?.agent_call_medium === 'chat'
   const runBlocked = singleSuite ? suiteHasTtsProviderMismatch(singleSuite) && !isInbound : false
 
-  const { data: runAgent } = useQuery({
+  const { data: runAgent, isFetching: runAgentLoading } = useQuery({
     queryKey: ['agent', singleSuite?.agent_id],
     queryFn: () => apiClient.getAgent(singleSuite!.agent_id),
     enabled: open && !!singleSuite?.agent_id && isChat,
@@ -63,14 +71,24 @@ export default function EvaluatorSmartRunModal({
 
   const isMessagingChat = isChat && runAgent?.chat_connection_type === 'messaging_channels'
   const needsRecipientNumber = isPhoneOutbound || isMessagingChat
+  const chatRunContextLoading = isChat && !isInbound && runAgentLoading
 
   useEffect(() => {
-    if (!open || !isMessagingChat || trialTemplateControlled || !runAgent) return
-    setInternalTrialSmsTemplate((prev) => {
-      if (prev) return prev
-      return trialSmsTemplateFromAgentConfig(runAgent.chat_connection_config ?? null)
-    })
-  }, [open, isMessagingChat, trialTemplateControlled, runAgent])
+    if (!open) return
+    if (!isControlled) {
+      setInternalToNumber('')
+      setInternalFromNumber('')
+      setInternalTrialSmsTemplate('')
+    }
+  }, [open, singleSuite?.id, isControlled])
+
+  useEffect(() => {
+    if (!open || trialTemplateControlled || !runAgent) return
+    if (runAgent.chat_connection_type !== 'messaging_channels') return
+    setInternalTrialSmsTemplate(
+      trialSmsTemplateFromAgentConfig(runAgent.chat_connection_config ?? null),
+    )
+  }, [open, trialTemplateControlled, singleSuite?.id, runAgent?.id])
 
   const { data: dialTargets = [] } = useQuery({
     queryKey: ['telephony-dial-targets'],
@@ -83,7 +101,8 @@ export default function EvaluatorSmartRunModal({
       apiClient.runEvaluatorSuite(suiteId, {
         runs_per_combination: runs,
         to_number: toNumber || undefined,
-        ...(trialSmsTemplate.trim()
+        from_number: fromNumber.trim() || undefined,
+        ...(isMessagingChat
           ? { twilio_sms_trial_body_template: trialSmsTemplate.trim() }
           : {}),
       }),
@@ -109,6 +128,12 @@ export default function EvaluatorSmartRunModal({
   const nextRotationLabel = nextCombo
     ? [nextCombo.persona_name, nextCombo.scenario_name].filter(Boolean).join(' · ')
     : undefined
+
+  const runActionBlocked =
+    runBlocked ||
+    chatRunContextLoading ||
+    (isPhoneOutbound && !toNumber.trim()) ||
+    (isMessagingChat && !toNumber.trim())
 
   const modal = (
     <div className="fixed inset-0 z-[9999] overflow-y-auto">
@@ -171,7 +196,11 @@ export default function EvaluatorSmartRunModal({
                   </div>
                 </div>
 
-                {needsRecipientNumber && (
+                {chatRunContextLoading && (
+                  <p className="text-sm text-gray-500">Loading agent connection details…</p>
+                )}
+
+                {needsRecipientNumber && !chatRunContextLoading && (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">
                       {isMessagingChat ? 'Recipient number *' : 'To number *'}
@@ -198,7 +227,22 @@ export default function EvaluatorSmartRunModal({
                   </div>
                 )}
 
-                {isMessagingChat && (
+                {isPhoneOutbound && !chatRunContextLoading && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                      From number (optional)
+                    </label>
+                    <input
+                      type="tel"
+                      value={fromNumber}
+                      onChange={(e) => setFromNumber(e.target.value)}
+                      placeholder="Org caller ID (defaults to agent number)"
+                      className={MODERN_INPUT_CLASS}
+                    />
+                  </div>
+                )}
+
+                {isMessagingChat && !chatRunContextLoading && (
                   <EvaluatorMessagingTrialTemplateField
                     value={trialSmsTemplate}
                     onChange={setTrialSmsTemplate}
@@ -221,7 +265,7 @@ export default function EvaluatorSmartRunModal({
                 variant="primary"
                 onClick={() => runMutation.mutate({ suiteId: singleSuite.id, runs: runsPerCombination })}
                 isLoading={runMutation.isPending}
-                disabled={runBlocked || (needsRecipientNumber && !toNumber.trim())}
+                disabled={runActionBlocked}
                 leftIcon={<Play className="h-4 w-4" />}
               >
                 Queue {totalRuns} runs

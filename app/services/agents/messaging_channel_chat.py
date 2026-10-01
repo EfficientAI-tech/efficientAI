@@ -173,7 +173,12 @@ def test_twilio_sms_send(
     merged = dict(cfg)
     if overrides:
         for key, val in overrides.items():
-            if isinstance(val, str) and val.strip():
+            if key == "twilio_sms_trial_body_template":
+                if isinstance(val, str) and val.strip():
+                    merged[key] = val.strip()
+                else:
+                    merged.pop(key, None)
+            elif isinstance(val, str) and val.strip():
                 merged[key] = val.strip()
 
     recipient = _cfg_str(merged, "messaging_recipient", "messaging_test_recipient")

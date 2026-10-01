@@ -30,9 +30,7 @@ export default function EvaluatorMessagingRunPanel({
     mutationFn: () =>
       apiClient.testAgentTwilioSms(agentId, {
         ...(toNumber.trim() ? { messaging_recipient: toNumber.trim() } : {}),
-        ...(trialSmsTemplate.trim()
-          ? { twilio_sms_trial_body_template: trialSmsTemplate.trim() }
-          : {}),
+        twilio_sms_trial_body_template: trialSmsTemplate.trim(),
       }),
     onSuccess: (data) => {
       const sid = data.message_sid ? ` · ${data.message_sid}` : ''

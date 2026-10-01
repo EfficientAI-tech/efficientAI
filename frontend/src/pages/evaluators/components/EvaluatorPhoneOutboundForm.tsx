@@ -4,6 +4,7 @@ import { apiClient } from '../../../lib/api'
 import Button from '../../../components/Button'
 import { Phone } from 'lucide-react'
 import EvaluatorDialTargetFields from './EvaluatorDialTargetFields'
+import { MODERN_INPUT_CLASS } from './evaluatorUi'
 
 interface Props {
   agentId: string
@@ -14,6 +15,8 @@ interface Props {
   scenarioName?: string
   toNumber: string
   onToNumberChange: (value: string) => void
+  fromNumber?: string
+  onFromNumberChange?: (value: string) => void
   disabled?: boolean
   showToast: (message: string, type: 'success' | 'error') => void
 }
@@ -27,6 +30,8 @@ export default function EvaluatorPhoneOutboundForm({
   scenarioName,
   toNumber,
   onToNumberChange,
+  fromNumber = '',
+  onFromNumberChange,
   disabled = false,
   showToast,
 }: Props) {
@@ -41,6 +46,7 @@ export default function EvaluatorPhoneOutboundForm({
         persona_id: personaId,
         scenario_id: scenarioId,
         to_number: toNumber,
+        ...(fromNumber.trim() ? { from_number: fromNumber.trim() } : {}),
       }),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })
@@ -80,6 +86,18 @@ export default function EvaluatorPhoneOutboundForm({
         onChange={onToNumberChange}
         helperText="Also used when you queue suite runs from the header."
       />
+      {onFromNumberChange ? (
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1.5">From number (optional)</label>
+          <input
+            type="tel"
+            value={fromNumber}
+            onChange={(e) => onFromNumberChange(e.target.value)}
+            placeholder="Org caller ID (defaults to agent number)"
+            className={MODERN_INPUT_CLASS}
+          />
+        </div>
+      ) : null}
       <Button
         variant="primary"
         onClick={() => callMutation.mutate()}

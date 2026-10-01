@@ -124,9 +124,12 @@ def generate_production_chat_reply(
             merged = dict(cfg)
             merged["messaging_recipient"] = recipient.strip()
         trial_tpl = call_data.get("run_twilio_sms_trial_body_template")
-        if isinstance(trial_tpl, str) and trial_tpl.strip():
+        if "run_twilio_sms_trial_body_template" in call_data:
             merged = dict(merged if merged is not None else cfg)
-            merged["twilio_sms_trial_body_template"] = trial_tpl.strip()
+            if isinstance(trial_tpl, str) and trial_tpl.strip():
+                merged["twilio_sms_trial_body_template"] = trial_tpl.strip()
+            else:
+                merged.pop("twilio_sms_trial_body_template", None)
         return merged if merged is not None else cfg
 
     if conn == ChatConnectionTypeEnum.CUSTOMER_API.value:

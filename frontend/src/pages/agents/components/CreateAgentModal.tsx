@@ -799,12 +799,7 @@ export default function CreateAgentModal({
         : 'w-[min(92vw,38rem)]'
 
   const renderStepContent = () => {
-    const canGenerateTestPrompt = Boolean(
-      formData.name.trim() &&
-        productionPrompt.trim() &&
-        aiCredentialId &&
-        (aiModel.trim() || gatewayDirectModel),
-    )
+    const canGenerateTestPrompt = Boolean(formData.name.trim() && productionPrompt.trim())
 
     if (isEntryPhase) {
       return (

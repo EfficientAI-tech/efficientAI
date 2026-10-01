@@ -1449,11 +1449,16 @@ async def test_chat_messaging_twilio_sms(
         raise HTTPException(status_code=400, detail="Agent is not a messaging chat agent")
 
     cfg = chat_connection_config_for_runtime(db_agent.chat_connection_config)
-    overrides = {
-        k: v.strip()
-        for k, v in body.model_dump().items()
-        if isinstance(v, str) and v.strip()
-    }
+    raw = body.model_dump()
+    overrides: dict[str, str] = {}
+    if raw.get("twilio_sms_trial_body_template") is not None:
+        overrides["twilio_sms_trial_body_template"] = str(
+            raw["twilio_sms_trial_body_template"] or ""
+        ).strip()
+    for key in ("messaging_recipient", "twilio_from"):
+        val = raw.get(key)
+        if isinstance(val, str) and val.strip():
+            overrides[key] = val.strip()
     try:
         result = test_twilio_sms_send(
             db,

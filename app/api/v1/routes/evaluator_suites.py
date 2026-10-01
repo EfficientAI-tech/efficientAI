@@ -239,7 +239,7 @@ def run_suite(
                 "run_messaging_recipient": str(request.to_number).strip(),
             }
             trial_tpl = request.twilio_sms_trial_body_template
-            if trial_tpl and str(trial_tpl).strip():
+            if trial_tpl is not None:
                 initial_call_data["run_twilio_sms_trial_body_template"] = str(trial_tpl).strip()
         task_ids, evaluator_results = queue_evaluator_runs(
             db,

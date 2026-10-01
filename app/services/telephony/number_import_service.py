@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from loguru import logger
 from sqlalchemy.orm import Session
+
+import httpx
 
 from app.config import settings
 from app.models.database import Agent, TelephonyIntegration, TelephonyPhoneNumber
@@ -42,26 +46,74 @@ def _assert_import_provider(provider: str) -> str:
     return provider_key
 
 
+def _provider_display_name(provider: str) -> str:
+    key = (provider or "").strip().lower()
+    return {
+        "vobiz": "Vobiz",
+        "plivo": "Plivo",
+        "twilio": "Twilio",
+        "exotel": "Exotel",
+    }.get(key, key.capitalize() or "Telephony")
+
+
+def _extract_nested_provider_message(raw: str) -> Optional[str]:
+    text = (raw or "").strip()
+    if not text:
+        return None
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict):
+            err = data.get("error")
+            if isinstance(err, dict):
+                msg = err.get("message")
+                if isinstance(msg, str) and msg.strip():
+                    return msg.strip()
+            msg = data.get("message")
+            if isinstance(msg, str) and msg.strip():
+                return msg.strip()
+    lower = text.lower()
+    if "invalid authentication" in lower:
+        return "Authentication failed."
+    if "unauthorized" in lower or "invalid credentials" in lower:
+        return "Authentication failed."
+    return None
+
+
 def _credential_configuration_error(provider: str, exc: BaseException) -> ValueError:
-    provider_label = (provider or "telephony").strip().lower()
-    detail = str(exc).strip()
-    if detail:
-        return ValueError(
-            f"Invalid {provider_label} credentials ({detail}). "
-            "Update the integration under Settings → Integrations."
-        )
-    return ValueError(
-        f"Invalid {provider_label} credentials. "
-        "Update the integration under Settings → Integrations."
-    )
+    name = _provider_display_name(provider)
+    settings_hint = f"Check your API credentials in Settings → Integrations."
+
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        if code in (401, 403):
+            return ValueError(f"Could not connect to {name}. {settings_hint}")
+
+    nested = _extract_nested_provider_message(str(exc))
+    if nested and len(nested) <= 160 and "{" not in nested:
+        return ValueError(f"Could not connect to {name}. {nested} {settings_hint}")
+
+    return ValueError(f"Could not connect to {name}. {settings_hint}")
 
 
 def _is_provider_credential_error(exc: BaseException) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        if exc.response.status_code in (401, 403):
+            return True
     name = type(exc).__name__.lower()
     if "authentication" in name or "auth" in name and "error" in name:
         return True
     msg = str(exc).lower()
-    return "invalid auth_id" in msg or "invalid credentials" in msg or "authentication" in msg
+    return (
+        "invalid auth_id" in msg
+        or "invalid credentials" in msg
+        or "authentication" in msg
+        or "401 unauthorized" in msg
+        or "403 forbidden" in msg
+    )
 
 
 def _twilio_sms_inbound_webhook_url() -> str:
@@ -185,15 +237,20 @@ def _list_remote_numbers(
     client: Any,
 ) -> List[Dict[str, Any]]:
     provider_key = provider.lower()
-    if provider_key == TelephonyProvider.VOBIZ.value:
-        return client.list_account_numbers()
-    if provider_key == TelephonyProvider.PLIVO.value:
-        return client.list_numbers()
-    if provider_key == TelephonyProvider.EXOTEL.value:
-        return client.list_incoming_phone_numbers()
-    if provider_key == TelephonyProvider.TWILIO.value:
-        return client.list_incoming_phone_numbers()
-    raise ValueError(f"Unsupported provider: {provider}")
+    try:
+        if provider_key == TelephonyProvider.VOBIZ.value:
+            return client.list_account_numbers()
+        if provider_key == TelephonyProvider.PLIVO.value:
+            return client.list_numbers()
+        if provider_key == TelephonyProvider.EXOTEL.value:
+            return client.list_incoming_phone_numbers()
+        if provider_key == TelephonyProvider.TWILIO.value:
+            return client.list_incoming_phone_numbers()
+        raise ValueError(f"Unsupported provider: {provider}")
+    except Exception as exc:
+        if _is_provider_credential_error(exc):
+            raise _credential_configuration_error(provider_key, exc) from exc
+        raise
 
 
 def _normalize_country_iso2(
