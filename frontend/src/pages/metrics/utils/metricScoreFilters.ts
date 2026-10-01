@@ -9,8 +9,8 @@ const LEGACY_CATEGORY_LABEL_METRIC_NAMES = new Set([
 
 export type MetricScoreEntry = {
   value?: unknown
-  type?: string
-  metric_name?: string
+  type?: string | null
+  metric_name?: string | null
   parent_metric_id?: string | null
   rationale?: string | null
   skipped?: unknown
