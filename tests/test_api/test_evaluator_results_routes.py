@@ -703,7 +703,7 @@ def test_stream_evaluator_result_audio_proxies_vapi_presigned_url(
     assert response.status_code == 200
     assert response.content == b"presigned-audio"
     assert captured["url"] == signed_url
-    assert captured["headers"] is None
+    assert captured["headers"] == {}
 
 
 def test_stream_evaluator_result_audio_not_found(

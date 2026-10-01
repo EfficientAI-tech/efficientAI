@@ -95,7 +95,7 @@ def test_stream_audio_from_provider_url_forwards_range(monkeypatch):
     monkeypatch.setattr("requests.get", fake_get)
 
     response = stream_audio_from_provider_url(
-        "https://example.com/recording.wav",
+        "https://bucket.s3.amazonaws.com/recording.wav",
         filename="call_1",
         range_header="bytes=0-1023",
     )
