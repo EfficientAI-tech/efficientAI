@@ -199,7 +199,16 @@ def test_twilio_sms_send(
         raise ValueError("Twilio From number and eval recipient are required")
 
     body = _sms_outbound_body(merged, "EfficientAI test SMS")
-    if body == "EfficientAI test SMS" and not _cfg_str(merged, "twilio_sms_trial_body_template"):
+    trial_template_cleared = bool(
+        overrides
+        and "twilio_sms_trial_body_template" in overrides
+        and not str(overrides.get("twilio_sms_trial_body_template") or "").strip()
+    )
+    if (
+        body == "EfficientAI test SMS"
+        and not _cfg_str(merged, "twilio_sms_trial_body_template")
+        and not trial_template_cleared
+    ):
         raise ValueError(
             "Twilio trial accounts need Outbound SMS body (Twilio trial) set to a template name "
             "(e.g. sms_appointment_reminders)"

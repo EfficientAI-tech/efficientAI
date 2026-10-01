@@ -63,15 +63,25 @@ export default function EvaluatorSmartRunModal({
   const isChat = singleSuite?.agent_call_medium === 'chat'
   const runBlocked = singleSuite ? suiteHasTtsProviderMismatch(singleSuite) && !isInbound : false
 
-  const { data: runAgent, isFetching: runAgentLoading } = useQuery({
+  const needsChatAgentContext = isChat && !isInbound
+
+  const {
+    data: runAgent,
+    isFetching: runAgentFetching,
+    isPending: runAgentPending,
+    isError: runAgentError,
+  } = useQuery({
     queryKey: ['agent', singleSuite?.agent_id],
     queryFn: () => apiClient.getAgent(singleSuite!.agent_id),
-    enabled: open && !!singleSuite?.agent_id && isChat,
+    enabled: open && !!singleSuite?.agent_id && needsChatAgentContext,
   })
 
-  const isMessagingChat = isChat && runAgent?.chat_connection_type === 'messaging_channels'
-  const needsRecipientNumber = isPhoneOutbound || isMessagingChat
-  const chatRunContextLoading = isChat && !isInbound && runAgentLoading
+  const chatRunContextLoading = needsChatAgentContext && (runAgentPending || runAgentFetching)
+  const chatRunContextFailed = needsChatAgentContext && runAgentError && !runAgentPending
+
+  const isMessagingChat = runAgent?.chat_connection_type === 'messaging_channels'
+  const needsRecipientNumber =
+    isPhoneOutbound || isMessagingChat || chatRunContextLoading || chatRunContextFailed
 
   useEffect(() => {
     if (!open) return
@@ -132,8 +142,9 @@ export default function EvaluatorSmartRunModal({
   const runActionBlocked =
     runBlocked ||
     chatRunContextLoading ||
+    chatRunContextFailed ||
     (isPhoneOutbound && !toNumber.trim()) ||
-    (isMessagingChat && !toNumber.trim())
+    ((isMessagingChat || chatRunContextFailed) && !toNumber.trim())
 
   const modal = (
     <div className="fixed inset-0 z-[9999] overflow-y-auto">
@@ -200,10 +211,16 @@ export default function EvaluatorSmartRunModal({
                   <p className="text-sm text-gray-500">Loading agent connection details…</p>
                 )}
 
+                {chatRunContextFailed && (
+                  <p className="text-sm text-gray-700 border border-red-300 rounded-md px-3 py-2.5 bg-white">
+                    Could not load agent details. Close and reopen this dialog, or refresh the page.
+                  </p>
+                )}
+
                 {needsRecipientNumber && !chatRunContextLoading && (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                      {isMessagingChat ? 'Recipient number *' : 'To number *'}
+                      {isMessagingChat || chatRunContextFailed ? 'Recipient number *' : 'To number *'}
                     </label>
                     <input
                       type="tel"
