@@ -1960,6 +1960,7 @@ class RunEvaluatorSuiteRequest(BaseModel):
     runs_per_combination: Optional[int] = None
     to_number: Optional[str] = None
     from_number: Optional[str] = None
+    twilio_sms_trial_body_template: Optional[str] = None
 
 
 

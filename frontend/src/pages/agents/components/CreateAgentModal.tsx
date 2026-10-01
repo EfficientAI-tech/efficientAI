@@ -799,6 +799,13 @@ export default function CreateAgentModal({
         : 'w-[min(92vw,38rem)]'
 
   const renderStepContent = () => {
+    const canGenerateTestPrompt = Boolean(
+      formData.name.trim() &&
+        productionPrompt.trim() &&
+        aiCredentialId &&
+        (aiModel.trim() || gatewayDirectModel),
+    )
+
     if (isEntryPhase) {
       return (
         <CreateAgentEntryStep
@@ -850,7 +857,7 @@ export default function CreateAgentModal({
           gatewayDirectModel={gatewayDirectModel}
           onGenerateTestPrompt={() => generateTestPromptMutation.mutate()}
           isGenerating={generateTestPromptMutation.isPending}
-          canGenerate={Boolean(formData.name.trim() && productionPrompt.trim())}
+          canGenerate={canGenerateTestPrompt}
         />
       )
 
@@ -963,7 +970,7 @@ export default function CreateAgentModal({
             gatewayDirectModel={gatewayDirectModel}
             onGenerateTestPrompt={() => generateTestPromptMutation.mutate()}
             isGenerating={generateTestPromptMutation.isPending}
-            canGenerate={Boolean(formData.name.trim() && productionPrompt.trim())}
+            canGenerate={canGenerateTestPrompt}
           />
         )
       }
@@ -1015,7 +1022,7 @@ export default function CreateAgentModal({
           gatewayDirectModel={gatewayDirectModel}
           onGenerateTestPrompt={() => generateTestPromptMutation.mutate()}
           isGenerating={generateTestPromptMutation.isPending}
-          canGenerate={Boolean(formData.name.trim() && productionPrompt.trim())}
+          canGenerate={canGenerateTestPrompt}
         />
       )
     }

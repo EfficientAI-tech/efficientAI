@@ -348,6 +348,7 @@ def run_llm_to_llm_evaluator_simulation(
                         organization_id=organization_id,
                         transcript=transcript,
                         provider_state=provider_chat_state,
+                        evaluator_result=result,
                     )
             except Exception as exc:
                 leg = (

@@ -100,6 +100,7 @@ def generate_production_chat_reply(
     organization_id: UUID,
     transcript: list[dict[str, str]],
     provider_state: ProviderChatState,
+    evaluator_result: Optional[Any] = None,
 ) -> tuple[str, dict[str, Any]]:
     """Return assistant text and metadata to merge into evaluator call_data."""
     conn = normalized_chat_connection_type(agent)
@@ -112,6 +113,21 @@ def generate_production_chat_reply(
     from app.config import settings
 
     assert_chat_connection_urls_safe(cfg_raw, allow_loopback=bool(settings.DEBUG))
+
+    def _apply_run_messaging_overrides(cfg: dict[str, Any]) -> dict[str, Any]:
+        if not evaluator_result or not isinstance(getattr(evaluator_result, "call_data", None), dict):
+            return cfg
+        call_data = evaluator_result.call_data
+        merged: dict[str, Any] | None = None
+        recipient = call_data.get("run_messaging_recipient")
+        if isinstance(recipient, str) and recipient.strip():
+            merged = dict(cfg)
+            merged["messaging_recipient"] = recipient.strip()
+        trial_tpl = call_data.get("run_twilio_sms_trial_body_template")
+        if isinstance(trial_tpl, str) and trial_tpl.strip():
+            merged = dict(merged if merged is not None else cfg)
+            merged["twilio_sms_trial_body_template"] = trial_tpl.strip()
+        return merged if merged is not None else cfg
 
     if conn == ChatConnectionTypeEnum.CUSTOMER_API.value:
         from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
@@ -173,7 +189,7 @@ def generate_production_chat_reply(
         from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
         from app.services.agents.messaging_channel_chat import try_messaging_worker_send
 
-        cfg = chat_connection_config_for_runtime(cfg_raw)
+        cfg = _apply_run_messaging_overrides(chat_connection_config_for_runtime(cfg_raw))
         reply, leg = try_messaging_worker_send(
             db,
             organization_id=organization_id,

@@ -37,46 +37,6 @@ const TWILIO_SMS_TRIAL_BODY_TEMPLATES = [
   { value: 'sms_internal_alerts', label: 'Internal alerts (trial)' },
 ] as const
 
-function MessagingContactSelect({
-  value,
-  onChange,
-  fieldClass,
-}: {
-  value: string
-  onChange: (phone: string) => void
-  fieldClass: string
-}) {
-  const { data: dialTargets = [], isLoading } = useQuery({
-    queryKey: ['telephony-dial-targets'],
-    queryFn: () => apiClient.listDialTargets(),
-    staleTime: 60_000,
-  })
-  if (isLoading) {
-    return <p className="text-xs text-gray-500">Loading contacts…</p>
-  }
-  if (dialTargets.length === 0) {
-    return (
-      <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-        Add contacts under Telephony Numbers → Contacts, then select one here.
-      </p>
-    )
-  }
-  return (
-    <select
-      className={fieldClass}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-    >
-      <option value="">Select contact</option>
-      {dialTargets.map((t) => (
-        <option key={t.id} value={t.phone_number}>
-          {t.label ? `${t.label} · ${t.phone_number}` : t.phone_number}
-        </option>
-      ))}
-    </select>
-  )
-}
-
 export type ChatConnectionConfigForm = {
   apiBaseUrl: string
   apiMessagePath: string
@@ -310,13 +270,9 @@ export function validateChatConnectionDetails(
   }
   if (integrationType === 'messaging_channels') {
     const hasProviderSmsLine = Boolean(formData.telephony_phone_number_id?.trim())
-    const hasSmsBasics =
-      config.messagingChannel === 'sms' &&
-      Boolean(config.messagingRecipient.trim()) &&
-      hasProviderSmsLine
+    const hasSmsBasics = config.messagingChannel === 'sms' && hasProviderSmsLine
     const hasWhatsappMeta =
       config.messagingChannel === 'whatsapp' &&
-      Boolean(config.messagingRecipient.trim()) &&
       Boolean(config.metaWhatsappPhoneNumberId.trim() && config.metaWhatsappAccessToken.trim())
     return Boolean(
       config.messagingChannel &&
@@ -358,34 +314,6 @@ export default function ChatConnectionDetailsStep({
       telephonyPhoneNumberId: formData.telephony_phone_number_id || undefined,
       excludeAgentId: agentId,
     })
-  const testTwilioSmsMutation = useMutation({
-    mutationFn: () => {
-      if (!agentId) {
-        throw new Error('Save the agent before sending a test SMS')
-      }
-      return apiClient.testAgentTwilioSms(agentId, {
-        ...(config.messagingRecipient.trim()
-          ? { messaging_recipient: config.messagingRecipient.trim() }
-          : {}),
-        ...(config.twilioFrom.trim() ? { twilio_from: config.twilioFrom.trim() } : {}),
-        ...(config.twilioSmsTrialBodyTemplate.trim()
-          ? { twilio_sms_trial_body_template: config.twilioSmsTrialBodyTemplate.trim() }
-          : {}),
-      })
-    },
-    onSuccess: (data) => {
-      const sid = data.message_sid ? ` · ${data.message_sid}` : ''
-      showToast(`Test SMS sent to ${data.to} (${data.body_sent})${sid}`, 'success')
-    },
-    onError: (err: unknown) => {
-      const ax = err as { response?: { data?: { detail?: string } }; message?: string }
-      const detail = ax.response?.data?.detail
-      showToast(
-        typeof detail === 'string' ? detail : ax.message || 'Test SMS failed',
-        'error',
-      )
-    },
-  })
   const { data: messagingPublicBase } = useQuery({
     queryKey: ['chat-messaging-public-base-url'],
     queryFn: () => apiClient.getMessagingPublicBaseUrl(),
@@ -546,17 +474,6 @@ export default function ChatConnectionDetailsStep({
           </div>
 
           {channel === 'whatsapp' ? (
-            <div>
-              <label className={labelClass}>Contact *</label>
-              <MessagingContactSelect
-                fieldClass={fieldClass}
-                value={config.messagingRecipient}
-                onChange={(phone) => onConfigChange({ messagingRecipient: phone })}
-              />
-            </div>
-          ) : null}
-
-          {channel === 'whatsapp' ? (
             <div className="rounded-lg border border-emerald-100 bg-emerald-50/40 p-3 space-y-3">
               <p className="text-xs font-medium text-emerald-900">Meta WhatsApp Cloud</p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -589,22 +506,13 @@ export default function ChatConnectionDetailsStep({
 
           {channel === 'sms' ? (
             <div className="space-y-4">
-              <div>
-                <label className={labelClass}>Contact *</label>
-                <MessagingContactSelect
-                  fieldClass={fieldClass}
-                  value={config.messagingRecipient}
-                  onChange={(phone) => onConfigChange({ messagingRecipient: phone })}
-                />
-              </div>
-
               {twilioSmsNumbers.length === 0 ? (
                 <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
                   Import a Twilio number under Telephony Numbers.
                 </p>
               ) : (
                 <div>
-                  <label className={labelClass}>Twilio number *</label>
+                  <label className={labelClass}>Phone number *</label>
                   <select
                     className={fieldClass}
                     value={formData.telephony_phone_number_id}
@@ -669,26 +577,9 @@ export default function ChatConnectionDetailsStep({
                 </div>
               </div>
 
-              {agentId ? (
-                <button
-                  type="button"
-                  disabled={
-                    testTwilioSmsMutation.isPending ||
-                    !config.messagingRecipient.trim() ||
-                    !formData.telephony_phone_number_id?.trim() ||
-                    hasSmsPhoneConflict
-                  }
-                  onClick={() => testTwilioSmsMutation.mutate()}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-800 hover:bg-gray-50 disabled:opacity-50"
-                >
-                  {testTwilioSmsMutation.isPending ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Smartphone className="h-3.5 w-3.5" />
-                  )}
-                  Test send SMS
-                </button>
-              ) : null}
+              <p className="text-xs text-gray-500">
+                Choose the eval recipient when you run an evaluator suite (same as voice outbound tests).
+              </p>
             </div>
           ) : null}
 

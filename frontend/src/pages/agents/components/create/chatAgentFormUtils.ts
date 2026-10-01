@@ -93,9 +93,6 @@ export function buildChatConnectionConfigPayload(
       ...(config.outboundWebhookUrl.trim()
         ? { outbound_webhook_url: config.outboundWebhookUrl.trim() }
         : {}),
-      ...(config.messagingRecipient.trim()
-        ? { messaging_recipient: config.messagingRecipient.trim() }
-        : {}),
       ...(config.messagingSyncReplyUrl.trim()
         ? { messaging_sync_reply_url: config.messagingSyncReplyUrl.trim() }
         : {}),

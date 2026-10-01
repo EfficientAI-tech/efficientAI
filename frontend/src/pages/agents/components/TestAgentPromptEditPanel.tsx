@@ -69,11 +69,11 @@ export default function TestAgentPromptEditPanel({
       <div className="flex items-center justify-between mb-1 gap-3 flex-wrap">
         <label className="block text-sm font-medium text-gray-700">EfficientAI Test Agent Template</label>
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={onToggleGeneratePanel}
-            disabled={generateMutation.isPending}
-            className={`inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-lg border transition-colors ${
+        <button
+          type="button"
+          onClick={onToggleGeneratePanel}
+          disabled={generateMutation.isPending}
+          className={`inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-lg border transition-colors ${
               showGeneratePanel
                 ? 'bg-amber-100 text-amber-800 border-amber-300'
                 : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
@@ -171,7 +171,12 @@ export default function TestAgentPromptEditPanel({
             <button
               type="button"
               onClick={() => generateMutation.mutate()}
-              disabled={generateMutation.isPending || !formData.provider_prompt?.trim()}
+              disabled={
+                generateMutation.isPending ||
+                !formData.provider_prompt?.trim() ||
+                !aiCredentialId ||
+                !(aiModel.trim() || gatewayDirectModel)
+              }
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-amber-600 text-white rounded-lg disabled:opacity-50"
             >
               {generateMutation.isPending ? (

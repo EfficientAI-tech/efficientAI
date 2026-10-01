@@ -4685,7 +4685,12 @@ class ApiClient {
 
   async runEvaluatorSuite(
     suiteId: string,
-    data: { runs_per_combination: number; to_number?: string; from_number?: string },
+    data: {
+      runs_per_combination: number
+      to_number?: string
+      from_number?: string
+      twilio_sms_trial_body_template?: string
+    },
   ): Promise<RunEvaluatorSuiteResponse> {
     const response = await this.client.post(`/api/v1/evaluator-suites/${suiteId}/run`, data)
     return response.data

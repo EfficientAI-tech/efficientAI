@@ -18,8 +18,10 @@ import {
   FileText,
 } from 'lucide-react'
 import { useToast } from '../../../hooks/useToast'
+import { trialSmsTemplateFromAgentConfig } from '../../../lib/twilioSmsTrialTemplates'
 import { ModelProvider } from '../../../types/api'
 import EvaluatorOutboundCallPanel from '../components/EvaluatorOutboundCallPanel'
+import EvaluatorMessagingRunPanel from '../components/EvaluatorMessagingRunPanel'
 import EvaluatorInboundCallPanel from '../components/EvaluatorInboundCallPanel'
 import EvaluatorSmartRunModal from '../components/EvaluatorSmartRunModal'
 import EvaluatorMetricPicker from '../components/EvaluatorMetricPicker'
@@ -70,6 +72,8 @@ export default function EvaluatorDetail() {
   const [viewCombination, setViewCombination] = useState<EvaluatorSuiteCombination | null>(null)
   const [showRunModal, setShowRunModal] = useState(false)
   const [showDeleteModal, setShowDeleteModal] = useState(false)
+  const [runToNumber, setRunToNumber] = useState('')
+  const [runTrialSmsTemplate, setRunTrialSmsTemplate] = useState('')
 
   const { data: suite, isLoading, error } = useQuery<EvaluatorSuite>({
     queryKey: ['evaluator-suite', id],
@@ -86,6 +90,14 @@ export default function EvaluatorDetail() {
     queryFn: () => apiClient.getAgent(suite!.agent_id),
     enabled: !!suite?.agent_id,
   })
+
+  useEffect(() => {
+    if (!agent || agent.chat_connection_type !== 'messaging_channels') return
+    setRunTrialSmsTemplate((prev) => {
+      if (prev) return prev
+      return trialSmsTemplateFromAgentConfig(agent.chat_connection_config ?? null)
+    })
+  }, [agent?.id, agent?.chat_connection_type, agent?.chat_connection_config])
 
   const { data: scenarios = [] } = useQuery({
     queryKey: ['scenarios', suite?.agent_id],
@@ -292,6 +304,11 @@ export default function EvaluatorDetail() {
   const hasTtsMismatch = !isChatAgent && suiteHasTtsProviderMismatch(suite)
   const blocksOutboundRun = hasTtsMismatch && !isInbound
   const firstCombo = suite.combinations[0]
+  const isPhoneOutbound =
+    !isInbound && (suite.agent_call_medium || 'phone_call') === 'phone_call'
+  const isMessagingChat =
+    isChatAgent && agent?.chat_connection_type === 'messaging_channels'
+  const runToNumberOnPage = isPhoneOutbound || isMessagingChat
   const existingScenarioIds = new Set(suite.combinations.map((c) => c.scenario_id))
   const existingPersonaIds = new Set(suite.persona_ids ?? suite.combinations.map((c) => c.persona_id).filter(Boolean))
   const distinctScenarioCount = existingScenarioIds.size
@@ -552,7 +569,8 @@ export default function EvaluatorDetail() {
           onSuiteUpdated={invalidateSuite}
           showToast={showToast}
         />
-      ) : firstCombo ? (
+      ) : null}
+      {isPhoneOutbound && firstCombo ? (
         <EvaluatorOutboundCallPanel
           evaluatorId={firstCombo.id}
           agentId={suite.agent_id}
@@ -564,6 +582,20 @@ export default function EvaluatorDetail() {
           callType={suite.agent_call_type || 'outbound'}
           suite={suite}
           onEditPersonas={handleStartEdit}
+          showToast={showToast}
+          toNumber={runToNumber}
+          onToNumberChange={setRunToNumber}
+        />
+      ) : null}
+      {isMessagingChat && firstCombo ? (
+        <EvaluatorMessagingRunPanel
+          agentId={suite.agent_id}
+          personaName={firstCombo.persona_name || suite.persona_name || undefined}
+          scenarioName={firstCombo.scenario_name || undefined}
+          toNumber={runToNumber}
+          onToNumberChange={setRunToNumber}
+          trialSmsTemplate={runTrialSmsTemplate}
+          onTrialSmsTemplateChange={setRunTrialSmsTemplate}
           showToast={showToast}
         />
       ) : null}
@@ -682,6 +714,10 @@ export default function EvaluatorDetail() {
           onClose={() => setShowRunModal(false)}
           suites={[suite]}
           showToast={showToast}
+          toNumber={runToNumberOnPage ? runToNumber : undefined}
+          onToNumberChange={runToNumberOnPage ? setRunToNumber : undefined}
+          trialSmsTemplate={isMessagingChat ? runTrialSmsTemplate : undefined}
+          onTrialSmsTemplateChange={isMessagingChat ? setRunTrialSmsTemplate : undefined}
         />
       )}
 
