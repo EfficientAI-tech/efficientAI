@@ -42,30 +42,6 @@ class VobizAgentContext:
     tts_elevenlabs_api_base_url: Optional[str] = None
 
 
-def _resolve_azure_endpoint_for_provider(
-    db: Session,
-    organization_id: UUID,
-    provider: ModelProvider,
-) -> Optional[str]:
-    from app.services.ai.llm_service import _resolve_azure_endpoint_from_provider
-
-    provider_value = provider.value if hasattr(provider, "value") else str(provider)
-    ai_provider_rec = db.query(AIProvider).filter(
-        AIProvider.organization_id == organization_id,
-        AIProvider.provider == provider_value,
-        AIProvider.is_active.is_(True),
-    ).first()
-    if not ai_provider_rec:
-        ai_provider_rec = db.query(AIProvider).filter(
-            AIProvider.organization_id == organization_id,
-            func.lower(AIProvider.provider) == provider_value.lower(),
-            AIProvider.is_active.is_(True),
-        ).first()
-    if not ai_provider_rec:
-        return None
-    return _resolve_azure_endpoint_from_provider(ai_provider_rec, None)
-
-
 def _resolve_voice_llm_urls(
     db: Session,
     organization_id: UUID,
@@ -74,12 +50,20 @@ def _resolve_voice_llm_urls(
     if not voice_bundle or not voice_bundle.llm_provider:
         return None, None
 
+    from app.services.credentials.resolver import resolve_azure_endpoint_for_model_provider
+
     llm_provider = voice_bundle.llm_provider
     provider_key = (
         llm_provider.value if hasattr(llm_provider, "value") else str(llm_provider)
     ).lower()
+    llm_credential_id = getattr(voice_bundle, "llm_credential_id", None)
     llm_endpoint_url = (
-        _resolve_azure_endpoint_for_provider(db, organization_id, llm_provider)
+        resolve_azure_endpoint_for_model_provider(
+            llm_provider,
+            db,
+            organization_id,
+            credential_id=llm_credential_id,
+        )
         if provider_key == "azure"
         else None
     )

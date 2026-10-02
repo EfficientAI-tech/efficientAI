@@ -1392,6 +1392,12 @@ def _expand_number_range_criteria(metric) -> list[str] | None:
         return None
     if min_v is None or max_v is None or step <= 0:
         return None
+    span = max_v - min_v
+    if span < 0:
+        return None
+    level_count = int(span / step + 1e-9) + 1
+    if level_count < 2 or level_count > 10:
+        return None
     levels: list[str] = []
     current = min_v
     while current <= max_v + 1e-9:
@@ -1632,6 +1638,19 @@ def _jev_noul_to_bool(raw_answer: dict[str, Any] | None) -> bool:
         return float(noul) >= 0.5
     except (TypeError, ValueError):
         return False
+
+
+def _jev_noul_to_bool_or_none(raw_answer: dict[str, Any] | None) -> bool | None:
+    """Map noul to bool when present; None when the answer is missing or unparseable."""
+    if not isinstance(raw_answer, dict):
+        return None
+    noul = raw_answer.get("noul")
+    if noul is None:
+        return None
+    try:
+        return float(noul) >= 0.5
+    except (TypeError, ValueError):
+        return None
 
 
 def _match_choice_key(choice: str | None, criteria: dict[str, str]) -> str | None:
@@ -1903,8 +1922,9 @@ def _map_jev_multi_label_group(
             else None
         )
         meta = _jev_answer_metadata(raw) if isinstance(raw, dict) else {}
+        child_value = _jev_noul_to_bool_or_none(raw if isinstance(raw, dict) else None)
         metric_scores[str(child.id)] = {
-            "value": _jev_noul_to_bool(raw if isinstance(raw, dict) else None),
+            "value": child_value,
             "type": "boolean",
             "metric_name": child.name,
             "parent_metric_id": str(parent.id),
@@ -1918,9 +1938,13 @@ def _map_jev_multi_label_group(
             "child_name": child.name,
         }
         for child in children
-        if metric_scores.get(str(child.id), {}).get("value")
+        if metric_scores.get(str(child.id), {}).get("value") is True
     ]
-    sequence_keys = [_child_slug(child) for child in children if metric_scores.get(str(child.id), {}).get("value")]
+    sequence_keys = [
+        _child_slug(child)
+        for child in children
+        if metric_scores.get(str(child.id), {}).get("value") is True
+    ]
     metric_scores[str(parent.id)] = {
         "type": "category",
         "metric_name": parent.name,
@@ -2831,7 +2855,9 @@ def _evaluate_with_jev_model(
     metric_scores = _map_jev_answers_to_metrics(answers, bindings, unsupported)
     for metric_id, entry in call_errors.items():
         existing = metric_scores.get(metric_id)
-        if existing is None or existing.get("value") is None:
+        if existing is None or existing.get("value") is None or existing.get("error"):
+            metric_scores[metric_id] = entry
+        elif entry.get("error") and existing.get("value") is False:
             metric_scores[metric_id] = entry
 
     if class_scores:

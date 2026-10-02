@@ -2,19 +2,12 @@
 
 from uuid import uuid4
 
-import pytest
-
 from app.core.encryption import encrypt_api_key
 from app.models.database import AIProvider, Integration, ModelProvider
 from app.services.ai.tts_service import TTSService
 
 
-@pytest.fixture
-def org_id():
-    return uuid4()
-
-
-def test_tts_pairs_integration_key_with_integration_base_url(db_session, org_id, monkeypatch):
+def test_tts_pairs_integration_key_with_integration_base_url(db_session, org_id, seed_org, monkeypatch):
     regional = Integration(
         id=uuid4(),
         organization_id=org_id,
@@ -60,7 +53,7 @@ def test_tts_pairs_integration_key_with_integration_base_url(db_session, org_id,
     assert captured["base_url"] == "https://api.eu.elevenlabs.io"
 
 
-def test_tts_aiprovider_key_does_not_use_integration_base_url(db_session, org_id, monkeypatch):
+def test_tts_aiprovider_key_does_not_use_integration_base_url(db_session, org_id, seed_org, monkeypatch):
     db_session.add(
         AIProvider(
             id=uuid4(),

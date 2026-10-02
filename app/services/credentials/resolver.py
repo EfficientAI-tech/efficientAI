@@ -115,6 +115,26 @@ def resolve_ai_provider(
     )
 
 
+def resolve_azure_endpoint_for_model_provider(
+    provider: ModelProvider,
+    db: Session,
+    org_id: UUID,
+    credential_id: Optional[UUID] = None,
+) -> Optional[str]:
+    """Resolve Azure OpenAI endpoint from the same AIProvider row as the LLM key."""
+    from app.services.ai.llm_service import _resolve_azure_endpoint_from_provider
+
+    provider_value = provider.value if hasattr(provider, "value") else str(provider)
+    if str(provider_value).lower() != "azure":
+        return None
+    ai_provider_rec = resolve_ai_provider(
+        provider_value, db, org_id, credential_id=credential_id
+    )
+    if not ai_provider_rec:
+        return None
+    return _resolve_azure_endpoint_from_provider(ai_provider_rec, None)
+
+
 def resolve_decrypted_api_key_for_model_provider(
     provider: ModelProvider,
     db: Session,
@@ -131,7 +151,8 @@ def resolve_decrypted_api_key_for_model_provider(
         try:
             return decrypt_api_key(ai_provider_rec.api_key)
         except Exception:
-            return None
+            if credential_id is not None and ai_provider_rec.id == credential_id:
+                return None
 
     plat = _VOICE_INTEGRATION_PLATFORMS.get(provider)
     if plat is None:
@@ -142,6 +163,8 @@ def resolve_decrypted_api_key_for_model_provider(
         try:
             return decrypt_api_key(integ.api_key)
         except Exception:
+            if credential_id is not None and integ.id == credential_id:
+                return None
             return None
     return None
 

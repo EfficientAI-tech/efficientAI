@@ -2483,7 +2483,10 @@ class EvaluatorResultResponse(BaseModel):
     provider_call_id: Optional[str] = None
     provider_platform: Optional[str] = None
     call_data: Optional[Dict[str, Any]] = None  # Full call details from provider
-    
+    call_recording_source: Optional[str] = None
+    synthetic_call_trace_id: Optional[UUID] = None
+    call_trace_status: Optional[str] = None
+
     created_at: datetime
     updated_at: datetime
     created_by: Optional[str]

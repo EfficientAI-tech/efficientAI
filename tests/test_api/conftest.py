@@ -456,6 +456,7 @@ def make_evaluator_result(db_session, org_id, seed_org, default_workspace):
             error_message=overrides.get("error_message"),
             provider_platform=overrides.get("provider_platform"),
             call_data=overrides.get("call_data"),
+            synthetic_call_trace_id=overrides.get("synthetic_call_trace_id"),
         )
         db_session.add(evaluator_result)
         db_session.commit()

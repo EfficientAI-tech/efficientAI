@@ -1,5 +1,7 @@
 """API tests for evaluator results routes."""
 
+from uuid import uuid4
+
 import pytest
 
 
@@ -20,6 +22,40 @@ def test_derive_speaker_segments_supports_smallest_payload():
     assert len(segments) == 2
     assert segments[0]["speaker"] == "Speaker 1"
     assert segments[1]["speaker"] == "Speaker 2"
+
+
+def test_get_evaluator_result_includes_trace_link_fields(
+    authenticated_client,
+    make_evaluator_result,
+    db_session,
+    org_id,
+    default_workspace,
+):
+    from app.models.database import SyntheticCallTrace
+
+    trace_id = uuid4()
+    db_session.add(
+        SyntheticCallTrace(
+            id=trace_id,
+            organization_id=org_id,
+            workspace_id=default_workspace.id,
+        )
+    )
+    db_session.commit()
+
+    result = make_evaluator_result(
+        result_id="991234",
+        synthetic_call_trace_id=trace_id,
+    )
+
+    response = authenticated_client.get(
+        f"/api/v1/evaluator-results/{result.result_id}?playground=true"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["synthetic_call_trace_id"] == str(trace_id)
+    assert body["call_trace_status"] == "open"
+    assert body.get("call_recording_source") is None
 
 
 def test_list_and_get_evaluator_results(authenticated_client, make_evaluator_result):

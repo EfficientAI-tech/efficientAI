@@ -617,7 +617,20 @@ def get_evaluator_result(
             if evaluator:
                 response_data["evaluator"] = EvaluatorResponse.model_validate(evaluator)
                 response_data["suite_id"] = evaluator.suite_id
-    
+
+    call_short_id = None
+    if isinstance(enriched_call_data, dict):
+        call_short_id = enriched_call_data.get("call_short_id")
+    from app.services.synthetic_traces.trace_service import lookup_call_trace_status
+
+    response_data["call_trace_status"] = lookup_call_trace_status(
+        db,
+        organization_id=result.organization_id,
+        workspace_id=result.workspace_id,
+        synthetic_call_trace_id=result.synthetic_call_trace_id,
+        call_short_id=call_short_id,
+    )
+
     return EvaluatorResultResponse(**response_data)
 
 

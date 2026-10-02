@@ -521,6 +521,7 @@ def _install_static_stubs():
                 return {"transcript": "test transcript", "processing_time": 0.1}
 
         fake_model_config_module.model_config_service = _FakeModelConfigService()
+        fake_model_config_module.ModelConfigService = _FakeModelConfigService
         fake_llm_singleton = _FakeLLMService()
         fake_llm_module.llm_service = fake_llm_singleton
         fake_llm_module.LLMService = _FakeLLMService

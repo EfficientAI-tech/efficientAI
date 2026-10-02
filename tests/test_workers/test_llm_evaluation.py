@@ -1302,6 +1302,44 @@ def test_map_jev_single_choice_accepts_false_string_choice():
     assert "error" not in scores["p1"]
 
 
+def test_expand_number_range_rejects_huge_span_before_allocating_levels():
+    metric = _make_metric(
+        name="Huge Range",
+        custom_data_type="number_range",
+        custom_config={"min": 0, "max": 1_000_000, "step": 1},
+    )
+    assert llm_evaluation._expand_number_range_criteria(metric) is None
+
+
+def test_map_jev_multi_label_missing_child_answer_is_none_not_false():
+    parent = _make_metric(name="Topics", metric_type="boolean", metric_id="p1")
+    parent.selection_mode = "multi_label"
+    child = _make_metric(name="Billing", metric_type="boolean", metric_id="c1")
+    groups = [llm_evaluation.MetricPromptGroup(parent, [child], None)]
+    _, bindings, _ = llm_evaluation._build_jev_questions_and_bindings(groups)
+    scores = llm_evaluation._map_jev_multi_label_group({}, bindings)
+    assert scores["c1"]["value"] is None
+
+
+def test_jev_call_errors_merge_overwrites_unanswered_multi_label_child():
+    parent = _make_metric(name="Topics", metric_type="boolean", metric_id="p1")
+    parent.selection_mode = "multi_label"
+    child = _make_metric(name="Billing", metric_type="boolean", metric_id="c1")
+    groups = [llm_evaluation.MetricPromptGroup(parent, [child], None)]
+    _, bindings, _ = llm_evaluation._build_jev_questions_and_bindings(groups)
+    metric_scores = llm_evaluation._map_jev_multi_label_group({}, bindings)
+    call_errors = {
+        "c1": llm_evaluation._unsupported_jev_entry(child, error="jev_answer_parse_failed"),
+    }
+    for metric_id, entry in call_errors.items():
+        existing = metric_scores.get(metric_id)
+        if existing is None or existing.get("value") is None or existing.get("error"):
+            metric_scores[metric_id] = entry
+        elif entry.get("error") and existing.get("value") is False:
+            metric_scores[metric_id] = entry
+    assert metric_scores["c1"]["error"] == "jev_answer_parse_failed"
+
+
 def test_evaluate_with_llm_non_jev_model_uses_standard_prompt(monkeypatch):
     captured: dict = {}
 

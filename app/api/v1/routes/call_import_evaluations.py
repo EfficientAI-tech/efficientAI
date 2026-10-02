@@ -121,7 +121,10 @@ from app.services.call_import_metric_clusters import (
     metric_clusters_state_to_db,
 )
 from app.services.classification_metric_scores import classification_facets_from_entry
-from app.services.classification_metric_sql import classification_level_row_predicate
+from app.services.classification_metric_sql import (
+    classification_choice_row_predicate,
+    classification_level_row_predicate,
+)
 from app.services.metric_classification_validation import is_classification_metric
 from app.services.metric_failure_policy import (
     aggregate_primary_percent,
@@ -1401,11 +1404,7 @@ def _apply_classification_metric_filters(
             query = query.filter(func.lower(effective) == yn)
 
     if choice and choice.strip():
-        choice_txt = func.coalesce(
-            func.json_extract_path_text(scores, mid, "classification_choice"),
-            func.json_extract_path_text(scores, mid, "answers", "choice", "choice"),
-        )
-        query = query.filter(func.lower(choice_txt) == choice.strip().lower())
+        query = query.filter(classification_choice_row_predicate(mid, choice))
 
     if level and level.strip():
         query = query.filter(classification_level_row_predicate(mid, level))
@@ -5111,12 +5110,15 @@ def _compute_metric_aggregates(
         # Multi-label parents however contribute one observation per
         # selected child, so summing ``category_counts`` over-counts —
         # we tracked rows-scored separately above and use it here.
+        legacy_rows_scored = len(numeric_values) + sum(category_counts.values())
+        # Mixed migrations may score some rows via classification facets and
+        # others via legacy numeric/category values for the same metric id.
         rows_scored = (
             multi_label_rows_scored
             if is_multi_label_parent
-            else classification_rows_scored
-            if is_classification_metric_agg and classification_rows_scored
-            else len(numeric_values) + sum(category_counts.values())
+            else (classification_rows_scored + legacy_rows_scored)
+            if is_classification_metric_agg
+            else legacy_rows_scored
         )
 
         # Build numeric stats first, then categorical (both can coexist).
