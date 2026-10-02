@@ -471,8 +471,14 @@ class LLMService:
         prefix = _LITELLM_PROVIDER_PREFIX.get(provider_value.lower(), provider_value.lower())
         if provider_value.lower() == "azure":
             model = _azure_deployment_name(model)
-        if provider_value.lower() == "fireworks" and not model.startswith("accounts/"):
-            model = f"accounts/fireworks/models/{model}"
+        if provider_value.lower() == "fireworks":
+            from app.services.ai.fireworks_model_aliases import (
+                resolve_fireworks_catalog_model,
+            )
+
+            model = resolve_fireworks_catalog_model(model)
+            if not model.startswith("accounts/"):
+                model = f"accounts/fireworks/models/{model}"
         if provider_value.lower() == "openrouter":
             normalized = model.strip()
             if normalized.lower().startswith("openrouter/"):

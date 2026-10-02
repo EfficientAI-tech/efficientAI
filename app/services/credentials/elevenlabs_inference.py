@@ -48,6 +48,31 @@ def resolve_elevenlabs_api_base_url_for_provider(
     )
 
 
+def resolve_elevenlabs_api_base_url_for_pinned_credentials(
+    db: Session,
+    organization_id: UUID,
+    provider: ModelProvider,
+    *,
+    credential_id: Optional[UUID] = None,
+) -> Optional[str]:
+    """Return a regional URL only when the API key resolves from Integration, not AIProvider."""
+    provider_value = (
+        provider.value if hasattr(provider, "value") else str(provider)
+    ).lower()
+    if provider_value != ModelProvider.ELEVENLABS.value:
+        return None
+    from app.services.credentials.resolver import resolve_ai_provider
+
+    ai_row = resolve_ai_provider(
+        provider_value, db, organization_id, credential_id=credential_id
+    )
+    if ai_row is not None:
+        return None
+    return resolve_elevenlabs_api_base_url(
+        db, organization_id, credential_id=credential_id
+    )
+
+
 def resolve_elevenlabs_api_base_url_for_voice_bundle_leg(
     db: Session,
     organization_id: UUID,

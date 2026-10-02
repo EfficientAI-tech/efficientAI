@@ -14,7 +14,24 @@ from uuid import UUID
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
-from app.models.database import AIProvider, Integration, TelephonyIntegration
+from app.core.encryption import decrypt_api_key
+from app.models.database import (
+    AIProvider,
+    Integration,
+    IntegrationPlatform,
+    ModelProvider,
+    TelephonyIntegration,
+)
+
+_VOICE_INTEGRATION_PLATFORMS = {
+    ModelProvider.DEEPGRAM: IntegrationPlatform.DEEPGRAM,
+    ModelProvider.CARTESIA: IntegrationPlatform.CARTESIA,
+    ModelProvider.ELEVENLABS: IntegrationPlatform.ELEVENLABS,
+    ModelProvider.MURF: IntegrationPlatform.MURF,
+    ModelProvider.SARVAM: IntegrationPlatform.SARVAM,
+    ModelProvider.VOICEMAKER: IntegrationPlatform.VOICEMAKER,
+    ModelProvider.SMALLEST: IntegrationPlatform.SMALLEST,
+}
 
 
 def _resolve_for_org_provider(
@@ -96,6 +113,37 @@ def resolve_ai_provider(
         provider_value=provider,
         credential_id=credential_id,
     )
+
+
+def resolve_decrypted_api_key_for_model_provider(
+    provider: ModelProvider,
+    db: Session,
+    org_id: UUID,
+    credential_id: Optional[UUID] = None,
+) -> Optional[str]:
+    """Decrypt API key for a voice/STT/TTS provider using shared credential priority."""
+    provider_value = provider.value if hasattr(provider, "value") else str(provider)
+
+    ai_provider_rec = resolve_ai_provider(
+        provider_value, db, org_id, credential_id=credential_id
+    )
+    if ai_provider_rec:
+        try:
+            return decrypt_api_key(ai_provider_rec.api_key)
+        except Exception:
+            return None
+
+    plat = _VOICE_INTEGRATION_PLATFORMS.get(provider)
+    if plat is None:
+        return None
+    plat_value = plat.value if hasattr(plat, "value") else str(plat)
+    integ = resolve_integration(plat_value, db, org_id, credential_id=credential_id)
+    if integ:
+        try:
+            return decrypt_api_key(integ.api_key)
+        except Exception:
+            return None
+    return None
 
 
 def clear_other_defaults(

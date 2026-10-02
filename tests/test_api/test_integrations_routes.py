@@ -33,6 +33,24 @@ def test_update_integration(authenticated_client, make_integration):
     assert response.json()["public_key"] == "pub-key"
 
 
+def test_update_elevenlabs_integration_clears_api_base_url(
+    authenticated_client, make_integration, db_session
+):
+    integration = make_integration(platform="elevenlabs")
+    integration.api_base_url = "https://api.us.elevenlabs.io"
+    db_session.commit()
+    db_session.refresh(integration)
+    response = authenticated_client.put(
+        f"/api/v1/integrations/{integration.id}",
+        json={"api_base_url": None},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["api_base_url"] is None
+    db_session.refresh(integration)
+    assert integration.api_base_url is None
+
+
 def test_get_integration_api_key(authenticated_client, monkeypatch, make_integration):
     integration = make_integration(platform="retell", api_key="encrypted")
     monkeypatch.setattr(integrations_route, "decrypt_api_key", lambda _v: "decrypted-key")

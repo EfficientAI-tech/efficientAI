@@ -136,83 +136,18 @@ async def websocket_endpoint(
 
         use_voice_bundle_pipeline = bool(voice_bundle and voice_bundle.bundle_type == "stt_llm_tts")
 
-        def resolve_api_key_for_provider(provider: ModelProvider) -> str | None:
-            """Resolve API key from AIProvider (preferred) or Integration for given provider."""
-            from sqlalchemy import func
-            # 1) AIProvider (handle both string and enum comparisons)
-            provider_value = provider.value if hasattr(provider, 'value') else provider
-            
-            ai_provider_rec = db.query(AIProvider).filter(
-                AIProvider.organization_id == organization_id,
-                AIProvider.provider == provider_value,
-                AIProvider.is_active == True,
-            ).first()
-            
-            # If not found, try case-insensitive match
-            if not ai_provider_rec:
-                ai_provider_rec = db.query(AIProvider).filter(
-                    AIProvider.organization_id == organization_id,
-                    func.lower(AIProvider.provider) == provider_value.lower(),
-                    AIProvider.is_active == True,
-                ).first()
-            if ai_provider_rec:
-                try:
-                    key = decrypt_api_key(ai_provider_rec.api_key)
-                    logger.debug(
-                        f"[resolve_api_key] Found AIProvider key for '{provider_value}': "
-                        f"starts={key[:6]}... ends=...{key[-4:]}, len={len(key)}"
-                    )
-                    return key
-                except Exception as e:
-                    logger.error(f"Failed to decrypt AIProvider key for {provider}: {e}", exc_info=True)
-            else:
-                logger.debug(f"[resolve_api_key] No AIProvider record found for '{provider_value}'")
+        from app.services.credentials.resolver import resolve_decrypted_api_key_for_model_provider
 
-            # 2) Integration mapping (only for platforms that exist in IntegrationPlatform)
-            platform_map = {
-                ModelProvider.DEEPGRAM: IntegrationPlatform.DEEPGRAM,
-                ModelProvider.CARTESIA: IntegrationPlatform.CARTESIA,
-                ModelProvider.ELEVENLABS: IntegrationPlatform.ELEVENLABS,
-                ModelProvider.MURF: IntegrationPlatform.MURF,
-                ModelProvider.SARVAM: IntegrationPlatform.SARVAM,
-                ModelProvider.VOICEMAKER: IntegrationPlatform.VOICEMAKER,
-                ModelProvider.SMALLEST: IntegrationPlatform.SMALLEST,
-            }
-            plat = platform_map.get(provider)
-            if plat:
-                # Handle both string and enum comparisons for platform
-                plat_value = plat.value if hasattr(plat, 'value') else plat
-                integ = db.query(Integration).filter(
-                    Integration.organization_id == organization_id,
-                    Integration.platform == plat_value,
-                    Integration.is_active == True,
-                ).first()
-                
-                # If not found, try case-insensitive match
-                if not integ:
-                    integ = db.query(Integration).filter(
-                        Integration.organization_id == organization_id,
-                        func.lower(Integration.platform) == plat_value.lower(),
-                        Integration.is_active == True,
-                    ).first()
-                
-                if integ:
-                    try:
-                        key = decrypt_api_key(integ.api_key)
-                        logger.debug(
-                            f"[resolve_api_key] Found Integration key for '{provider_value}' (platform={plat_value}): "
-                            f"starts={key[:6]}... ends=...{key[-4:]}, len={len(key)}"
-                        )
-                        return key
-                    except Exception as e:
-                        logger.error(f"Failed to decrypt Integration key for {provider}: {e}", exc_info=True)
-                else:
-                    logger.debug(f"[resolve_api_key] No Integration record found for platform '{plat_value}'")
-            else:
-                logger.debug(f"[resolve_api_key] No platform mapping for provider '{provider_value}'")
-
-            logger.warning(f"[resolve_api_key] Could not resolve any API key for provider '{provider_value}'")
-            return None
+        def resolve_api_key_for_provider(
+            provider: ModelProvider,
+            credential_id: Optional[UUID] = None,
+        ) -> str | None:
+            return resolve_decrypted_api_key_for_model_provider(
+                provider,
+                db,
+                organization_id,
+                credential_id=credential_id,
+            )
 
         def resolve_azure_endpoint_for_provider(provider: ModelProvider) -> str | None:
             """Resolve Azure OpenAI endpoint URL from the org's AIProvider credential."""
@@ -504,9 +439,30 @@ async def websocket_endpoint(
                 tts_provider = voice_bundle.tts_provider if voice_bundle else None
                 llm_provider = voice_bundle.llm_provider if voice_bundle else None
 
-                stt_api_key = resolve_api_key_for_provider(stt_provider) if stt_provider else None
-                tts_api_key = resolve_api_key_for_provider(tts_provider) if tts_provider else None
-                llm_api_key = resolve_api_key_for_provider(llm_provider) if llm_provider else None
+                stt_api_key = (
+                    resolve_api_key_for_provider(
+                        stt_provider,
+                        getattr(voice_bundle, "stt_credential_id", None),
+                    )
+                    if stt_provider and voice_bundle
+                    else None
+                )
+                tts_api_key = (
+                    resolve_api_key_for_provider(
+                        tts_provider,
+                        getattr(voice_bundle, "tts_credential_id", None),
+                    )
+                    if tts_provider and voice_bundle
+                    else None
+                )
+                llm_api_key = (
+                    resolve_api_key_for_provider(
+                        llm_provider,
+                        getattr(voice_bundle, "llm_credential_id", None),
+                    )
+                    if llm_provider and voice_bundle
+                    else None
+                )
                 llm_endpoint_url = (
                     resolve_azure_endpoint_for_provider(llm_provider)
                     if llm_provider and (

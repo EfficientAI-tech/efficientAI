@@ -54,6 +54,17 @@ def test_litellm_model_name_maps_known_provider_prefixes():
         == "fireworks_ai/accounts/fireworks/models/deepseek-v4-pro"
     )
     assert (
+        LLMService._litellm_model_name(ModelProvider.FIREWORKS, "kimi-k2p6")
+        == "fireworks_ai/accounts/fireworks/models/kimi-k3"
+    )
+    assert (
+        LLMService._litellm_model_name(
+            ModelProvider.FIREWORKS,
+            "accounts/fireworks/models/kimi-k2p6-fast",
+        )
+        == "fireworks_ai/accounts/fireworks/models/kimi-k3-fast"
+    )
+    assert (
         LLMService._litellm_model_name(
             ModelProvider.TOGETHER, "together/Tev1-4B-experimental"
         )

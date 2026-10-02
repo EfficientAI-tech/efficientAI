@@ -306,7 +306,7 @@ async def update_integration(
     if integration_update.public_key is not None:
         integration.public_key = integration_update.public_key
 
-    if integration_update.api_base_url is not None:
+    if "api_base_url" in integration_update.model_fields_set:
         platform_value = (
             integration.platform.value
             if hasattr(integration.platform, "value")
