@@ -1476,6 +1476,56 @@ async def test_chat_messaging_twilio_sms(
     return {"ok": True, **result}
 
 
+class ChatMessagingTestTelnyxSmsRequest(BaseModel):
+    messaging_recipient: Optional[str] = None
+    telnyx_from: Optional[str] = None
+
+
+@router.post("/{agent_id}/chat-messaging/test-telnyx-sms")
+async def test_chat_messaging_telnyx_sms(
+    agent_id: str,
+    body: ChatMessagingTestTelnyxSmsRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Send one Telnyx SMS using saved credentials (does not run an eval turn)."""
+    import httpx
+
+    from app.models.enums import ChatConnectionTypeEnum
+    from app.services.agents.chat_connection import normalized_chat_connection_type
+    from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
+    from app.services.agents.messaging_channel_chat import test_telnyx_sms_send
+
+    db_agent = _get_agent_for_org_workspace(db, agent_id, organization_id, workspace_id)
+    conn = normalized_chat_connection_type(db_agent)
+    if conn != ChatConnectionTypeEnum.MESSAGING_CHANNELS.value:
+        raise HTTPException(status_code=400, detail="Agent is not a messaging chat agent")
+
+    cfg = chat_connection_config_for_runtime(db_agent.chat_connection_config)
+    raw = body.model_dump()
+    overrides: dict[str, str] = {}
+    for key in ("messaging_recipient", "telnyx_from"):
+        val = raw.get(key)
+        if isinstance(val, str) and val.strip():
+            overrides[key] = val.strip()
+    try:
+        result = test_telnyx_sms_send(
+            db,
+            organization_id=organization_id,
+            cfg=cfg,
+            overrides=overrides or None,
+            telephony_phone_number_id=db_agent.telephony_phone_number_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except httpx.HTTPStatusError as exc:
+        detail = (exc.response.text or str(exc))[:400]
+        raise HTTPException(status_code=502, detail=detail) from exc
+
+    return {"ok": True, **result}
+
+
 def _get_agent_for_org_workspace(db, agent_id: str, organization_id: UUID, workspace_id: UUID) -> Agent:
     try:
         agent_uuid = UUID(agent_id)

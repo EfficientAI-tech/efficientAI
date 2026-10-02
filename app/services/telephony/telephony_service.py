@@ -132,6 +132,14 @@ class TelephonyService:
             from app.services.telephony.twilio_client import TwilioClient
 
             return TwilioClient(auth_id, auth_token)
+        if provider_key == "telnyx":
+            from app.services.telephony.telnyx_client import TelnyxClient
+            from app.services.telephony.telnyx_integration import telnyx_messaging_profile_id
+
+            return TelnyxClient(
+                auth_token,
+                messaging_profile_id=telnyx_messaging_profile_id(integration),
+            )
         raise ValueError(f"Unsupported telephony provider: {provider}")
 
     def save_integration(

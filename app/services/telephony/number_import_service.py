@@ -32,6 +32,7 @@ IMPORT_SUPPORTED_PROVIDERS = frozenset(
         TelephonyProvider.PLIVO.value,
         TelephonyProvider.EXOTEL.value,
         TelephonyProvider.TWILIO.value,
+        TelephonyProvider.TELNYX.value,
     }
 )
 
@@ -52,6 +53,7 @@ def _provider_display_name(provider: str) -> str:
         "vobiz": "Vobiz",
         "plivo": "Plivo",
         "twilio": "Twilio",
+        "telnyx": "Telnyx",
         "exotel": "Exotel",
     }.get(key, key.capitalize() or "Telephony")
 
@@ -120,6 +122,24 @@ def _twilio_sms_inbound_webhook_url() -> str:
     from app.services.telephony.twilio_webhook_urls import twilio_sms_inbound_webhook_url
 
     return twilio_sms_inbound_webhook_url()
+
+
+def _twilio_voice_webhook_url() -> str:
+    from app.services.telephony.twilio_webhook_urls import twilio_voice_webhook_url
+
+    return twilio_voice_webhook_url()
+
+
+def _telnyx_voice_webhook_url() -> str:
+    from app.services.telephony.telnyx_webhook_urls import telnyx_voice_webhook_url
+
+    return telnyx_voice_webhook_url()
+
+
+def _telnyx_sms_inbound_webhook_url() -> str:
+    from app.services.telephony.telnyx_webhook_urls import telnyx_sms_inbound_webhook_url
+
+    return telnyx_sms_inbound_webhook_url()
 
 
 def _vobiz_answer_webhook_url() -> str:
@@ -246,6 +266,8 @@ def _list_remote_numbers(
             return client.list_incoming_phone_numbers()
         if provider_key == TelephonyProvider.TWILIO.value:
             return client.list_incoming_phone_numbers()
+        if provider_key == TelephonyProvider.TELNYX.value:
+            return client.list_phone_numbers()
         raise ValueError(f"Unsupported provider: {provider}")
     except Exception as exc:
         if _is_provider_credential_error(exc):
@@ -370,7 +392,9 @@ def _answer_url_for_provider(provider: str) -> str:
     if provider_key == TelephonyProvider.EXOTEL.value:
         return _exotel_voice_webhook_url()
     if provider_key == TelephonyProvider.TWILIO.value:
-        return _twilio_sms_inbound_webhook_url()
+        return _twilio_voice_webhook_url()
+    if provider_key == TelephonyProvider.TELNYX.value:
+        return _telnyx_voice_webhook_url()
     raise ValueError(f"Unsupported provider: {provider}")
 
 
@@ -410,7 +434,31 @@ def _configure_inbound_webhook(
         sid = remote.get("sid") or remote.get("Sid") or remote.get("provider_number_id")
         if not sid:
             return False, "Missing Twilio incoming-number SID", None
-        return client.set_number_sms_webhook(sid, answer_url)
+        voice_ok, voice_msg, app_id = client.set_number_voice_webhook(sid, answer_url)
+        sms_ok, sms_msg, _ = client.set_number_sms_webhook(sid, _twilio_sms_inbound_webhook_url())
+        if voice_ok and sms_ok:
+            return True, "Twilio voice and SMS inbound webhooks configured", app_id
+        if voice_ok:
+            return True, f"Voice webhook set; SMS: {sms_msg}", app_id
+        if sms_ok:
+            return True, f"SMS webhook set; voice: {voice_msg}", app_id
+        return False, f"{voice_msg}; {sms_msg}", app_id
+    if provider_key == TelephonyProvider.TELNYX.value:
+        profile_id = remote.get("messaging_profile_id")
+        integration_profile = getattr(client, "messaging_profile_id", None)
+        effective_profile = profile_id or integration_profile
+        if effective_profile:
+            ok, msg = client.patch_messaging_profile_webhook(
+                str(effective_profile),
+                _telnyx_sms_inbound_webhook_url(),
+            )
+            return ok, msg, str(effective_profile)
+        return (
+            False,
+            "Set messaging profile on integration (voice_app_id) or assign on number; "
+            f"point Call Control app webhook to {answer_url}",
+            remote.get("connection_id"),
+        )
     raise ValueError(f"Unsupported provider: {provider}")
 
 

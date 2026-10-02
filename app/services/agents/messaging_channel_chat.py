@@ -320,6 +320,125 @@ def _resolve_telephony_integration(
     )
 
 
+def _resolve_messaging_telnyx_context(
+    db: Session,
+    *,
+    organization_id: UUID,
+    cfg: dict[str, Any],
+    telephony_phone_number_id: Optional[UUID] = None,
+) -> tuple[str, str, str]:
+    """Return (api_key, messaging_profile_id, from_e164)."""
+    from app.models.database import TelephonyPhoneNumber
+    from app.services.telephony.telnyx_integration import (
+        telnyx_api_key,
+        telnyx_messaging_profile_id,
+    )
+
+    tp_id = telephony_phone_number_id
+    if not tp_id:
+        raw = cfg.get("messaging_telephony_phone_number_id")
+        if raw:
+            try:
+                tp_id = UUID(str(raw))
+            except (TypeError, ValueError):
+                tp_id = None
+    if tp_id:
+        number_row = (
+            db.query(TelephonyPhoneNumber)
+            .filter(
+                TelephonyPhoneNumber.id == tp_id,
+                TelephonyPhoneNumber.organization_id == organization_id,
+                TelephonyPhoneNumber.is_active.is_(True),
+            )
+            .first()
+        )
+        if number_row:
+            telephony = _resolve_telephony_integration(
+                db,
+                organization_id=organization_id,
+                integration_id_raw=number_row.telephony_integration_id,
+            )
+            if telephony and telephony.provider.lower() == "telnyx":
+                profile = telnyx_messaging_profile_id(telephony) or ""
+                return (
+                    telnyx_api_key(telephony),
+                    profile,
+                    _normalize_sms_phone(number_row.phone_number),
+                )
+    return "", "", ""
+
+
+def _send_telnyx_sms(
+    *,
+    api_key: str,
+    messaging_profile_id: str,
+    from_addr: str,
+    to: str,
+    body: str,
+) -> str:
+    from app.services.telephony.telnyx_client import TelnyxClient
+
+    client = TelnyxClient(api_key, messaging_profile_id=messaging_profile_id or None)
+    return client.send_message(
+        from_e164=_normalize_sms_phone(from_addr),
+        to_e164=_normalize_sms_phone(to),
+        text=body,
+        messaging_profile_id=messaging_profile_id or None,
+    )
+
+
+def test_telnyx_sms_send(
+    db: Session,
+    *,
+    organization_id: UUID,
+    cfg: dict[str, Any],
+    overrides: Optional[dict[str, str]] = None,
+    telephony_phone_number_id: Optional[UUID] = None,
+) -> dict[str, str]:
+    channel = _cfg_str(cfg, "messaging_channel").lower() or "sms"
+    if channel != "sms":
+        raise ValueError("Agent messaging channel must be sms")
+
+    merged = dict(cfg)
+    if overrides:
+        for key, val in overrides.items():
+            if isinstance(val, str) and val.strip():
+                merged[key] = val.strip()
+
+    recipient = _cfg_str(merged, "messaging_recipient", "messaging_test_recipient")
+    api_key, profile_id, from_line = _resolve_messaging_telnyx_context(
+        db,
+        organization_id=organization_id,
+        cfg=merged,
+        telephony_phone_number_id=telephony_phone_number_id,
+    )
+    if overrides and overrides.get("telnyx_from"):
+        from_line = _normalize_sms_phone(overrides["telnyx_from"])
+    if not api_key or not profile_id:
+        raise ValueError(
+            "Telnyx credentials are required — link a Telnyx number with a messaging profile "
+            "(integration voice_app_id)"
+        )
+    if not from_line or not recipient:
+        raise ValueError("Telnyx From number and eval recipient are required")
+
+    body = _sms_outbound_body(merged, "EfficientAI test SMS")
+    recipient_norm = _normalize_sms_phone(recipient)
+    msg_id = _send_telnyx_sms(
+        api_key=api_key,
+        messaging_profile_id=profile_id,
+        from_addr=from_line,
+        to=recipient_norm,
+        body=body,
+    )
+    return {
+        "message_id": msg_id,
+        "to": recipient_norm,
+        "from": _normalize_sms_phone(from_line),
+        "body_sent": body,
+    }
+
+
 def _resolve_messaging_twilio_context(
     db: Session,
     *,
@@ -418,6 +537,12 @@ def try_messaging_worker_send(
         cfg=cfg,
         telephony_phone_number_id=telephony_phone_number_id,
     )
+    telnyx_key, telnyx_profile, telnyx_from = _resolve_messaging_telnyx_context(
+        db,
+        organization_id=organization_id,
+        cfg=cfg,
+        telephony_phone_number_id=telephony_phone_number_id,
+    )
 
     plivo_integration_id = cfg.get("messaging_integration_id")
     telephony: Optional[TelephonyIntegration] = None
@@ -492,6 +617,30 @@ def try_messaging_worker_send(
                 inbound = wait_twilio_sms_reply(turn_id)
                 if inbound:
                     return inbound.strip(), f"messaging_{sent_via}_inbound"
+        elif telnyx_key and telnyx_profile and telnyx_from and channel == "sms":
+            from app.services.agents.chat_messaging_turn_wait import (
+                register_messaging_sms_turn,
+                wait_messaging_sms_reply,
+            )
+
+            turn_id = register_messaging_sms_turn(
+                agent_id=agent_id or organization_id,
+                twilio_from=_normalize_sms_phone(telnyx_from),
+                messaging_recipient=recipient,
+            )
+            if not turn_id:
+                return None, "messaging_sms_concurrent_turn"
+            _send_telnyx_sms(
+                api_key=telnyx_key,
+                messaging_profile_id=telnyx_profile,
+                from_addr=telnyx_from,
+                to=recipient,
+                body=outbound_body,
+            )
+            sent_via = "telnyx_sms"
+            inbound = wait_messaging_sms_reply(turn_id)
+            if inbound:
+                return inbound.strip(), f"messaging_{sent_via}_inbound"
         elif telephony and telephony.provider.lower() == "plivo" and sender:
             _send_plivo_sms(telephony, src=sender, dst=recipient, body=user_text)
             sent_via = "plivo_sms"

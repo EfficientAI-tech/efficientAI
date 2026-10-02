@@ -283,6 +283,9 @@ class Settings(BaseSettings):
     # Twilio SMS inbound webhooks (chat eval; public API host, optional override)
     TWILIO_WEBHOOK_BASE_URL: str = ""
 
+    # Telnyx voice + SMS webhooks (public API host, optional override)
+    TELNYX_WEBHOOK_BASE_URL: str = ""
+
     # Vobiz Telephony (platform-level, optional)
     VOBIZ_AUTH_ID: str = ""
     VOBIZ_AUTH_TOKEN: str = ""
@@ -990,6 +993,11 @@ def load_config_from_file(config_path: str) -> None:
         twilio_cfg = config_data["twilio"]
         if twilio_cfg.get("webhook_base_url"):
             settings.TWILIO_WEBHOOK_BASE_URL = str(twilio_cfg["webhook_base_url"]).strip()
+
+    if "telnyx" in config_data:
+        telnyx_cfg = config_data["telnyx"]
+        if telnyx_cfg.get("webhook_base_url"):
+            settings.TELNYX_WEBHOOK_BASE_URL = str(telnyx_cfg["webhook_base_url"]).strip()
 
     if "vobiz" in config_data:
         vobiz_cfg = config_data["vobiz"]

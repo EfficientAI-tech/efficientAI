@@ -19,7 +19,10 @@ import { CREATE_WIZARD_FIELD_CLASS, CREATE_WIZARD_LABEL_CLASS } from './createWi
 import type { ChatIntegrationOptionId } from './ChatIntegrationTypeStep'
 import type { CreateAgentFormData } from './createAgentTypes'
 import { useOrgTelephony } from '../../../../hooks/useOrgTelephony'
-import { buildPlatformTwilioSmsInboundWebhookUrl } from '../../../../lib/chatMessagingWebhookUrl'
+import {
+  buildPlatformTelnyxSmsInboundWebhookUrl,
+  buildPlatformTwilioSmsInboundWebhookUrl,
+} from '../../../../lib/chatMessagingWebhookUrl'
 import { useAgentPhoneAssignmentCheck } from '../useAgentPhoneAssignmentCheck'
 import { formatAgentPhoneConflictMessage } from '../agentPhoneValidation'
 
@@ -303,12 +306,16 @@ export default function ChatConnectionDetailsStep({
   agentId,
 }: ChatConnectionDetailsStepProps) {
   const { activeNumbers: telephonyNumbers } = useOrgTelephony()
-  const twilioSmsNumbers = telephonyNumbers.filter(
-    (n) =>
+  const smsCarrierNumbers = telephonyNumbers.filter((n) => {
+    const provider = (n.provider || '').toLowerCase()
+    return (
       n.is_active &&
-      (n.provider || '').toLowerCase() === 'twilio' &&
-      n.outbound_enabled !== false,
-  )
+      (provider === 'twilio' || provider === 'telnyx') &&
+      n.outbound_enabled !== false
+    )
+  })
+  const selectedSmsNumber = smsCarrierNumbers.find((n) => n.id === formData.telephony_phone_number_id)
+  const selectedSmsProvider = (selectedSmsNumber?.provider || '').toLowerCase()
   const { conflict: smsPhoneConflict, hasConflict: hasSmsPhoneConflict } =
     useAgentPhoneAssignmentCheck({
       enabled: integrationType === 'messaging_channels' && (config.messagingChannel || 'sms') === 'sms',
@@ -442,7 +449,10 @@ export default function ChatConnectionDetailsStep({
 
   if (integrationType === 'messaging_channels') {
     const channel = config.messagingChannel || 'sms'
-    const platformWebhookUrl = buildPlatformTwilioSmsInboundWebhookUrl(twilioWebhookPublicBase)
+    const platformWebhookUrl =
+      selectedSmsProvider === 'telnyx'
+        ? buildPlatformTelnyxSmsInboundWebhookUrl(twilioWebhookPublicBase)
+        : buildPlatformTwilioSmsInboundWebhookUrl(twilioWebhookPublicBase)
 
     const copyWebhook = async () => {
       if (!platformWebhookUrl) return
@@ -517,9 +527,9 @@ export default function ChatConnectionDetailsStep({
 
           {channel === 'sms' ? (
             <div className="space-y-4">
-              {twilioSmsNumbers.length === 0 ? (
+              {smsCarrierNumbers.length === 0 ? (
                 <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-                  Import a Twilio number under Telephony Numbers.
+                  Import a Twilio or Telnyx SMS number under Telephony Numbers.
                 </p>
               ) : (
                 <div>
@@ -529,7 +539,7 @@ export default function ChatConnectionDetailsStep({
                     value={formData.telephony_phone_number_id}
                     onChange={(e) => {
                       const id = e.target.value
-                      const row = twilioSmsNumbers.find((n) => n.id === id)
+                      const row = smsCarrierNumbers.find((n) => n.id === id)
                       onFormChange({
                         telephony_phone_number_id: id,
                         phone_number: row?.phone_number || '',
@@ -537,7 +547,7 @@ export default function ChatConnectionDetailsStep({
                     }}
                   >
                     <option value="">Select number</option>
-                    {twilioSmsNumbers.map((n) => {
+                    {smsCarrierNumbers.map((n) => {
                       const taken =
                         n.agent_id && n.agent_id !== agentId && n.id !== formData.telephony_phone_number_id
                       return (
@@ -556,22 +566,24 @@ export default function ChatConnectionDetailsStep({
                 </div>
               )}
 
-              <div>
-                <label className={labelClass}>Trial SMS template</label>
-                <select
-                  className={fieldClass}
-                  value={config.twilioSmsTrialBodyTemplate}
-                  onChange={(e) =>
-                    onConfigChange({ twilioSmsTrialBodyTemplate: e.target.value })
-                  }
-                >
-                  {TWILIO_SMS_TRIAL_BODY_TEMPLATES.map((opt) => (
-                    <option key={opt.value || 'custom'} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {selectedSmsProvider === 'twilio' ? (
+                <div>
+                  <label className={labelClass}>Trial SMS template</label>
+                  <select
+                    className={fieldClass}
+                    value={config.twilioSmsTrialBodyTemplate}
+                    onChange={(e) =>
+                      onConfigChange({ twilioSmsTrialBodyTemplate: e.target.value })
+                    }
+                  >
+                    {TWILIO_SMS_TRIAL_BODY_TEMPLATES.map((opt) => (
+                      <option key={opt.value || 'custom'} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
 
               <div>
                 <label className={labelClass}>Inbound webhook URL</label>

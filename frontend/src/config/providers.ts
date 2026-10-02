@@ -244,10 +244,21 @@ export const TELEPHONY_PROVIDER_CONFIG: Record<TelephonyProvider, TelephonyProvi
   [TelephonyProvider.TWILIO]: {
     label: 'Twilio',
     logo: '/twilio.svg',
-    description: 'Programmable SMS and WhatsApp for chat agent eval',
+    description: 'Programmable SMS, WhatsApp, and voice Media Streams',
     fields: [
       { key: 'auth_id', label: 'Account SID', required: true, type: 'text' },
       { key: 'auth_token', label: 'Auth Token', required: true, type: 'password' },
+    ],
+  },
+  [TelephonyProvider.TELNYX]: {
+    label: 'Telnyx',
+    logo: null,
+    description: 'Call Control voice streaming and programmable SMS for chat eval',
+    fields: [
+      { key: 'auth_id', label: 'Connection ID (optional)', required: true, type: 'text' },
+      { key: 'auth_token', label: 'API Key', required: true, type: 'password' },
+      { key: 'voice_app_id', label: 'Messaging Profile ID', required: false, type: 'text' },
+      { key: 'verify_app_uuid', label: 'Webhook Public Key', required: false, type: 'password' },
     ],
   },
 }

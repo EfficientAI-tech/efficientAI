@@ -49,6 +49,26 @@ class TwilioClient:
             if isinstance(item, dict) and item.get("phone_number")
         ]
 
+    def set_number_voice_webhook(
+        self,
+        incoming_phone_number_sid: str,
+        voice_url: str,
+    ) -> Tuple[bool, str, Optional[str]]:
+        sid = (incoming_phone_number_sid or "").strip()
+        if not sid:
+            return False, "Missing Twilio incoming phone number SID", None
+        url = f"{self._base_url()}/IncomingPhoneNumbers/{sid}.json"
+        with httpx.Client(timeout=60.0) as client:
+            resp = client.post(
+                url,
+                auth=(self.account_sid, self.auth_token),
+                data={"VoiceUrl": voice_url, "VoiceMethod": "POST"},
+            )
+            if resp.is_error:
+                detail = (resp.text or "")[:300]
+                return False, f"Twilio voice webhook update failed: {detail}", sid
+        return True, "Twilio voice inbound webhook configured", sid
+
     def set_number_sms_webhook(
         self,
         incoming_phone_number_sid: str,

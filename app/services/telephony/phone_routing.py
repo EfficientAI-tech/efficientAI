@@ -246,7 +246,7 @@ def resolve_messaging_sms_agent_for_inbound(
     db: Session,
     to_number_raw: Optional[str],
 ) -> Tuple[Optional[Agent], Optional[TelephonyPhoneNumber], Optional[UUID]]:
-    """Resolve chat messaging (SMS) agent for Twilio inbound To number."""
+    """Resolve chat messaging (SMS) agent for Twilio/Telnyx inbound To number."""
     candidates = expand_phone_candidates(to_number_raw)
     if not candidates:
         return None, None, None

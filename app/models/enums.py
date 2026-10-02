@@ -142,6 +142,7 @@ class TelephonyProvider(str, enum.Enum):
     EXOTEL = "exotel"
     VOBIZ = "vobiz"
     TWILIO = "twilio"
+    TELNYX = "telnyx"
 
 
 class CredentialRoutingMode(str, enum.Enum):

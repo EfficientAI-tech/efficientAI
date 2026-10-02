@@ -26,6 +26,7 @@ const IMPORT_SUPPORTED_PROVIDERS: TelephonyProvider[] = [
   TelephonyProvider.PLIVO,
   TelephonyProvider.EXOTEL,
   TelephonyProvider.TWILIO,
+  TelephonyProvider.TELNYX,
 ]
 
 function telephonyIntegrationLabel(cfg: TelephonyIntegrationResponse): string {

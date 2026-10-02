@@ -28,6 +28,9 @@ from app.api.v1.routes import (
     chat,
     chat_messaging_webhooks,
     twilio_sms_webhooks,
+    twilio_voice_webhooks,
+    telnyx_sms_webhooks,
+    telnyx_voice_webhooks,
     playground,
     settings,
     observability,
@@ -86,6 +89,9 @@ api_router.include_router(evaluator_results.router)
 api_router.include_router(chat.router)
 api_router.include_router(chat_messaging_webhooks.router)
 api_router.include_router(twilio_sms_webhooks.router)
+api_router.include_router(twilio_voice_webhooks.router)
+api_router.include_router(telnyx_sms_webhooks.router)
+api_router.include_router(telnyx_voice_webhooks.router)
 api_router.include_router(playground.router)
 api_router.include_router(settings.router)
 api_router.include_router(observability.router)

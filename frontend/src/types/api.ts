@@ -348,6 +348,7 @@ export enum TelephonyProvider {
   EXOTEL = 'exotel',
   VOBIZ = 'vobiz',
   TWILIO = 'twilio',
+  TELNYX = 'telnyx',
 }
 
 export type CredentialRoutingMode = 'inherit' | 'gateway' | 'direct'

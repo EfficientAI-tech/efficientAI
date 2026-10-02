@@ -105,15 +105,15 @@ def wait_twilio_sms_reply(
     return None
 
 
-def complete_twilio_sms_turn(
+def complete_messaging_sms_turn(
     *,
     agent_id: UUID | str,
-    twilio_to: str,
+    line_to: str,
     reply_from: str,
     body: str,
     ttl_secs: int = _DEFAULT_TTL_SECS,
 ) -> bool:
-    pair_key = _pending_key(agent_id, twilio_to, reply_from)
+    pair_key = _pending_key(agent_id, line_to, reply_from)
     from_key = _pending_from_key(agent_id, reply_from)
     try:
         client = _redis()
@@ -129,7 +129,7 @@ def complete_twilio_sms_turn(
                 pair_key,
                 from_key,
                 _normalize_phone(reply_from),
-                _normalize_phone(twilio_to),
+                _normalize_phone(line_to),
             )
             return False
         client.delete(pair_key)
@@ -145,3 +145,24 @@ def complete_twilio_sms_turn(
     except redis.RedisError as exc:
         logger.warning("[MessagingTurnWait] complete failed: {}", exc)
         return False
+
+
+def complete_twilio_sms_turn(
+    *,
+    agent_id: UUID | str,
+    twilio_to: str,
+    reply_from: str,
+    body: str,
+    ttl_secs: int = _DEFAULT_TTL_SECS,
+) -> bool:
+    return complete_messaging_sms_turn(
+        agent_id=agent_id,
+        line_to=twilio_to,
+        reply_from=reply_from,
+        body=body,
+        ttl_secs=ttl_secs,
+    )
+
+
+register_messaging_sms_turn = register_twilio_sms_turn
+wait_messaging_sms_reply = wait_twilio_sms_reply

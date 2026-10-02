@@ -16,6 +16,13 @@ export function buildPlatformTwilioSmsInboundWebhookUrl(publicBaseUrl?: string |
   return origin ? `${origin}${path}` : path
 }
 
+/** Configure on the Telnyx messaging profile (all numbers on that profile). */
+export function buildPlatformTelnyxSmsInboundWebhookUrl(publicBaseUrl?: string | null): string {
+  const origin = resolvePublicOrigin(publicBaseUrl)
+  const path = `${API_PREFIX}/telephony/telnyx/webhooks/sms-inbound`
+  return origin ? `${origin}${path}` : path
+}
+
 /** @deprecated Legacy per-agent token URLs; prefer buildPlatformTwilioSmsInboundWebhookUrl. */
 export function buildTwilioInboundWebhookUrl(
   webhookToken: string,

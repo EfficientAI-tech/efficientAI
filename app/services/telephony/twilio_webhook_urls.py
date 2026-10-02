@@ -27,3 +27,8 @@ def twilio_webhook_base() -> str:
 def twilio_sms_inbound_webhook_url() -> str:
     prefix = (settings.API_V1_PREFIX or "/api/v1").rstrip("/")
     return f"{twilio_webhook_base()}{prefix}/telephony/twilio/webhooks/sms-inbound"
+
+
+def twilio_voice_webhook_url() -> str:
+    prefix = (settings.API_V1_PREFIX or "/api/v1").rstrip("/")
+    return f"{twilio_webhook_base()}{prefix}/telephony/twilio/webhooks/voice-inbound"
