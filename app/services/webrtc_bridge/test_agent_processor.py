@@ -9,6 +9,7 @@ Receives transcripts from Retell's real-time events (no STT needed).
 import asyncio
 import io
 import os
+import re
 from dataclasses import dataclass
 from typing import Optional, Callable, Awaitable, List, Dict, Any, Union
 from uuid import UUID
@@ -23,6 +24,46 @@ try:
 except ImportError:
     EFFICIENTAI_AVAILABLE = False
     logger.warning("EfficientAI services not available, using fallback implementations")
+
+DEFAULT_MAX_TOKENS = 400
+# Reasoning models (e.g. Fireworks DeepSeek/GLM) can spend 150+ tokens thinking
+# and return no text at all, which leaves the test agent silent for the turn.
+REASONING_MODEL_MIN_MAX_TOKENS = 1024
+RETRY_MAX_TOKENS_CAP = 2048
+
+# Streaming replies: speak sentence by sentence so the first audio goes out
+# after the first sentence, not after the whole LLM reply and TTS clip.
+# Run-on text with no sentence end is cut at a comma/space past this length.
+MAX_SEGMENT_CHARS = 220
+# Abandon a turn whose LLM has produced no text by then (provider stall); the
+# worker thread can't be killed, but the turn and the turn gate are released.
+LLM_FIRST_TEXT_TIMEOUT_S = 8.0
+
+_CANCELLED = object()
+
+
+async def _get_unless_cancelled(queue: asyncio.Queue, cancel_event: Optional[asyncio.Event]):
+    """``queue.get()`` that returns ``_CANCELLED`` as soon as ``cancel_event`` is set."""
+    if cancel_event is None:
+        return await queue.get()
+    if cancel_event.is_set():
+        return _CANCELLED
+    getter = asyncio.ensure_future(queue.get())
+    stopper = asyncio.ensure_future(cancel_event.wait())
+    try:
+        done, _ = await asyncio.wait({getter, stopper}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        stopper.cancel()
+    if getter in done:
+        return getter.result()
+    getter.cancel()
+    return _CANCELLED
+# Families that reason by default but are often missing from LiteLLM's model map
+# (new Fireworks/OpenRouter releases such as deepseek-v4p1-flash).
+_REASONING_MODEL_NAME_RE = re.compile(
+    r"deepseek-(?:r\d|v[4-9])|glm-[4-9]|qwen3|kimi-k2|gpt-oss|thinking|(?:^|/)o[1-9]\b|gpt-5",
+    re.IGNORECASE,
+)
 
 TTS_ENV_KEYS = {
     "cartesia": "CARTESIA_API_KEY",
@@ -71,8 +112,11 @@ class TestAgentConfig:
     test_agent_simulation_prompt: Optional[str] = None
     caller_system_prompt: Optional[str] = None
     
-    # LLM config
+    # LLM config (from the persona's voice bundle; OpenAI gpt-4o-mini when unset)
+    llm_provider: str = "openai"
     llm_model: str = "gpt-4o-mini"
+    llm_credential_id: Optional[Any] = None
+    llm_config: Optional[Dict[str, Any]] = None
     llm_api_key: Optional[str] = None
     llm_temperature: Optional[float] = None
     llm_max_tokens: Optional[int] = None
@@ -102,6 +146,38 @@ class TestAgentConfig:
     evaluator_result_id: Optional[Union[UUID, str]] = None
     conversation_id: Optional[Union[UUID, str]] = None
     db: Any = None
+
+
+def _litellm_supports_reasoning(litellm: Any, model: str) -> bool:
+    try:
+        return bool(litellm.supports_reasoning(model=model))
+    except Exception:
+        return False
+
+
+def _split_ready_segments(buffer: str):
+    """Yield (segment, remaining_buffer) for each speakable segment in ``buffer``.
+
+    Uses the same sentence detection as the pipecat TTS text aggregator
+    (``match_endofsentence``), so streamed replies split like the telephony
+    pipeline. A boundary is only accepted once more text follows it, so a
+    streamed "3." or "Dr." can still resolve to "3.5" / "Dr. Shah"; the
+    remainder is flushed when the stream ends. Run-on text is cut at the last
+    comma or space before MAX_SEGMENT_CHARS.
+    """
+    from efficientai.utils.string import match_endofsentence
+
+    while True:
+        cut = match_endofsentence(buffer)
+        if not cut or cut >= len(buffer):
+            cut = 0
+            if len(buffer) > MAX_SEGMENT_CHARS:
+                window = buffer[:MAX_SEGMENT_CHARS]
+                cut = max(window.rfind(", "), window.rfind(" ")) + 1
+        if cut <= 0:
+            return
+        segment, buffer = buffer[:cut], buffer[cut:]
+        yield segment, buffer
 
 
 class TestAgentProcessor:
@@ -181,16 +257,24 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
         """Initialize LLM and TTS services."""
         try:
             # Initialize LLM
+            # With db/org context, llm_service resolves the bundle's provider key at
+            # call time (any provider). Only the direct-OpenAI fallback needs a key here.
+            uses_llm_service = bool(self.config.db and self.config.organization_id)
             llm_api_key = self.config.llm_api_key or os.getenv("OPENAI_API_KEY")
-            if not llm_api_key:
+            if not llm_api_key and not uses_llm_service:
                 raise ValueError("OpenAI API key not configured")
+            if not llm_api_key:
+                logger.info(
+                    f"[TestAgent] LLM {self.config.llm_provider}/{self.config.llm_model} "
+                    "via llm_service (key resolved per call)"
+                )
             
-            if EFFICIENTAI_AVAILABLE:
+            if llm_api_key and EFFICIENTAI_AVAILABLE:
                 self._llm_service = OpenAILLMService(
                     api_key=llm_api_key,
                     model=self.config.llm_model
                 )
-            else:
+            elif llm_api_key:
                 # Fallback to direct OpenAI
                 import openai
                 self._openai_client = openai.AsyncOpenAI(api_key=llm_api_key)
@@ -343,7 +427,10 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
             logger.info(f"[TestAgent] Generated response (turn {self.turn_count}): {response_text[:50]}...")
             
             return audio
-            
+
+        except asyncio.CancelledError:
+            logger.warning(f"[TestAgent] Turn {self.turn_count} cancelled before response was spoken")
+            raise
         except Exception as e:
             logger.error(f"[TestAgent] Error processing transcript: {e}", exc_info=True)
             return None
@@ -388,49 +475,130 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
             ),
         )
 
-    def _sync_llm_call(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
-        from app.models.database import ModelProvider
+    def _is_reasoning_model(self) -> bool:
+        cached = getattr(self, "_reasoning_model", None)
+        if cached is not None:
+            return cached
+        try:
+            import litellm
+
+            from app.services.ai.llm_service import _LITELLM_PROVIDER_PREFIX
+
+            provider = (self.config.llm_provider or "openai").lower()
+            prefix = _LITELLM_PROVIDER_PREFIX.get(provider, provider)
+            model = self.config.llm_model or ""
+            candidates = [model, f"{prefix}/{model}"]
+            if prefix == "fireworks_ai" and "/" not in model:
+                # LiteLLM's model map keys Fireworks models by their full path.
+                candidates.append(f"{prefix}/accounts/fireworks/models/{model}")
+            self._reasoning_model = any(
+                _litellm_supports_reasoning(litellm, name) for name in candidates
+            )
+        except Exception:
+            self._reasoning_model = False
+        if not self._reasoning_model:
+            self._reasoning_model = bool(_REASONING_MODEL_NAME_RE.search(self.config.llm_model or ""))
+        return self._reasoning_model
+
+    def _effective_max_tokens(self) -> int:
+        """Reply token budget; reasoning models spend part of it before any text."""
+        configured = self.config.llm_max_tokens
+        if self._is_reasoning_model():
+            return max(configured or 0, REASONING_MODEL_MIN_MAX_TOKENS)
+        return configured if configured is not None else DEFAULT_MAX_TOKENS
+
+    def _overrides_reasoning(self) -> bool:
+        config = self.config.llm_config or {}
+        return (
+            self._is_reasoning_model()
+            and "reasoning_effort" not in config
+            and "thinking" not in config
+        )
+
+    def _effective_llm_config(self, *, allow_reasoning_override: bool = True) -> Optional[Dict[str, Any]]:
+        """Bundle LLM config, with reasoning turned down for live turns unless set."""
+        config = dict(self.config.llm_config or {})
+        if allow_reasoning_override and self._overrides_reasoning():
+            config["reasoning_effort"] = "low"
+        return config or None
+
+    def _sync_llm_call(
+        self,
+        messages: List[Dict[str, str]],
+        *,
+        max_tokens: Optional[int] = None,
+        allow_reasoning_override: bool = True,
+        on_text_delta: Optional[Callable[[str], None]] = None,
+    ) -> Dict[str, Any]:
         from app.services.ai.llm_service import llm_service
         from app.services.usage.context import llm_usage_context
 
         ctx = self._build_simulation_context()
-        org_id = UUID(str(self.config.organization_id))
-        if ctx is not None:
-            with llm_usage_context(ctx):
-                return llm_service.generate_response(
-                    messages=messages,
-                    llm_provider=ModelProvider.OPENAI,
-                    llm_model=self.config.llm_model,
-                    organization_id=org_id,
-                    db=self.config.db,
-                    temperature=(
-                        self.config.llm_temperature
-                        if self.config.llm_temperature is not None
-                        else 0.7
-                    ),
-                    max_tokens=(
-                        self.config.llm_max_tokens
-                        if self.config.llm_max_tokens is not None
-                        else 150
-                    ),
-                )
-        return llm_service.generate_response(
+        credential_id = self.config.llm_credential_id
+        kwargs: Dict[str, Any] = dict(
             messages=messages,
-            llm_provider=ModelProvider.OPENAI,
+            llm_provider=self._llm_provider_enum(),
             llm_model=self.config.llm_model,
-            organization_id=org_id,
+            organization_id=UUID(str(self.config.organization_id)),
             db=self.config.db,
             temperature=(
                 self.config.llm_temperature
                 if self.config.llm_temperature is not None
                 else 0.7
             ),
-            max_tokens=(
-                self.config.llm_max_tokens
-                if self.config.llm_max_tokens is not None
-                else 150
-            ),
+            max_tokens=max_tokens or self._effective_max_tokens(),
+            llm_config=self._effective_llm_config(allow_reasoning_override=allow_reasoning_override),
+            credential_id=UUID(str(credential_id)) if credential_id else None,
         )
+        if on_text_delta is not None:
+            kwargs["on_text_delta"] = on_text_delta
+        if ctx is not None:
+            with llm_usage_context(ctx):
+                return llm_service.generate_response(**kwargs)
+        return llm_service.generate_response(**kwargs)
+
+    def _llm_provider_enum(self):
+        from app.models.database import ModelProvider
+
+        try:
+            return ModelProvider((self.config.llm_provider or "openai").lower())
+        except ValueError:
+            logger.warning(
+                f"[TestAgent] Unknown LLM provider '{self.config.llm_provider}', using OpenAI"
+            )
+            return ModelProvider.OPENAI
+
+    async def _generate_via_llm_service(self, messages: List[Dict[str, str]]) -> Optional[str]:
+        """One llm_service call, retried once if it errors on the reasoning
+        override or returns no text (budget spent on reasoning)."""
+        allow_override = True
+        try:
+            result = await asyncio.to_thread(self._sync_llm_call, messages)
+        except Exception as e:
+            if not self._overrides_reasoning():
+                raise
+            logger.warning(f"[TestAgent] LLM call failed with reasoning_effort override, retrying without: {e}")
+            allow_override = False
+            result = await asyncio.to_thread(
+                self._sync_llm_call, messages, allow_reasoning_override=False
+            )
+
+        text = (result.get("text") or "").strip()
+        if text:
+            return text
+
+        retry_tokens = min(self._effective_max_tokens() * 2, RETRY_MAX_TOKENS_CAP)
+        logger.warning(
+            f"[TestAgent] LLM returned no text (finish_reason={result.get('finish_reason')}); "
+            f"retrying once with max_tokens={retry_tokens}"
+        )
+        result = await asyncio.to_thread(
+            self._sync_llm_call,
+            messages,
+            max_tokens=retry_tokens,
+            allow_reasoning_override=allow_override,
+        )
+        return (result.get("text") or "").strip() or None
 
     async def _generate_llm_response(self) -> Optional[str]:
         """Generate a response using the LLM."""
@@ -440,8 +608,13 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
             ] + self.conversation_history
 
             if self.config.db and self.config.organization_id:
-                result = await asyncio.to_thread(self._sync_llm_call, messages)
-                return (result.get("text") or "").strip()
+                return await self._generate_via_llm_service(messages)
+
+            if (self.config.llm_provider or "openai").lower() != "openai":
+                logger.warning(
+                    f"[TestAgent] No db/org context for {self.config.llm_provider} LLM; "
+                    "falling back to direct OpenAI client"
+                )
 
             import openai
             client = getattr(self, "_openai_client", None)
@@ -449,13 +622,14 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
                 api_key = self.config.llm_api_key or os.getenv("OPENAI_API_KEY")
                 client = openai.AsyncOpenAI(api_key=api_key)
 
+            is_openai = (self.config.llm_provider or "openai").lower() == "openai"
             response = await client.chat.completions.create(
-                model=self.config.llm_model,
+                model=self.config.llm_model if is_openai else "gpt-4o-mini",
                 messages=messages,
                 max_tokens=(
                     self.config.llm_max_tokens
                     if self.config.llm_max_tokens is not None
-                    else 150
+                    else DEFAULT_MAX_TOKENS
                 ),
                 temperature=(
                     self.config.llm_temperature
@@ -801,12 +975,287 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
         )
         return audio_bytes
 
+    async def process_agent_transcript_streaming(
+        self,
+        transcript: str,
+        speak: Callable[[bytes], Awaitable[int]],
+        cancel_event: Optional[asyncio.Event] = None,
+    ) -> Optional[str]:
+        """Reply to ``transcript``, speaking each sentence as soon as it is ready.
+
+        The LLM is streamed; each complete sentence is synthesized while the
+        previous one plays. ``speak`` sends one segment and returns the bytes
+        actually sent. Setting ``cancel_event`` (barge-in) stops generation and
+        playback, and history is trimmed to what was spoken.
+
+        Returns the reply text, or None if nothing was generated.
+        """
+        if not transcript or not transcript.strip():
+            return None
+        if self.is_processing:
+            logger.warning(f"[TestAgent] Already processing; dropping transcript: {transcript[:60]}...")
+            return None
+
+        self.is_processing = True
+        loop = asyncio.get_running_loop()
+        turn_started = loop.time()
+        text_q: asyncio.Queue = asyncio.Queue()
+        segment_q: asyncio.Queue = asyncio.Queue(maxsize=2)
+        generated: List[str] = []
+        spoken_chars = 0
+        interrupted = False
+        tasks: List[asyncio.Task] = []
+
+        def cancelled() -> bool:
+            return cancel_event is not None and cancel_event.is_set()
+
+        try:
+            logger.info(f"[TestAgent] Processing agent transcript (streaming): {transcript[:100]}...")
+            self.conversation_history.append({"role": "user", "content": transcript})
+            self.turn_count += 1
+
+            if self.turn_count >= self.config.max_turns:
+                logger.info(f"[TestAgent] Max turns ({self.config.max_turns}) reached, ending call")
+                self.should_end_call = True
+                text_q.put_nowait("Thank you so much for your help. I think I have everything I need. Goodbye!")
+                text_q.put_nowait(None)
+            else:
+                tasks.append(asyncio.create_task(self._stream_llm_text(text_q), name="test-agent-llm"))
+            tasks.append(
+                asyncio.create_task(
+                    self._synthesize_segments(text_q, segment_q, generated, cancelled),
+                    name="test-agent-tts",
+                )
+            )
+
+            first = True
+            while not interrupted:
+                item = await _get_unless_cancelled(segment_q, cancel_event)
+                if item is _CANCELLED:
+                    interrupted = True
+                    break
+                if item is None:
+                    break
+                segment_text, chunk_q = item
+                received = sent_total = 0
+                while True:
+                    chunk = await _get_unless_cancelled(chunk_q, cancel_event)
+                    if chunk is _CANCELLED:
+                        interrupted = True
+                        break
+                    if chunk is None:
+                        break
+                    received += len(chunk)
+                    if cancelled():
+                        interrupted = True
+                        break
+                    if first:
+                        first = False
+                        if self.config.response_delay_ms > 0:
+                            await asyncio.sleep(self.config.response_delay_ms / 1000)
+                        logger.info(
+                            f"[TestAgent] First audio after {loop.time() - turn_started:.2f}s "
+                            f"(turn {self.turn_count}): {segment_text[:50]}..."
+                        )
+                    sent = await speak(chunk) or 0
+                    sent_total += sent
+                    if cancelled() and sent < len(chunk):
+                        interrupted = True
+                        break
+                if interrupted:
+                    # Rough share of this sentence that was heard (its full
+                    # length may not have arrived yet).
+                    spoken_chars += int(len(segment_text) * sent_total / max(1, received))
+                    break
+                spoken_chars += len(segment_text) + 1
+        except asyncio.CancelledError:
+            logger.warning(f"[TestAgent] Turn {self.turn_count} cancelled before response was spoken")
+            raise
+        except Exception as e:
+            logger.error(f"[TestAgent] Error in streaming reply: {e}", exc_info=True)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            for task in tasks:
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            streamer = self._live_tts_streamer()
+            if streamer is not None:
+                if interrupted or cancelled():
+                    await streamer.interrupt()
+                else:
+                    await streamer.finish_utterance()
+            self.is_processing = False
+
+        response_text = " ".join(generated).strip()
+        if not response_text:
+            logger.warning("[TestAgent] No response generated")
+            return None
+
+        self.conversation_history.append({"role": "assistant", "content": response_text})
+        if interrupted or cancelled():
+            fraction = min(1.0, spoken_chars / max(1, len(response_text)))
+            logger.info(
+                f"[TestAgent] Barged in after {fraction:.0%} of reply (turn {self.turn_count})"
+            )
+            self.mark_last_response_interrupted(fraction)
+        if self.on_response_text:
+            await self.on_response_text(response_text)
+        logger.info(f"[TestAgent] Generated response (turn {self.turn_count}): {response_text[:50]}...")
+
+        if self.should_end_call and self.on_call_should_end and not interrupted:
+            await asyncio.sleep(2)
+            await self.on_call_should_end()
+        return response_text
+
+    async def _stream_llm_text(self, text_q: asyncio.Queue) -> None:
+        """Push LLM text deltas into ``text_q``, then None. Falls back to the
+        non-streaming call (with its retries) when the stream yields no text."""
+        loop = asyncio.get_running_loop()
+        emitted = False
+        requested_at = loop.time()
+        first_text = asyncio.Event()
+
+        def on_delta(delta: str) -> None:
+            nonlocal emitted
+            if not emitted:
+                loop.call_soon_threadsafe(first_text.set)
+                # Thread-safe: only reads the loop clock.
+                logger.info(
+                    f"[TestAgent] LLM first text after {loop.time() - requested_at:.2f}s "
+                    f"({self.config.llm_provider}/{self.config.llm_model})"
+                )
+            emitted = True
+            loop.call_soon_threadsafe(text_q.put_nowait, delta)
+
+        messages = [{"role": "system", "content": self._system_prompt}] + self.conversation_history
+        try:
+            if self.config.db and self.config.organization_id:
+                streamed_text = ""
+                try:
+                    call = asyncio.ensure_future(
+                        asyncio.to_thread(self._sync_llm_call, messages, on_text_delta=on_delta)
+                    )
+                    waiter = asyncio.ensure_future(first_text.wait())
+                    done, _ = await asyncio.wait(
+                        {call, waiter}, timeout=LLM_FIRST_TEXT_TIMEOUT_S, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    waiter.cancel()
+                    if not done:
+                        logger.warning(
+                            f"[TestAgent] LLM produced no text within {LLM_FIRST_TEXT_TIMEOUT_S:.0f}s "
+                            f"({self.config.llm_provider}/{self.config.llm_model}); skipping turn"
+                        )
+                        return
+                    result = await call
+                    streamed_text = (result.get("text") or "").strip()
+                except Exception as e:
+                    if emitted:
+                        logger.warning(f"[TestAgent] LLM stream ended early: {e}")
+                    else:
+                        logger.warning(f"[TestAgent] LLM stream failed, retrying without streaming: {e}")
+                if not emitted:
+                    # Paths that can't stream (e.g. OpenRouter Jev) still return
+                    # text; only re-call the LLM when there is genuinely none.
+                    text = streamed_text or await self._generate_via_llm_service(messages)
+                    if text:
+                        text_q.put_nowait(text)
+            else:
+                text = await self._generate_llm_response()
+                if text:
+                    text_q.put_nowait(text)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"[TestAgent] LLM error: {e}")
+        finally:
+            # Deltas scheduled from the worker thread land before this sentinel.
+            loop.call_soon(text_q.put_nowait, None)
+
+    async def _synthesize_segments(
+        self,
+        text_q: asyncio.Queue,
+        segment_q: asyncio.Queue,
+        generated: List[str],
+        cancelled: Callable[[], bool],
+    ) -> None:
+        """Split streamed text into sentences and synthesize each in order.
+
+        Each segment is queued with its own chunk queue as soon as synthesis
+        starts, so playback begins with the first streamed chunk while this
+        worker keeps the provider busy with the next sentence.
+        """
+        buffer = ""
+
+        async def emit(segment: str) -> None:
+            segment = segment.strip()
+            if not segment or cancelled():
+                return
+            generated.append(segment)
+            chunk_q: asyncio.Queue = asyncio.Queue()
+            await segment_q.put((segment, chunk_q))
+            try:
+                await self._synthesize_into(segment, chunk_q, cancelled)
+            finally:
+                chunk_q.put_nowait(None)
+
+        try:
+            while True:
+                delta = await text_q.get()
+                if delta is None:
+                    break
+                buffer += delta
+                for segment, buffer in _split_ready_segments(buffer):
+                    await emit(segment)
+            await emit(buffer)
+        finally:
+            await segment_q.put(None)
+
+    def _live_tts_streamer(self):
+        streamer = getattr(self, "tts_streamer", None)
+        return streamer if streamer is not None and streamer.healthy else None
+
+    async def _synthesize_into(
+        self,
+        segment: str,
+        chunk_q: asyncio.Queue,
+        cancelled: Callable[[], bool],
+    ) -> None:
+        """Stream ``segment`` audio into ``chunk_q`` via the provider's streaming
+        TTS; fall back to one-shot TTS if streaming is unavailable or fails
+        before producing audio."""
+        streamer = self._live_tts_streamer()
+        if streamer is not None:
+            produced = False
+            try:
+                async for chunk in streamer.synthesize(segment):
+                    if cancelled():
+                        return
+                    produced = True
+                    chunk_q.put_nowait(chunk)
+                if produced:
+                    self._record_tts_usage(text=segment)
+                    return
+            except RuntimeError as e:
+                if produced:
+                    return
+                logger.warning(f"[TestAgent] Streaming TTS failed, using one-shot TTS for segment: {e}")
+        audio = await self._text_to_speech(segment)
+        if audio:
+            chunk_q.put_nowait(audio)
+        else:
+            logger.warning(f"[TestAgent] TTS returned no audio for segment: {segment[:50]}...")
+
     async def stream_audio_chunks(
         self, 
         audio_bytes: bytes, 
         chunk_callback: Callable[[bytes], Awaitable[None]],
-        chunk_duration_ms: int = 20
-    ):
+        chunk_duration_ms: int = 20,
+        cancel_event: Optional[asyncio.Event] = None,
+    ) -> int:
         """
         Stream audio in chunks suitable for real-time transmission.
         
@@ -814,22 +1263,62 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
             audio_bytes: Full audio buffer (PCM 16-bit)
             chunk_callback: Async callback for each chunk
             chunk_duration_ms: Duration of each chunk in milliseconds
+            cancel_event: When set, stop early (the production agent barged in)
+
+        Returns:
+            Number of audio bytes actually sent.
         """
         # Calculate bytes per chunk (16-bit = 2 bytes per sample)
         bytes_per_sample = 2
         samples_per_chunk = (self.config.sample_rate * chunk_duration_ms) // 1000
         bytes_per_chunk = samples_per_chunk * bytes_per_sample
         
-        # Stream chunks with appropriate timing
+        # Pace against the clock (not sleep-per-chunk) so the stream keeps up
+        # with real time; per-chunk sleeps overshoot and accumulate drift.
+        loop = asyncio.get_running_loop()
+        next_send = loop.time()
         offset = 0
         while offset < len(audio_bytes):
+            if cancel_event is not None and cancel_event.is_set():
+                break
             chunk = audio_bytes[offset:offset + bytes_per_chunk]
             if chunk:
                 await chunk_callback(chunk)
-                # Sleep to maintain real-time playback rate
-                await asyncio.sleep(chunk_duration_ms / 1000)
+                next_send += len(chunk) / bytes_per_sample / self.config.sample_rate
+                delay = next_send - loop.time()
+                if delay > 0:
+                    await asyncio.sleep(delay)
             offset += bytes_per_chunk
-    
+        return min(offset, len(audio_bytes))
+
+    def mark_last_response_interrupted(self, fraction_spoken: float) -> None:
+        """Trim our last reply in history to roughly what was actually spoken."""
+        for entry in reversed(self.conversation_history):
+            if entry.get("role") != "assistant":
+                continue
+            words = (entry.get("content") or "").split()
+            keep = max(0, min(len(words), int(round(len(words) * fraction_spoken))))
+            spoken = " ".join(words[:keep])
+            entry["content"] = f"{spoken} — [interrupted]" if spoken else "[interrupted before speaking]"
+            break
+
+    def record_stt_usage(self, *, model: str, audio_seconds: float) -> None:
+        ctx = self._build_simulation_context()
+        if ctx is None:
+            return
+        try:
+            from app.services.usage.context import llm_usage_context
+            from app.services.usage.llm_usage import record_stt_usage
+
+            with llm_usage_context(ctx):
+                record_stt_usage(
+                    model,
+                    audio_seconds=audio_seconds,
+                    organization_id=ctx.organization_id,
+                )
+        except Exception as exc:
+            logger.debug("test agent stt usage record skipped: {}", exc)
+
     def get_conversation_transcript(self) -> str:
         """Get the full conversation transcript."""
         lines = []

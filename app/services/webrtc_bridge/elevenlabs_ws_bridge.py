@@ -42,11 +42,19 @@ except ImportError:
 
 ELEVENLABS_SAMPLE_RATE = 16000
 NUM_CHANNELS = 1
+# Silence fills mic gaps once speech has paused this long (between sentences
+# of a streamed reply, or after it), keeping the caller track on real time.
+MIC_SPEECH_GAP_S = 0.06
+MIC_MAX_CATCHUP_FRAMES = 25  # 0.5 s
 BYTES_PER_SAMPLE = 2  # 16-bit audio
 
-# How long (seconds) without an audio event before we consider the agent done.
-# ElevenLabs streams TTS in bursts; keep this above typical inter-chunk gaps.
-SILENCE_THRESHOLD_S = 1.5
+# How long (seconds) after the last *played-out* frame before we consider the
+# agent done. Audio is paced to real time first, so this only needs to clear
+# ElevenLabs' inter-sentence gaps, not its faster-than-real-time bursts.
+SILENCE_THRESHOLD_S = 0.8
+
+# Inbound audio is re-sliced into frames of this size and released in real time.
+PLAYOUT_FRAME_MS = 20
 
 
 class ElevenLabsWSBridge:
@@ -98,8 +106,19 @@ class ElevenLabsWSBridge:
         self._agent_is_talking = False
         # Accumulates the agent_response text for the current turn
         self._pending_agent_text = ""
-        # Monotonic timestamp of the most recent audio event
+        # Monotonic timestamp of the most recently *played-out* audio frame
         self._last_audio_ts: float = 0.0
+        # Real-time playout pacer: ElevenLabs sends audio faster than real time,
+        # so frames are queued and released at playback speed.
+        self._playout_queue: asyncio.Queue = asyncio.Queue()
+        self._playout_buf = bytearray()
+        self._playout_generation = 0
+        self._pacer_task: Optional[asyncio.Task] = None
+        self._turn_rx_started: float = 0.0
+        self._turn_rx_last: float = 0.0
+        self._turn_audio_bytes = 0
+        # When True, deliver turn end even without provider text (STT supplies it).
+        self.deliver_empty_turns = False
         # Handle for the silence-detection background task
         self._silence_task: Optional[asyncio.Task] = None
         # Background task that simulates a live microphone by sending silence
@@ -108,6 +127,12 @@ class ElevenLabsWSBridge:
         self._external_mic_feed = False
         # Suppresses background silence while the test agent is actively sending audio
         self._user_is_sending = False
+        # Mic timeline: bytes sent vs. wall clock since the first send. ElevenLabs
+        # builds the caller track from samples received, so any shortfall makes
+        # our speech land later on its timeline (cumulative over the call).
+        self._mic_t0: Optional[float] = None
+        self._mic_bytes_sent = 0
+        self._last_user_audio_ts = 0.0
 
         logger.info(f"[ElevenLabsWS] Initialized bridge (sample_rate={sample_rate})")
 
@@ -148,6 +173,13 @@ class ElevenLabsWSBridge:
                     logger.info(
                         f"[ElevenLabsWS] Connected — conversation_id={self.conversation_id}"
                     )
+                    expected = f"pcm_{self.sample_rate}"
+                    out_fmt = event.get("agent_output_audio_format")
+                    if out_fmt and out_fmt != expected:
+                        logger.warning(
+                            f"[ElevenLabsWS] Agent output format {out_fmt} != {expected}; "
+                            "pacing, VAD and STT assume raw PCM at the bridge sample rate"
+                        )
                 else:
                     logger.warning(
                         f"[ElevenLabsWS] Unexpected first message type: {msg.get('type')}"
@@ -158,8 +190,9 @@ class ElevenLabsWSBridge:
 
             self.is_connected = True
 
-            # Start background message receiver
+            # Start background message receiver and the real-time playout pacer
             asyncio.create_task(self._receive_loop())
+            self._pacer_task = asyncio.create_task(self._playout_loop())
 
             # Start continuous silence stream unless an external mic feed is active.
             if not self._external_mic_feed:
@@ -193,8 +226,22 @@ class ElevenLabsWSBridge:
 
             chunk_b64 = base64.b64encode(audio_bytes).decode()
             await self._ws.send(json.dumps({"user_audio_chunk": chunk_b64}))
+            self._count_mic_bytes(len(audio_bytes))
+            self._last_user_audio_ts = time.monotonic()
         except Exception as e:
             logger.error(f"[ElevenLabsWS] Error sending audio: {e}")
+
+    def _count_mic_bytes(self, n: int) -> None:
+        if self._mic_t0 is None:
+            self._mic_t0 = time.monotonic()
+        self._mic_bytes_sent += n
+
+    def _mic_deficit_bytes(self) -> int:
+        """Bytes the mic stream is behind real time (frame-aligned, >= 0)."""
+        if self._mic_t0 is None:
+            return 0
+        expected = int((time.monotonic() - self._mic_t0) * self.sample_rate) * BYTES_PER_SAMPLE
+        return max(0, expected - self._mic_bytes_sent)
 
     def mark_user_audio_done(self):
         """Signal that the test agent finished sending its utterance.
@@ -238,26 +285,47 @@ class ElevenLabsWSBridge:
         during silence).  Without this, ElevenLabs' VAD cannot detect
         end-of-speech between turns and the conversation stalls.
 
-        The loop yields whenever the test agent is actively sending real
-        audio (``_user_is_sending`` is True).
+        Pacing is against the wall clock: every tick tops the stream up to
+        real time with silence, so sleep overshoot, event-loop stalls and gaps
+        between the test agent's sentences never make the caller track drift
+        behind the agent track. Silence is withheld only while speech is
+        actually flowing.
         """
-        chunk_samples = (self.sample_rate * 20) // 1000  # 20ms worth of samples
-        chunk_bytes = b"\x00" * (chunk_samples * BYTES_PER_SAMPLE)
-        chunk_b64 = base64.b64encode(chunk_bytes).decode()
-        silence_msg = json.dumps({"user_audio_chunk": chunk_b64})
+        frame_bytes = (self.sample_rate * 20) // 1000 * BYTES_PER_SAMPLE  # 20 ms
+        max_burst_bytes = frame_bytes * MIC_MAX_CATCHUP_FRAMES
 
         logger.info("[ElevenLabsWS] Background silence stream started")
         try:
+            next_tick = time.monotonic()
             while self.is_connected and not self._should_stop.is_set():
-                if self._user_is_sending:
-                    await asyncio.sleep(0.05)
-                    continue
-                try:
-                    if self._ws:
-                        await self._ws.send(silence_msg)
-                except Exception:
-                    break
-                await asyncio.sleep(0.02)  # 20ms cadence
+                next_tick += 0.02
+                speech_flowing = (
+                    self._user_is_sending
+                    and time.monotonic() - self._last_user_audio_ts < MIC_SPEECH_GAP_S
+                )
+                if not speech_flowing:
+                    deficit = self._mic_deficit_bytes() if self._mic_t0 is not None else frame_bytes
+                    if deficit > max_burst_bytes:
+                        # Long stall: send a bounded burst and re-anchor the clock
+                        # rather than flooding the socket.
+                        skipped = deficit - max_burst_bytes
+                        self._mic_bytes_sent += skipped
+                        logger.debug(f"[ElevenLabsWS] Mic clock re-anchored ({skipped / BYTES_PER_SAMPLE / self.sample_rate:.2f}s)")
+                        deficit = max_burst_bytes
+                    frames = max(1, deficit // frame_bytes) if deficit >= frame_bytes else 0
+                    if frames:
+                        silence = base64.b64encode(b"\x00" * frame_bytes * frames).decode()
+                        try:
+                            if self._ws:
+                                await self._ws.send(json.dumps({"user_audio_chunk": silence}))
+                                self._count_mic_bytes(frame_bytes * frames)
+                        except Exception:
+                            break
+                delay = next_tick - time.monotonic()
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                else:
+                    next_tick = time.monotonic()
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -292,7 +360,14 @@ class ElevenLabsWSBridge:
                 except json.JSONDecodeError:
                     continue
 
-                await self._handle_message(message)
+                try:
+                    await self._handle_message(message)
+                except Exception as e:
+                    # One bad event must not end the call.
+                    logger.error(
+                        f"[ElevenLabsWS] Error handling {message.get('type')!r} event: {e}",
+                        exc_info=True,
+                    )
 
         except Exception as e:
             logger.error(f"[ElevenLabsWS] Receive loop error: {e}", exc_info=True)
@@ -326,22 +401,15 @@ class ElevenLabsWSBridge:
             if self.recording_enabled:
                 self._recording_buffer.append(audio_bytes)
 
-            # Mark agent as talking (fire callback only on rising edge)
-            if not self._agent_is_talking:
-                self._agent_is_talking = True
-                logger.info("[ElevenLabsWS] Agent started speaking (first audio chunk)")
-                if self.on_agent_start_talking:
-                    asyncio.create_task(self.on_agent_start_talking())
+            now = time.monotonic()
+            if self._turn_audio_bytes == 0:
+                self._turn_rx_started = now
+            self._turn_rx_last = now
+            self._turn_audio_bytes += len(audio_bytes)
 
-            # Update last-audio timestamp for silence detection
-            self._last_audio_ts = time.monotonic()
-
-            # (Re)start the silence detection task every time audio arrives
-            self._ensure_silence_detector()
-
-            if self.on_audio_received:
-                # Audio forwarding is cheap — safe to await inline
-                await self.on_audio_received(audio_bytes)
+            # Talking state, silence detection and downstream delivery all
+            # happen at playout time (see _playout_loop), not arrival time.
+            self._playout_queue.put_nowait(audio_bytes)
 
         # ----------------------------------------------------------
         # agent_response — full text of what the agent said
@@ -351,7 +419,9 @@ class ElevenLabsWSBridge:
             text = event.get("agent_response", "").strip()
             if text:
                 logger.info(f"[ElevenLabsWS] Agent response text: {text[:120]}...")
-                self._pending_agent_text = text
+                # Accumulate multi-part responses within one turn.
+                if text not in self._pending_agent_text:
+                    self._pending_agent_text = f"{self._pending_agent_text} {text}".strip()
 
         # ----------------------------------------------------------
         # user_transcript — our test agent's speech echoed back
@@ -369,6 +439,8 @@ class ElevenLabsWSBridge:
             event = message.get("interruption_event", {})
             self._last_interrupt_id = int(event.get("event_id", 0))
             logger.info("[ElevenLabsWS] Interruption received")
+            # Drop audio the agent generated but a listener would never hear.
+            self._clear_playout()
             # Agent was interrupted — consider the turn over immediately
             if self._agent_is_talking:
                 self._agent_is_talking = False
@@ -421,6 +493,97 @@ class ElevenLabsWSBridge:
             logger.debug(f"[ElevenLabsWS] Unhandled message type: {msg_type}")
 
     # ------------------------------------------------------------------
+    # Real-time playout pacing
+    # ------------------------------------------------------------------
+
+    @property
+    def agent_is_talking(self) -> bool:
+        """True from the agent's first played frame until end-of-turn silence."""
+        return self._agent_is_talking or self._playout_pending()
+
+    def _playout_pending(self) -> bool:
+        return not self._playout_queue.empty() or bool(self._playout_buf)
+
+    def _clear_playout(self):
+        """Discard queued, unplayed agent audio (e.g. after an interruption)."""
+        dropped = len(self._playout_buf)
+        self._playout_buf.clear()
+        while not self._playout_queue.empty():
+            dropped += len(self._playout_queue.get_nowait())
+        self._playout_generation += 1
+        if dropped:
+            logger.info(
+                f"[ElevenLabsWS] Dropped {dropped / (self.sample_rate * BYTES_PER_SAMPLE):.2f}s "
+                "of unplayed agent audio"
+            )
+
+    async def _playout_loop(self):
+        """Release queued agent audio in fixed frames at real-time speed.
+
+        ElevenLabs delivers TTS audio faster than real time. A listener only
+        hears the end of the utterance once it has played out, so turn-taking,
+        VAD and STT must all observe the paced stream.
+        """
+        frame_bytes = (self.sample_rate * PLAYOUT_FRAME_MS // 1000) * BYTES_PER_SAMPLE
+        frame_secs = PLAYOUT_FRAME_MS / 1000
+        due = 0.0
+        try:
+            while not self._should_stop.is_set():
+                if len(self._playout_buf) < frame_bytes:
+                    if self._playout_buf and self._playout_queue.empty():
+                        # Tail of an utterance: pad to a full frame.
+                        frame = bytes(self._playout_buf).ljust(frame_bytes, b"\x00")
+                        self._playout_buf.clear()
+                    else:
+                        self._playout_buf.extend(await self._playout_queue.get())
+                        continue
+                else:
+                    frame = bytes(self._playout_buf[:frame_bytes])
+                    del self._playout_buf[:frame_bytes]
+
+                generation = self._playout_generation
+                now = time.monotonic()
+                due = max(due, now)
+                if due > now:
+                    await asyncio.sleep(due - now)
+                due += frame_secs
+                if generation != self._playout_generation:
+                    continue  # interrupted while waiting
+                await self._play_frame(frame)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"[ElevenLabsWS] Playout loop error: {e}", exc_info=True)
+
+    async def _play_frame(self, frame: bytes):
+        self._last_audio_ts = time.monotonic()
+
+        # Mark agent as talking (fire callback only on rising edge)
+        if not self._agent_is_talking:
+            self._agent_is_talking = True
+            logger.info("[ElevenLabsWS] Agent started speaking (first played frame)")
+            if self.on_agent_start_talking:
+                asyncio.create_task(self.on_agent_start_talking())
+
+        self._ensure_silence_detector()
+
+        if self.on_audio_received:
+            try:
+                await self.on_audio_received(frame)
+            except Exception as e:
+                logger.error(f"[ElevenLabsWS] on_audio_received error: {e}", exc_info=True)
+
+    def _log_turn_stats(self):
+        if not self._turn_audio_bytes:
+            return
+        audio_secs = self._turn_audio_bytes / (self.sample_rate * BYTES_PER_SAMPLE)
+        rx_secs = self._turn_rx_last - self._turn_rx_started
+        logger.info(
+            f"[ElevenLabsWS] Turn audio: {audio_secs:.1f}s received over {rx_secs:.1f}s wall"
+        )
+        self._turn_audio_bytes = 0
+
+    # ------------------------------------------------------------------
     # Silence detection (replaces missing start/stop-talking events)
     # ------------------------------------------------------------------
 
@@ -439,7 +602,7 @@ class ElevenLabsWSBridge:
         try:
             while self.is_connected and self._agent_is_talking:
                 await asyncio.sleep(0.15)  # check frequently
-                if self._last_audio_ts == 0:
+                if self._last_audio_ts == 0 or self._playout_pending():
                     continue
                 elapsed = time.monotonic() - self._last_audio_ts
                 if elapsed >= SILENCE_THRESHOLD_S:
@@ -458,7 +621,8 @@ class ElevenLabsWSBridge:
         """Deliver held agent text, then signal provider stop for the turn gate."""
         text = self._pending_agent_text.strip()
         self._pending_agent_text = ""
-        if text and self.on_transcript_received:
+        self._log_turn_stats()
+        if self.on_transcript_received and (text or self.deliver_empty_turns):
             logger.info(
                 f"[ElevenLabsWS] Delivering agent transcript after silence "
                 f"({len(text)} chars): {text[:100]}..."
@@ -536,6 +700,8 @@ class ElevenLabsWSBridge:
                 self._silence_task.cancel()
             if self._bg_silence_task and not self._bg_silence_task.done():
                 self._bg_silence_task.cancel()
+            if self._pacer_task and not self._pacer_task.done():
+                self._pacer_task.cancel()
 
             if self._ws:
                 await self._ws.close()

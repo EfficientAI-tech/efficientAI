@@ -213,6 +213,16 @@ def _elevenlabs_realtime_stt_factory(api_key, model, base_url=None):
     )
 
 
+def _deepgram_stt_factory(api_key, model):
+    # DeepgramSTTService has no ``model`` kwarg; it must go through LiveOptions.
+    kwargs = {}
+    if model:
+        from deepgram import LiveOptions
+
+        kwargs["live_options"] = LiveOptions(model=model)
+    return _get_service("DeepgramSTTService")(api_key=api_key, **kwargs)
+
+
 def _get_stt_providers():
     """Get STT provider registry with truly lazy-loaded service classes.
     
@@ -222,10 +232,7 @@ def _get_stt_providers():
         "deepgram": {
             "env_key": "DEEPGRAM_API_KEY",
             "default_model": None,
-            "factory": lambda api_key, model: _get_service("DeepgramSTTService")(
-                api_key=api_key,
-                **({"model": model} if model else {}),
-            ),
+            "factory": _deepgram_stt_factory,
         },
         "openai": {
             "env_key": "OPENAI_API_KEY",

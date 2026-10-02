@@ -10,7 +10,7 @@ Completions) automatically.
 
 import re
 import time
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse, urlunparse
 from uuid import UUID
 
@@ -501,8 +501,14 @@ class LLMService:
         task_defaults: Optional[Dict[str, Any]] = None,
         credential_id: Optional[UUID] = None,
         completion_extra: Optional[Dict[str, Any]] = None,
+        on_text_delta: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
         """Generate a text response using the specified LLM via LiteLLM.
+
+        When ``on_text_delta`` is given, the completion is streamed and the
+        callback receives each visible text delta as it arrives (reasoning
+        deltas are not forwarded). The return value is the same as the
+        non-streaming call.
 
         ``credential_id`` lets callers pin a specific AIProvider row when an
         organization has multiple keys for the same provider; when omitted
@@ -666,7 +672,10 @@ class LLMService:
                     call_kwargs[key] = value
 
         try:
-            response = litellm.completion(**call_kwargs)
+            if on_text_delta is not None:
+                response = _stream_completion(call_kwargs, messages, on_text_delta)
+            else:
+                response = litellm.completion(**call_kwargs)
         except Exception as e:
             logger.exception("[LLMService] LiteLLM call failed (%s)", model_str)
             raise RuntimeError(f"LLM generation failed for {model_str}: {e}") from e
@@ -710,6 +719,29 @@ class LLMService:
             raw_response=response,
         )
         return result
+
+
+def _stream_completion(
+    call_kwargs: Dict[str, Any],
+    messages: List[Dict[str, str]],
+    on_text_delta: Callable[[str], None],
+) -> Any:
+    """Run a streaming completion, forwarding text deltas, and rebuild the
+    full response so callers and usage accounting see the usual shape."""
+    stream = litellm.completion(
+        **call_kwargs,
+        stream=True,
+        stream_options={"include_usage": True},
+    )
+    chunks = []
+    for chunk in stream:
+        chunks.append(chunk)
+        choices = getattr(chunk, "choices", None) or []
+        delta = getattr(choices[0], "delta", None) if choices else None
+        content = getattr(delta, "content", None) if delta is not None else None
+        if content:
+            on_text_delta(content)
+    return litellm.stream_chunk_builder(chunks, messages=messages)
 
 
 # Singleton instance
