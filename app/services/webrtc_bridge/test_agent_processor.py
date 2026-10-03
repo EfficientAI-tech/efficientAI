@@ -1211,8 +1211,16 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
                 for segment, buffer in _split_ready_segments(buffer):
                     await emit(segment)
             await emit(buffer)
-        finally:
-            await segment_q.put(None)
+        except asyncio.CancelledError:
+            # Barge-in cleanup: the player has stopped reading, so never block
+            # on the bounded queue here (a blocked put would hang the turn).
+            raise
+        except Exception as e:
+            logger.error(f"[TestAgent] Segment synthesis failed: {e}", exc_info=True)
+        # Not in ``finally``: after cancellation this put could wait forever on a
+        # full queue that nobody drains. Here the player is still reading (or we
+        # get cancelled while waiting, which is fine).
+        await segment_q.put(None)
 
     def _live_tts_streamer(self):
         streamer = getattr(self, "tts_streamer", None)

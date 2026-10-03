@@ -65,6 +65,9 @@ import {
   isLLMSelectionComplete,
   isLLMSelectionPartial,
   resolveLLMModelForSubmit,
+  isClassificationCapableModel,
+  isClassificationMetric,
+  isStandardJudgeModel,
 } from '../../lib/llmModelOptions'
 import CallImportProgressBar from './components/CallImportProgressBar'
 import RetryFailedImportModal from './components/RetryFailedImportModal'
@@ -74,6 +77,7 @@ import InsightsMetricCard, {
 } from './components/InsightsMetricCard'
 import MappingPanel from './components/MappingPanel'
 import RunEvaluationStep from './components/RunEvaluationStep'
+import RunEvaluationClassificationModel from './components/RunEvaluationClassificationModel'
 import StageTracker from './components/StageTracker'
 import TelephonyCredentialPicker, {
   credentialSelectionFromState,
@@ -436,6 +440,12 @@ export default function CallImportDetail() {
     model: null,
     credential_id: null,
   })
+  // System 1 (Jev) model used for classification metrics in the run.
+  const [classificationLLM, setClassificationLLM] = useState<ProviderModelValue>({
+    provider: null,
+    model: null,
+    credential_id: null,
+  })
   // Per-metric LLM overrides keyed by metric id. Only metrics with a
   // non-null provider+model end up in the request payload; everything
   // else inherits the run-level default.
@@ -578,6 +588,7 @@ export default function CallImportDetail() {
   const openRunEvaluationModal = useCallback(() => {
     setSelectedMetricIds([])
     setRunLLM({ provider: null, model: null, credential_id: null })
+    setClassificationLLM({ provider: null, model: null, credential_id: null })
     void queryClient.invalidateQueries({ queryKey: ['ai-providers'] })
     if (!evalDiariserLLM.provider) {
       setEvalDiariserLLM({
@@ -1020,6 +1031,7 @@ export default function CallImportDetail() {
       setSelectedMetricIds([])
       setRunDraftName('')
       setRunLLM({ provider: null, model: null, credential_id: null })
+      setClassificationLLM({ provider: null, model: null, credential_id: null })
       setMetricLLMOverrides({})
       setShowAdvancedLLM(false)
       setTranscribeOverwrite(false)
@@ -3690,6 +3702,29 @@ export default function CallImportDetail() {
             const overrideTargetIds = new Set(
               overrideTargets.map((t) => t.id),
             )
+            // Classification metrics are scored only by System 1 (Jev) models;
+            // standard metrics only by regular LLM judges. Split the selection so
+            // each group gets a compatible model picker.
+            const classificationTargetIds = new Set(
+              enabledMetrics
+                .filter((m) => isClassificationMetric(m) && overrideTargetIds.has(m.id))
+                .map((m) => m.id as string),
+            )
+            const classificationTargets = overrideTargets.filter((t) =>
+              classificationTargetIds.has(t.id),
+            )
+            const standardTargetCount =
+              overrideTargets.length - classificationTargets.length
+            const hasClassificationSelected = classificationTargets.length > 0
+            const hasStandardSelected = standardTargetCount > 0
+            const classificationLLMComplete =
+              aiProviders.length > 0 &&
+              isLLMSelectionComplete(classificationLLM, aiProviders) &&
+              isClassificationCapableModel(
+                resolveLLMModelForSubmit(classificationLLM, aiProviders) ??
+                  classificationLLM.model ??
+                  '',
+              )
             const runError = runEvaluationMutation.isError
               ? (runEvaluationMutation.error as any)?.response?.data?.detail ||
                 'Failed to start evaluation.'
@@ -3937,6 +3972,21 @@ export default function CallImportDetail() {
                         </div>
 
                         <div className="space-y-3">
+                        {hasClassificationSelected && (
+                          <RunEvaluationClassificationModel
+                            value={classificationLLM}
+                            onChange={setClassificationLLM}
+                            metricNames={classificationTargets.map((t) => t.name)}
+                            hasCompatibleCredential={aiProviders.some(
+                              (p) =>
+                                p.is_active &&
+                                (p.enabled_models?.some?.((m: string) => isClassificationCapableModel(m)) ||
+                                  isClassificationCapableModel(p.gateway_model ?? '') ||
+                                  ['openrouter', 'typesafe'].includes(String(p.provider).toLowerCase())),
+                            )}
+                            complete={classificationLLMComplete}
+                          />
+                        )}
                         {/* Run-level LLM config */}
                         {(() => {
                           const llmPartial =
@@ -3951,17 +4001,21 @@ export default function CallImportDetail() {
                               }`}
                             >
                               <p className="text-xs uppercase tracking-wide font-semibold text-gray-500">
-                                Evaluation LLM
+                                {hasClassificationSelected ? 'Evaluation LLM · standard metrics' : 'Evaluation LLM'}
                               </p>
                               <p className="text-[11px] text-gray-500">
-                                Pick the LLM that scores every selected
-                                metric. Leave empty to keep the default
-                                (OpenAI · gpt-4o).
+                                {hasClassificationSelected && !hasStandardSelected
+                                  ? 'Only classification metrics are selected — they use the System 1 model above. Pick an LLM here only if you add standard metrics.'
+                                  : hasClassificationSelected
+                                    ? `Scores the ${standardTargetCount} standard metric${standardTargetCount === 1 ? '' : 's'}. System 1 (Jev) models are hidden here. Leave empty to keep the default (OpenAI · gpt-4o).`
+                                    : 'Pick the LLM that scores every selected metric. Leave empty to keep the default (OpenAI · gpt-4o).'}
                               </p>
                               <AIProviderModelPicker
                                 provider={runLLM.provider ?? ''}
                                 model={runLLM.model ?? ''}
                                 credentialId={runLLM.credential_id ?? ''}
+                                modelFilter={isStandardJudgeModel}
+                                incompatibleHint="This credential only exposes System 1 (Jev) models, which cannot score standard metrics."
                                 onSelectionChange={(next) =>
                                   setRunLLM((prev) => ({
                                     ...prev,
@@ -4074,6 +4128,11 @@ export default function CallImportDetail() {
                                           provider={override.provider ?? ''}
                                           model={override.model ?? ''}
                                           credentialId={override.credential_id ?? ''}
+                                          modelFilter={
+                                            classificationTargetIds.has(target.id)
+                                              ? isClassificationCapableModel
+                                              : isStandardJudgeModel
+                                          }
                                           onProviderChange={(next) =>
                                             updateOverride({
                                               provider: next || null,
@@ -4443,6 +4502,11 @@ export default function CallImportDetail() {
                       } else if (selectedMetricIds.length === 0) {
                         disabledReasons.push('Select at least one metric to score.')
                       }
+                      if (hasClassificationSelected && !classificationLLMComplete) {
+                        disabledReasons.push(
+                          'Pick a System 1 (Jev) model for the classification metrics.',
+                        )
+                      }
                       // STT and diariser are only required when diarising.
                       if (evalTranscriptSource === 'diarised') {
                         if (evalTranscribeMode === 'stt_llm') {
@@ -4544,8 +4608,27 @@ export default function CallImportDetail() {
                               }
                             }
                           }
+                          // Classification metrics always run on the System 1 model unless
+                          // the user picked a per-metric override for them.
+                          const runLevelLLM =
+                            hasClassificationSelected && !hasStandardSelected
+                              ? classificationLLM
+                              : runLLM
+                          if (hasClassificationSelected && hasStandardSelected) {
+                            for (const target of classificationTargets) {
+                              if (overrides[target.id]?.provider) continue
+                              overrides[target.id] = {
+                                provider: classificationLLM.provider,
+                                model:
+                                  resolveLLMModelForSubmit(classificationLLM, aiProviders) ??
+                                  classificationLLM.model,
+                                credential_id: classificationLLM.credential_id,
+                                llm_config: classificationLLM.llm_config,
+                              }
+                            }
+                          }
                           const runLLMComplete = isLLMSelectionComplete(
-                            runLLM,
+                            runLevelLLM,
                             aiProviders,
                           )
                           runEvaluationMutation.mutate({
@@ -4553,18 +4636,18 @@ export default function CallImportDetail() {
                             name: runDraftName.trim() || null,
                             transcript_sources: [evalTranscriptSource],
                             llm_provider: runLLMComplete
-                              ? runLLM.provider || null
+                              ? runLevelLLM.provider || null
                               : null,
                             llm_model: runLLMComplete
-                              ? resolveLLMModelForSubmit(runLLM, aiProviders) ??
-                                runLLM.model ??
+                              ? resolveLLMModelForSubmit(runLevelLLM, aiProviders) ??
+                                runLevelLLM.model ??
                                 null
                               : null,
                             llm_credential_id: runLLMComplete
-                              ? runLLM.credential_id || null
+                              ? runLevelLLM.credential_id || null
                               : null,
                             llm_config: runLLMComplete
-                              ? runLLM.llm_config || null
+                              ? runLevelLLM.llm_config || null
                               : null,
                             metric_llm_overrides: Object.keys(overrides).length
                               ? overrides

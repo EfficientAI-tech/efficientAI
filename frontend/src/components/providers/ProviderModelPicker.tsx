@@ -114,6 +114,10 @@ export interface ProviderModelPickerProps {
    * without a code change.
    */
   audioCapableOnly?: boolean
+  /** Restrict selectable LLM models (e.g. System 1-only for classification metrics). */
+  modelFilter?: (model: string) => boolean
+  /** Shown when ``modelFilter`` leaves the selected provider/credential with nothing to pick. */
+  incompatibleHint?: string
   /** When false, hide the LLM advanced options panel (LLM kind only). */
   showAdvancedOptions?: boolean
 }
@@ -134,6 +138,8 @@ export default function ProviderModelPicker({
   disabled = false,
   audioCapableOnly = false,
   showAdvancedOptions = true,
+  modelFilter,
+  incompatibleHint = 'No compatible models for this provider.',
 }: ProviderModelPickerProps) {
   const { data: aiProviders = [] } = useQuery<AIProvider[]>({
     queryKey: ['ai-providers'],
@@ -240,7 +246,7 @@ export default function ProviderModelPicker({
   const resolvedGatewayDirectModel =
     catalogModels.mode === 'gateway_direct' ? catalogModels.model : null
 
-  const models =
+  const unfilteredModels =
     catalogModels.mode === 'gateway_direct'
       ? []
       : audioCapableOnly && kind === 'llm' && value.provider
@@ -248,6 +254,16 @@ export default function ProviderModelPicker({
             isAudioCapableModel(value.provider as string, m),
           )
         : catalogModels.models
+  const models =
+    modelFilter && kind === 'llm' ? unfilteredModels.filter(modelFilter) : unfilteredModels
+  const hasIncompatibleSelection = Boolean(
+    modelFilter &&
+      kind === 'llm' &&
+      value.provider &&
+      (resolvedGatewayDirectModel
+        ? !modelFilter(resolvedGatewayDirectModel)
+        : unfilteredModels.length > 0 && models.length === 0),
+  )
 
   // Auto-pick the first model when the provider changes and the
   // currently-selected model isn't valid for it. Avoids a confusing
@@ -472,6 +488,9 @@ export default function ProviderModelPicker({
             })}
           </select>
         </div>
+      )}
+      {hasIncompatibleSelection && (
+        <p className="mt-1 text-xs text-amber-700">{incompatibleHint}</p>
       )}
       {kind === 'llm' &&
         showAdvancedOptions &&

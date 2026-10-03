@@ -44,3 +44,49 @@ export function resolveActiveAIProvider(
   }
   return rows.find((p) => p.is_default) ?? rows[0]
 }
+
+export type ResolvedGatewayType = 'bifrost' | 'litellm_proxy'
+
+export const GATEWAY_TYPE_LABELS: Record<ResolvedGatewayType, string> = {
+  bifrost: 'Bifrost',
+  litellm_proxy: 'LiteLLM Proxy',
+}
+
+type GatewayFieldCopy = {
+  /** Whether the Bifrost API surface (shim vs native) selector applies. */
+  supportsInterface: boolean
+  modelHelp: string
+  customModelHelp: string
+  baseUrlPlaceholder: string
+  authHeaderPlaceholder: string
+  authHeaderHelp: string
+  authSecretEnvPlaceholder: string
+  authSecretEnvHelp: string
+}
+
+/** Per-gateway copy for the credential gateway fields. Add an entry to support a new gateway. */
+export const GATEWAY_FIELD_COPY: Record<ResolvedGatewayType, GatewayFieldCopy> = {
+  bifrost: {
+    supportsInterface: true,
+    modelHelp: 'Bifrost custom model ID sent when routing via gateway. Leave blank to use the workload-selected model.',
+    customModelHelp: 'Bifrost model ID for this integration. Each custom credential pins one model.',
+    baseUrlPlaceholder: 'e.g. http://localhost:8080',
+    authHeaderPlaceholder: 'x-bf-vk',
+    authHeaderHelp: 'Header name for Bifrost auth. Defaults to x-bf-vk when blank.',
+    authSecretEnvPlaceholder: 'BIFROST_VIRTUAL_KEY',
+    authSecretEnvHelp:
+      'Read the auth secret from this environment variable at runtime (e.g. K8s secret). Overrides org virtual key.',
+  },
+  litellm_proxy: {
+    supportsInterface: false,
+    modelHelp:
+      'LiteLLM Proxy model alias (model_name in the proxy config). Leave blank to use the workload-selected model.',
+    customModelHelp: 'LiteLLM Proxy model alias for this integration. Each custom credential pins one model.',
+    baseUrlPlaceholder: 'e.g. http://localhost:4000',
+    authHeaderPlaceholder: 'Authorization',
+    authHeaderHelp: 'Header name for LiteLLM Proxy auth. Defaults to Authorization (Bearer added automatically).',
+    authSecretEnvPlaceholder: 'LITELLM_API_KEY',
+    authSecretEnvHelp:
+      'Read the LiteLLM key from this environment variable at runtime (e.g. K8s secret). Overrides org master key.',
+  },
+}

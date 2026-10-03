@@ -764,6 +764,8 @@ class AIProvider(Base):
     routing_mode = Column(String(20), nullable=False, default="inherit", server_default="inherit")
     # Bifrost custom model ID used when routing via gateway
     gateway_model = Column(String(255), nullable=True)
+    # inherit | bifrost | litellm_proxy — gateway backend override
+    gateway_type = Column(String(20), nullable=False, default="inherit", server_default="inherit")
     # inherit | litellm_shim | native_openai — Bifrost API surface override
     gateway_interface = Column(String(20), nullable=False, default="inherit", server_default="inherit")
     # Optional per-credential Bifrost/gateway base URL override

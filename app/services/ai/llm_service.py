@@ -23,8 +23,11 @@ from app.services.credentials import resolve_ai_provider, resolve_integration
 from app.services.ai.llm_generation_config import build_litellm_kwargs
 from app.services.ai.openrouter_jev import (
     call_openrouter_systemone,
+    call_systemone,
     extract_jev_payload,
+    gateway_systemone_url,
     is_openrouter_jev_model,
+    normalize_typesafe_model_id,
     systemone_response_to_text,
 )
 from app.services.ai.llm_gateway import (
@@ -625,10 +628,6 @@ class LLMService:
             model_str = str(call_kwargs.get("model") or model_str)
 
         if is_openrouter_jev_model(provider_value, llm_model):
-            if not api_key:
-                raise RuntimeError(
-                    "OpenRouter Jev requires a direct API key on this credential."
-                )
             jev_payload = extract_jev_payload(messages, completion_extra)
             if jev_payload is None:
                 raise RuntimeError(
@@ -636,12 +635,29 @@ class LLMService:
                     "state/questions; chat/completions is not supported."
                 )
             state, questions = jev_payload
-            body = call_openrouter_systemone(
-                api_key=api_key,
-                model=llm_model,
-                state=state,
-                questions=questions,
-            )
+            if effective_routing != "direct":
+                # Honour the org's gateway: use its TypeSafe pass-through with the
+                # gateway-routed auth (virtual/master key) and headers, never a
+                # direct OpenRouter call that would bypass it.
+                body = call_systemone(
+                    url=gateway_systemone_url(str(call_kwargs.get("api_base") or "")),
+                    api_key=str(call_kwargs.get("api_key") or ""),
+                    model_id=normalize_typesafe_model_id(llm_model),
+                    state=state,
+                    questions=questions,
+                    extra_headers=call_kwargs.get("extra_headers") or None,
+                )
+            else:
+                if not api_key:
+                    raise RuntimeError(
+                        "OpenRouter Jev requires a direct API key on this credential."
+                    )
+                body = call_openrouter_systemone(
+                    api_key=api_key,
+                    model=llm_model,
+                    state=state,
+                    questions=questions,
+                )
             from app.services.usage.normalize import normalize_llm_usage
 
             snapshot = normalize_llm_usage(raw_response=body)

@@ -6,8 +6,10 @@ pipeline, so the test agent gets each sentence's audio as the provider
 streams it instead of waiting for a whole clip over plain HTTP.
 
 Segments are synthesized one at a time: the next sentence is requested as
-soon as the previous one has finished *arriving*, which is well before it
-has finished playing, so synthesis still overlaps playback.
+soon as the provider signals the previous one is complete (TTSStoppedFrame),
+which is usually well before it has finished playing, so synthesis still
+overlaps playback. Waiting for the provider's own completion signal (not an
+audio gap) keeps a mid-sentence pause from splitting or truncating a sentence.
 """
 
 from __future__ import annotations
@@ -18,11 +20,16 @@ from typing import Any, AsyncIterator, Callable, Optional
 import numpy as np
 from loguru import logger
 
-# A segment is complete once no audio has arrived for this long. Provider stop
-# frames are not used: Sarvam/ElevenLabs HTTP only emit them after a 2 s idle
-# timeout, and Cartesia's are paced in real time behind the audio.
-SEGMENT_IDLE_S = 0.35
+# A segment ends on the provider's TTSStoppedFrame. Services without an explicit
+# completion message (Sarvam WS, ElevenLabs HTTP) emit it after this much audio
+# silence (pipecat's default is 2 s); lowered so the next sentence is requested
+# sooner, still well above normal inter-chunk gaps.
+PROVIDER_STOP_TIMEOUT_S = 1.0
+# Safety net if a provider never sends a stop frame.
+SEGMENT_IDLE_FALLBACK_S = 8.0
 FIRST_AUDIO_TIMEOUT_S = 6.0
+
+_STOPPED = object()
 
 
 def _default_service_factory(
@@ -104,7 +111,7 @@ class AgentTTSStreamer:
 
     async def start(self, timeout: float = 10.0) -> bool:
         try:
-            from efficientai.frames.frames import ErrorFrame, TTSAudioRawFrame
+            from efficientai.frames.frames import ErrorFrame, TTSAudioRawFrame, TTSStoppedFrame
             from efficientai.pipeline.pipeline import Pipeline
             from efficientai.pipeline.runner import PipelineRunner
             from efficientai.pipeline.task import PipelineParams, PipelineTask
@@ -117,6 +124,8 @@ class AgentTTSStreamer:
                     await super().process_frame(frame, direction)
                     if isinstance(frame, TTSAudioRawFrame):
                         streamer._on_audio(frame.audio, frame.sample_rate)
+                    elif isinstance(frame, TTSStoppedFrame):
+                        streamer._on_stopped()
                     elif isinstance(frame, ErrorFrame):
                         streamer._on_error(frame.error)
                     await self.push_frame(frame, direction)
@@ -133,6 +142,8 @@ class AgentTTSStreamer:
             # services that pause between utterances would block forever.
             if hasattr(tts, "_pause_frame_processing"):
                 tts._pause_frame_processing = False
+            if getattr(tts, "_push_stop_frames", False):
+                tts._stop_frame_timeout_s = PROVIDER_STOP_TIMEOUT_S
             self._tts = tts
 
             self._task = PipelineTask(
@@ -219,13 +230,23 @@ class AgentTTSStreamer:
 
                 got_audio = False
                 while True:
-                    timeout = SEGMENT_IDLE_S if got_audio else FIRST_AUDIO_TIMEOUT_S
+                    timeout = SEGMENT_IDLE_FALLBACK_S if got_audio else FIRST_AUDIO_TIMEOUT_S
                     try:
                         item = await asyncio.wait_for(queue.get(), timeout=timeout)
                     except asyncio.TimeoutError:
                         if not got_audio:
                             raise RuntimeError(f"no audio within {FIRST_AUDIO_TIMEOUT_S:.0f}s")
+                        logger.warning(
+                            f"[AgentTTS] {self.provider} sent no stop frame within "
+                            f"{SEGMENT_IDLE_FALLBACK_S:.0f}s of audio; ending segment"
+                        )
                         return
+                    if item is _STOPPED:
+                        if got_audio:
+                            return
+                        # A stop before any audio is stale (from an interrupted
+                        # segment); keep waiting for this segment's audio.
+                        continue
                     if isinstance(item, Exception):
                         if not got_audio:
                             raise RuntimeError(str(item))
@@ -273,6 +294,11 @@ class AgentTTSStreamer:
 
             audio = resample_mono_int16(np.frombuffer(audio, dtype=np.int16), rate, self.sample_rate).tobytes()
         queue.put_nowait(audio)
+
+    def _on_stopped(self) -> None:
+        queue = self._active
+        if queue is not None:
+            queue.put_nowait(_STOPPED)
 
     def _on_error(self, error: Any) -> None:
         logger.warning(f"[AgentTTS] {self.provider} TTS error: {error}")

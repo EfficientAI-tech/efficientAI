@@ -23,19 +23,28 @@ def _top_probability_label(
 ) -> Optional[str]:
     if not isinstance(probabilities, dict) or not probabilities:
         return None
+    # Ties go to the smallest key (code-point order) so the SQL row filters in
+    # classification_metric_sql.py can reproduce the winner from jsonb, which
+    # does not preserve insertion order.
     best_key: Optional[str] = None
-    best_prob = -1.0
+    best_prob: Optional[float] = None
     for key, raw in probabilities.items():
         prob = _as_float(raw)
         if prob is None:
             continue
-        if prob > best_prob:
+        key = str(key)
+        if best_prob is None or prob > best_prob or (prob == best_prob and key < best_key):
             best_prob = prob
-            best_key = str(key)
+            best_key = key
     if best_key is None:
         return None
     if isinstance(legend, dict):
-        legend_label = legend.get(best_key) or legend.get(str(int(best_key)))
+        legend_label = legend.get(best_key)
+        if legend_label is None:
+            try:
+                legend_label = legend.get(str(int(best_key)))
+            except ValueError:
+                legend_label = None
         if legend_label is not None:
             return str(legend_label).strip() or None
     return best_key.strip() or None

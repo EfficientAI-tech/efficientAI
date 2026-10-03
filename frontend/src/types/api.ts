@@ -350,6 +350,8 @@ export enum TelephonyProvider {
 
 export type CredentialRoutingMode = 'inherit' | 'gateway' | 'direct'
 export type GatewayInterfaceMode = 'inherit' | 'litellm_shim' | 'native_openai'
+/** Per-credential gateway backend override. */
+export type CredentialGatewayType = 'inherit' | 'bifrost' | 'litellm_proxy'
 
 export type EffectiveCredentialRouting =
   | 'inherit'
@@ -438,6 +440,7 @@ export interface AIProvider {
   is_default?: boolean
   routing_mode?: CredentialRoutingMode
   gateway_model?: string | null
+  gateway_type?: CredentialGatewayType
   gateway_interface?: GatewayInterfaceMode
   gateway_base_url?: string | null
   gateway_auth_header?: string | null
@@ -449,6 +452,7 @@ export interface AIProvider {
   gateway_managed?: boolean
   effective_routing?: EffectiveCredentialRouting
   effective_gateway_interface?: 'litellm_shim' | 'native_openai'
+  effective_gateway_type?: 'bifrost' | 'litellm_proxy'
   created_at: string
   updated_at: string
   last_tested_at?: string | null
@@ -461,6 +465,7 @@ export interface AIProviderCreate {
   endpoint_url?: string | null
   routing_mode?: CredentialRoutingMode
   gateway_model?: string | null
+  gateway_type?: CredentialGatewayType
   gateway_interface?: GatewayInterfaceMode
   gateway_base_url?: string | null
   gateway_auth_header?: string | null
@@ -479,6 +484,7 @@ export interface AIProviderUpdate {
   is_active?: boolean
   routing_mode?: CredentialRoutingMode
   gateway_model?: string | null
+  gateway_type?: CredentialGatewayType
   gateway_interface?: GatewayInterfaceMode
   gateway_base_url?: string | null
   gateway_auth_header?: string | null

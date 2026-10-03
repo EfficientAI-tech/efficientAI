@@ -777,3 +777,48 @@ def test_promote_discovered_child_rejects_when_discovery_disabled(
 # call-import worker now injects EVERY non-empty CSV column into the
 # evaluation prompt for every metric, so there is no allow-list to
 # round-trip through the metric API.
+
+
+
+def _create_classification_metric(client) -> str:
+    payload = {
+        "name": "Outcome Classification",
+        "metric_type": "text",
+        "custom_data_type": "classification",
+        "custom_config": {
+            "noul": {
+                "enabled": True,
+                "instructions": "Was the issue resolved?",
+                "criteria": {"true": "Resolved", "false": "Not resolved"},
+            },
+            "choice": {"enabled": False},
+            "score": {"enabled": False},
+        },
+        "trigger": "always",
+        "enabled": True,
+    }
+    response = client.post("/api/v1/metrics", json=payload)
+    assert response.status_code == 201, response.text
+    return response.json()["id"]
+
+
+def test_update_classification_metric_rejects_non_text_type(authenticated_client):
+    """PR review P1: metric_type alone must not turn a classification metric non-text."""
+    metric_id = _create_classification_metric(authenticated_client)
+
+    response = authenticated_client.put(f"/api/v1/metrics/{metric_id}", json={"metric_type": "number"})
+
+    assert response.status_code == 400, response.text
+    assert "metric_type 'text'" in response.json()["detail"]
+    stored = authenticated_client.get(f"/api/v1/metrics/{metric_id}").json()
+    assert stored["metric_type"] == "text"
+
+
+def test_update_classification_metric_allows_text_and_other_fields(authenticated_client):
+    metric_id = _create_classification_metric(authenticated_client)
+
+    renamed = authenticated_client.put(f"/api/v1/metrics/{metric_id}", json={"name": "Renamed"})
+    same_type = authenticated_client.put(f"/api/v1/metrics/{metric_id}", json={"metric_type": "text"})
+
+    assert renamed.status_code == 200, renamed.text
+    assert same_type.status_code == 200, same_type.text

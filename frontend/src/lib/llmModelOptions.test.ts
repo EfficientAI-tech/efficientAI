@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { resolveLLMModelsForCredential } from './llmModelOptions'
+import {
+  isClassificationCapableModel,
+  isClassificationMetric,
+  isStandardJudgeModel,
+  mergeClassificationOverrides,
+  resolveLLMModelsForCredential,
+  seedClassificationLLM,
+} from './llmModelOptions'
 import type { AIProvider } from '../types/api'
 
 function makeCredential(overrides: Partial<AIProvider> = {}): AIProvider {
@@ -78,5 +85,64 @@ describe('resolveLLMModelsForCredential', () => {
       mode: 'catalog',
       models: ['accounts/fireworks/models/gpt-oss-120b'],
     })
+  })
+})
+
+describe('classification model helpers', () => {
+  it('accepts Jev models for classification and rejects Tev / standard models', () => {
+    expect(isClassificationCapableModel('typesafe/jev-1.13.0')).toBe(true)
+    expect(isClassificationCapableModel('openrouter/typesafe/JEV-latest')).toBe(true)
+    expect(isClassificationCapableModel('typesafe/tev-1')).toBe(false)
+    expect(isClassificationCapableModel('gpt-4o')).toBe(false)
+  })
+
+  it('treats only non-System 1 models as standard judges', () => {
+    expect(isStandardJudgeModel('gpt-4o')).toBe(true)
+    expect(isStandardJudgeModel('anthropic/claude-sonnet-5-5')).toBe(true)
+    expect(isStandardJudgeModel('typesafe/jev-1.13.0')).toBe(false)
+    expect(isStandardJudgeModel('typesafe/tev-1')).toBe(false)
+  })
+
+  it('detects classification metrics by custom_data_type', () => {
+    expect(isClassificationMetric({ custom_data_type: 'classification' })).toBe(true)
+    expect(isClassificationMetric({ custom_data_type: 'enum' })).toBe(false)
+    expect(isClassificationMetric({})).toBe(false)
+  })
+})
+
+describe('seedClassificationLLM', () => {
+  const runLevel = { provider: 'openai', model: 'gpt-4o', credential_id: 'c-openai' }
+
+  it('reuses an existing Jev override on a classification metric', () => {
+    const seeded = seedClassificationLLM(
+      ['m-class'],
+      { 'm-class': { provider: 'openrouter', model: 'typesafe/jev-1.13', credential_id: 'c-or' } },
+      runLevel,
+    )
+    expect(seeded).toMatchObject({ provider: 'openrouter', model: 'typesafe/jev-1.13', credential_id: 'c-or' })
+  })
+
+  it('falls back to the run-level model only when it is a Jev model', () => {
+    expect(seedClassificationLLM(['m-class'], null, runLevel).model).toBeNull()
+    expect(
+      seedClassificationLLM(['m-class'], null, { provider: 'typesafe', model: 'jev-1.13.0' }).model,
+    ).toBe('jev-1.13.0')
+  })
+})
+
+describe('mergeClassificationOverrides', () => {
+  it('keeps existing overrides, sets classification metrics, and drops unknown ids', () => {
+    const merged = mergeClassificationOverrides(
+      {
+        'm-std': { provider: 'anthropic', model: 'claude-sonnet-5-5' },
+        'm-gone': { provider: 'openai', model: 'gpt-4o' },
+      },
+      ['m-class', 'm-not-in-run'],
+      ['m-std', 'm-class'],
+      { provider: 'typesafe', model: 'jev-1.13.0', credential_id: 'c-ts' },
+    )
+    expect(Object.keys(merged).sort()).toEqual(['m-class', 'm-std'])
+    expect(merged['m-std'].model).toBe('claude-sonnet-5-5')
+    expect(merged['m-class']).toMatchObject({ provider: 'typesafe', model: 'jev-1.13.0', credential_id: 'c-ts' })
   })
 })

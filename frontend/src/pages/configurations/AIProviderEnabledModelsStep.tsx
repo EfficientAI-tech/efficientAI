@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Check } from 'lucide-react'
+import { Check, Search, X } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import type { ModelProvider } from '../../types/api'
 import { usageTheme } from '../usage/usageTheme'
@@ -26,6 +26,12 @@ type Props = {
   enabledModels: string[]
   onChange: (models: string[]) => void
   gatewayModel?: string
+}
+
+/** Every whitespace-separated term must appear (case-insensitive), so "gpt 4o" matches "gpt-4o-mini". */
+function matchesQuery(model: string, terms: string[]) {
+  const haystack = model.toLowerCase()
+  return terms.every((term) => haystack.includes(term))
 }
 
 function ModelChip({
@@ -69,6 +75,19 @@ export default function AIProviderEnabledModelsStep({
   gatewayModel,
 }: Props) {
   const [customModel, setCustomModel] = useState('')
+  const [query, setQuery] = useState('')
+
+  useEffect(() => {
+    setQuery('')
+  }, [provider])
+
+  const searchTerms = useMemo(
+    () => query.trim().toLowerCase().split(/\s+/).filter(Boolean),
+    [query],
+  )
+  const isSearching = searchTerms.length > 0
+  const filterModels = (models: string[]) =>
+    isSearching ? models.filter((model) => matchesQuery(model, searchTerms)) : models
 
   const { data: options, isLoading } = useQuery({
     queryKey: ['model-options', provider],
@@ -76,7 +95,7 @@ export default function AIProviderEnabledModelsStep({
     enabled: Boolean(provider),
   })
 
-  const catalog = (options || {}) as ModelOptions
+  const catalog = useMemo(() => (options || {}) as ModelOptions, [options])
   const selected = useMemo(() => new Set(enabledModels), [enabledModels])
 
   const catalogModelSet = useMemo(() => {
@@ -112,26 +131,37 @@ export default function AIProviderEnabledModelsStep({
     onChange(Array.from(next).sort())
   }
 
+  // While searching, All / Clear apply only to the visible matches.
   const selectSection = (key: SectionKey) => {
-    const models = catalog[key] || []
+    const models = filterModels(catalog[key] || [])
     const next = new Set(enabledModels)
     models.forEach((m) => next.add(m))
     onChange(Array.from(next).sort())
   }
 
   const clearSection = (key: SectionKey) => {
-    const models = new Set(catalog[key] || [])
+    const models = new Set(filterModels(catalog[key] || []))
     onChange(enabledModels.filter((m) => !models.has(m)))
   }
 
-  const addCustomModel = () => {
-    const name = customModel.trim()
+  const addModel = (raw: string) => {
+    const name = raw.trim()
     if (!name) return
     if (!selected.has(name)) {
       onChange([...enabledModels, name].sort())
     }
+  }
+
+  const addCustomModel = () => {
+    addModel(customModel)
     setCustomModel('')
   }
+
+  const hasAnyModels = !catalogIsEmpty || customModels.length > 0
+  const visibleCustomModels = filterModels(customModels)
+  const totalMatches =
+    SECTIONS.reduce((sum, { key }) => sum + filterModels(catalog[key] || []).length, 0) +
+    visibleCustomModels.length
 
   const gateway = gatewayModel?.trim()
 
@@ -156,7 +186,49 @@ export default function AIProviderEnabledModelsStep({
       {isCustomProvider && !gateway && enabledModels.length === 0 && !isLoading ? (
         <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
           Add custom model IDs below, or set a <span className="font-medium">Gateway model</span> on
-          the previous step for a single pinned Bifrost model.
+          the previous step for a single pinned gateway model.
+        </div>
+      ) : null}
+
+      {!isLoading && hasAnyModels ? (
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setQuery('')
+            }}
+            placeholder="Search models…"
+            aria-label="Search models"
+            className={`w-full rounded-lg border border-gray-200 py-2 pl-9 pr-9 text-sm focus:outline-none ${usageTheme.focusRing}`}
+          />
+          {query ? (
+            <button
+              type="button"
+              onClick={() => setQuery('')}
+              aria-label="Clear search"
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-gray-400 hover:text-gray-700"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
+      {!isLoading && isSearching && totalMatches === 0 ? (
+        <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-700">
+          No models match <span className="font-medium break-all">“{query.trim()}”</span>.
+          {showManualAdd ? (
+            <button
+              type="button"
+              onClick={() => addModel(query)}
+              className="ml-2 font-medium text-[#a16207] underline-offset-2 hover:underline"
+            >
+              Add it as a model ID
+            </button>
+          ) : null}
         </div>
       ) : null}
 
@@ -164,16 +236,18 @@ export default function AIProviderEnabledModelsStep({
         <p className="text-sm text-gray-500">Loading catalog models…</p>
       ) : (
         SECTIONS.map(({ key, label }) => {
-          const models = catalog[key] || []
+          const allModels = catalog[key] || []
+          const models = filterModels(allModels)
           if (models.length === 0) return null
-          const sectionSelected = models.filter((m) => selected.has(m)).length
+          const sectionSelected = allModels.filter((m) => selected.has(m)).length
           return (
             <div key={key} className={`${usageTheme.panel} overflow-hidden`}>
               <div className={`flex items-center justify-between gap-2 px-3 py-2 ${usageTheme.panelHeader}`}>
                 <div>
                   <span className="text-sm font-semibold text-gray-900">{label}</span>
                   <span className="ml-2 text-xs text-gray-500">
-                    {sectionSelected}/{models.length} selected
+                    {sectionSelected}/{allModels.length} selected
+                    {isSearching ? ` · ${models.length} match${models.length === 1 ? '' : 'es'}` : ''}
                   </span>
                 </div>
                 <div className="flex gap-2">
@@ -182,14 +256,14 @@ export default function AIProviderEnabledModelsStep({
                     className={`rounded-lg px-2.5 py-1 text-xs font-medium ${usageTheme.pillInactive}`}
                     onClick={() => selectSection(key)}
                   >
-                    All
+                    {isSearching ? 'All matches' : 'All'}
                   </button>
                   <button
                     type="button"
                     className={`rounded-lg px-2.5 py-1 text-xs font-medium ${usageTheme.pillMuted}`}
                     onClick={() => clearSection(key)}
                   >
-                    Clear
+                    {isSearching ? 'Clear matches' : 'Clear'}
                   </button>
                 </div>
               </div>
@@ -208,7 +282,7 @@ export default function AIProviderEnabledModelsStep({
         })
       )}
 
-      {customModels.length > 0 ? (
+      {visibleCustomModels.length > 0 ? (
         <div className={`${usageTheme.panel} overflow-hidden`}>
           <div className={`px-3 py-2 ${usageTheme.panelHeader}`}>
             <span className="text-sm font-semibold text-gray-900">Enabled models</span>
@@ -217,7 +291,7 @@ export default function AIProviderEnabledModelsStep({
             </span>
           </div>
           <div className="grid max-h-52 grid-cols-1 gap-2 overflow-y-auto p-3 sm:grid-cols-2">
-            {customModels.map((model) => (
+            {visibleCustomModels.map((model) => (
               <ModelChip
                 key={model}
                 model={model}

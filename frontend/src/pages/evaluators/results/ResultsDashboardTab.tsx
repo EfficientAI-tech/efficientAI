@@ -1,11 +1,8 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { motion } from 'framer-motion'
 import {
   Activity,
-  Clock,
   Loader,
-  Target,
 } from 'lucide-react'
 import {
   Bar,
@@ -18,12 +15,9 @@ import {
 } from 'recharts'
 import ResultsMetricTrendCard, { type TrendSeries } from './ResultsMetricTrendCard'
 import { apiClient } from '../../../lib/api'
-import ResultsCountCards from './ResultsCountCards'
 import { dateRangeToSinceUntil, rangeForDays } from './resultsDateRange'
 import type {
   CallImportMetricAggregate,
-  EvaluatorResultCounts,
-  EvaluatorResultsOverviewResponse,
   EvaluatorResultRow,
 } from '../../../types/api'
 import { itemsOf } from '../../../lib/safeData'
@@ -37,41 +31,6 @@ interface ResultsDashboardTabProps {
   scenarioId: string
   startDate: string | null
   endDate: string | null
-  overview: EvaluatorResultsOverviewResponse | undefined
-  loadingOverview: boolean
-}
-
-function resolveScopeCounts(
-  overview: EvaluatorResultsOverviewResponse | undefined,
-  agentId: string,
-  suiteId: string,
-  scenarioId: string,
-): EvaluatorResultCounts {
-  if (!overview) {
-    return { total: 0, completed: 0, failed: 0, in_progress: 0 }
-  }
-  if (scenarioId && suiteId) {
-    for (const agent of overview.agents) {
-      if (agentId && agent.agent_id !== agentId) continue
-      for (const suite of agent.suites ?? []) {
-        if (suite.suite_id !== suiteId) continue
-        const scenario = suite.scenarios?.find((s) => s.scenario_id === scenarioId)
-        if (scenario) return scenario.counts
-      }
-    }
-  }
-  if (suiteId) {
-    for (const agent of overview.agents) {
-      if (agentId && agent.agent_id !== agentId) continue
-      const suite = agent.suites?.find((s) => s.suite_id === suiteId)
-      if (suite) return suite.counts
-    }
-  }
-  if (agentId) {
-    const agent = overview.agents.find((a) => a.agent_id === agentId)
-    if (agent) return agent.counts
-  }
-  return overview.workspace_counts
 }
 
 function metricNumericValue(value: unknown, type: string): number | null {
@@ -162,8 +121,6 @@ export default function ResultsDashboardTab({
   scenarioId,
   startDate,
   endDate,
-  overview,
-  loadingOverview,
 }: ResultsDashboardTabProps) {
   const [hiddenMetricIds, setHiddenMetricIds] = useState<Set<string>>(() => new Set())
 
@@ -225,27 +182,9 @@ export default function ResultsDashboardTab({
     return { childIdsByParent, childNamesById }
   }, [metricsCatalog])
 
-  const scopeCounts = useMemo(
-    () => resolveScopeCounts(overview, agentId, suiteId, scenarioId),
-    [overview, agentId, suiteId, scenarioId],
-  )
-
   const results = itemsOf<EvaluatorResultRow>(listResponse)
   const totalInRange = listResponse?.total ?? 0
   const truncated = totalInRange > TRENDS_PAGE_LIMIT
-
-  const successRate =
-    scopeCounts.total > 0
-      ? (scopeCounts.completed / scopeCounts.total) * 100
-      : 0
-
-  const avgDuration = useMemo(() => {
-    const durations = results
-      .map((r) => r.duration_seconds)
-      .filter((d): d is number => typeof d === 'number' && d > 0)
-    if (!durations.length) return 0
-    return durations.reduce((a, b) => a + b, 0) / durations.length
-  }, [results])
 
   const visibleMetrics = useMemo(() => {
     const metrics = aggregate?.metrics ?? []
@@ -366,7 +305,7 @@ export default function ResultsDashboardTab({
     })
   }
 
-  const loading = loadingOverview || loadingAggregate || loadingResults
+  const loading = loadingAggregate || loadingResults
 
   if (loading && !aggregate && !results.length) {
     return (
@@ -390,44 +329,6 @@ export default function ResultsDashboardTab({
           Trends use the newest {TRENDS_PAGE_LIMIT} runs in this window ({totalInRange.toLocaleString()} total match the filter).
         </div>
       ) : null}
-
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-        <div className="col-span-2 md:col-span-4">
-          <ResultsCountCards counts={scopeCounts} />
-        </div>
-        <motion.div
-          className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 flex flex-col justify-center"
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-        >
-          <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Success rate</p>
-          <p className="text-2xl font-bold text-emerald-600 mt-1 tabular-nums">
-            {successRate.toFixed(0)}%
-          </p>
-          <Target className="w-5 h-5 text-emerald-500 mt-2" />
-        </motion.div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-          <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Avg duration</p>
-          <p className="text-xl font-bold text-gray-900 mt-1 tabular-nums">
-            {Math.round(avgDuration)}s
-          </p>
-          <Clock className="w-4 h-4 text-amber-500 mt-2" />
-        </div>
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 md:col-span-2">
-          <p className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Runs in window</p>
-          <p className="text-xl font-bold text-gray-900 tabular-nums">
-            {results.length.toLocaleString()}
-            {truncated ? (
-              <span className="text-sm font-normal text-gray-500 ml-2">
-                of {totalInRange.toLocaleString()} total
-              </span>
-            ) : null}
-          </p>
-        </div>
-      </div>
 
       {aggregate?.metrics.length ? (
         <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 space-y-4">

@@ -64,7 +64,13 @@ import { downloadBlob } from '../../lib/download'
 import {
   isLLMSelectionComplete,
   resolveLLMModelForSubmit,
+  isClassificationCapableModel,
+  isClassificationMetric,
+  isStandardJudgeModel,
+  mergeClassificationOverrides,
+  seedClassificationLLM,
 } from '../../lib/llmModelOptions'
+import RunEvaluationClassificationModel from './components/RunEvaluationClassificationModel'
 import { useToast } from '../../hooks/useToast'
 import type {
   CallImportEvaluation,
@@ -577,6 +583,13 @@ export default function CallImportEvaluationDetail() {
     model: null,
     credential_id: null,
   })
+  // System 1 (Jev) model for classification metrics in the Retry / Re-run
+  // modals. Classification metrics cannot be scored by standard LLM judges,
+  // so they get their own picker and are routed via per-metric overrides.
+  const [retryClassificationLLM, setRetryClassificationLLM] =
+    useState<ProviderModelValue>({ provider: null, model: null, credential_id: null })
+  const [rerunClassificationLLM, setRerunClassificationLLM] =
+    useState<ProviderModelValue>({ provider: null, model: null, credential_id: null })
   const [rerunError, setRerunError] = useState<string | null>(null)
   const [resultsTab, setResultsTab] = useState<
     'table' | 'visualizations' | 'flow'
@@ -874,6 +887,23 @@ export default function CallImportEvaluationDetail() {
     queryFn: () => apiClient.listAIProviders(),
   })
 
+  // Metric definitions, used to tell classification metrics apart from
+  // standard ones. Same query key as the Run Evaluation modal (shared cache).
+  const { data: metricDefinitions = [] } = useQuery({
+    queryKey: ['metrics', activeWorkspaceId, 'agent'],
+    queryFn: () => apiClient.listMetrics('agent'),
+    enabled: !!evalId,
+  })
+  const classificationMetricIdSet = useMemo(() => {
+    const ids = new Set<string>()
+    const visit = (metric: { id: string; custom_data_type?: string | null; children?: unknown }) => {
+      if (isClassificationMetric(metric)) ids.add(metric.id)
+      if (Array.isArray(metric.children)) metric.children.forEach(visit)
+    }
+    metricDefinitions.forEach(visit)
+    return ids
+  }, [metricDefinitions])
+
   const rowsQuery = useQuery({
     queryKey: [
       'call-import-evaluation-rows',
@@ -1162,6 +1192,18 @@ export default function CallImportEvaluationDetail() {
         (telephonySelection.telephonyIntegrationId ?? null) !==
           (callImport?.telephony_integration_id ?? null)
 
+      // Classification metrics are routed to the System 1 model through
+      // per-metric overrides; standard metrics keep the run-level LLM.
+      const retryClassificationOverrides =
+        retryClassificationIds.length > 0 &&
+        isClassificationSelectionReady(retryClassificationLLM)
+          ? mergeClassificationOverrides(
+              evaluation?.metric_llm_overrides,
+              retryClassificationIds,
+              runMetricIds,
+              classificationOverrideSelection(retryClassificationLLM),
+            )
+          : undefined
       return apiClient.retryCallImportEvaluation(id!, evalId!, {
         llmProvider:
           llmChanged && llmComplete ? retryLLM.provider ?? undefined : undefined,
@@ -1174,6 +1216,7 @@ export default function CallImportEvaluationDetail() {
         llmCredentialId:
           llmChanged && llmComplete ? retryLLM.credential_id ?? null : undefined,
         llmConfig: llmChanged ? retryLLM.llm_config ?? null : undefined,
+        metricLlmOverrides: retryClassificationOverrides,
         sttProvider:
           sttChanged && retrySTT.provider && retrySTT.model
             ? retrySTT.provider
@@ -1264,6 +1307,20 @@ export default function CallImportEvaluationDetail() {
     const telephonyInitial = initialTelephonySelection(callImportQuery.data)
     setRetryTelephonyProvider(telephonyInitial.provider)
     setRetryTelephonyIntegrationId(telephonyInitial.integrationId)
+    setRetryClassificationLLM(
+      seedClassificationLLM(
+        (evaluation.selected_metric_ids ?? []).filter((mid) =>
+          classificationMetricIdSet.has(mid),
+        ),
+        evaluation.metric_llm_overrides,
+        {
+          provider: evaluation.llm_provider ?? null,
+          model: evaluation.llm_model ?? null,
+          credential_id: evaluation.llm_credential_id ?? null,
+          llm_config: evaluation.llm_config ?? null,
+        },
+      ),
+    )
     setRetryError(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [retryConfirmOpen])
@@ -1284,6 +1341,20 @@ export default function CallImportEvaluationDetail() {
     })
     setRerunMetricIds(new Set())
     setRerunError(null)
+    setRerunClassificationLLM(
+      seedClassificationLLM(
+        (evaluation.selected_metric_ids ?? []).filter((mid) =>
+          classificationMetricIdSet.has(mid),
+        ),
+        evaluation.metric_llm_overrides,
+        {
+          provider: evaluation.llm_provider ?? null,
+          model: evaluation.llm_model ?? null,
+          credential_id: evaluation.llm_credential_id ?? null,
+          llm_config: evaluation.llm_config ?? null,
+        },
+      ),
+    )
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rerunMetricsOpen])
 
@@ -1310,6 +1381,16 @@ export default function CallImportEvaluationDetail() {
         JSON.stringify(rerunLLM.llm_config ?? null) !==
           JSON.stringify(evaluation?.llm_config ?? null)
       const llmComplete = isLLMSelectionComplete(rerunLLM, aiProviders)
+      const rerunClassificationOverrides =
+        rerunClassificationIds.length > 0 &&
+        isClassificationSelectionReady(rerunClassificationLLM)
+          ? mergeClassificationOverrides(
+              evaluation?.metric_llm_overrides,
+              rerunClassificationIds,
+              runMetricIds,
+              classificationOverrideSelection(rerunClassificationLLM),
+            )
+          : undefined
       return apiClient.retryCallImportEvaluation(id!, evalId!, {
         metricIds,
         includeCompleted: true,
@@ -1324,6 +1405,7 @@ export default function CallImportEvaluationDetail() {
         llmCredentialId:
           llmChanged && llmComplete ? rerunLLM.credential_id ?? null : undefined,
         llmConfig: llmChanged ? rerunLLM.llm_config ?? null : undefined,
+        metricLlmOverrides: rerunClassificationOverrides,
       })
     },
     onSuccess: (data: CallImportEvaluationRetryResponse) => {
@@ -1457,6 +1539,55 @@ export default function CallImportEvaluationDetail() {
 
   const callImport = callImportQuery.data
   const evaluation = evaluationQuery.data
+
+  const runMetricIds: string[] = evaluation?.selected_metric_ids ?? []
+  const retryClassificationIds = runMetricIds.filter((mid) =>
+    classificationMetricIdSet.has(mid),
+  )
+  const retryHasStandard = runMetricIds.some(
+    (mid) => !classificationMetricIdSet.has(mid),
+  )
+  const rerunSelectedIds = Array.from(rerunMetricIds)
+  const rerunClassificationIds = rerunSelectedIds.filter((mid) =>
+    classificationMetricIdSet.has(mid),
+  )
+  const rerunHasStandard = rerunSelectedIds.some(
+    (mid) => !classificationMetricIdSet.has(mid),
+  )
+  const isClassificationSelectionReady = (value: ProviderModelValue) =>
+    aiProviders.length > 0 &&
+    isLLMSelectionComplete(value, aiProviders) &&
+    isClassificationCapableModel(
+      resolveLLMModelForSubmit(value, aiProviders) ?? value.model ?? '',
+    )
+  const retryClassificationReady =
+    retryClassificationIds.length === 0 ||
+    isClassificationSelectionReady(retryClassificationLLM)
+  const rerunClassificationReady =
+    rerunClassificationIds.length === 0 ||
+    isClassificationSelectionReady(rerunClassificationLLM)
+  const classificationOverrideSelection = (value: ProviderModelValue) => ({
+    provider: value.provider,
+    model: resolveLLMModelForSubmit(value, aiProviders) ?? value.model,
+    credential_id: value.credential_id ?? null,
+    llm_config: value.llm_config ?? null,
+  })
+  const metricNameById = useMemo(() => {
+    const names = new Map<string, string>()
+    const visit = (metric: { id: string; name?: string; children?: unknown }) => {
+      names.set(metric.id, metric.name ?? metric.id)
+      if (Array.isArray(metric.children)) metric.children.forEach(visit)
+    }
+    metricDefinitions.forEach(visit)
+    return names
+  }, [metricDefinitions])
+  const hasClassificationCredential = aiProviders.some(
+    (p) =>
+      p.is_active &&
+      (p.enabled_models?.some((m: string) => isClassificationCapableModel(m)) ||
+        isClassificationCapableModel(p.gateway_model ?? '') ||
+        ['openrouter', 'typesafe'].includes(String(p.provider).toLowerCase())),
+  )
   const diarisationInFlightCount = callImport
     ? (callImport.diarised_pending_rows ?? 0) +
       (callImport.diarised_running_rows ?? 0)
@@ -4495,13 +4626,28 @@ export default function CallImportEvaluationDetail() {
                     Used to score every retried row. Leave as-is to
                     re-run with the same LLM as before.
                   </p>
-                  <ProviderModelPicker
-                    kind="llm"
-                    value={retryLLM}
-                    onChange={setRetryLLM}
-                    allowCredentialPick
-                    defaultLabel="Pick an LLM provider"
-                  />
+                  {(retryHasStandard || retryClassificationIds.length === 0) && (
+                    <ProviderModelPicker
+                      kind="llm"
+                      value={retryLLM}
+                      onChange={setRetryLLM}
+                      allowCredentialPick
+                      defaultLabel="Pick an LLM provider"
+                      modelFilter={isStandardJudgeModel}
+                      incompatibleHint="This credential only exposes System 1 (Jev) models, which cannot score standard metrics."
+                    />
+                  )}
+                  {retryClassificationIds.length > 0 && (
+                    <div className="mt-3">
+                      <RunEvaluationClassificationModel
+                        value={retryClassificationLLM}
+                        onChange={setRetryClassificationLLM}
+                        metricNames={retryClassificationIds.map((mid) => metricNameById.get(mid) ?? mid)}
+                        hasCompatibleCredential={hasClassificationCredential}
+                        complete={isClassificationSelectionReady(retryClassificationLLM)}
+                      />
+                    </div>
+                  )}
                 </div>
 
                 {evaluation.transcript_source === 'diarised' && (
@@ -4660,6 +4806,7 @@ export default function CallImportEvaluationDetail() {
                   disabled={
                     retryAllFailedMutation.isPending ||
                     !isLLMSelectionComplete(retryLLM, aiProviders) ||
+                    !retryClassificationReady ||
                     !isCredentialSelectionValid(
                       retryTelephonyProvider,
                       retryTelephonyIntegrationId,
@@ -4802,13 +4949,28 @@ export default function CallImportEvaluationDetail() {
                         Used to score the selected metrics. Leave as-is
                         to re-run with the run's existing LLM.
                       </p>
-                      <ProviderModelPicker
-                        kind="llm"
-                        value={rerunLLM}
-                        onChange={setRerunLLM}
-                        allowCredentialPick
-                        defaultLabel="Pick an LLM provider"
-                      />
+                      {(rerunHasStandard || rerunClassificationIds.length === 0) && (
+                        <ProviderModelPicker
+                          kind="llm"
+                          value={rerunLLM}
+                          onChange={setRerunLLM}
+                          allowCredentialPick
+                          defaultLabel="Pick an LLM provider"
+                          modelFilter={isStandardJudgeModel}
+                          incompatibleHint="This credential only exposes System 1 (Jev) models, which cannot score standard metrics."
+                        />
+                      )}
+                      {rerunClassificationIds.length > 0 && (
+                        <div className="mt-3">
+                          <RunEvaluationClassificationModel
+                            value={rerunClassificationLLM}
+                            onChange={setRerunClassificationLLM}
+                            metricNames={rerunClassificationIds.map((mid) => metricNameById.get(mid) ?? mid)}
+                            hasCompatibleCredential={hasClassificationCredential}
+                            complete={isClassificationSelectionReady(rerunClassificationLLM)}
+                          />
+                        </div>
+                      )}
                     </div>
 
                     <div className="rounded-md bg-blue-50 border border-blue-200 p-3 text-xs text-blue-900">
@@ -4852,7 +5014,8 @@ export default function CallImportEvaluationDetail() {
                       disabled={
                         rerunMetricsMutation.isPending ||
                         noneSelected ||
-                        !isLLMSelectionComplete(rerunLLM, aiProviders)
+                        !isLLMSelectionComplete(rerunLLM, aiProviders) ||
+                        !rerunClassificationReady
                       }
                     >
                       Re-run {selectedCount > 0 ? `${selectedCount} ` : ''}

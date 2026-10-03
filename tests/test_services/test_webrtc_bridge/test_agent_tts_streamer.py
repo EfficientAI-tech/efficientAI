@@ -17,6 +17,7 @@ from efficientai.frames.frames import (
     InterruptionFrame,
     TTSAudioRawFrame,
     TTSSpeakFrame,
+    TTSStoppedFrame,
 )
 from efficientai.processors.frame_processor import FrameDirection, FrameProcessor
 
@@ -24,9 +25,10 @@ from efficientai.processors.frame_processor import FrameDirection, FrameProcesso
 class FakeTTS(FrameProcessor):
     """Streams a few audio chunks per TTSSpeakFrame, like a websocket TTS."""
 
-    def __init__(self, *, chunks=3, rate=16000, delay=0.02, fail=False):
+    def __init__(self, *, chunks=3, rate=16000, delay=0.02, fail=False, pause_after=None, pause_s=0.0):
         super().__init__()
         self._chunks, self._rate, self._delay, self._fail = chunks, rate, delay, fail
+        self._pause_after, self._pause_s = pause_after, pause_s
         self._pause_frame_processing = True
         self.spoken: list[str] = []
         self.interruptions = 0
@@ -38,9 +40,12 @@ class FakeTTS(FrameProcessor):
             if self._fail:
                 await self.push_frame(ErrorFrame(error="tts socket closed"))
                 return
-            for _ in range(self._chunks):
+            for i in range(self._chunks):
                 await asyncio.sleep(self._delay)
+                if self._pause_after is not None and i == self._pause_after:
+                    await asyncio.sleep(self._pause_s)  # provider stalls mid-sentence
                 await self.push_frame(TTSAudioRawFrame(b"\x01\x00" * 320, self._rate, 1))
+            await self.push_frame(TTSStoppedFrame())
             return
         if isinstance(frame, InterruptionFrame):
             self.interruptions += 1
@@ -59,7 +64,7 @@ async def _collect(streamer, text):
 
 @pytest.fixture(autouse=True)
 def _fast_idle(monkeypatch):
-    monkeypatch.setattr(streamer_module, "SEGMENT_IDLE_S", 0.1)
+    monkeypatch.setattr(streamer_module, "SEGMENT_IDLE_FALLBACK_S", 1.0)
     monkeypatch.setattr(streamer_module, "FIRST_AUDIO_TIMEOUT_S", 0.5)
 
 
@@ -75,6 +80,41 @@ async def test_synthesize_streams_chunks_for_each_segment():
 
     assert len(first) == 3 and len(second) == 3
     assert tts.spoken == ["Hello there.", "Second sentence."]
+    await streamer.close()
+
+
+@pytest.mark.asyncio
+async def test_mid_sentence_pause_does_not_split_segment():
+    """Audio after a provider stall stays in its own sentence (PR review P1)."""
+    tts = FakeTTS(chunks=4, pause_after=2, pause_s=0.5)
+    streamer = _streamer(tts)
+    assert await streamer.start()
+
+    first = await _collect(streamer, "Long sentence with a pause.")
+    second = await _collect(streamer, "Next one.")
+
+    assert len(first) == 4 and len(second) == 4
+    await streamer.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_stop_frame_before_audio_is_ignored():
+    tts = FakeTTS(chunks=2)
+    streamer = _streamer(tts)
+    assert await streamer.start()
+
+    async def stale_stop_then_speak():
+        gen = streamer.synthesize("Hello there.")
+        first = asyncio.ensure_future(gen.__anext__())
+        while streamer._active is None:  # wait until synthesize() owns the queue
+            await asyncio.sleep(0.001)
+        streamer._on_stopped()  # stop left over from an interrupted segment
+        chunks = [await first]
+        async for chunk in gen:
+            chunks.append(chunk)
+        return chunks
+
+    assert len(await stale_stop_then_speak()) == 2
     await streamer.close()
 
 
@@ -289,3 +329,22 @@ async def test_turn_is_skipped_when_llm_produces_no_text_in_time(monkeypatch):
         reply = await processor.process_agent_transcript_streaming("Hi", speak)
         assert time.monotonic() - start < 0.5
     assert reply is None and sent == []
+
+
+
+@pytest.mark.asyncio
+async def test_cancelling_synthesis_blocked_on_full_segment_queue_finishes():
+    """PR review P1 (direct): cancelling the synthesis worker while it waits on a
+    full segment queue must not leave it blocked adding the end marker."""
+    processor = _processor(FakeStreamer(chunks=1, delay=0.0))
+    segment_q: asyncio.Queue = asyncio.Queue(maxsize=1)
+    segment_q.put_nowait(("already queued", asyncio.Queue()))  # player stopped reading
+    text_q: asyncio.Queue = asyncio.Queue()
+    text_q.put_nowait("Hello there friend. Next one.")
+    text_q.put_nowait(None)
+
+    with patch.object(TestAgentProcessor, "_record_tts_usage"):
+        task = asyncio.create_task(processor._synthesize_segments(text_q, segment_q, [], lambda: False))
+        await asyncio.sleep(0.05)  # worker is now blocked putting its first segment
+        task.cancel()
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=1.0)

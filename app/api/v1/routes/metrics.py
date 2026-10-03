@@ -1343,28 +1343,41 @@ def update_metric(
         validate_classification_custom_config,
     )
 
-    if is_classification_metric(custom_data_type=metric.custom_data_type):
-        if metric.parent_metric_id is not None:
-            raise HTTPException(
-                status_code=400,
-                detail="Classification metrics must be standalone.",
-            )
-        if metric.selection_mode is not None:
-            raise HTTPException(
-                status_code=400,
-                detail="Classification metrics cannot be parent category metrics.",
-            )
-        if metric.compare_transcripts:
-            raise HTTPException(
-                status_code=400,
-                detail="Classification metrics cannot use compare_transcripts.",
-            )
-        try:
-            metric.custom_config = validate_classification_custom_config(
-                metric.custom_config
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        if is_classification_metric(custom_data_type=metric.custom_data_type):
+            if metric.parent_metric_id is not None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Classification metrics must be standalone.",
+                )
+            if metric.selection_mode is not None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Classification metrics cannot be parent category metrics.",
+                )
+            if metric.compare_transcripts:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Classification metrics cannot use compare_transcripts.",
+                )
+            # Check the merged type: a body that changes only metric_type skips the
+            # schema's classification checks (they key off custom_data_type).
+            final_type = getattr(metric.metric_type, "value", metric.metric_type)
+            if str(final_type or "").strip().lower() != MetricType.TEXT.value:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Classification metrics must use metric_type 'text'.",
+                )
+            try:
+                metric.custom_config = validate_classification_custom_config(
+                    metric.custom_config
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HTTPException:
+        # Fields were already applied to the ORM row; never leave them pending.
+        db.rollback()
+        raise
 
     db.commit()
     db.refresh(metric)

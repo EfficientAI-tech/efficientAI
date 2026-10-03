@@ -1,5 +1,7 @@
+import type { ReactNode } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
 import type { ClassificationFormState } from '../classificationMetricUtils'
+import ClassificationQuestionGuide from './ClassificationQuestionGuide'
 
 const INPUT_CLASS =
   'block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-primary-500 focus:ring-primary-500'
@@ -15,21 +17,27 @@ function Toggle({
   checked,
   onChange,
   label,
+  adornment,
 }: {
   checked: boolean
   onChange: (v: boolean) => void
   label: string
+  /** Rendered after the label, outside the <label> so it never toggles the checkbox. */
+  adornment?: ReactNode
 }) {
   return (
-    <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-      />
-      <span className="text-sm font-medium text-gray-900">{label}</span>
-    </label>
+    <div className="inline-flex items-center gap-1.5">
+      <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(e) => onChange(e.target.checked)}
+          className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+        />
+        <span className="text-sm font-medium text-gray-900">{label}</span>
+      </label>
+      {adornment}
+    </div>
   )
 }
 
@@ -44,8 +52,9 @@ export default function ClassificationMetricFields({
   return (
     <div className="space-y-5">
       <p className="text-sm text-gray-600">
-        Configure Jev classification questions (Noul, Choice, Score). Evaluations
-        require a Jev model (for example typesafe/jev-1.13.0) and use the
+        Configure System 1 classification questions (Noul, Choice, Score) — hover
+        the help icon on each for guidance and an example. Evaluations require a
+        System 1 (Jev) model, for example typesafe/jev-1.13.0, and use the
         transcript source selected when you run the evaluation.
       </p>
 
@@ -81,6 +90,7 @@ export default function ClassificationMetricFields({
       <div className="rounded-xl border border-gray-200 p-4 space-y-3">
         <Toggle
           label="Noul (yes/no probability)"
+          adornment={<ClassificationQuestionGuide type="noul" />}
           checked={form.noul.enabled}
           onChange={(enabled) =>
             patch({ noul: { ...form.noul, enabled } })
@@ -138,6 +148,7 @@ export default function ClassificationMetricFields({
       <div className="rounded-xl border border-gray-200 p-4 space-y-3">
         <Toggle
           label="Choice (one option + distribution)"
+          adornment={<ClassificationQuestionGuide type="choice" />}
           checked={form.choice.enabled}
           onChange={(enabled) =>
             patch({ choice: { ...form.choice, enabled } })
@@ -234,6 +245,7 @@ export default function ClassificationMetricFields({
       <div className="rounded-xl border border-gray-200 p-4 space-y-3">
         <Toggle
           label="Score (ordered levels)"
+          adornment={<ClassificationQuestionGuide type="score" />}
           checked={form.score.enabled}
           onChange={(enabled) =>
             patch({ score: { ...form.score, enabled } })

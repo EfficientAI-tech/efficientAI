@@ -9,7 +9,7 @@ from app.models.enums import (
     EvaluationType, EvaluationStatus, EvaluatorResultStatus, RoleEnum, InvitationStatus,
     LanguageEnum, CallTypeEnum, CallMediumEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
     BackgroundNoiseSourceEnum,
-    IntegrationPlatform, ModelProvider, CredentialRoutingMode, GatewayInterfaceMode, VoiceBundleType, TestAgentConversationStatus,
+    IntegrationPlatform, ModelProvider, CredentialRoutingMode, GatewayInterfaceMode, GatewayTypeMode, VoiceBundleType, TestAgentConversationStatus,
     MetricType, MetricCategory, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
     AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus, CronJobStatus,
     CallImportStatus, CallImportRowStatus, CallImportParameterType,
@@ -1055,6 +1055,10 @@ class AIProviderCreate(BaseModel):
         max_length=255,
         description="Bifrost custom model ID sent when routing via gateway.",
     )
+    gateway_type: GatewayTypeMode = Field(
+        GatewayTypeMode.INHERIT,
+        description="Gateway backend: inherit org default, Bifrost, or LiteLLM Proxy.",
+    )
     gateway_interface: GatewayInterfaceMode = Field(
         GatewayInterfaceMode.INHERIT,
         description="Bifrost API surface: inherit org default, LiteLLM shim, or native OpenAI-compatible.",
@@ -1196,6 +1200,7 @@ class AIProviderUpdate(BaseModel):
     is_active: Optional[bool] = None
     routing_mode: Optional[CredentialRoutingMode] = None
     gateway_model: Optional[str] = Field(None, min_length=1, max_length=255)
+    gateway_type: Optional[GatewayTypeMode] = None
     gateway_interface: Optional[GatewayInterfaceMode] = None
     gateway_base_url: Optional[str] = Field(None, max_length=512)
     gateway_auth_header: Optional[str] = Field(None, max_length=64)
@@ -1289,6 +1294,7 @@ class AIProviderResponse(BaseModel):
     is_default: bool = False
     routing_mode: CredentialRoutingMode = CredentialRoutingMode.INHERIT
     gateway_model: Optional[str] = None
+    gateway_type: GatewayTypeMode = GatewayTypeMode.INHERIT
     gateway_interface: GatewayInterfaceMode = GatewayInterfaceMode.INHERIT
     gateway_base_url: Optional[str] = None
     gateway_auth_header: Optional[str] = None
@@ -1299,6 +1305,7 @@ class AIProviderResponse(BaseModel):
     gateway_managed: bool = False
     effective_routing: Literal["inherit", "direct", "gateway", "bifrost", "litellm_proxy"] = "inherit"
     effective_gateway_interface: Literal["litellm_shim", "native_openai"] = "litellm_shim"
+    effective_gateway_type: Literal["bifrost", "litellm_proxy"] = "bifrost"
     created_at: datetime
     updated_at: datetime
     last_tested_at: Optional[datetime]

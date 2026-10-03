@@ -610,6 +610,11 @@ class ElevenLabsWSBridge:
                         f"[ElevenLabsWS] Silence detected ({elapsed:.2f}s) — agent stopped speaking"
                     )
                     self._agent_is_talking = False
+                    # Release the detector slot before delivering: delivery awaits
+                    # STT finalize, and a turn that starts meanwhile (interruption)
+                    # must get its own detector instead of finding this one busy.
+                    if self._silence_task is asyncio.current_task():
+                        self._silence_task = None
                     await self._deliver_turn_end()
                     return
         except asyncio.CancelledError:

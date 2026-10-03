@@ -231,3 +231,32 @@ async def test_silence_is_withheld_while_speech_flows_and_fills_after():
     # Total stream ~= wall time: no silence was mixed under the speech (it would
     # exceed elapsed), and sleep overshoot during speech was topped up after.
     assert _mic_seconds(bridge, ws) == pytest.approx(0.1 + 0.5 + 0.2, abs=0.1)
+
+
+
+@pytest.mark.asyncio
+async def test_turn_starting_during_delivery_gets_its_own_stop_detector(monkeypatch):
+    """PR review P1: an interruption mid-delivery must not leave the new turn
+    without silence detection."""
+    monkeypatch.setattr(bridge_mod, "SILENCE_THRESHOLD_S", 0.05)
+    bridge = _make_bridge()
+    stops: list[int] = []
+    delivering = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_deliver():
+        stops.append(1)
+        if len(stops) == 1:
+            delivering.set()
+            await release.wait()  # e.g. waiting on STT finalize
+
+    bridge._deliver_turn_end = slow_deliver
+    frame = b"\x01\x00" * 320
+
+    await bridge._play_frame(frame)  # turn 1
+    await asyncio.wait_for(delivering.wait(), timeout=2)
+    await bridge._play_frame(frame)  # turn 2 starts while turn 1 is still delivering
+    release.set()
+
+    await asyncio.sleep(0.5)
+    assert len(stops) == 2  # turn 2's end was detected too

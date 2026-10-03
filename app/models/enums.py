@@ -133,6 +133,13 @@ class GatewayInterfaceMode(str, enum.Enum):
     NATIVE_OPENAI = "native_openai"
 
 
+class GatewayTypeMode(str, enum.Enum):
+    """Per-credential gateway backend override."""
+    INHERIT = "inherit"
+    BIFROST = "bifrost"
+    LITELLM_PROXY = "litellm_proxy"
+
+
 class ModelProvider(str, enum.Enum):
     """Model provider enumeration for extensibility."""
     OPENAI = "openai"
