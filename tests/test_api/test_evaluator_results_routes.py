@@ -1,5 +1,7 @@
 """API tests for evaluator results routes."""
 
+from uuid import uuid4
+
 import pytest
 
 
@@ -20,6 +22,40 @@ def test_derive_speaker_segments_supports_smallest_payload():
     assert len(segments) == 2
     assert segments[0]["speaker"] == "Speaker 1"
     assert segments[1]["speaker"] == "Speaker 2"
+
+
+def test_get_evaluator_result_includes_trace_link_fields(
+    authenticated_client,
+    make_evaluator_result,
+    db_session,
+    org_id,
+    default_workspace,
+):
+    from app.models.database import SyntheticCallTrace
+
+    trace_id = uuid4()
+    db_session.add(
+        SyntheticCallTrace(
+            id=trace_id,
+            organization_id=org_id,
+            workspace_id=default_workspace.id,
+        )
+    )
+    db_session.commit()
+
+    result = make_evaluator_result(
+        result_id="991234",
+        synthetic_call_trace_id=trace_id,
+    )
+
+    response = authenticated_client.get(
+        f"/api/v1/evaluator-results/{result.result_id}?playground=true"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["synthetic_call_trace_id"] == str(trace_id)
+    assert body["call_trace_status"] == "open"
+    assert body.get("call_recording_source") is None
 
 
 def test_list_and_get_evaluator_results(authenticated_client, make_evaluator_result):
@@ -839,3 +875,87 @@ def test_re_evaluate_playground_result_without_evaluator_id(
     assert response.status_code == 200
     assert response.json()["status"] == "queued"
 
+
+
+
+def _make_trace(db_session, org_id, workspace):
+    from app.models.database import SyntheticCallTrace
+
+    trace_id = uuid4()
+    db_session.add(SyntheticCallTrace(id=trace_id, organization_id=org_id, workspace_id=workspace.id))
+    db_session.commit()
+    return trace_id
+
+
+def test_result_detail_and_list_survive_unavailable_trace_storage(
+    authenticated_client,
+    make_evaluator_result,
+    db_session,
+    org_id,
+    default_workspace,
+):
+    """PR review P1: no ClickHouse + no Postgres trace tables must not 500 the
+    detail or list endpoints; the trace status just comes back empty."""
+    from unittest.mock import patch
+
+    trace_id = _make_trace(db_session, org_id, default_workspace)
+    result = make_evaluator_result(result_id="991235", synthetic_call_trace_id=trace_id)
+
+    with patch("app.services.synthetic_traces.ch_trace_ops.use_ch", return_value=False), patch(
+        "app.services.synthetic_traces.trace_service._pg_trace_table_available", return_value=False
+    ):
+        detail = authenticated_client.get(f"/api/v1/evaluator-results/{result.result_id}?playground=true")
+        listing = authenticated_client.get("/api/v1/evaluator-results?playground=true")
+
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["call_trace_status"] is None
+    assert detail.json()["synthetic_call_trace_id"] == str(trace_id)
+    assert listing.status_code == 200, listing.text
+    assert [item["call_trace_status"] for item in listing.json()["items"]] == [None]
+
+
+def test_trace_lookup_driver_error_degrades_and_keeps_session_usable(
+    authenticated_client,
+    make_evaluator_result,
+    db_session,
+    org_id,
+    default_workspace,
+):
+    from unittest.mock import patch
+
+    first = make_evaluator_result(
+        result_id="991236", synthetic_call_trace_id=_make_trace(db_session, org_id, default_workspace)
+    )
+    second = make_evaluator_result(
+        result_id="991237", synthetic_call_trace_id=_make_trace(db_session, org_id, default_workspace)
+    )
+
+    with patch(
+        "app.services.synthetic_traces.trace_service.get_trace_by_id",
+        side_effect=RuntimeError("clickhouse connection refused"),
+    ):
+        listing = authenticated_client.get("/api/v1/evaluator-results?playground=true")
+
+    assert listing.status_code == 200, listing.text
+    ids = {item["result_id"] for item in listing.json()["items"]}
+    assert {first.result_id, second.result_id} <= ids
+
+
+def test_trace_status_lookup_does_not_auto_close(db_session, org_id, default_workspace):
+    """The read path must not run auto-close (which commits) on GET requests."""
+    from unittest.mock import patch
+
+    from app.services.synthetic_traces import trace_service
+
+    trace_id = _make_trace(db_session, org_id, default_workspace)
+
+    with patch("app.services.synthetic_traces.ch_trace_ops.use_ch", return_value=False), patch.object(
+        trace_service, "maybe_auto_close_open_trace", side_effect=AssertionError("auto-close on read")
+    ):
+        status = trace_service.lookup_call_trace_status(
+            db_session,
+            organization_id=org_id,
+            workspace_id=default_workspace.id,
+            synthetic_call_trace_id=trace_id,
+        )
+    assert status == "open"

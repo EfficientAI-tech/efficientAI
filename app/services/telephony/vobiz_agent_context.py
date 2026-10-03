@@ -13,14 +13,13 @@ from app.core.encryption import decrypt_api_key
 from app.models.database import (
     AIProvider,
     Agent,
-    Integration,
-    IntegrationPlatform,
     ModelProvider,
     Persona,
     Scenario,
     VoiceBundle,
     Workspace,
 )
+from app.services.credentials.resolver import resolve_decrypted_api_key_for_model_provider
 
 
 @dataclass
@@ -39,30 +38,8 @@ class VobizAgentContext:
     llm_api_key: Optional[str]
     llm_endpoint_url: Optional[str] = None
     llm_base_url: Optional[str] = None
-
-
-def _resolve_azure_endpoint_for_provider(
-    db: Session,
-    organization_id: UUID,
-    provider: ModelProvider,
-) -> Optional[str]:
-    from app.services.ai.llm_service import _resolve_azure_endpoint_from_provider
-
-    provider_value = provider.value if hasattr(provider, "value") else str(provider)
-    ai_provider_rec = db.query(AIProvider).filter(
-        AIProvider.organization_id == organization_id,
-        AIProvider.provider == provider_value,
-        AIProvider.is_active.is_(True),
-    ).first()
-    if not ai_provider_rec:
-        ai_provider_rec = db.query(AIProvider).filter(
-            AIProvider.organization_id == organization_id,
-            func.lower(AIProvider.provider) == provider_value.lower(),
-            AIProvider.is_active.is_(True),
-        ).first()
-    if not ai_provider_rec:
-        return None
-    return _resolve_azure_endpoint_from_provider(ai_provider_rec, None)
+    stt_elevenlabs_api_base_url: Optional[str] = None
+    tts_elevenlabs_api_base_url: Optional[str] = None
 
 
 def _resolve_voice_llm_urls(
@@ -73,12 +50,20 @@ def _resolve_voice_llm_urls(
     if not voice_bundle or not voice_bundle.llm_provider:
         return None, None
 
+    from app.services.credentials.resolver import resolve_azure_endpoint_for_model_provider
+
     llm_provider = voice_bundle.llm_provider
     provider_key = (
         llm_provider.value if hasattr(llm_provider, "value") else str(llm_provider)
     ).lower()
+    llm_credential_id = getattr(voice_bundle, "llm_credential_id", None)
     llm_endpoint_url = (
-        _resolve_azure_endpoint_for_provider(db, organization_id, llm_provider)
+        resolve_azure_endpoint_for_model_provider(
+            llm_provider,
+            db,
+            organization_id,
+            credential_id=llm_credential_id,
+        )
         if provider_key == "azure"
         else None
     )
@@ -101,51 +86,6 @@ class VobizTelephonyRunParams:
     persona_speaks_via_tts: bool = False
     caller_speaks_first: bool = True
     caller_opening_text: Optional[str] = None
-
-
-def _resolve_api_key_for_provider(db: Session, organization_id: UUID, provider: ModelProvider) -> Optional[str]:
-    provider_value = provider.value if hasattr(provider, "value") else provider
-
-    ai_provider_rec = db.query(AIProvider).filter(
-        AIProvider.organization_id == organization_id,
-        AIProvider.provider == provider_value,
-        AIProvider.is_active.is_(True),
-    ).first()
-    if not ai_provider_rec:
-        ai_provider_rec = db.query(AIProvider).filter(
-            AIProvider.organization_id == organization_id,
-            func.lower(AIProvider.provider) == provider_value.lower(),
-            AIProvider.is_active.is_(True),
-        ).first()
-    if ai_provider_rec:
-        return decrypt_api_key(ai_provider_rec.api_key)
-
-    platform_map = {
-        ModelProvider.DEEPGRAM: IntegrationPlatform.DEEPGRAM,
-        ModelProvider.CARTESIA: IntegrationPlatform.CARTESIA,
-        ModelProvider.ELEVENLABS: IntegrationPlatform.ELEVENLABS,
-        ModelProvider.MURF: IntegrationPlatform.MURF,
-        ModelProvider.SARVAM: IntegrationPlatform.SARVAM,
-        ModelProvider.VOICEMAKER: IntegrationPlatform.VOICEMAKER,
-        ModelProvider.SMALLEST: IntegrationPlatform.SMALLEST,
-    }
-    plat = platform_map.get(provider)
-    if plat:
-        plat_value = plat.value if hasattr(plat, "value") else plat
-        integ = db.query(Integration).filter(
-            Integration.organization_id == organization_id,
-            Integration.platform == plat_value,
-            Integration.is_active.is_(True),
-        ).first()
-        if not integ:
-            integ = db.query(Integration).filter(
-                Integration.organization_id == organization_id,
-                func.lower(Integration.platform) == plat_value.lower(),
-                Integration.is_active.is_(True),
-            ).first()
-        if integ:
-            return decrypt_api_key(integ.api_key)
-    return None
 
 
 def build_system_instruction(
@@ -273,17 +213,44 @@ def resolve_vobiz_agent_context(
     model_name = None
     stt_api_key = None
     tts_api_key = None
+    stt_elevenlabs_api_base_url = None
+    tts_elevenlabs_api_base_url = None
     llm_api_key = None
     llm_endpoint_url = None
     llm_base_url = None
 
     if use_voice_bundle_pipeline and voice_bundle:
+        from app.services.credentials.elevenlabs_inference import (
+            resolve_elevenlabs_api_base_url_for_voice_bundle_leg,
+        )
+
         if voice_bundle.stt_provider:
-            stt_api_key = _resolve_api_key_for_provider(db, organization_id, voice_bundle.stt_provider)
+            stt_api_key = resolve_decrypted_api_key_for_model_provider(
+                voice_bundle.stt_provider,
+                db,
+                organization_id,
+                credential_id=getattr(voice_bundle, "stt_credential_id", None),
+            )
+            stt_elevenlabs_api_base_url = resolve_elevenlabs_api_base_url_for_voice_bundle_leg(
+                db, organization_id, voice_bundle, "stt"
+            )
         if voice_bundle.tts_provider:
-            tts_api_key = _resolve_api_key_for_provider(db, organization_id, voice_bundle.tts_provider)
+            tts_api_key = resolve_decrypted_api_key_for_model_provider(
+                voice_bundle.tts_provider,
+                db,
+                organization_id,
+                credential_id=getattr(voice_bundle, "tts_credential_id", None),
+            )
+            tts_elevenlabs_api_base_url = resolve_elevenlabs_api_base_url_for_voice_bundle_leg(
+                db, organization_id, voice_bundle, "tts"
+            )
         if voice_bundle.llm_provider:
-            llm_api_key = _resolve_api_key_for_provider(db, organization_id, voice_bundle.llm_provider)
+            llm_api_key = resolve_decrypted_api_key_for_model_provider(
+                voice_bundle.llm_provider,
+                db,
+                organization_id,
+                credential_id=getattr(voice_bundle, "llm_credential_id", None),
+            )
             llm_endpoint_url, llm_base_url = _resolve_voice_llm_urls(
                 db,
                 organization_id,
@@ -330,6 +297,8 @@ def resolve_vobiz_agent_context(
         model_name=model_name,
         stt_api_key=stt_api_key,
         tts_api_key=tts_api_key,
+        stt_elevenlabs_api_base_url=stt_elevenlabs_api_base_url,
+        tts_elevenlabs_api_base_url=tts_elevenlabs_api_base_url,
         llm_api_key=llm_api_key,
         llm_endpoint_url=llm_endpoint_url,
         llm_base_url=llm_base_url,

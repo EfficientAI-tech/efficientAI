@@ -9,7 +9,7 @@ from app.models.enums import (
     EvaluationType, EvaluationStatus, EvaluatorResultStatus, RoleEnum, InvitationStatus,
     LanguageEnum, CallTypeEnum, CallMediumEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
     BackgroundNoiseSourceEnum,
-    IntegrationPlatform, ModelProvider, CredentialRoutingMode, GatewayInterfaceMode, VoiceBundleType, TestAgentConversationStatus,
+    IntegrationPlatform, ModelProvider, CredentialRoutingMode, GatewayInterfaceMode, GatewayTypeMode, VoiceBundleType, TestAgentConversationStatus,
     MetricType, MetricCategory, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
     AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus, CronJobStatus,
     CallImportStatus, CallImportRowStatus, CallImportParameterType,
@@ -317,6 +317,22 @@ class PreviewIntegrationAgentPromptResponse(BaseModel):
     provider_prompt: str
 
 
+class IntegrationVoiceAgentListItem(BaseModel):
+    """One remote voice agent row for integration picker UIs."""
+
+    id: str
+    name: str
+
+
+class ListIntegrationVoiceAgentsResponse(BaseModel):
+    """``GET /integrations/{id}/voice-agents`` payload."""
+
+    agents: List[IntegrationVoiceAgentListItem] = Field(default_factory=list)
+    platform: str
+    cached: bool = False
+    truncated: bool = False
+    list_supported: bool = True
+    message: Optional[str] = None
 
 
 class AgentPhoneAssignmentConflict(BaseModel):
@@ -849,6 +865,10 @@ class IntegrationCreate(BaseModel):
     platform: IntegrationPlatform
     api_key: str = Field(..., description="Private API key for the platform")
     public_key: Optional[str] = Field(None, description="Optional public API key (e.g. for Vapi)")
+    api_base_url: Optional[str] = Field(
+        None,
+        description="Optional ElevenLabs API origin for data-residency stacks (https host only)",
+    )
     name: Optional[str] = Field(None, description="Optional friendly name for the integration")
     routing_mode: CredentialRoutingMode = Field(
         CredentialRoutingMode.INHERIT,
@@ -868,6 +888,7 @@ class IntegrationUpdate(BaseModel):
     name: Optional[str] = None
     api_key: Optional[str] = None
     public_key: Optional[str] = None
+    api_base_url: Optional[str] = None
     is_active: Optional[bool] = None
     routing_mode: Optional[CredentialRoutingMode] = None
 
@@ -879,6 +900,7 @@ class IntegrationResponse(BaseModel):
     platform: IntegrationPlatform
     name: Optional[str]
     public_key: Optional[str] = None
+    api_base_url: Optional[str] = None
     is_active: bool
     is_default: bool = False
     routing_mode: CredentialRoutingMode = CredentialRoutingMode.INHERIT
@@ -920,20 +942,6 @@ class IntegrationResponse(BaseModel):
         return v
 
     model_config = ConfigDict(from_attributes=True)
-
-
-class IntegrationVoiceAgentListItem(BaseModel):
-    id: str
-    name: str
-
-
-class ListIntegrationVoiceAgentsResponse(BaseModel):
-    agents: List[IntegrationVoiceAgentListItem]
-    platform: str
-    cached: bool
-    truncated: bool
-    list_supported: bool
-    message: Optional[str] = None
 
 
 # ============================================
@@ -1046,6 +1054,10 @@ class AIProviderCreate(BaseModel):
         min_length=1,
         max_length=255,
         description="Bifrost custom model ID sent when routing via gateway.",
+    )
+    gateway_type: GatewayTypeMode = Field(
+        GatewayTypeMode.INHERIT,
+        description="Gateway backend: inherit org default, Bifrost, or LiteLLM Proxy.",
     )
     gateway_interface: GatewayInterfaceMode = Field(
         GatewayInterfaceMode.INHERIT,
@@ -1188,6 +1200,7 @@ class AIProviderUpdate(BaseModel):
     is_active: Optional[bool] = None
     routing_mode: Optional[CredentialRoutingMode] = None
     gateway_model: Optional[str] = Field(None, min_length=1, max_length=255)
+    gateway_type: Optional[GatewayTypeMode] = None
     gateway_interface: Optional[GatewayInterfaceMode] = None
     gateway_base_url: Optional[str] = Field(None, max_length=512)
     gateway_auth_header: Optional[str] = Field(None, max_length=64)
@@ -1281,6 +1294,7 @@ class AIProviderResponse(BaseModel):
     is_default: bool = False
     routing_mode: CredentialRoutingMode = CredentialRoutingMode.INHERIT
     gateway_model: Optional[str] = None
+    gateway_type: GatewayTypeMode = GatewayTypeMode.INHERIT
     gateway_interface: GatewayInterfaceMode = GatewayInterfaceMode.INHERIT
     gateway_base_url: Optional[str] = None
     gateway_auth_header: Optional[str] = None
@@ -1291,6 +1305,7 @@ class AIProviderResponse(BaseModel):
     gateway_managed: bool = False
     effective_routing: Literal["inherit", "direct", "gateway", "bifrost", "litellm_proxy"] = "inherit"
     effective_gateway_interface: Literal["litellm_shim", "native_openai"] = "litellm_shim"
+    effective_gateway_type: Literal["bifrost", "litellm_proxy"] = "bifrost"
     created_at: datetime
     updated_at: datetime
     last_tested_at: Optional[datetime]
@@ -1974,6 +1989,27 @@ class MetricCreate(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def validate_classification_metric(self):
+        from app.services.metric_classification_validation import (
+            assert_classification_metric_shape,
+            is_classification_metric,
+        )
+
+        if not is_classification_metric(custom_data_type=self.custom_data_type):
+            return self
+        normalized = assert_classification_metric_shape(
+            custom_data_type=self.custom_data_type,
+            custom_config=self.custom_config,
+            metric_type=self.metric_type,
+            parent_metric_id=self.parent_metric_id,
+            selection_mode=self.selection_mode,
+            compare_transcripts=bool(self.compare_transcripts),
+        )
+        self.custom_config = normalized
+        self.metric_type = MetricType.TEXT
+        return self
+
     model_config = ConfigDict(json_schema_extra={
             "example": {
                 "name": "Professionalism",
@@ -2080,6 +2116,32 @@ class MetricUpdate(BaseModel):
                 "selection_mode must be cleared before enabling "
                 "compare_transcripts."
             )
+        return self
+
+    @model_validator(mode="after")
+    def validate_classification_metric_patch(self):
+        from app.services.metric_classification_validation import (
+            assert_classification_metric_shape,
+            is_classification_metric,
+        )
+
+        if not is_classification_metric(custom_data_type=self.custom_data_type):
+            return self
+        if self.custom_config is None:
+            raise ValueError(
+                "Updating custom_data_type to classification requires custom_config."
+            )
+        normalized = assert_classification_metric_shape(
+            custom_data_type=self.custom_data_type,
+            custom_config=self.custom_config,
+            metric_type=self.metric_type,
+            parent_metric_id=None,
+            selection_mode=self.selection_mode,
+            compare_transcripts=bool(self.compare_transcripts),
+        )
+        self.custom_config = normalized
+        if self.metric_type is not None and self.metric_type != MetricType.TEXT:
+            raise ValueError("Classification metrics must use metric_type 'text'.")
         return self
 
 
@@ -2428,7 +2490,7 @@ class EvaluatorResultResponse(BaseModel):
     provider_call_id: Optional[str] = None
     provider_platform: Optional[str] = None
     call_data: Optional[Dict[str, Any]] = None  # Full call details from provider
-    call_recording_source: Optional[str] = None  # playground | webhook when linked by call_short_id
+    call_recording_source: Optional[str] = None
     synthetic_call_trace_id: Optional[UUID] = None
     call_trace_status: Optional[str] = None
 
@@ -4343,6 +4405,8 @@ class CallImportEvaluationRowResponse(BaseModel):
     # ``call_import_rows.conversation_id`` column.
     conversation_id: Optional[str] = None
     transcript: Optional[str] = None
+    production_transcript: Optional[str] = None
+    diarised_transcript: Optional[str] = None
     raw_columns: Optional[Dict[str, Any]] = None
     recording_url: Optional[str] = None
     recording_date: Optional[date] = None
@@ -4749,6 +4813,14 @@ class CallImportMetricLabelPair(BaseModel):
     count: int
 
 
+class CallImportClassificationFacetCounts(BaseModel):
+    """Per-dimension value tallies for Jev classification metrics."""
+
+    yes_no: List[CallImportMetricValueCount] = Field(default_factory=list)
+    choice: List[CallImportMetricValueCount] = Field(default_factory=list)
+    level: List[CallImportMetricValueCount] = Field(default_factory=list)
+
+
 class CallImportMetricAggregate(BaseModel):
     """Per-metric aggregate computed from an evaluation run's rows.
 
@@ -4790,6 +4862,7 @@ class CallImportMetricAggregate(BaseModel):
     # symmetric matrix from these unordered pairs and renders the
     # co-occurrence heatmap chart type.
     co_occurrence: List[CallImportMetricLabelPair] = Field(default_factory=list)
+    classification_facets: Optional[CallImportClassificationFacetCounts] = None
 
 
 class MetricPeriodDelta(BaseModel):

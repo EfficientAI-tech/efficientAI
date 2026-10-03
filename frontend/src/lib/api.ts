@@ -3296,6 +3296,12 @@ class ApiClient {
        * Required-and-implied when ``metricIds`` is set.
        */
       includeCompleted?: boolean
+      /**
+       * Per-metric LLM overrides, keyed by leaf metric id. Replaces the
+       * run's stored overrides, so callers should merge with the existing
+       * map. Used to route classification metrics to a System 1 model.
+       */
+      metricLlmOverrides?: Record<string, CallImportEvaluationLLMOverride>
     },
   ): Promise<CallImportEvaluationRetryResponse> {
     const body: Record<string, unknown> = {}
@@ -3309,6 +3315,9 @@ class ApiClient {
     }
     if (options?.llmConfig !== undefined) {
       body.llm_config = options.llmConfig
+    }
+    if (options?.metricLlmOverrides !== undefined) {
+      body.metric_llm_overrides = options.metricLlmOverrides
     }
     if (options?.sttProvider) body.stt_provider = options.sttProvider
     if (options?.sttModel) body.stt_model = options.sttModel
@@ -3452,6 +3461,9 @@ class ApiClient {
       q?: string
       metric_id?: string
       metric_value?: string
+      classification_yes_no?: string
+      classification_choice?: string
+      classification_level?: string
       status?: string
       // Flow-chart drilldown: filter to rows whose sequence under the
       // given parent contains ``flow_node`` (and optionally is
@@ -4237,14 +4249,22 @@ class ApiClient {
     return response.data
   }
 
-  async getCallRecordingAudioUrl(callShortId: string, options?: { stereo?: boolean }): Promise<string> {
+  async getCallRecordingAudioBlob(
+    callShortId: string,
+    options?: { stereo?: boolean },
+  ): Promise<Blob> {
     const params = new URLSearchParams({ proxy: 'true' })
     if (options?.stereo) params.set('stereo', 'true')
     const response = await this.client.get(
       `/api/v1/playground/call-recordings/${callShortId}/audio?${params.toString()}`,
-      { responseType: 'blob' }
+      { responseType: 'blob' },
     )
-    return URL.createObjectURL(response.data)
+    return response.data as Blob
+  }
+
+  async getCallRecordingAudioUrl(callShortId: string, options?: { stereo?: boolean }): Promise<string> {
+    const blob = await this.getCallRecordingAudioBlob(callShortId, options)
+    return URL.createObjectURL(blob)
   }
 
   async getCallRecordingAudioBuffer(
@@ -4448,12 +4468,17 @@ class ApiClient {
     return response.data as ArrayBuffer
   }
 
-  async getObservabilityCallAudioUrl(callShortId: string): Promise<string> {
+  async getObservabilityCallAudioBlob(callShortId: string): Promise<Blob> {
     const response = await this.client.get(
       `/api/v1/observability/calls/${callShortId}/audio`,
       { responseType: 'blob' },
     )
-    return URL.createObjectURL(response.data)
+    return response.data as Blob
+  }
+
+  async getObservabilityCallAudioUrl(callShortId: string): Promise<string> {
+    const blob = await this.getObservabilityCallAudioBlob(callShortId)
+    return URL.createObjectURL(blob)
   }
 
   async deleteObservabilityCall(callShortId: string): Promise<{ message: string }> {
@@ -5231,12 +5256,17 @@ class ApiClient {
     return response.data as ArrayBuffer
   }
 
-  async getEvaluatorResultAudioUrl(resultId: string): Promise<string> {
+  async getEvaluatorResultAudioBlob(resultId: string): Promise<Blob> {
     const response = await this.client.get(
       `/api/v1/evaluator-results/${resultId}/audio`,
       { responseType: 'blob' },
     )
-    return URL.createObjectURL(response.data)
+    return response.data as Blob
+  }
+
+  async getEvaluatorResultAudioUrl(resultId: string): Promise<string> {
+    const blob = await this.getEvaluatorResultAudioBlob(resultId)
+    return URL.createObjectURL(blob)
   }
 
   async createEvaluatorResultManual(data: {

@@ -795,22 +795,38 @@ def lookup_call_trace_status(
     synthetic_call_trace_id: Optional[UUID] = None,
     call_short_id: Optional[str] = None,
 ) -> Optional[str]:
+    """Best-effort trace status for read endpoints (result detail/list, playground).
+
+    Read-only (no auto-close commit) and fail-soft: if trace storage is
+    unavailable (no ClickHouse and no Postgres trace tables, or a driver/SQL
+    error) this returns None instead of failing the caller's request. The
+    savepoint keeps a failed query from aborting the caller's transaction,
+    which matters when this runs once per row in list endpoints.
+    """
+    if not synthetic_call_trace_id and not call_short_id:
+        return None
     trace = None
-    if synthetic_call_trace_id:
-        trace = get_trace_by_id(
-            db,
-            organization_id=organization_id,
-            trace_id=synthetic_call_trace_id,
-            workspace_id=workspace_id,
-        )
-    elif call_short_id:
-        trace = get_trace_by_call_short_id(
-            db,
-            organization_id=organization_id,
-            call_short_id=call_short_id,
-            workspace_id=workspace_id,
-            auto_close=False,
-        )
+    try:
+        with db.begin_nested():
+            if synthetic_call_trace_id:
+                trace = get_trace_by_id(
+                    db,
+                    organization_id=organization_id,
+                    trace_id=synthetic_call_trace_id,
+                    workspace_id=workspace_id,
+                    auto_close=False,
+                )
+            else:
+                trace = get_trace_by_call_short_id(
+                    db,
+                    organization_id=organization_id,
+                    call_short_id=call_short_id,
+                    workspace_id=workspace_id,
+                    auto_close=False,
+                )
+    except Exception as exc:
+        logger.warning("Trace status lookup unavailable: {}", exc)
+        return None
     return trace.status if trace else None
 
 
@@ -884,6 +900,7 @@ def get_trace_by_id(
     organization_id: UUID,
     trace_id: UUID,
     workspace_id: Optional[UUID] = None,
+    auto_close: bool = True,
 ) -> Optional[SyntheticCallTrace]:
     if ch_trace_ops.use_ch():
         return ch_get_trace_by_id(
@@ -900,7 +917,7 @@ def get_trace_by_id(
     if workspace_id is not None:
         query = query.filter(SyntheticCallTrace.workspace_id == workspace_id)
     trace = query.first()
-    if trace:
+    if trace and auto_close:
         trace = maybe_auto_close_open_trace(db, trace)
     return trace
 

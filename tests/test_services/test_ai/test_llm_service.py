@@ -54,6 +54,33 @@ def test_litellm_model_name_maps_known_provider_prefixes():
         == "fireworks_ai/accounts/fireworks/models/deepseek-v4-pro"
     )
     assert (
+        LLMService._litellm_model_name(ModelProvider.FIREWORKS, "kimi-k2p6")
+        == "fireworks_ai/accounts/fireworks/models/kimi-k3"
+    )
+    assert (
+        LLMService._litellm_model_name(
+            ModelProvider.FIREWORKS,
+            "accounts/fireworks/models/kimi-k2p6-fast",
+        )
+        == "fireworks_ai/accounts/fireworks/models/kimi-k3-fast"
+    )
+    assert (
+        LLMService._litellm_model_name(
+            ModelProvider.TOGETHER, "together/Tev1-4B-experimental"
+        )
+        == "together_ai/together/Tev1-4B-experimental"
+    )
+    assert (
+        LLMService._litellm_model_name(
+            ModelProvider.TOGETHER, "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"
+        )
+        == "together_ai/meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"
+    )
+    assert (
+        LLMService._litellm_model_name(ModelProvider.TYPESAFE, "jev-1.13.0")
+        == "typesafe/jev-1.13.0"
+    )
+    assert (
         LLMService._litellm_model_name(ModelProvider.SARVAM, "sarvam-30b")
         == "sarvam/sarvam-30b"
     )
@@ -64,6 +91,18 @@ def test_litellm_model_name_maps_known_provider_prefixes():
     assert (
         LLMService._litellm_model_name(ModelProvider.AZURE, "azure-openai-gpt4")
         == "azure/gpt-4"
+    )
+    assert (
+        LLMService._litellm_model_name(
+            ModelProvider.OPENROUTER, "anthropic/claude-sonnet-4"
+        )
+        == "openrouter/anthropic/claude-sonnet-4"
+    )
+    assert (
+        LLMService._litellm_model_name(
+            ModelProvider.OPENROUTER, "openrouter/openai/gpt-4o"
+        )
+        == "openrouter/openai/gpt-4o"
     )
 
 
@@ -343,3 +382,26 @@ def test_generate_response_azure_foundry_uses_openai_v1_routing(monkeypatch):
     assert captured["model"] == "openai/gpt-5-mini"
     assert captured["api_base"] == "https://eaitest-resource.openai.azure.com/openai/v1"
     assert "azure_endpoint" not in captured
+
+
+def test_normalize_openai_compatible_api_base_strips_chat_completions():
+    assert (
+        llm_module._normalize_openai_compatible_api_base(
+            "https://api.ai.kodekloud.com/v1/chat/completions"
+        )
+        == "https://api.ai.kodekloud.com/v1"
+    )
+
+
+def test_apply_direct_custom_provider_kwargs_sets_api_base_and_model():
+    provider = SimpleNamespace(
+        endpoint_url="https://api.ai.kodekloud.com/v1",
+        gateway_base_url=None,
+    )
+    out = llm_module._apply_direct_custom_provider_kwargs(
+        {"model": "custom/typesafe/jev-1.13.0", "api_key": "sekret"},
+        ai_provider=provider,
+    )
+    assert out["api_base"] == "https://api.ai.kodekloud.com/v1"
+    assert out["model"] == "openai/typesafe/jev-1.13.0"
+    assert out["custom_llm_provider"] == "openai"

@@ -4,7 +4,7 @@ import type { TelephonyIntegrationResponse } from '../../lib/api'
 import { useState, useEffect, useRef, useMemo, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Plus, Trash2, X, AlertCircle, Plug, Edit, Brain, ChevronDown, Phone, Star, Network } from 'lucide-react'
-import { IntegrationCreate, IntegrationPlatform, Integration, AIProvider, AIProviderCreate, AIProviderUpdate, ModelProvider, TelephonyProvider, CredentialRoutingMode, GatewayInterfaceMode } from '../../types/api'
+import { IntegrationCreate, IntegrationPlatform, Integration, AIProvider, AIProviderCreate, AIProviderUpdate, ModelProvider, TelephonyProvider, CredentialRoutingMode, GatewayInterfaceMode, CredentialGatewayType } from '../../types/api'
 import type {
   LLMGatewayMode,
   LLMGatewaySettings,
@@ -23,6 +23,7 @@ import {
 import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
 import { useLicenseStore } from '../../store/licenseStore'
 import AIProviderEnabledModelsStep from './AIProviderEnabledModelsStep'
+import { GATEWAY_FIELD_COPY, GATEWAY_TYPE_LABELS, type ResolvedGatewayType } from '../../lib/gatewayRouting'
 
 type IntegrationType = 'voice_platform' | 'ai_provider' | 'telephony_provider' | null
 
@@ -36,6 +37,8 @@ const AI_INTEGRATION_PROVIDERS: ModelProvider[] = [
   ModelProvider.MISTRAL,
   ModelProvider.META,
   ModelProvider.TOGETHER,
+  ModelProvider.OPENROUTER,
+  ModelProvider.TYPESAFE,
   ModelProvider.PERPLEXITY,
   ModelProvider.AZURE,
   ModelProvider.AWS,
@@ -60,6 +63,7 @@ export default function Integrations() {
   const [showPlatformDropdown, setShowPlatformDropdown] = useState(false)
   const [apiKey, setApiKey] = useState('')
   const [publicKey, setPublicKey] = useState('')
+  const [elevenLabsApiBaseUrl, setElevenLabsApiBaseUrl] = useState('')
   const [name, setName] = useState('')
   const [azureEndpointUrl, setAzureEndpointUrl] = useState('')
   const [credentialRoutingMode, setCredentialRoutingMode] = useState<CredentialRoutingMode>('direct')
@@ -67,6 +71,7 @@ export default function Integrations() {
     ? credentialRoutingMode
     : 'direct'
   const [gatewayModel, setGatewayModel] = useState('')
+  const [gatewayType, setGatewayType] = useState<CredentialGatewayType>('inherit')
   const [gatewayInterface, setGatewayInterface] = useState<GatewayInterfaceMode>('inherit')
   const [gatewayBaseUrl, setGatewayBaseUrl] = useState('')
   const [gatewayAuthHeader, setGatewayAuthHeader] = useState('')
@@ -202,6 +207,15 @@ export default function Integrations() {
       ? llmGatewayType
       : llmGatewaySettings?.platform_gateway_type || 'bifrost'
 
+  // Saved org gateway type (not the unsaved LLM Gateway modal draft).
+  const orgGatewayType: ResolvedGatewayType =
+    llmGatewaySettings?.gateway_type && llmGatewaySettings.gateway_type !== 'inherit'
+      ? llmGatewaySettings.gateway_type
+      : llmGatewaySettings?.platform_gateway_type || 'bifrost'
+  const credentialGatewayType: ResolvedGatewayType =
+    gatewayType !== 'inherit' ? gatewayType : orgGatewayType
+  const gatewayFieldCopy = GATEWAY_FIELD_COPY[credentialGatewayType]
+
   const activeAIProvider =
     selectedProvider ||
     (selectedAIProvider?.provider as ModelProvider | undefined) ||
@@ -222,6 +236,18 @@ export default function Integrations() {
   const aiProviderRequiresApiKey = isCustomAIProvider
     ? !gatewayRoutingAllowed || credentialRoutingMode === 'direct'
     : !isEditMode
+
+  const isElevenLabsVoicePlatform =
+    integrationType === 'voice_platform' &&
+    (selectedPlatform === IntegrationPlatform.ELEVENLABS ||
+      selectedIntegration?.platform === IntegrationPlatform.ELEVENLABS)
+
+  const integrationModalMaxWidthClass =
+    aiProviderUsesModelsStep && aiProviderWizardStep === 2
+      ? 'max-w-2xl'
+      : isElevenLabsVoicePlatform
+        ? 'max-w-lg'
+        : 'max-w-md'
 
   useEffect(() => {
     if (!gatewayRoutingAllowed && credentialRoutingMode !== 'direct') {
@@ -406,8 +432,8 @@ export default function Integrations() {
   const resetFormFields = () => {
     setIsEditMode(false); setIntegrationType(null); setSelectedIntegration(null); setSelectedAIProvider(null)
     setSelectedPlatform(null); setSelectedProvider(null); setShowProviderDropdown(false); setShowPlatformDropdown(false)
-    setApiKey(''); setPublicKey(''); setName(''); setAzureEndpointUrl('')
-    setCredentialRoutingMode(defaultCredentialRouting()); setGatewayModel(''); setGatewayInterface('inherit'); setGatewayBaseUrl('')
+    setApiKey(''); setPublicKey(''); setElevenLabsApiBaseUrl(''); setName(''); setAzureEndpointUrl('')
+    setCredentialRoutingMode(defaultCredentialRouting()); setGatewayModel(''); setGatewayType('inherit'); setGatewayInterface('inherit'); setGatewayBaseUrl('')
     setGatewayAuthHeader(''); setGatewayAuthSecretEnv(''); setGatewayAuthSecret(''); setClearGatewayAuthSecret(false)
     setGatewayExtraHeadersJson('')
     setAiProviderWizardStep(1); setEnabledModels([])
@@ -432,6 +458,7 @@ export default function Integrations() {
     setName(integration.name || '')
     setApiKey('') // Don't pre-fill API key for security
     setPublicKey(integration.public_key || '')
+    setElevenLabsApiBaseUrl(integration.api_base_url || '')
     setCredentialRoutingMode(integration.routing_mode || 'inherit')
     setIsEditMode(true)
     setShowModal(true)
@@ -442,7 +469,7 @@ export default function Integrations() {
     setName(provider.name || ''); setApiKey('')
     setCredentialRoutingMode(provider.routing_mode || 'inherit')
     setAzureEndpointUrl(provider.endpoint_url || '')
-    setGatewayModel(provider.gateway_model || ''); setGatewayInterface(provider.gateway_interface || 'inherit')
+    setGatewayModel(provider.gateway_model || ''); setGatewayType(provider.gateway_type || 'inherit'); setGatewayInterface(provider.gateway_interface || 'inherit')
     setGatewayBaseUrl(provider.gateway_base_url || ''); setGatewayAuthHeader(provider.gateway_auth_header || '')
     setGatewayAuthSecretEnv(provider.gateway_auth_secret_env || ''); setGatewayAuthSecret(''); setClearGatewayAuthSecret(false)
     setGatewayExtraHeadersJson(formatGatewayExtraHeadersJson(provider.gateway_extra_headers))
@@ -471,6 +498,13 @@ export default function Integrations() {
         if (name !== (selectedIntegration.name || '')) updateData.name = name || undefined
         if (apiKey) updateData.api_key = apiKey
         if (publicKey !== (selectedIntegration.public_key || '')) updateData.public_key = publicKey || undefined
+        if (selectedIntegration.platform === IntegrationPlatform.ELEVENLABS) {
+          const trimmedBase = elevenLabsApiBaseUrl.trim()
+          const prevBase = (selectedIntegration.api_base_url || '').trim()
+          if (trimmedBase !== prevBase) {
+            updateData.api_base_url = trimmedBase || null
+          }
+        }
         if (
           gatewayRoutingAllowed &&
           effectiveCredentialRoutingMode !== (selectedIntegration.routing_mode || 'inherit')
@@ -485,6 +519,10 @@ export default function Integrations() {
           platform: selectedPlatform as IntegrationPlatform,
           api_key: apiKey,
           public_key: publicKey || undefined,
+          api_base_url:
+            selectedPlatform === IntegrationPlatform.ELEVENLABS && elevenLabsApiBaseUrl.trim()
+              ? elevenLabsApiBaseUrl.trim()
+              : undefined,
           name: name || undefined,
           routing_mode: effectiveCredentialRoutingMode,
         })
@@ -540,6 +578,9 @@ export default function Integrations() {
           if (trimmedGatewayModel !== (selectedAIProvider.gateway_model || '')) {
             updateData.gateway_model = trimmedGatewayModel || null
           }
+          if (gatewayType !== (selectedAIProvider.gateway_type || 'inherit')) {
+            updateData.gateway_type = gatewayType
+          }
           if (gatewayInterface !== (selectedAIProvider.gateway_interface || 'inherit')) {
             updateData.gateway_interface = gatewayInterface
           }
@@ -590,6 +631,7 @@ export default function Integrations() {
           ...(gatewayRoutingAllowed
             ? {
                 gateway_model: gatewayModel.trim() || undefined,
+                gateway_type: gatewayType,
                 gateway_interface: gatewayInterface,
                 gateway_base_url: gatewayBaseUrl.trim() || undefined,
                 gateway_auth_header: gatewayAuthHeader.trim() || undefined,
@@ -776,7 +818,7 @@ export default function Integrations() {
                             <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full whitespace-nowrap">Voice Platform</span>
                           </div>
                           {/* Logo + Provider */}
-                          <div className="flex items-center gap-3 flex-1 min-w-0">
+                          <div className="flex items-start gap-3 flex-1 min-w-0">
                             <div className="flex-shrink-0">
                               {platformInfo?.image ? (
                                 <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center border border-gray-200 p-1.5"><img src={platformInfo.image} alt={platformInfo.name} className="w-full h-full object-contain" /></div>
@@ -784,24 +826,33 @@ export default function Integrations() {
                                 <div className="w-10 h-10 bg-gradient-to-br from-primary-100 to-primary-200 rounded-lg flex items-center justify-center"><Plug className="h-5 w-5 text-primary-600" /></div>
                               )}
                             </div>
-                            <div className="flex items-center gap-2 flex-wrap min-w-0">
-                              <h3 className="text-base font-semibold text-gray-900 truncate">{platformInfo?.name || integration.platform}</h3>
-                              {integration.is_default && (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 rounded">
-                                  <Star className="h-3 w-3 fill-current" /> Default
-                                </span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <h3 className="text-base font-semibold text-gray-900 whitespace-nowrap">
+                                  {platformInfo?.name || integration.platform}
+                                </h3>
+                                {integration.is_default && (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 rounded">
+                                    <Star className="h-3 w-3 fill-current" /> Default
+                                  </span>
+                                )}
+                                {integration.routing_mode && integration.routing_mode !== 'inherit' && (
+                                  <span className="px-2 py-0.5 text-xs font-medium bg-slate-100 text-slate-700 rounded">
+                                    {integration.routing_mode === 'gateway' ? 'Gateway' : 'Direct'}
+                                  </span>
+                                )}
+                                {integration.effective_routing && integration.effective_routing !== 'direct' && (
+                                  <span className="px-2 py-0.5 text-xs font-medium bg-indigo-100 text-indigo-700 rounded">
+                                    {credentialRoutingLabel(integration.effective_routing)}
+                                  </span>
+                                )}
+                                {!integration.is_active && <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 rounded">Inactive</span>}
+                              </div>
+                              {integration.platform === IntegrationPlatform.ELEVENLABS && integration.api_base_url && (
+                                <p className="text-xs text-gray-500 mt-1 break-all" title={integration.api_base_url}>
+                                  API: {integration.api_base_url}
+                                </p>
                               )}
-                              {integration.routing_mode && integration.routing_mode !== 'inherit' && (
-                                <span className="px-2 py-0.5 text-xs font-medium bg-slate-100 text-slate-700 rounded">
-                                  {integration.routing_mode === 'gateway' ? 'Gateway' : 'Direct'}
-                                </span>
-                              )}
-                              {integration.effective_routing && integration.effective_routing !== 'direct' && (
-                                <span className="px-2 py-0.5 text-xs font-medium bg-indigo-100 text-indigo-700 rounded">
-                                  {credentialRoutingLabel(integration.effective_routing)}
-                                </span>
-                              )}
-                              {!integration.is_active && <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 rounded">Inactive</span>}
                             </div>
                           </div>
                           {/* Actions */}
@@ -1244,9 +1295,9 @@ export default function Integrations() {
 
       {showModal && renderModal(
         <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">
-          <div className={`bg-white rounded-lg shadow-xl w-full mx-4 max-h-[90vh] overflow-y-auto ${aiProviderUsesModelsStep && aiProviderWizardStep === 2 ? 'max-w-2xl' : 'max-w-md'}`}>
-            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-              <div>
+          <div className={`bg-white rounded-lg shadow-xl w-full mx-4 max-h-[90vh] overflow-y-auto ${integrationModalMaxWidthClass}`}>
+            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center gap-3">
+              <div className="min-w-0">
                 <h3 className="text-lg font-semibold">
                   {isEditMode
                     ? integrationType === 'ai_provider'
@@ -1256,13 +1307,16 @@ export default function Integrations() {
                         : 'Edit Integration'
                     : 'Add Integration'}
                 </h3>
+                {isElevenLabsVoicePlatform && (
+                  <p className="mt-0.5 text-sm font-medium text-gray-700">ElevenLabs</p>
+                )}
                 {aiProviderUsesModelsStep ? (
                   <p className="mt-0.5 text-xs text-gray-500">
                     Step {aiProviderWizardStep} of 2 —{' '}
                     {aiProviderWizardStep === 1 ? 'Credentials' : 'Enabled models'}
                   </p>
                 ) : isCustomAIProvider ? (
-                  <p className="mt-0.5 text-xs text-gray-500">Custom Bifrost model integration</p>
+                  <p className="mt-0.5 text-xs text-gray-500">Custom gateway model integration</p>
                 ) : null}
               </div>
               <button onClick={resetForm} className="text-gray-400 hover:text-gray-600"><X className="h-5 w-5" /></button>
@@ -1312,11 +1366,11 @@ export default function Integrations() {
                     <label className="block text-sm font-medium text-gray-700 mb-1">Platform *</label>
                     <div className="relative" ref={platformDropdownRef}>
                       <button type="button" onClick={() => setShowPlatformDropdown(!showPlatformDropdown)} disabled={isEditMode || availablePlatforms.length === 0}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white text-left flex items-center justify-between disabled:bg-gray-100 disabled:cursor-not-allowed">
-                        <div className="flex items-center gap-2">
-                          {selectedPlatform ? (() => { const pi = getPlatformInfo(selectedPlatform as IntegrationPlatform); return (<>{pi?.image ? <img src={pi.image} alt={pi.name} className="w-5 h-5 object-contain" /> : <Plug className="h-5 w-5 text-primary-600" />}<span>{pi?.name || selectedPlatform}</span></>)})() : <span className="text-gray-500">Select a platform</span>}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white text-left flex items-center justify-between gap-2 disabled:bg-gray-100 disabled:cursor-not-allowed">
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          {selectedPlatform ? (() => { const pi = getPlatformInfo(selectedPlatform as IntegrationPlatform); return (<>{pi?.image ? <img src={pi.image} alt={pi.name} className="w-5 h-5 flex-shrink-0 object-contain" /> : <Plug className="h-5 w-5 flex-shrink-0 text-primary-600" />}<span className="font-medium text-gray-900 whitespace-nowrap">{pi?.name || selectedPlatform}</span></>)})() : <span className="text-gray-500">Select a platform</span>}
                         </div>
-                        <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showPlatformDropdown ? 'transform rotate-180' : ''}`} />
+                        <ChevronDown className={`h-4 w-4 flex-shrink-0 text-gray-400 transition-transform ${showPlatformDropdown ? 'transform rotate-180' : ''}`} />
                       </button>
                       {showPlatformDropdown && availablePlatforms.length > 0 && (
                         <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-auto">
@@ -1334,12 +1388,12 @@ export default function Integrations() {
                                 <img
                                   src={platform.image}
                                   alt={platform.name}
-                                  className="w-5 h-5 object-contain"
+                                  className="w-5 h-5 flex-shrink-0 object-contain"
                                 />
                               ) : (
-                                <Plug className="h-5 w-5 text-primary-600" />
+                                <Plug className="h-5 w-5 flex-shrink-0 text-primary-600" />
                               )}
-                              <span>{platform.name}</span>
+                              <span className="whitespace-nowrap">{platform.name}</span>
                             </button>
                           ))}
                         </div>
@@ -1377,6 +1431,25 @@ export default function Integrations() {
                         <label className="block text-sm font-medium text-gray-700 mb-1">Public API Key {isEditMode && <span className="text-gray-500 font-normal">(leave empty to keep current)</span>}</label>
                         <input type="text" required={!isEditMode} value={publicKey} onChange={(e) => setPublicKey(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
                           placeholder={isEditMode ? "Enter new public API key (optional)" : "Enter public API key"} />
+                      </div>
+                    )}
+                    {selectedPlatform === IntegrationPlatform.ELEVENLABS && (
+                      <div className="mt-4">
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          API base URL{' '}
+                          <span className="text-gray-500 font-normal">(optional)</span>
+                        </label>
+                        <input
+                          type="url"
+                          value={elevenLabsApiBaseUrl}
+                          onChange={(e) => setElevenLabsApiBaseUrl(e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                          placeholder="https://api.elevenlabs.io"
+                        />
+                        <p className="mt-1 text-xs text-gray-500">
+                          Leave blank for the global API. For data-residency keys, use the base URL from your ElevenLabs dashboard
+                          (for example https://api.eu.residency.elevenlabs.io or https://api.in.residency.elevenlabs.io).
+                        </p>
                       </div>
                     )}
                     <p className="mt-1 text-xs text-gray-500">Your {selectedPlatform === IntegrationPlatform.VAPI ? 'API keys' : 'API key'} will be encrypted and stored securely</p>
@@ -1460,6 +1533,26 @@ export default function Integrations() {
                   {showGatewayModelField && (
                     <>
                     <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Gateway type</label>
+                      <select
+                        value={gatewayType}
+                        onChange={(e) => {
+                          const next = e.target.value as CredentialGatewayType
+                          setGatewayType(next)
+                          const resolved = next !== 'inherit' ? next : orgGatewayType
+                          if (!GATEWAY_FIELD_COPY[resolved].supportsInterface) setGatewayInterface('inherit')
+                        }}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white"
+                      >
+                        <option value="inherit">Inherit org default ({GATEWAY_TYPE_LABELS[orgGatewayType]})</option>
+                        <option value="bifrost">{GATEWAY_TYPE_LABELS.bifrost}</option>
+                        <option value="litellm_proxy">{GATEWAY_TYPE_LABELS.litellm_proxy}</option>
+                      </select>
+                      <p className="mt-1 text-xs text-gray-500">
+                        Which gateway this credential routes through. The fields below adapt to the selected gateway.
+                      </p>
+                    </div>
+                    <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">
                         {isCustomAIProvider ? 'Custom model ID (Optional)' : 'Gateway Model (Optional)'}
                       </label>
@@ -1471,11 +1564,10 @@ export default function Integrations() {
                         placeholder={isCustomAIProvider ? 'e.g. openai/gpt-4o or production-gpt4' : 'e.g., production-gpt4 or openai/gpt-4o'}
                       />
                       <p className="mt-1 text-xs text-gray-500">
-                        {isCustomAIProvider
-                          ? 'Bifrost model ID for this integration. Each custom credential pins one model.'
-                          : 'Bifrost custom model ID sent when routing via gateway. Leave blank to use the workload-selected model.'}
+                        {isCustomAIProvider ? gatewayFieldCopy.customModelHelp : gatewayFieldCopy.modelHelp}
                       </p>
                     </div>
+                    {gatewayFieldCopy.supportsInterface && (
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">Bifrost API surface</label>
                       <select
@@ -1491,6 +1583,7 @@ export default function Integrations() {
                         Override how this credential reaches Bifrost. Use native for custom models that fail through /litellm.
                       </p>
                     </div>
+                    )}
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">Gateway Base URL (Optional)</label>
                       <input
@@ -1498,9 +1591,9 @@ export default function Integrations() {
                         value={gatewayBaseUrl}
                         onChange={(e) => setGatewayBaseUrl(e.target.value)}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
-                        placeholder="e.g. http://localhost:8080"
+                        placeholder={gatewayFieldCopy.baseUrlPlaceholder}
                       />
-                      {gatewayInterface === 'native_openai' && (
+                      {gatewayFieldCopy.supportsInterface && gatewayInterface === 'native_openai' && (
                         <p className="mt-1 text-xs text-gray-500">
                           Host root only. /v1 is added automatically — do not include /v1/chat/completions.
                         </p>
@@ -1513,11 +1606,9 @@ export default function Integrations() {
                         value={gatewayAuthHeader}
                         onChange={(e) => setGatewayAuthHeader(e.target.value)}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
-                        placeholder="x-bf-vk"
+                        placeholder={gatewayFieldCopy.authHeaderPlaceholder}
                       />
-                      <p className="mt-1 text-xs text-gray-500">
-                        Header name for Bifrost auth. Defaults to <code>x-bf-vk</code> when blank.
-                      </p>
+                      <p className="mt-1 text-xs text-gray-500">{gatewayFieldCopy.authHeaderHelp}</p>
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">Gateway Auth Secret Env Var (Optional)</label>
@@ -1526,11 +1617,9 @@ export default function Integrations() {
                         value={gatewayAuthSecretEnv}
                         onChange={(e) => setGatewayAuthSecretEnv(e.target.value)}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
-                        placeholder="BIFROST_VIRTUAL_KEY"
+                        placeholder={gatewayFieldCopy.authSecretEnvPlaceholder}
                       />
-                      <p className="mt-1 text-xs text-gray-500">
-                        Read the auth secret from this environment variable at runtime (e.g. K8s secret). Overrides org virtual key.
-                      </p>
+                      <p className="mt-1 text-xs text-gray-500">{gatewayFieldCopy.authSecretEnvHelp}</p>
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">

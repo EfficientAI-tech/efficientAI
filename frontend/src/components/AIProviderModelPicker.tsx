@@ -53,6 +53,8 @@ export default function AIProviderModelPicker({
   disabled = false,
   size = 'md',
   showAdvancedOptions = true,
+  modelFilter,
+  incompatibleHint = 'No compatible models for this provider.',
 }: {
   provider: string
   model: string
@@ -71,6 +73,9 @@ export default function AIProviderModelPicker({
   disabled?: boolean
   size?: 'sm' | 'md'
   showAdvancedOptions?: boolean
+  /** Restrict selectable models (e.g. System 1-only for classification metrics). */
+  modelFilter?: (model: string) => boolean
+  incompatibleHint?: string
 }) {
   const { data: aiProviders = [] } = useQuery<AIProvider[]>({
     queryKey: ['ai-providers'],
@@ -173,8 +178,16 @@ export default function AIProviderModelPicker({
   const gatewayDirectModel =
     modelResolution.mode === 'gateway_direct' ? modelResolution.model : null
 
-  const llmModels =
+  const catalogModels =
     modelResolution.mode === 'catalog' ? modelResolution.models : []
+  const llmModels = modelFilter ? catalogModels.filter(modelFilter) : catalogModels
+  const hasIncompatibleSelection = Boolean(
+    modelFilter &&
+      resolvedProvider &&
+      (gatewayDirectModel
+        ? !modelFilter(gatewayDirectModel)
+        : catalogModels.length > 0 && llmModels.length === 0),
+  )
 
   useEffect(() => {
     if (gatewayDirectModel) {
@@ -304,6 +317,9 @@ export default function AIProviderModelPicker({
           )}
         </div>
       </div>
+      {hasIncompatibleSelection && (
+        <p className="mt-1 text-xs text-amber-700">{incompatibleHint}</p>
+      )}
       {showAdvancedOptions && resolvedProvider && !gatewayDirectModel && onLLMConfigChange && (
         <LLMAdvancedOptionsPanel
           provider={resolvedProvider}

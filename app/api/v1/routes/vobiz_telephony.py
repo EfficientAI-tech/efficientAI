@@ -753,6 +753,8 @@ async def carrier_media_websocket(websocket: WebSocket):
                     persona=context.persona,
                     stt_api_key=context.stt_api_key,
                     tts_api_key=context.tts_api_key,
+                    stt_elevenlabs_api_base_url=context.stt_elevenlabs_api_base_url,
+                    tts_elevenlabs_api_base_url=context.tts_elevenlabs_api_base_url,
                     llm_api_key=context.llm_api_key,
                     llm_endpoint_url=context.llm_endpoint_url,
                     llm_base_url=context.llm_base_url,

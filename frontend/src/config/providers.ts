@@ -57,6 +57,16 @@ export const MODEL_PROVIDER_CONFIG: Record<ModelProvider, ProviderMetadata> = {
     logo: '/togetherai.svg',
     description: 'Hosted open-source models via Together',
   },
+  [ModelProvider.OPENROUTER]: {
+    label: 'OpenRouter',
+    logo: '/openrouter.jpg',
+    description: 'Route requests to many LLMs via OpenRouter (LiteLLM)',
+  },
+  [ModelProvider.TYPESAFE]: {
+    label: 'TypeSafe',
+    logo: '/typesafe.png',
+    description: 'Jev decision classifiers via TypeSafe',
+  },
   [ModelProvider.PERPLEXITY]: {
     label: 'Perplexity',
     logo: '/perplexity-ai.svg',

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -23,6 +25,8 @@ _MODELS_JSON_PATH = (
 _CATALOG_JSON_PATH = (
     Path(__file__).resolve().parent.parent.parent / "config" / "pricing_catalog.json"
 )
+
+logger = logging.getLogger(__name__)
 
 _RATE_COMPARE_COLUMNS = (
     "input_micro_usd_per_million",
@@ -135,3 +139,62 @@ def seed_rates_from_models_json(
     db: Session, *, effective_from: Optional[date] = None
 ) -> int:
     return seed_pricing_rates(db, effective_from=effective_from)
+
+
+def pricing_catalog_needs_seed(report: Dict[str, Any]) -> bool:
+    """True when models.json adds or changes catalog rates relative to Postgres."""
+    return bool(report.get("only_in_models_json") or report.get("mismatches"))
+
+
+def auto_seed_pricing_enabled() -> bool:
+    return os.environ.get("USAGE_AUTO_SEED_PRICING", "true").lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+
+
+def sync_pricing_catalog_from_models_json(
+    db: Session, *, effective_from: Optional[date] = None
+) -> Dict[str, Any]:
+    """Upsert catalog rates when models.json pricing differs from Postgres."""
+    report = diff_models_json_vs_db(db, effective_from=effective_from)
+    if not pricing_catalog_needs_seed(report):
+        return {
+            "seeded": False,
+            "seeded_count": 0,
+            "only_in_models_json": len(report["only_in_models_json"]),
+            "mismatches": len(report["mismatches"]),
+        }
+
+    seeded_count = seed_rates_from_models_json(db, effective_from=effective_from)
+    return {
+        "seeded": seeded_count > 0,
+        "seeded_count": seeded_count,
+        "only_in_models_json": len(report["only_in_models_json"]),
+        "mismatches": len(report["mismatches"]),
+    }
+
+
+def maybe_sync_pricing_catalog_after_migrate(db: Session) -> None:
+    """Post-migrate hook: keep model_pricing_rates aligned with models.json."""
+    if not auto_seed_pricing_enabled():
+        logger.info(
+            "Skipping automatic pricing catalog sync "
+            "(USAGE_AUTO_SEED_PRICING disabled)"
+        )
+        return
+
+    result = sync_pricing_catalog_from_models_json(db)
+    if result["seeded"]:
+        db.commit()
+        logger.info(
+            "Synced pricing catalog from models.json "
+            "(updated %s rate row(s); %s new model(s), %s mismatch(es))",
+            result["seeded_count"],
+            result["only_in_models_json"],
+            result["mismatches"],
+        )
+        return
+
+    logger.info("Pricing catalog already matches models.json")

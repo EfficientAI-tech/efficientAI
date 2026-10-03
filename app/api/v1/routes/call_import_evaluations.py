@@ -19,7 +19,7 @@ from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Qu
 from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import desc, func, or_, text
+from sqlalchemy import Float, case, cast, desc, func, or_, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -67,6 +67,7 @@ from app.models.schemas import (
     CallImportEvaluationRowListResponse,
     CallImportEvaluationRowResponse,
     CallImportEvaluationUpdate,
+    CallImportClassificationFacetCounts,
     CallImportMetricAggregate,
     CallImportMetricHistogramBucket,
     CallImportMetricLabelPair,
@@ -119,6 +120,12 @@ from app.services.call_import_metric_clusters import (
     metric_clusters_state_from_raw,
     metric_clusters_state_to_db,
 )
+from app.services.classification_metric_scores import classification_facets_from_entry
+from app.services.classification_metric_sql import (
+    classification_choice_row_predicate,
+    classification_level_row_predicate,
+)
+from app.services.metric_classification_validation import is_classification_metric
 from app.services.metric_failure_policy import (
     aggregate_primary_percent,
     build_failure_policy_previews,
@@ -335,6 +342,12 @@ def _to_evaluation_row_response(
         row_index=source_row.row_index if source_row else None,
         conversation_id=source_row.conversation_id if source_row else None,
         transcript=_pick_evaluation_row_transcript(source_row, evaluation),
+        production_transcript=(
+            (source_row.transcript or "").strip() or None if source_row else None
+        ),
+        diarised_transcript=(
+            (source_row.diarised_transcript or "").strip() or None if source_row else None
+        ),
         raw_columns=source_row.raw_columns if source_row else None,
         recording_url=source_row.recording_url if source_row else None,
         recording_date=source_row.recording_date if source_row else None,
@@ -1360,6 +1373,45 @@ async def get_call_import_evaluation(
     return _serialize_eval(db, row)
 
 
+def _apply_classification_metric_filters(
+    query,
+    metric_id: UUID,
+    *,
+    yes_no: Optional[str] = None,
+    choice: Optional[str] = None,
+    level: Optional[str] = None,
+):
+    """Restrict rows by Jev classification facets under ``metric_scores``."""
+    mid = str(metric_id)
+    scores = CallImportEvaluationRow.metric_scores
+
+    if yes_no and yes_no.strip():
+        yn = yes_no.strip().lower()
+        if yn in ("yes", "no"):
+            noul_txt = func.json_extract_path_text(
+                scores, mid, "answers", "noul", "noul"
+            )
+            noul_f = cast(noul_txt, Float)
+            derived = case(
+                (noul_f >= 0.5, "Yes"),
+                (noul_f.isnot(None), "No"),
+                else_=None,
+            )
+            effective = func.coalesce(
+                func.json_extract_path_text(scores, mid, "classification_yes_no"),
+                derived,
+            )
+            query = query.filter(func.lower(effective) == yn)
+
+    if choice and choice.strip():
+        query = query.filter(classification_choice_row_predicate(mid, choice))
+
+    if level and level.strip():
+        query = query.filter(classification_level_row_predicate(mid, level))
+
+    return query
+
+
 @router.get(
     "/{eval_id}/rows",
     response_model=CallImportEvaluationRowListResponse,
@@ -1388,6 +1440,27 @@ async def list_call_import_evaluation_rows(
     metric_value: Optional[str] = Query(
         None,
         description="Value to match against metric_id (string compare).",
+    ),
+    classification_yes_no: Optional[str] = Query(
+        None,
+        description=(
+            "With ``metric_id``, filter classification metrics by Yes/No "
+            "(case-insensitive)."
+        ),
+    ),
+    classification_choice: Optional[str] = Query(
+        None,
+        description=(
+            "With ``metric_id``, filter classification metrics by category "
+            "choice (case-insensitive)."
+        ),
+    ),
+    classification_level: Optional[str] = Query(
+        None,
+        description=(
+            "With ``metric_id``, filter classification metrics by level label "
+            "(case-insensitive)."
+        ),
     ),
     status_filter: Optional[str] = Query(
         None,
@@ -1520,6 +1593,19 @@ async def list_call_import_evaluation_rows(
             "value",
         )
         query = query.filter(func.lower(path_value) == metric_value.strip().lower())
+
+    if metric_id is not None and (
+        (classification_yes_no and classification_yes_no.strip())
+        or (classification_choice and classification_choice.strip())
+        or (classification_level and classification_level.strip())
+    ):
+        query = _apply_classification_metric_filters(
+            query,
+            metric_id,
+            yes_no=classification_yes_no,
+            choice=classification_choice,
+            level=classification_level,
+        )
 
     # --- Flow chart drilldown filter -------------------------------------
     # Translates a clicked node (or edge) on the flow chart into a
@@ -4902,6 +4988,13 @@ def _compute_metric_aggregates(
         meta = metric_meta.get(metric_id_str)
         numeric_values: List[float] = []
         category_counts: Dict[str, int] = {}
+        classification_yes_no_counts: Dict[str, int] = {}
+        classification_choice_counts: Dict[str, int] = {}
+        classification_level_counts: Dict[str, int] = {}
+        classification_rows_scored = 0
+        is_classification_metric_agg = bool(
+            meta and is_classification_metric(custom_data_type=getattr(meta, "custom_data_type", None))
+        )
         # For multi-label parents we still need to know how many rows
         # were scored (each row votes for >=1 label) so the n-badge in
         # the UI shows "n=50" instead of the misleading "n=208" sum.
@@ -4939,6 +5032,8 @@ def _compute_metric_aggregates(
                 observed_name = entry.get("metric_name")
             if entry.get("type"):
                 observed_metric_type = entry.get("type")
+            if entry.get("type") == "classification":
+                is_classification_metric_agg = True
             if entry.get("skipped"):
                 skipped += 1
                 continue
@@ -4973,7 +5068,32 @@ def _compute_metric_aggregates(
                             multi_label_pair_counts[pair] = (
                                 multi_label_pair_counts.get(pair, 0) + 1
                             )
-                continue
+                    continue
+
+            if is_classification_metric_agg or entry.get("type") == "classification":
+                facets = classification_facets_from_entry(entry)
+                scored_classification = False
+                yn = facets.get("yes_no")
+                if yn:
+                    classification_yes_no_counts[yn] = (
+                        classification_yes_no_counts.get(yn, 0) + 1
+                    )
+                    scored_classification = True
+                ch = facets.get("choice")
+                if ch:
+                    classification_choice_counts[ch] = (
+                        classification_choice_counts.get(ch, 0) + 1
+                    )
+                    scored_classification = True
+                lv = facets.get("level")
+                if lv:
+                    classification_level_counts[lv] = (
+                        classification_level_counts.get(lv, 0) + 1
+                    )
+                    scored_classification = True
+                if scored_classification:
+                    classification_rows_scored += 1
+                    continue
 
             value = entry.get("value")
             numeric = _coerce_numeric(value)
@@ -4990,10 +5110,15 @@ def _compute_metric_aggregates(
         # Multi-label parents however contribute one observation per
         # selected child, so summing ``category_counts`` over-counts —
         # we tracked rows-scored separately above and use it here.
+        legacy_rows_scored = len(numeric_values) + sum(category_counts.values())
+        # Mixed migrations may score some rows via classification facets and
+        # others via legacy numeric/category values for the same metric id.
         rows_scored = (
             multi_label_rows_scored
             if is_multi_label_parent
-            else len(numeric_values) + sum(category_counts.values())
+            else (classification_rows_scored + legacy_rows_scored)
+            if is_classification_metric_agg
+            else legacy_rows_scored
         )
 
         # Build numeric stats first, then categorical (both can coexist).
@@ -5030,6 +5155,28 @@ def _compute_metric_aggregates(
             agg.p75 = _percentile(numeric_values, 75)
             agg.p95 = _percentile(numeric_values, 95)
             agg.histogram_buckets = _build_histogram(numeric_values)
+        if (
+            is_classification_metric_agg
+            and (
+                classification_yes_no_counts
+                or classification_choice_counts
+                or classification_level_counts
+            )
+        ):
+            def _facet_value_counts(counts: Dict[str, int]) -> List[CallImportMetricValueCount]:
+                sorted_counts = sorted(
+                    counts.items(), key=lambda kv: kv[1], reverse=True
+                )
+                return [
+                    CallImportMetricValueCount(label=label, count=count)
+                    for label, count in sorted_counts[:_TOP_VALUE_COUNTS]
+                ]
+
+            agg.classification_facets = CallImportClassificationFacetCounts(
+                yes_no=_facet_value_counts(classification_yes_no_counts),
+                choice=_facet_value_counts(classification_choice_counts),
+                level=_facet_value_counts(classification_level_counts),
+            )
         if category_counts:
             sorted_counts = sorted(
                 category_counts.items(), key=lambda kv: kv[1], reverse=True

@@ -445,11 +445,11 @@ def _recover_missing_audio_for_result(result, db, refresh_call_data: bool = True
     call_data = result.call_data or {}
     if refresh_call_data and decrypted_key:
         try:
-            provider_class = get_voice_provider(platform)
-            provider_kwargs = {"api_key": decrypted_key}
-            if platform == "vapi" and integration and getattr(integration, "public_key", None):
-                provider_kwargs["public_key"] = integration.public_key
-            provider = provider_class(**provider_kwargs)
+            from app.services.voice_providers.prompt_sync import build_voice_provider_from_integration
+
+            if not integration:
+                raise ValueError("Integration required for provider refresh")
+            provider = build_voice_provider_from_integration(integration, decrypted_key=decrypted_key)
             if hasattr(provider, "retrieve_call_metrics"):
                 refreshed = provider.retrieve_call_metrics(result.provider_call_id)
                 if isinstance(refreshed, dict) and refreshed:

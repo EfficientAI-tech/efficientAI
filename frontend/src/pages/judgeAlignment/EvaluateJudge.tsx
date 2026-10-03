@@ -5,7 +5,6 @@ import {
   Play,
   RefreshCw,
   AlertCircle,
-  HelpCircle,
   Trash2,
   ChevronDown,
   ChevronRight,
@@ -14,6 +13,7 @@ import { format } from 'date-fns'
 import { apiClient } from '../../lib/api'
 import type { JudgeRun } from '../../lib/api'
 import Button from '../../components/Button'
+import { InfoTooltip } from '../../components/shared'
 
 /** Stable, human-readable id for a judge run (first 6 chars of the UUID, upper-cased). */
 function runShortId(id: string): string {
@@ -106,34 +106,6 @@ const METRIC_HELP: Record<string, { title: string; body: ReactNode }> = {
       </>
     ),
   },
-}
-
-function InfoTooltip({
-  title,
-  children,
-  className = '',
-}: {
-  title: string
-  children: ReactNode
-  className?: string
-}) {
-  return (
-    <span className={`relative inline-flex group ${className}`}>
-      <HelpCircle
-        className="h-3.5 w-3.5 text-gray-400 group-hover:text-gray-600 cursor-help"
-        aria-label={title}
-      />
-      <span
-        role="tooltip"
-        className="pointer-events-none absolute bottom-full left-1/2 z-30 mb-2 w-64 -translate-x-1/2 rounded-md bg-gray-900 px-3 py-2 text-xs font-normal leading-snug text-white opacity-0 shadow-lg transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100"
-      >
-        <span className="block text-[11px] font-semibold uppercase tracking-wide text-yellow-300">
-          {title}
-        </span>
-        <span className="mt-1 block text-gray-100">{children}</span>
-      </span>
-    </span>
-  )
 }
 
 export default function EvaluateJudge({ datasetId }: { datasetId: string }) {

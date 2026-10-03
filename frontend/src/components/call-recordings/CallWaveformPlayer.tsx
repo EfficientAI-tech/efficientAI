@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Download, Loader, Pause, Play } from 'lucide-react'
+import { Download, Loader, Pause, Play, Volume1, Volume2, VolumeX } from 'lucide-react'
 import { apiClient } from '../../lib/api'
+import { audioExtensionFromBlob, downloadBlob } from '../../lib/download'
+import { formatVolumePercent } from '../../hooks/useRecordingAudioPlayer'
 import { WAVEFORM_COLORS } from '../../lib/callDetailTheme'
 import { extractWavPeaks, isWavBuffer } from '../../lib/waveformPeaksFast'
 import {
@@ -41,6 +43,9 @@ const TRACK_GAP = 4
 const TRACK_HEIGHT = 44
 const RULER_HEIGHT = 16
 const PEAK_WIDTH = 512
+
+const VOLUME_SLIDER_CLASS =
+  'h-2 min-w-[72px] max-w-[120px] flex-1 rounded-full appearance-none bg-gray-200 accent-primary-600 cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary-600 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-primary-600'
 
 function resolveWaveformCanvasHeight(stereo: boolean): number {
   const trackCount = stereo ? 2 : 1
@@ -337,6 +342,9 @@ export default function CallWaveformPlayer({
   const [decoding, setDecoding] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [playbackRate, setPlaybackRate] = useState(1)
+  const [volume, setVolume] = useState(1)
+  const [downloading, setDownloading] = useState(false)
+  const preMuteVolumeRef = useRef(0.85)
   const [playbackReady, setPlaybackReady] = useState(false)
   const waveformDecodedKeyRef = useRef<string | null>(null)
   const pendingWaveformFetchRef = useRef<{
@@ -869,19 +877,53 @@ export default function CallWaveformPlayer({
     if (audio) audio.playbackRate = playbackRate
   }, [playbackRate])
 
+  useEffect(() => {
+    const audio = audioRef.current
+    if (audio) audio.volume = volume
+  }, [volume, audioUrl])
+
+  const toggleMute = () => {
+    if (volume > 0) {
+      preMuteVolumeRef.current = volume
+      setVolume(0)
+      return
+    }
+    setVolume(preMuteVolumeRef.current > 0 ? preMuteVolumeRef.current : 0.85)
+  }
+
+  const VolumeIcon = volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2
+
+  const canDownload =
+    Boolean(callShortId || observabilityCallShortId || evaluatorResultId) &&
+    playbackReady &&
+    Boolean(audioUrl)
+
   const handleDownload = async () => {
-    if (!callShortId) return
+    if (!canDownload || downloading) return
+    setDownloading(true)
     try {
-      const blobUrl = await apiClient.getCallRecordingAudioUrl(callShortId, {
-        stereo: loadedStereoRef.current,
-      })
-      const anchor = document.createElement('a')
-      anchor.href = blobUrl
-      anchor.download = `call-${callShortId}.wav`
-      anchor.click()
-      window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1000)
+      let blob: Blob
+      let baseName: string
+      if (callShortId) {
+        blob = await apiClient.getCallRecordingAudioBlob(callShortId, {
+          stereo: loadedStereoRef.current,
+        })
+        baseName = `call-${callShortId}`
+      } else if (observabilityCallShortId) {
+        blob = await apiClient.getObservabilityCallAudioBlob(observabilityCallShortId)
+        baseName = `call-${observabilityCallShortId}`
+      } else if (evaluatorResultId) {
+        blob = await apiClient.getEvaluatorResultAudioBlob(evaluatorResultId)
+        baseName = `result-${evaluatorResultId}`
+      } else {
+        return
+      }
+      const ext = audioExtensionFromBlob(blob)
+      downloadBlob(blob, `${baseName}.${ext}`)
     } catch {
       setLoadError('Download failed. Try Refresh on the call first.')
+    } finally {
+      setDownloading(false)
     }
   }
 
@@ -982,13 +1024,43 @@ export default function CallWaveformPlayer({
           ))}
         </select>
 
-        {callShortId ? (
+        <div className="flex min-w-[140px] flex-1 items-center gap-1.5 sm:max-w-[200px]">
+          <button
+            type="button"
+            onClick={toggleMute}
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+            aria-label={volume === 0 ? 'Unmute' : 'Mute'}
+          >
+            <VolumeIcon className="h-4 w-4" />
+          </button>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={volume}
+            onChange={(e) => setVolume(Number(e.target.value))}
+            className={VOLUME_SLIDER_CLASS}
+            aria-label="Volume"
+          />
+          <span className="w-9 shrink-0 text-right text-[10px] tabular-nums text-gray-500">
+            {formatVolumePercent(volume)}
+          </span>
+        </div>
+
+        {canDownload ? (
           <button
             type="button"
             onClick={() => void handleDownload()}
-            className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+            disabled={downloading}
+            className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+            aria-label="Download recording"
           >
-            <Download className="h-3.5 w-3.5" />
+            {downloading ? (
+              <Loader className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Download className="h-3.5 w-3.5" />
+            )}
             Audio
           </button>
         ) : null}

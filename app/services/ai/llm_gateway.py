@@ -23,6 +23,7 @@ from app.config import settings
 
 
 GatewayType = Literal["bifrost", "litellm_proxy"]
+GatewayTypeOverride = Literal["inherit", "bifrost", "litellm_proxy"]
 GatewayInterface = Literal["litellm_shim", "native_openai"]
 GatewayInterfaceOverride = Literal["inherit", "litellm_shim", "native_openai"]
 RoutingMode = Literal["inherit", "gateway", "direct"]
@@ -56,6 +57,7 @@ class CredentialRoutingContext:
 
     routing_mode: RoutingMode = "inherit"
     gateway_model: Optional[str] = None
+    gateway_type: GatewayTypeOverride = "inherit"
     gateway_interface: GatewayInterfaceOverride = "inherit"
     gateway_base_url: Optional[str] = None
     gateway_auth_header: Optional[str] = None
@@ -77,6 +79,14 @@ def _normalize_gateway_interface(value: Any) -> GatewayInterfaceOverride:
     iface = str(iface or "inherit").strip().lower()
     if iface in ("inherit", "litellm_shim", "native_openai"):
         return iface  # type: ignore[return-value]
+    return "inherit"
+
+
+def _normalize_gateway_type(value: Any) -> GatewayTypeOverride:
+    gtype = value.value if hasattr(value, "value") else value
+    gtype = str(gtype or "inherit").strip().lower()
+    if gtype in ("inherit", "bifrost", "litellm_proxy"):
+        return gtype  # type: ignore[return-value]
     return "inherit"
 
 
@@ -123,6 +133,7 @@ def routing_context_from_ai_provider(provider: Any) -> CredentialRoutingContext:
     return CredentialRoutingContext(
         routing_mode=_normalize_routing_mode(getattr(provider, "routing_mode", "inherit")),
         gateway_model=gateway_model,
+        gateway_type=_normalize_gateway_type(getattr(provider, "gateway_type", "inherit")),
         gateway_interface=_normalize_gateway_interface(
             getattr(provider, "gateway_interface", "inherit")
         ),
@@ -348,7 +359,13 @@ def _decrypt_org_master_key(raw: Dict[str, Any]) -> Optional[str]:
     return _decrypt_org_secret(raw, "master_key")
 
 
-def _resolve_gateway_type(org: Dict[str, Any], platform: Dict[str, Any]) -> GatewayType:
+def _resolve_gateway_type(
+    credential: Optional[CredentialRoutingContext],
+    org: Dict[str, Any],
+    platform: Dict[str, Any],
+) -> GatewayType:
+    if credential and credential.gateway_type in ("bifrost", "litellm_proxy"):
+        return credential.gateway_type
     org_type = org.get("gateway_type")
     if org_type in ("bifrost", "litellm_proxy"):
         return org_type
@@ -387,18 +404,23 @@ def _resolve_gateway_base_url(
     return (org.get("base_url") or platform.get("base_url") or "").strip()
 
 
-def _resolve_gateway_auth_header(credential: Optional[CredentialRoutingContext]) -> str:
+def _resolve_gateway_auth_header(
+    credential: Optional[CredentialRoutingContext],
+    gateway_type: GatewayType = "bifrost",
+) -> str:
     if credential and credential.gateway_auth_header:
         header = credential.gateway_auth_header.strip()
         if header:
             return header
-    return "x-bf-vk"
+    # LiteLLM Proxy authenticates with ``Authorization: Bearer <key>``.
+    return "Authorization" if gateway_type == "litellm_proxy" else "x-bf-vk"
 
 
 def _resolve_gateway_auth_secret(
     credential: Optional[CredentialRoutingContext],
     org: Dict[str, Any],
     platform: Dict[str, Any],
+    gateway_type: GatewayType = "bifrost",
 ) -> Optional[str]:
     if credential and credential.gateway_auth_secret_env:
         env_name = credential.gateway_auth_secret_env.strip()
@@ -414,6 +436,9 @@ def _resolve_gateway_auth_secret(
     if credential and credential.gateway_auth_secret:
         return credential.gateway_auth_secret.strip() or None
 
+    if gateway_type == "litellm_proxy":
+        # Org/platform master key is applied as ``api_key`` by the proxy path.
+        return None
     return _decrypt_org_virtual_key(org) or platform.get("virtual_key")
 
 
@@ -455,7 +480,7 @@ def _build_gateway_config(
     strict: bool,
 ) -> Optional[LLMGatewayConfig]:
     """Resolve gateway connection details from org/platform/credential settings."""
-    gateway_type = _resolve_gateway_type(org, platform)
+    gateway_type = _resolve_gateway_type(credential, org, platform)
     gateway_interface = _resolve_gateway_interface(credential, org, platform)
     base_url = _resolve_gateway_base_url(credential, org, platform)
 
@@ -482,8 +507,8 @@ def _build_gateway_config(
         logger.warning("{} Falling back to direct provider routing.", message)
         return None
 
-    virtual_key = _resolve_gateway_auth_secret(credential, org, platform)
-    auth_header = _resolve_gateway_auth_header(credential)
+    virtual_key = _resolve_gateway_auth_secret(credential, org, platform, gateway_type)
+    auth_header = _resolve_gateway_auth_header(credential, gateway_type)
     extra_headers = (
         dict(credential.gateway_extra_headers)
         if credential and credential.gateway_extra_headers
@@ -576,6 +601,18 @@ def get_credential_effective_gateway_interface(
     org = _get_org_raw_settings(organization_id, db)
     platform = _platform_config()
     return _resolve_gateway_interface(ctx, org, platform)
+
+
+def get_credential_effective_gateway_type(
+    organization_id: UUID,
+    db: Session,
+    credential: Any,
+) -> GatewayType:
+    """Resolved gateway backend for a credential (for API responses)."""
+    ctx = _credential_routing_context(credential)
+    org = _get_org_raw_settings(organization_id, db)
+    platform = _platform_config()
+    return _resolve_gateway_type(ctx, org, platform)
 
 
 def get_credential_effective_routing_label(

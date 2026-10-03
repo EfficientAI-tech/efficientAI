@@ -643,3 +643,87 @@ def test_gateway_auth_header_overrides_duplicate_extra_header():
         credential=ctx,
     )
     assert result["extra_headers"]["x-bf-vk"] == "resolved-vk"
+
+
+def test_credential_gateway_type_overrides_org_type():
+    _set_platform_gateway(
+        enabled=True,
+        gateway_type="bifrost",
+        base_url="http://bifrost.example.com/litellm",
+    )
+    org_id, db = _org_db({"enabled": True, "gateway_type": "bifrost"})
+    ctx = CredentialRoutingContext(
+        routing_mode="gateway",
+        gateway_type="litellm_proxy",
+        gateway_interface="native_openai",
+        gateway_base_url="http://cred-proxy:4000",
+    )
+    config, effective = resolve_effective_routing(org_id, db, ctx)
+    assert effective == "litellm_proxy"
+    assert config.gateway_type == "litellm_proxy"
+    assert config.gateway_interface == "litellm_shim"
+    assert config.api_base == "http://cred-proxy:4000"
+
+
+def test_credential_inherit_gateway_type_uses_org_type():
+    _set_platform_gateway(
+        enabled=True,
+        gateway_type="bifrost",
+        base_url="http://bifrost.example.com/litellm",
+    )
+    org_id, db = _org_db(
+        {"enabled": True, "gateway_type": "litellm_proxy", "base_url": "http://org-proxy:4000"}
+    )
+    ctx = CredentialRoutingContext(routing_mode="gateway", gateway_type="inherit")
+    config = resolve_llm_gateway(org_id, db, credential=ctx)
+    assert config.gateway_type == "litellm_proxy"
+
+
+def test_litellm_credential_secret_defaults_to_bearer_authorization(monkeypatch):
+    _set_platform_gateway(
+        enabled=True,
+        gateway_type="bifrost",
+        base_url="http://bifrost.example.com/litellm",
+        virtual_key="platform-vk",
+    )
+    org_id, db = _org_db({"enabled": True})
+    ctx = CredentialRoutingContext(
+        routing_mode="gateway",
+        gateway_type="litellm_proxy",
+        gateway_base_url="http://cred-proxy:4000",
+        gateway_auth_secret="sk-litellm-team",
+    )
+    result = apply_llm_gateway(
+        {"model": "gpt-4o", "messages": []},
+        organization_id=org_id,
+        db=db,
+        credential=ctx,
+    )
+    assert result["api_base"] == "http://cred-proxy:4000"
+    assert result["extra_headers"]["Authorization"] == "Bearer sk-litellm-team"
+    assert "x-bf-vk" not in result["extra_headers"]
+
+
+def test_litellm_credential_without_secret_uses_master_key_not_virtual_key():
+    _set_platform_gateway(
+        enabled=True,
+        gateway_type="bifrost",
+        base_url="http://bifrost.example.com/litellm",
+        virtual_key="platform-vk",
+        master_key="platform-master",
+        passthrough=False,
+    )
+    org_id, db = _org_db({"enabled": True})
+    ctx = CredentialRoutingContext(
+        routing_mode="gateway",
+        gateway_type="litellm_proxy",
+        gateway_base_url="http://cred-proxy:4000",
+    )
+    result = apply_llm_gateway(
+        {"model": "gpt-4o", "api_key": "sk-provider", "messages": []},
+        organization_id=org_id,
+        db=db,
+        credential=ctx,
+    )
+    assert result["api_key"] == "platform-master"
+    assert "x-bf-vk" not in (result.get("extra_headers") or {})
