@@ -27,6 +27,47 @@ import AIProviderEnabledModelsStep from './AIProviderEnabledModelsStep'
 
 type IntegrationType = 'voice_platform' | 'ai_provider' | 'telephony_provider' | null
 
+type TelephonyConfigFieldKey = 'auth_id' | 'auth_token' | 'verify_app_uuid' | 'voice_app_id' | 'sip_domain'
+
+function TelephonyFieldRequirement({ required }: { required: boolean }) {
+  if (required) {
+    return <span className="text-red-500" aria-hidden="true"> *</span>
+  }
+  return <span className="text-gray-400 font-normal"> (optional)</span>
+}
+
+const TELEPHONY_FIELD_PLACEHOLDERS: Partial<
+  Record<TelephonyProvider, Partial<Record<TelephonyConfigFieldKey, string>>>
+> = {
+  [TelephonyProvider.PLIVO]: {
+    auth_id: 'Auth ID',
+    auth_token: 'Auth token',
+    verify_app_uuid: 'Verify app UUID',
+    sip_domain: 'SIP domain',
+  },
+  [TelephonyProvider.VOBIZ]: {
+    auth_id: 'Auth ID',
+    auth_token: 'Auth token',
+  },
+  [TelephonyProvider.TWILIO]: {
+    auth_id: 'Account SID',
+    auth_token: 'Auth token',
+  },
+  [TelephonyProvider.EXOTEL]: {
+    auth_id: 'API key',
+    auth_token: 'API token',
+    voice_app_id: 'Account SID',
+    verify_app_uuid: 'Verification app ID',
+    sip_domain: 'API host',
+  },
+  [TelephonyProvider.TELNYX]: {
+    auth_id: 'telnyx',
+    auth_token: 'API key',
+    voice_app_id: 'Profile UUID',
+    verify_app_uuid: 'Public key',
+  },
+}
+
 const AI_INTEGRATION_PROVIDERS: ModelProvider[] = [
   ModelProvider.OPENAI,
   ModelProvider.ANTHROPIC,
@@ -1653,48 +1694,57 @@ export default function Integrations() {
                     <>
                       <div className="grid grid-cols-1 gap-4">
                         <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-1">Name (Optional)</label>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">
+                            Name
+                            <TelephonyFieldRequirement required={false} />
+                          </label>
                           <input
                             type="text"
                             value={telephonyName}
                             onChange={(e) => setTelephonyName(e.target.value)}
-                            placeholder="Friendly name to distinguish multiple keys"
+                            placeholder="Name"
                             className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
                           />
                         </div>
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-1">
-                        {selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'API Key' : selectedTelephonyProvider === TelephonyProvider.TWILIO ? 'Account SID' : 'Auth ID'} {isEditMode && <span className="text-gray-500 font-normal">(leave blank to keep current)</span>}
-                          </label>
-                          <input type="password" value={telephonyAuthId} onChange={(e) => setTelephonyAuthId(e.target.value)} required={!isEditMode}
-                            placeholder={isEditMode ? 'Leave blank to keep current' : selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'Enter API Key' : 'Enter Auth ID'} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500" />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-1">
-                            {selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'API Token' : 'Auth Token'} {isEditMode && <span className="text-gray-500 font-normal">(leave blank to keep current)</span>}
-                          </label>
-                          <input type="password" value={telephonyAuthToken} onChange={(e) => setTelephonyAuthToken(e.target.value)} required={!isEditMode}
-                            placeholder={isEditMode ? 'Leave blank to keep current' : selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'Enter API Token' : 'Enter Auth Token'} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500" />
-                        </div>
-                        {selectedTelephonyProvider === TelephonyProvider.EXOTEL && (
-                          <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-1">Account SID <span className="text-red-500">*</span></label>
-                            <input type="text" value={telephonyVoiceAppId} onChange={(e) => setTelephonyVoiceAppId(e.target.value)}
-                              required placeholder="Enter Exotel Account SID" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500" />
-                          </div>
-                        )}
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-1">Verify App UUID <span className="text-gray-400 font-normal">(optional)</span></label>
-                          <input type="text" value={telephonyVerifyAppUuid} onChange={(e) => setTelephonyVerifyAppUuid(e.target.value)}
-                            placeholder="Optional: Verify App UUID" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500" />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-1">
-                            {selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'API Host' : 'SIP Domain'} <span className="text-gray-400 font-normal">(optional)</span>
-                          </label>
-                          <input type="text" value={telephonySipDomain} onChange={(e) => setTelephonySipDomain(e.target.value)}
-                            placeholder={selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'Optional: api.exotel.com or api.in.exotel.com' : 'Optional: SIP domain'} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500" />
-                        </div>
+                        {(TELEPHONY_PROVIDER_CONFIG[selectedTelephonyProvider]?.fields ?? []).map((field) => {
+                          const key = field.key as TelephonyConfigFieldKey
+                          const valueByKey: Record<TelephonyConfigFieldKey, string> = {
+                            auth_id: telephonyAuthId,
+                            auth_token: telephonyAuthToken,
+                            verify_app_uuid: telephonyVerifyAppUuid,
+                            voice_app_id: telephonyVoiceAppId,
+                            sip_domain: telephonySipDomain,
+                          }
+                          const setters: Record<TelephonyConfigFieldKey, (v: string) => void> = {
+                            auth_id: setTelephonyAuthId,
+                            auth_token: setTelephonyAuthToken,
+                            verify_app_uuid: setTelephonyVerifyAppUuid,
+                            voice_app_id: setTelephonyVoiceAppId,
+                            sip_domain: setTelephonySipDomain,
+                          }
+                          const credField = key === 'auth_id' || key === 'auth_token'
+                          const inputRequired = field.required && !isEditMode
+                          const placeholder =
+                            isEditMode && credField
+                              ? 'Leave blank to keep current'
+                              : TELEPHONY_FIELD_PLACEHOLDERS[selectedTelephonyProvider]?.[key] ?? field.label
+                          return (
+                            <div key={key}>
+                              <label className="block text-sm font-medium text-gray-700 mb-1">
+                                {field.label}
+                                <TelephonyFieldRequirement required={field.required} />
+                              </label>
+                              <input
+                                type={field.type}
+                                value={valueByKey[key]}
+                                onChange={(e) => setters[key](e.target.value)}
+                                required={inputRequired}
+                                placeholder={placeholder}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
+                              />
+                            </div>
+                          )
+                        })}
                       </div>
                       <p className="text-xs text-gray-500">Credentials are encrypted and stored securely. Your browser never displays stored secrets.</p>
                     </>

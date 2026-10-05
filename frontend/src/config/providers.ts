@@ -229,7 +229,7 @@ export const TELEPHONY_PROVIDER_CONFIG: Record<TelephonyProvider, TelephonyProvi
       { key: 'auth_token', label: 'API Token', required: true, type: 'password' },
       { key: 'voice_app_id', label: 'Account SID', required: true, type: 'text' },
       { key: 'verify_app_uuid', label: 'Verification App ID', required: false, type: 'text' },
-      { key: 'sip_domain', label: 'API Host (optional)', required: false, type: 'text' },
+      { key: 'sip_domain', label: 'API Host', required: false, type: 'text' },
     ],
   },
   [TelephonyProvider.VOBIZ]: {
@@ -253,12 +253,12 @@ export const TELEPHONY_PROVIDER_CONFIG: Record<TelephonyProvider, TelephonyProvi
   [TelephonyProvider.TELNYX]: {
     label: 'Telnyx',
     logo: null,
-    description: 'Call Control voice streaming and programmable SMS for chat eval',
+    description: 'Voice and SMS',
     fields: [
-      { key: 'auth_id', label: 'Connection ID (optional)', required: true, type: 'text' },
+      { key: 'auth_id', label: 'Connection ID', required: true, type: 'text' },
       { key: 'auth_token', label: 'API Key', required: true, type: 'password' },
-      { key: 'voice_app_id', label: 'Messaging Profile ID', required: false, type: 'text' },
-      { key: 'verify_app_uuid', label: 'Webhook Public Key', required: false, type: 'password' },
+      { key: 'voice_app_id', label: 'Messaging profile ID', required: false, type: 'text' },
+      { key: 'verify_app_uuid', label: 'Webhook public key', required: false, type: 'password' },
     ],
   },
 }
