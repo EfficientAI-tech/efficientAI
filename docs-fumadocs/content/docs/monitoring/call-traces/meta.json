@@ -1,9 +1,0 @@
-{
-  "title": "Call Traces",
-  "pages": [
-    "index",
-    "latency-metrics",
-    "architecture",
-    "pipecat-integration"
-  ]
-}

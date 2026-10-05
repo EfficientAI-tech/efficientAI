@@ -1,4 +1,5 @@
-import { fetchGitHubReleases } from '@/lib/github-releases';
+import Link from 'fumadocs-core/link';
+import { getChangelogFeedReleases } from '@/lib/changelog-feed';
 
 function formatReleaseDate(iso: string) {
   return new Date(iso).toLocaleDateString('en-US', {
@@ -8,28 +9,22 @@ function formatReleaseDate(iso: string) {
   });
 }
 
-export async function ChangelogReleases() {
-  let releases: Awaited<ReturnType<typeof fetchGitHubReleases>> = [];
+export function ChangelogReleases() {
+  const releases = getChangelogFeedReleases();
 
-  try {
-    releases = await fetchGitHubReleases();
-  } catch {
+  if (releases.length === 0) {
     return (
       <p className="text-sm text-fd-muted-foreground">
-        Release notes are temporarily unavailable. View them on{' '}
+        Recent releases are not available in this build. View them on{' '}
         <a
           href="https://github.com/EfficientAI-tech/efficientAI/releases"
           className="font-medium text-fd-primary underline-offset-4 hover:underline"
         >
           GitHub Releases
         </a>
-        .
+        , or pick a version from the sidebar.
       </p>
     );
-  }
-
-  if (releases.length === 0) {
-    return <p className="text-sm text-fd-muted-foreground">No releases found yet.</p>;
   }
 
   return (
@@ -37,7 +32,11 @@ export async function ChangelogReleases() {
       {releases.map((release) => (
         <section key={release.tagName} className="rounded-lg border border-fd-border/70 bg-fd-card/40 p-5">
           <div className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <h2 className="text-lg font-semibold text-fd-foreground">{release.tagName}</h2>
+            <h2 className="text-lg font-semibold text-fd-foreground">
+              <Link href={`/docs/changelog/${release.docsSlug}/`} className="hover:text-fd-primary">
+                {release.tagName}
+              </Link>
+            </h2>
             <time className="text-sm text-fd-muted-foreground">{formatReleaseDate(release.publishedAt)}</time>
             <a
               href={release.htmlUrl}

@@ -1,0 +1,52 @@
+---
+title: v1.5.1
+description: Release notes for v1.5.1.
+---
+
+# v1.5.1
+
+Released Jun 9, 2026. [View on GitHub](https://github.com/EfficientAI-tech/efficientAI/releases/tag/v1.5.1).
+
+Primary pull request: [#77](https://github.com/EfficientAI-tech/efficientAI/pull/77) by [@aadhar-EAI](https://github.com/aadhar-EAI).
+
+## What changed
+
+This PR finalizes the docs and related platform updates on `docs_test`, including:
+- Docs deployment workflow updates and an added docs quality workflow.
+- Cleanup of obsolete documentation files, including deleting `EfficientAI-Docs/docs/pricing.md`.
+- UI/config updates across agent creation, data sources, and observability call detail pages.
+- Voice service/model config updates in backend STT/TTS related files.
+- Added frontend image assets used by the updated docs/UX flows.
+
+## Why
+
+The branch had a mix of docs modernization and platform UX/backend follow-ups that needed to be shipped together.  
+This solves three issues:
+1. Removes stale/incorrect documentation content (`pricing.md` and migration scratch files).
+2. Improves docs pipeline reliability and quality checks in CI.
+3. Aligns product UI/backend behavior and assets with the latest docs and workflow changes.
+
+This approach was chosen to keep the branch coherent and merge-ready in one pass, rather than splitting partially-dependent updates.
+
+## How to test
+
+1. Checkout this branch:
+   - `git checkout docs_test && git pull`
+2. Validate docs quality/workflow files:
+   - Inspect `.github/workflows/deploy-docs.yml`
+   - Inspect `.github/workflows/docs-quality.yml`
+3. Frontend sanity checks:
+   - Run frontend and verify updated screens:
+     - Agent creation modal
+     - Data Sources page
+     - Observability call detail page
+4. Backend sanity checks:
+   - Exercise STT/TTS related paths touched in:
+     - `app/services/ai/stt_clients.py`
+     - `app/services/ai/tts_service.py`
+5. (Optional) Run existing CI-equivalent checks/tests used by your team before merge.
+
+## Contributors
+
+- [@aadhar-EAI](https://github.com/aadhar-EAI)
+

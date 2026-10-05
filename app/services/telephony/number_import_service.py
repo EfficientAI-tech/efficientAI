@@ -347,6 +347,20 @@ _CALLING_CODE_TO_ISO2 = {
 }
 
 
+def _capabilities_for_import(provider_key: str, remote: Dict[str, Any]) -> Optional[Any]:
+    caps = remote.get("capabilities")
+    if provider_key != TelephonyProvider.TELNYX.value:
+        return caps
+    merged: Dict[str, Any] = dict(caps) if isinstance(caps, dict) else {}
+    msg_profile = remote.get("messaging_profile_id")
+    if msg_profile and str(msg_profile).strip():
+        merged["messaging_profile_id"] = str(msg_profile).strip()
+    conn = remote.get("connection_id")
+    if conn and str(conn).strip():
+        merged["connection_id"] = str(conn).strip()
+    return merged or None
+
+
 def _remote_metadata(
     provider: str,
     item: Dict[str, Any],
@@ -452,7 +466,7 @@ def _configure_inbound_webhook(
             False,
             "Imported. Set messaging profile webhook in Telnyx (profile is shared across its numbers): "
             f"{sms_url}. Voice Call Control webhook: {answer_url}",
-            str(effective_profile) if effective_profile else remote.get("connection_id"),
+            str(effective_profile).strip() if effective_profile else None,
         )
     raise ValueError(f"Unsupported provider: {provider}")
 
@@ -602,7 +616,7 @@ def import_numbers(
             row.source = "imported"
             row.country_iso2 = remote.get("country_iso2") or row.country_iso2
             row.region = remote.get("region") or row.region
-            row.capabilities = remote.get("capabilities") or row.capabilities
+            row.capabilities = _capabilities_for_import(provider_key, remote) or row.capabilities
             row.provider_app_id = remote.get("application_id") or row.provider_app_id
             if integration_id:
                 row.telephony_integration_id = integration_id
@@ -613,7 +627,7 @@ def import_numbers(
                 phone_number=e164,
                 country_iso2=remote.get("country_iso2"),
                 region=remote.get("region"),
-                capabilities=remote.get("capabilities"),
+                capabilities=_capabilities_for_import(provider_key, remote),
                 provider_app_id=remote.get("application_id"),
                 inbound_enabled=True,
                 outbound_enabled=True,

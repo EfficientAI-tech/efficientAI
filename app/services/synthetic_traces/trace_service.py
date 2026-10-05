@@ -1045,7 +1045,7 @@ def build_otlp_setup_info(
     install_command = (
         'pip install "efficientai[otel] @ git+https://github.com/EfficientAI-tech/efficientAI.git"'
     )
-    docs_url = "https://docs.efficientai.cloud/docs/monitoring/call-traces/pipecat-integration/"
+    docs_url = "https://docs.efficientai.cloud/docs/integrations/pipecat/"
     env_block = "\n".join(
         [
             "# Save as .env next to your voice agent (Pipecat, LiveKit worker, etc.).",
