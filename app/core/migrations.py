@@ -129,6 +129,20 @@ def verify_catalog_schema(db: Session) -> List[str]:
     return errors
 
 
+def _finalize_catalog_engine(db: Session) -> None:
+    """Verify catalog schema and sync pricing rates from models.json when needed."""
+    schema_errors = verify_catalog_schema(db)
+    if schema_errors:
+        raise RuntimeError(
+            "Catalog auth schema incomplete after migrations: "
+            + "; ".join(schema_errors)
+        )
+
+    from app.services.usage.pricing_ops import maybe_sync_pricing_catalog_after_migrate
+
+    maybe_sync_pricing_catalog_after_migrate(db)
+
+
 class MigrationRunner:
     """Handles running database migrations in order."""
 
@@ -339,12 +353,7 @@ def run_migrations():
 
             if not pending:
                 if is_catalog:
-                    schema_errors = verify_catalog_schema(db)
-                    if schema_errors:
-                        raise RuntimeError(
-                            "Catalog auth schema incomplete after migrations: "
-                            + "; ".join(schema_errors)
-                        )
+                    _finalize_catalog_engine(db)
                 logger.info("✅ Database is up to date - no migrations needed (%s)", url_hint)
                 continue
 
@@ -365,12 +374,7 @@ def run_migrations():
                 )
 
             if is_catalog:
-                schema_errors = verify_catalog_schema(db)
-                if schema_errors:
-                    raise RuntimeError(
-                        "Catalog auth schema incomplete after migrations: "
-                        + "; ".join(schema_errors)
-                    )
+                _finalize_catalog_engine(db)
 
             logger.info("✅ Verification complete - all migrations applied (%s)", url_hint)
         except RuntimeError:

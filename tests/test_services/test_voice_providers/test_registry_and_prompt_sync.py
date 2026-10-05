@@ -50,3 +50,46 @@ def test_sync_provider_prompt_updates_agent_and_commits(monkeypatch):
     assert agent.provider_prompt == "hello provider prompt"
     assert agent.provider_prompt_synced_at is not None
     assert db.commits == 1
+
+
+def test_build_voice_provider_passes_elevenlabs_base_url(monkeypatch):
+    captured = {}
+
+    class _Provider:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(prompt_sync_module, "get_voice_provider", lambda _p: _Provider)
+
+    integration = SimpleNamespace(
+        platform="elevenlabs",
+        api_key="enc-key",
+        public_key=None,
+        api_base_url="https://api.eu.residency.elevenlabs.io",
+    )
+    prompt_sync_module.build_voice_provider_from_integration(integration, decrypted_key="plain")
+
+    assert captured == {
+        "api_key": "plain",
+        "base_url": "https://api.eu.residency.elevenlabs.io",
+    }
+
+
+def test_build_voice_provider_omits_base_url_when_unset(monkeypatch):
+    captured = {}
+
+    class _Provider:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(prompt_sync_module, "get_voice_provider", lambda _p: _Provider)
+
+    integration = SimpleNamespace(
+        platform="elevenlabs",
+        api_key="enc-key",
+        public_key=None,
+        api_base_url=None,
+    )
+    prompt_sync_module.build_voice_provider_from_integration(integration, decrypted_key="plain")
+
+    assert captured == {"api_key": "plain"}

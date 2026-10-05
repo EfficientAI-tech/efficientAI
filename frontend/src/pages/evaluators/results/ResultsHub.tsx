@@ -1021,10 +1021,6 @@ export default function ResultsHub() {
 
           endDate={endDate}
 
-          overview={overview}
-
-          loadingOverview={loadingOverview}
-
         />
 
       ) : activeTab === 'runs' ? (

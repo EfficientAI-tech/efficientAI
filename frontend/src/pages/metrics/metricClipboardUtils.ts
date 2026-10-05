@@ -27,7 +27,7 @@ export interface MetricClipboardSinglePayload extends MetricClipboardPayloadBase
   capture_rationale: boolean
   compare_transcripts: boolean
   allow_discovery: boolean
-  custom_data_type?: 'boolean' | 'enum' | 'number_range' | null
+  custom_data_type?: 'boolean' | 'enum' | 'number_range' | 'classification' | null
   custom_config?: Record<string, unknown> | null
 }
 
@@ -51,7 +51,7 @@ type MetricLike = {
   metric_origin: 'default' | 'custom'
   supported_surfaces: string[]
   enabled_surfaces: string[]
-  custom_data_type?: 'boolean' | 'enum' | 'number_range' | null
+  custom_data_type?: 'boolean' | 'enum' | 'number_range' | 'classification' | null
   custom_config?: Record<string, unknown> | null
   tags?: string[] | null
   capture_rationale?: boolean
@@ -198,7 +198,11 @@ export function singleFormFromMetricClipboard(
     enabled_surfaces: [...payload.enabled_surfaces] as Array<
       'agent' | 'chat_agent' | 'voice_playground'
     >,
-    custom_data_type: customDataType as 'boolean' | 'enum' | 'number_range',
+    custom_data_type: customDataType as
+      | 'boolean'
+      | 'enum'
+      | 'number_range'
+      | 'classification',
     enum_options_csv: Array.isArray(payload.custom_config?.options)
       ? (payload.custom_config.options as string[]).join(', ')
       : '',

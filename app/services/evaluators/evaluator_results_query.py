@@ -290,6 +290,24 @@ def serialize_evaluator_result_row(
     if isinstance(call_data, dict):
         call_short_id = call_data.get("call_short_id")
 
+    call_recording_source = None
+    call_data = result_dict.get("call_data")
+    if isinstance(call_data, dict):
+        linked_call_short_id = call_data.get("call_short_id")
+        if isinstance(linked_call_short_id, str) and linked_call_short_id:
+            linked_recording = (
+                db.query(CallRecording)
+                .filter(
+                    CallRecording.call_short_id == linked_call_short_id,
+                    CallRecording.organization_id == result.organization_id,
+                    CallRecording.workspace_id == result.workspace_id,
+                )
+                .first()
+            )
+            if linked_recording and linked_recording.source:
+                call_recording_source = linked_recording.source.value
+    result_dict["call_recording_source"] = call_recording_source
+
     from app.services.synthetic_traces.trace_service import lookup_call_trace_status
 
     result_dict["call_trace_status"] = lookup_call_trace_status(

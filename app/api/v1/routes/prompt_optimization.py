@@ -31,7 +31,6 @@ from app.models.database import (
 )
 from app.models.enums import PromptOptimizationStatus
 from app.core.encryption import decrypt_api_key
-from app.services.voice_providers import get_voice_provider
 
 
 router = APIRouter(
@@ -319,13 +318,9 @@ def push_candidate_to_provider(
 
     try:
         decrypted_key = decrypt_api_key(integration.api_key)
-        provider_class = get_voice_provider(integration.platform)
+        from app.services.voice_providers.prompt_sync import build_voice_provider_from_integration
 
-        platform_val = integration.platform.value if hasattr(integration.platform, "value") else integration.platform
-        if platform_val.lower() == "vapi":
-            provider = provider_class(api_key=decrypted_key, public_key=integration.public_key)
-        else:
-            provider = provider_class(api_key=decrypted_key)
+        provider = build_voice_provider_from_integration(integration, decrypted_key=decrypted_key)
 
         result = provider.update_agent_prompt(
             agent_id=agent.voice_ai_agent_id,

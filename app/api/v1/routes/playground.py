@@ -98,6 +98,7 @@ def _validate_provider_call_id_for_recording(
     call_recording: CallRecording,
     proposed_id: str,
     agent: Agent,
+    integration: Integration,
     decrypted_api_key: str,
 ) -> None:
     """Ensure a client-supplied provider call id belongs to this recording's agent."""
@@ -136,8 +137,12 @@ def _validate_provider_call_id_for_recording(
         )
 
     try:
-        provider_class = get_voice_provider(platform)
-        provider = provider_class(api_key=decrypted_api_key)
+        from app.services.voice_providers.prompt_sync import build_voice_provider_from_integration
+
+        provider = build_voice_provider_from_integration(
+            integration,
+            decrypted_key=decrypted_api_key,
+        )
         metrics = provider.retrieve_call_metrics(proposed_id)
     except Exception as exc:
         raise HTTPException(
@@ -186,8 +191,10 @@ def poll_call_metrics(
     """
     import time
     from app.database import SessionLocal
+    from app.models.database import Agent, Integration
     from app.services.playground.post_call_processing import merge_playground_call_data
     from app.services.voice_providers import get_voice_provider
+    from app.services.voice_providers.prompt_sync import build_voice_provider_from_integration
     
     db = SessionLocal()
     call_complete = False
@@ -203,8 +210,21 @@ def poll_call_metrics(
 
         # Get the appropriate voice provider
         try:
-            provider_class = get_voice_provider(provider_platform)
-            provider = provider_class(api_key=integration_api_key)
+            integration = None
+            if call_recording.agent_id:
+                agent = db.query(Agent).filter(Agent.id == call_recording.agent_id).first()
+                if agent and agent.voice_ai_integration_id:
+                    integration = db.query(Integration).filter(
+                        Integration.id == agent.voice_ai_integration_id,
+                    ).first()
+            if integration:
+                provider = build_voice_provider_from_integration(
+                    integration,
+                    decrypted_key=integration_api_key,
+                )
+            else:
+                provider_class = get_voice_provider(provider_platform)
+                provider = provider_class(api_key=integration_api_key)
         except ValueError:
             return
         
@@ -473,6 +493,7 @@ async def update_call_recording(
         call_recording,
         update_data.provider_call_id,
         agent,
+        integration,
         decrypted_api_key,
     )
 
@@ -580,13 +601,12 @@ async def create_web_call(
         
         # Get the appropriate voice provider
         try:
-            provider_class = get_voice_provider(integration.platform)
-            
-            platform_value = integration.platform.value if hasattr(integration.platform, 'value') else integration.platform
-            if platform_value.lower() == "vapi":
-                provider = provider_class(api_key=decrypted_api_key, public_key=integration.public_key)
-            else:
-                provider = provider_class(api_key=decrypted_api_key)
+            from app.services.voice_providers.prompt_sync import build_voice_provider_from_integration
+
+            provider = build_voice_provider_from_integration(
+                integration,
+                decrypted_key=decrypted_api_key,
+            )
         except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -1178,6 +1198,7 @@ async def refresh_call_recording(
             call_recording,
             refresh_data.provider_call_id,
             agent,
+            integration,
             decrypted_api_key,
         )
         call_recording.provider_call_id = refresh_data.provider_call_id
@@ -1325,11 +1346,12 @@ async def re_evaluate_call_recording(
         # Retry once with fresh provider payload (new signed URL) using provider_call_id
         if not audio_bytes and call_recording.provider_call_id:
             try:
-                provider_class = get_voice_provider(platform)
-                provider_kwargs: Dict[str, Any] = {"api_key": decrypted_key}
-                if platform == "vapi" and integration.public_key:
-                    provider_kwargs["public_key"] = integration.public_key
-                provider = provider_class(**provider_kwargs)
+                from app.services.voice_providers.prompt_sync import build_voice_provider_from_integration
+
+                provider = build_voice_provider_from_integration(
+                    integration,
+                    decrypted_key=decrypted_key,
+                )
                 if hasattr(provider, "retrieve_call_metrics"):
                     refreshed_call_data = provider.retrieve_call_metrics(call_recording.provider_call_id)
                     if isinstance(refreshed_call_data, dict) and refreshed_call_data:
@@ -1691,7 +1713,7 @@ def _resolve_agent_stt_config(
     Lookup chain: Agent -> VoiceBundle -> stt_provider/stt_model
                   -> AIProvider (by org + provider name) or Integration or env var fallback.
 
-    Returns (stt_provider, stt_model, api_key).  Any element may be None.
+    Returns (stt_provider, stt_model, api_key, api_base_url).  Any element may be None.
     """
     import os
     from sqlalchemy import func
@@ -1701,14 +1723,14 @@ def _resolve_agent_stt_config(
         Agent.organization_id == organization_id,
     ).first()
     if not agent or not agent.voice_bundle_id:
-        return None, None, None
+        return None, None, None, None
 
     voice_bundle = db.query(VoiceBundle).filter(
         VoiceBundle.id == agent.voice_bundle_id,
         VoiceBundle.organization_id == organization_id,
     ).first()
     if not voice_bundle or not voice_bundle.stt_provider:
-        return None, None, None
+        return None, None, None, None
 
     stt_provider = (
         voice_bundle.stt_provider.value
@@ -1739,6 +1761,9 @@ def _resolve_agent_stt_config(
         except Exception:
             pass
 
+    api_base_url = None
+    stt_credential_id = getattr(voice_bundle, "stt_credential_id", None)
+
     # 2) Integration fallback
     if not api_key:
         _platform_map = {
@@ -1748,16 +1773,21 @@ def _resolve_agent_stt_config(
         }
         plat_value = _platform_map.get(stt_provider)
         if plat_value:
-            integ = db.query(Integration).filter(
-                Integration.organization_id == organization_id,
-                func.lower(Integration.platform) == plat_value,
-                Integration.is_active == True,
-            ).first()
+            from app.services.credentials.resolver import resolve_integration
+
+            integ = resolve_integration(
+                plat_value,
+                db,
+                organization_id,
+                credential_id=stt_credential_id,
+            )
             if integ:
                 try:
                     api_key = decrypt_api_key(integ.api_key)
                 except Exception:
                     pass
+                if stt_provider == "elevenlabs":
+                    api_base_url = getattr(integ, "api_base_url", None)
 
     # 3) Env var fallback
     if not api_key:
@@ -1765,7 +1795,7 @@ def _resolve_agent_stt_config(
         if env_key:
             api_key = os.getenv(env_key)
 
-    return stt_provider, stt_model, api_key
+    return stt_provider, stt_model, api_key, api_base_url
 
 
 # ---------------------------------------------------------------------------
@@ -1780,7 +1810,7 @@ async def get_agent_stt_config(
     db: Session = Depends(get_db),
 ):
     """Check whether an agent has STT configured via its voice bundle."""
-    stt_provider, stt_model, stt_api_key = _resolve_agent_stt_config(
+    stt_provider, stt_model, stt_api_key, _stt_base = _resolve_agent_stt_config(
         agent_id, organization_id, db
     )
     if stt_provider and stt_api_key:
@@ -1816,7 +1846,7 @@ async def transcribe_turn(
             detail="channel must be 'user' or 'agent'",
         )
 
-    stt_provider, stt_model, stt_api_key = _resolve_agent_stt_config(
+    stt_provider, stt_model, stt_api_key, stt_api_base_url = _resolve_agent_stt_config(
         agent_id, organization_id, db
     )
     if not stt_provider or not stt_api_key:
@@ -1853,7 +1883,9 @@ async def transcribe_turn(
         elif stt_provider == "openai":
             result = transcribe_openai(tmp_path, stt_model, stt_api_key)
         elif stt_provider == "elevenlabs":
-            result = transcribe_elevenlabs(tmp_path, stt_model, stt_api_key)
+            result = transcribe_elevenlabs(
+                tmp_path, stt_model, stt_api_key, base_url=stt_api_base_url
+            )
         elif stt_provider == "sarvam":
             result = transcribe_sarvam(tmp_path, stt_model, stt_api_key)
         else:

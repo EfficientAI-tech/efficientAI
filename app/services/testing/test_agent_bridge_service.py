@@ -39,6 +39,94 @@ from app.services.evaluators.evaluator_helpers import require_matching_agent_per
 from app.workers.celery_app import process_evaluator_result_task
 
 
+async def _start_agent_speech_listener(
+    *,
+    voice_bundle,
+    resolve_api_key,
+    db,
+    organization_id,
+    sample_rate: int,
+    test_agent,
+):
+    """Start streaming STT over the production agent's audio.
+
+    Uses the voice bundle's STT provider/model/credential (Deepgram when unset).
+    Returns None when STT cannot run; callers fall back to provider text.
+    """
+    from app.models.database import ModelProvider
+    from app.services.webrtc_bridge.agent_speech_listener import (
+        DEFAULT_STT_PROVIDER,
+        AgentSpeechListener,
+    )
+
+    raw = getattr(voice_bundle, "stt_provider", None) if voice_bundle else None
+    provider = (raw.value if hasattr(raw, "value") else str(raw or "")).lower() or DEFAULT_STT_PROVIDER
+    model = getattr(voice_bundle, "stt_model", None) if voice_bundle else None
+    credential_id = getattr(voice_bundle, "stt_credential_id", None) if voice_bundle else None
+
+    provider_enum = {
+        "deepgram": ModelProvider.DEEPGRAM,
+        "elevenlabs": ModelProvider.ELEVENLABS,
+        "openai": ModelProvider.OPENAI,
+        "sarvam": ModelProvider.SARVAM,
+        "smallest": ModelProvider.SMALLEST,
+    }.get(provider)
+    if provider_enum is None:
+        logger.warning(f"[AgentSTT] Unsupported STT provider '{provider}' — using provider text")
+        return None
+
+    api_key = resolve_api_key(provider_enum, credential_id=credential_id)
+    if not api_key:
+        logger.warning(f"[AgentSTT] No API key for STT provider '{provider}' — using provider text")
+        return None
+
+    base_url = None
+    if provider == "elevenlabs":
+        from app.services.credentials.elevenlabs_inference import resolve_elevenlabs_api_base_url
+
+        base_url = resolve_elevenlabs_api_base_url(db, organization_id, credential_id=credential_id)
+
+    listener = AgentSpeechListener(
+        provider=provider,
+        api_key=api_key,
+        model=model,
+        sample_rate=sample_rate,
+        base_url=base_url,
+        on_usage=lambda secs: test_agent.record_stt_usage(
+            model=model or provider, audio_seconds=secs
+        ),
+    )
+    if not await listener.start():
+        logger.warning(f"[AgentSTT] {provider} STT failed to start — using provider text")
+        return None
+    return listener
+
+
+async def _start_agent_tts_streamer(test_agent: Any):
+    """Start streaming TTS for the test agent with the bundle's TTS provider,
+    voice and credential (same pipecat service as telephony). Returns None if
+    it can't start; the test agent then uses one-shot TTS."""
+    from app.services.webrtc_bridge.agent_tts_streamer import AgentTTSStreamer
+
+    cfg = test_agent.config
+    if not cfg.tts_api_key:
+        return None
+    streamer = AgentTTSStreamer(
+        provider=cfg.tts_provider,
+        api_key=cfg.tts_api_key,
+        sample_rate=cfg.sample_rate,
+        voice_id=cfg.tts_voice_id,
+        model=cfg.tts_model,
+        elevenlabs_api_base_url=cfg.tts_elevenlabs_api_base_url,
+    )
+    if not await streamer.start():
+        await streamer.close()
+        logger.warning(f"[AgentTTS] Streaming {cfg.tts_provider} TTS unavailable; using one-shot TTS")
+        return None
+    test_agent.tts_streamer = streamer
+    return streamer
+
+
 class TestAgentBridgeService:
     """Service to bridge test voice AI agent with Voice AI agent."""
 
@@ -121,13 +209,11 @@ class TestAgentBridgeService:
         # Handle platform being either enum or string
         platform_value = integration.platform.value if hasattr(integration.platform, "value") else integration.platform
         try:
-            provider_class = get_voice_provider(platform_value)
-            # For Vapi, pass the public_key as well (needed for web call creation)
+            from app.services.voice_providers.prompt_sync import build_voice_provider_from_integration
+
             if platform_value.lower() == "vapi":
                 logger.info(f"[Bridge] Creating Vapi provider with public_key={'set' if integration.public_key else 'NOT SET (will fail!)'}")
-                provider = provider_class(api_key=api_key, public_key=integration.public_key)
-            else:
-                provider = provider_class(api_key=api_key)
+            provider = build_voice_provider_from_integration(integration, decrypted_key=api_key)
         except ValueError:
             raise ValueError(f"Unsupported voice provider platform: {platform_value}")
 
@@ -318,6 +404,8 @@ class TestAgentBridgeService:
         test_agent = None
         ambient_mic_pump = None
         turn_gate = None
+        stt_listener = None
+        tts_streamer = None
 
         # Helper function to update status
         async def update_status(new_status: str, event: str = None, error: str = None):
@@ -573,17 +661,40 @@ class TestAgentBridgeService:
             # Honor per-leg credential pins on the voice bundle when present.
             llm_credential_id = getattr(voice_bundle, "llm_credential_id", None) if voice_bundle else None
             tts_credential_id = getattr(voice_bundle, "tts_credential_id", None) if voice_bundle else None
-            llm_api_key = resolve_api_key_for_provider(
-                ModelProvider.OPENAI, credential_id=llm_credential_id
-            )
+            # Test agent LLM comes from the voice bundle; OpenAI gpt-4o-mini only when unset.
+            raw_llm_provider = getattr(voice_bundle, "llm_provider", None) if voice_bundle else None
+            llm_provider_str = (
+                raw_llm_provider.value if hasattr(raw_llm_provider, "value") else str(raw_llm_provider or "")
+            ).lower() or "openai"
+            llm_model = (getattr(voice_bundle, "llm_model", None) if voice_bundle else None) or "gpt-4o-mini"
+            llm_config = (getattr(voice_bundle, "llm_config", None) if voice_bundle else None) or None
+            llm_api_key = None
+            if llm_provider_str == "openai":
+                llm_api_key = resolve_api_key_for_provider(
+                    ModelProvider.OPENAI, credential_id=llm_credential_id
+                )
+            logger.info(f"[Bridge WebRTC] Test agent LLM: {llm_provider_str}/{llm_model}")
             tts_api_key = resolve_api_key_for_provider(
                 tts_model_provider, credential_id=tts_credential_id
             )
+            tts_elevenlabs_api_base_url = None
+            if tts_provider_str == "elevenlabs":
+                from app.services.credentials.elevenlabs_inference import (
+                    resolve_elevenlabs_api_base_url,
+                )
+
+                tts_elevenlabs_api_base_url = resolve_elevenlabs_api_base_url(
+                    db,
+                    organization_id,
+                    credential_id=tts_credential_id,
+                )
 
             logger.info(f"[Bridge WebRTC] API keys found: OpenAI={'yes' if llm_api_key else 'no'}, {tts_provider_str}={'yes' if tts_api_key else 'no'}")
 
             missing_keys = []
-            if not llm_api_key:
+            # Non-OpenAI LLM keys are resolved by llm_service (AIProvider / Integration, honoring
+            # the bundle's credential pin) at call time.
+            if llm_provider_str == "openai" and not llm_api_key:
                 missing_keys.append("OpenAI (LLM) - check AIProvider table or OPENAI_API_KEY env var")
             if not tts_api_key:
                 env_hints = {
@@ -648,10 +759,24 @@ class TestAgentBridgeService:
                     scenario_goal=scenario_goal,
                     first_message=first_message or "",
                     caller_speaks_first=caller_speaks_first,
+                    llm_provider=llm_provider_str,
+                    llm_model=llm_model,
+                    llm_credential_id=llm_credential_id,
+                    llm_config=llm_config,
                     llm_api_key=llm_api_key,
-                    llm_temperature=getattr(persona, "llm_temperature", None),
-                    llm_max_tokens=getattr(persona, "llm_max_tokens", None),
+                    # Persona overrides the bundle's sampling settings when set.
+                    llm_temperature=(
+                        getattr(persona, "llm_temperature", None)
+                        if getattr(persona, "llm_temperature", None) is not None
+                        else getattr(voice_bundle, "llm_temperature", None) if voice_bundle else None
+                    ),
+                    llm_max_tokens=(
+                        getattr(persona, "llm_max_tokens", None)
+                        if getattr(persona, "llm_max_tokens", None) is not None
+                        else getattr(voice_bundle, "llm_max_tokens", None) if voice_bundle else None
+                    ),
                     tts_api_key=tts_api_key,
+                    tts_elevenlabs_api_base_url=tts_elevenlabs_api_base_url,
                     tts_provider=tts_provider_str,
                     tts_voice_id=tts_voice_id,
                     tts_model=tts_model,
@@ -693,22 +818,49 @@ class TestAgentBridgeService:
                 from app.services.audio.ambient_mic_pump import AmbientMicPump
                 from app.services.webrtc_bridge.production_turn_gate import ProductionTurnGate
 
-                async def send_audio_chunks(audio: bytes):
-                    """Stream audio to voice provider in real-time chunks."""
+                # Set when the production agent starts talking over the test agent.
+                # Barge-in is enabled for ElevenLabs only.
+                outbound_cancel = asyncio.Event() if provider_platform == "elevenlabs" else None
+
+                async def send_audio_chunks(audio: bytes, *, final: bool = True) -> int:
+                    """Stream audio to voice provider in real-time chunks.
+
+                    ``final=False`` sends one segment of a streamed reply: the ElevenLabs
+                    background silence stays paused (so gaps between sentences don't end
+                    the test agent's turn) and barge-in bookkeeping is left to the caller.
+                    Returns the number of bytes sent.
+                    """
                     touch_voice_activity()
+                    cancel_kwargs = {"cancel_event": outbound_cancel} if outbound_cancel is not None else {}
+                    started = time.monotonic()
                     if ambient_mic_pump:
-                        await ambient_mic_pump.send_speech(
+                        sent = await ambient_mic_pump.send_speech(
                             audio,
                             test_agent.stream_audio_chunks,
+                            **cancel_kwargs,
                         )
                     else:
-                        await test_agent.stream_audio_chunks(
-                            audio,
-                            webrtc_bridge.receive_audio_from_test_agent,
-                            chunk_duration_ms=chunk_ms,
-                        )
-                        if provider_platform == "elevenlabs" and hasattr(webrtc_bridge, "mark_user_audio_done"):
-                            webrtc_bridge.mark_user_audio_done()
+                        try:
+                            sent = await test_agent.stream_audio_chunks(
+                                audio,
+                                webrtc_bridge.receive_audio_from_test_agent,
+                                chunk_duration_ms=chunk_ms,
+                                **cancel_kwargs,
+                            )
+                        finally:
+                            if final and provider_platform == "elevenlabs" and hasattr(webrtc_bridge, "mark_user_audio_done"):
+                                webrtc_bridge.mark_user_audio_done()
+                    if not final:
+                        return sent or 0
+                    if outbound_cancel is not None and outbound_cancel.is_set() and audio:
+                        fraction = (sent or 0) / len(audio)
+                        if fraction < 1.0:
+                            logger.info(
+                                f"[Bridge WebRTC] Test agent barged-in by {provider_platform} after "
+                                f"{time.monotonic() - started:.1f}s ({fraction:.0%} of utterance sent)"
+                            )
+                            test_agent.mark_last_response_interrupted(fraction)
+                    return sent or 0
 
                 async def flush_held_transcript(transcript: str):
                     """Run test-agent LLM+TTS only after VAD confirms production audio is quiet."""
@@ -717,7 +869,30 @@ class TestAgentBridgeService:
                         f"{provider_platform}: {transcript[:50]}..."
                     )
                     test_agent.agent_is_talking = False
+                    if outbound_cancel is not None:
+                        # Reset per turn; if the agent starts talking while we are
+                        # still generating (LLM/TTS), the reply is suppressed.
+                        outbound_cancel.clear()
                     turn_gate.set_outbound_active(True)
+                    if provider_platform == "elevenlabs":
+                        # Stream like the telephony pipeline: speak each sentence as it is
+                        # ready instead of waiting for the full LLM reply and TTS clip.
+                        try:
+                            reply = await test_agent.process_agent_transcript_streaming(
+                                transcript,
+                                speak=lambda audio: send_audio_chunks(audio, final=False),
+                                cancel_event=outbound_cancel,
+                            )
+                            if not reply:
+                                logger.warning(
+                                    f"[Bridge WebRTC] No reply generated for held transcript — test agent silent "
+                                    f"(TTS={test_agent.config.tts_provider}, turn={test_agent.turn_count})"
+                                )
+                        finally:
+                            if hasattr(webrtc_bridge, "mark_user_audio_done"):
+                                webrtc_bridge.mark_user_audio_done()
+                            turn_gate.set_outbound_active(False)
+                        return
                     try:
                         audio = await test_agent.process_agent_transcript(transcript)
                         if audio:
@@ -734,6 +909,21 @@ class TestAgentBridgeService:
                     finally:
                         turn_gate.set_outbound_active(False)
 
+                async def on_production_speech():
+                    """VAD heard the agent: barge in, like the telephony pipeline's interruption."""
+                    if outbound_cancel is not None and turn_gate.outbound_active and not outbound_cancel.is_set():
+                        logger.info(f"[Bridge WebRTC] {provider_platform} agent speech (VAD) — stopping test agent turn")
+                        outbound_cancel.set()
+
+                barge_in_kwargs = (
+                    {
+                        "hold_while_speaking": True,
+                        "speaking_probe": lambda: webrtc_bridge.agent_is_talking,
+                        "on_production_speech": on_production_speech,
+                    }
+                    if provider_platform == "elevenlabs"
+                    else {}
+                )
                 turn_gate = ProductionTurnGate(
                     on_flush=flush_held_transcript,
                     stop_secs=(
@@ -743,27 +933,63 @@ class TestAgentBridgeService:
                         else 1.0
                     ),
                     flush_on_vad_quiet=provider_platform != "elevenlabs",
+                    **barge_in_kwargs,
                 )
                 await turn_gate.start()
 
+                if provider_platform == "elevenlabs":
+                    stt_listener = await _start_agent_speech_listener(
+                        voice_bundle=voice_bundle,
+                        resolve_api_key=resolve_api_key_for_provider,
+                        db=db,
+                        organization_id=organization_id,
+                        sample_rate=sample_rate,
+                        test_agent=test_agent,
+                    )
+                    if stt_listener and hasattr(webrtc_bridge, "deliver_empty_turns"):
+                        # Late or missing agent_response text: STT still drives the turn.
+                        webrtc_bridge.deliver_empty_turns = True
+                    tts_streamer = await _start_agent_tts_streamer(test_agent)
+
                 async def on_transcript_received(transcript: str):
-                    """Hold provider text until inbound audio VAD confirms silence."""
+                    """Hold the turn's text until inbound audio VAD confirms silence.
+
+                    With an STT listener attached, the test agent hears what was
+                    actually spoken; provider text is the fallback.
+                    """
                     touch_voice_activity()
+                    if stt_listener is not None:
+                        heard = None
+                        if stt_listener.healthy:
+                            heard = await stt_listener.finalize_turn(timeout=0.5)
+                        if heard:
+                            logger.info(f'[AgentSTT] heard="{heard[:80]}" | provider="{transcript[:80]}"')
+                            transcript = heard
+                        else:
+                            reason = "STT unhealthy" if not stt_listener.healthy else "no speech recognized"
+                            logger.warning(f"[AgentSTT] fallback to provider text ({reason})")
+                    if not transcript or not transcript.strip():
+                        return
                     logger.info(
                         f"[Bridge WebRTC] Holding transcript from {provider_platform}: {transcript[:50]}..."
                     )
                     await turn_gate.hold_transcript(transcript)
 
                 async def on_audio_received(pcm: bytes):
-                    """Feed production-agent PCM into the VAD turn gate."""
+                    """Feed production-agent PCM into the VAD turn gate (and STT)."""
                     touch_voice_activity()
                     await turn_gate.ingest_audio(pcm, source_rate=sample_rate)
+                    if stt_listener is not None:
+                        await stt_listener.push_audio(pcm)
 
                 async def on_agent_start_talking():
                     """Voice AI agent started speaking -- test agent should wait."""
                     touch_voice_activity()
                     logger.info(f"[Bridge WebRTC] {provider_platform} agent started speaking")
                     test_agent.agent_is_talking = True
+                    if outbound_cancel is not None and turn_gate.outbound_active and not outbound_cancel.is_set():
+                        logger.info(f"[Bridge WebRTC] {provider_platform} agent barged in — stopping test agent audio")
+                        outbound_cancel.set()
                     await turn_gate.on_production_start_talking()
 
                 async def on_agent_stop_talking():
@@ -897,6 +1123,10 @@ class TestAgentBridgeService:
             # Cleanup
             if turn_gate:
                 await turn_gate.stop()
+            if stt_listener:
+                await stt_listener.close()
+            if tts_streamer:
+                await tts_streamer.close()
             if ambient_mic_pump:
                 await ambient_mic_pump.stop()
             if webrtc_bridge:
@@ -991,7 +1221,9 @@ class TestAgentBridgeService:
 
                     # Retrieve call metrics from provider
                     if provider_platform in ["retell", "vapi", "elevenlabs"] and hasattr(provider, "retrieve_call_metrics"):
-                        call_metrics = provider.retrieve_call_metrics(call_id)
+                        # Sync HTTP (requests, 30 s timeout): run it off the event loop
+                        # so it can't freeze the live bridge audio while the call runs.
+                        call_metrics = await asyncio.to_thread(provider.retrieve_call_metrics, call_id)
                     else:
                         logger.warning(f"[Bridge Poll] Platform {provider_platform} polling not yet implemented")
                         continue

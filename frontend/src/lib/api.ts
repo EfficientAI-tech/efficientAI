@@ -1343,15 +1343,6 @@ class ApiClient {
     call_type: string
     call_medium: string
     voice_bundle_id?: string
-    chat_connection_type?: string
-    main_llm_provider?: string
-    main_llm_model?: string
-    main_llm_credential_id?: string
-    test_llm_provider?: string
-    test_llm_model?: string
-    test_llm_credential_id?: string
-    chat_connection_config?: Record<string, unknown>
-    chat_eval_mode?: string
     ai_provider_id?: string
     voice_ai_integration_id?: string
     voice_ai_agent_id?: string
@@ -1371,16 +1362,6 @@ class ApiClient {
 
   async getAgent(agentId: string): Promise<TestAgent> {
     const response = await this.client.get(`/api/v1/agents/${agentId}`)
-    return response.data
-  }
-
-  async setupChatImportForAgent(agentId: string): Promise<{
-    schema_id: string
-    schema_name: string
-    content_modality: string
-    imports_path: string
-  }> {
-    const response = await this.client.post(`/api/v1/agents/${agentId}/chat-import-setup`)
     return response.data
   }
 
@@ -1414,16 +1395,6 @@ class ApiClient {
     voice_ai_agent_id?: string | null
     provider_prompt?: string | null
     prompt_variables?: Record<string, string>
-    test_agent_template?: unknown
-    chat_connection_type?: string
-    main_llm_provider?: string
-    main_llm_model?: string
-    main_llm_credential_id?: string
-    test_llm_provider?: string
-    test_llm_model?: string
-    test_llm_credential_id?: string
-    chat_connection_config?: Record<string, unknown> | null
-    chat_eval_mode?: string
   }): Promise<TestAgent> {
     const response = await this.client.put(`/api/v1/agents/${agentId}`, data)
     return response.data
@@ -2580,7 +2551,6 @@ class ApiClient {
       dataset?: string
       tag_id?: string[]
       source_format?: string
-      content_modality?: string
     } = {}
   ): Promise<CallImportListResponse> {
     // Send tag_id repeated rather than as a JSON array.
@@ -2590,7 +2560,6 @@ class ApiClient {
     if (params.status) search.set('status', params.status)
     if (params.dataset !== undefined) search.set('dataset', params.dataset)
     if (params.source_format) search.set('source_format', params.source_format)
-    if (params.content_modality) search.set('content_modality', params.content_modality)
     for (const tag of params.tag_id || []) search.append('tag_id', tag)
     const response = await this.client.get('/api/v1/call-imports', { params: search })
     return response.data
@@ -2773,8 +2742,9 @@ class ApiClient {
    *
    * - Pass ``regenerate: true`` to force a fresh LLM call even when a
    *   cached summary exists at the current ``completed_rows`` watermark.
-   * - Pass ``provider``, ``model``, and optional ``credential_id`` to run
-   *   insights with an explicit LLM selection.
+   * - Pass ``provider`` + ``model`` to pin a specific LLM. Omit both to
+   *   let the backend auto-detect the org's first active OpenAI /
+   *   Anthropic / Google credential (mirroring Prompt Partials).
    */
   async generateCallImportEvaluationInsights(
     callImportId: string,
@@ -3366,6 +3336,12 @@ class ApiClient {
        * Required-and-implied when ``metricIds`` is set.
        */
       includeCompleted?: boolean
+      /**
+       * Per-metric LLM overrides, keyed by leaf metric id. Replaces the
+       * run's stored overrides, so callers should merge with the existing
+       * map. Used to route classification metrics to a System 1 model.
+       */
+      metricLlmOverrides?: Record<string, CallImportEvaluationLLMOverride>
     },
   ): Promise<CallImportEvaluationRetryResponse> {
     const body: Record<string, unknown> = {}
@@ -3379,6 +3355,9 @@ class ApiClient {
     }
     if (options?.llmConfig !== undefined) {
       body.llm_config = options.llmConfig
+    }
+    if (options?.metricLlmOverrides !== undefined) {
+      body.metric_llm_overrides = options.metricLlmOverrides
     }
     if (options?.sttProvider) body.stt_provider = options.sttProvider
     if (options?.sttModel) body.stt_model = options.sttModel
@@ -3522,6 +3501,9 @@ class ApiClient {
       q?: string
       metric_id?: string
       metric_value?: string
+      classification_yes_no?: string
+      classification_choice?: string
+      classification_level?: string
       status?: string
       // Flow-chart drilldown: filter to rows whose sequence under the
       // given parent contains ``flow_node`` (and optionally is
@@ -4307,14 +4289,22 @@ class ApiClient {
     return response.data
   }
 
-  async getCallRecordingAudioUrl(callShortId: string, options?: { stereo?: boolean }): Promise<string> {
+  async getCallRecordingAudioBlob(
+    callShortId: string,
+    options?: { stereo?: boolean },
+  ): Promise<Blob> {
     const params = new URLSearchParams({ proxy: 'true' })
     if (options?.stereo) params.set('stereo', 'true')
     const response = await this.client.get(
       `/api/v1/playground/call-recordings/${callShortId}/audio?${params.toString()}`,
-      { responseType: 'blob' }
+      { responseType: 'blob' },
     )
-    return URL.createObjectURL(response.data)
+    return response.data as Blob
+  }
+
+  async getCallRecordingAudioUrl(callShortId: string, options?: { stereo?: boolean }): Promise<string> {
+    const blob = await this.getCallRecordingAudioBlob(callShortId, options)
+    return URL.createObjectURL(blob)
   }
 
   async getCallRecordingAudioBuffer(
@@ -4518,12 +4508,17 @@ class ApiClient {
     return response.data as ArrayBuffer
   }
 
-  async getObservabilityCallAudioUrl(callShortId: string): Promise<string> {
+  async getObservabilityCallAudioBlob(callShortId: string): Promise<Blob> {
     const response = await this.client.get(
       `/api/v1/observability/calls/${callShortId}/audio`,
       { responseType: 'blob' },
     )
-    return URL.createObjectURL(response.data)
+    return response.data as Blob
+  }
+
+  async getObservabilityCallAudioUrl(callShortId: string): Promise<string> {
+    const blob = await this.getObservabilityCallAudioBlob(callShortId)
+    return URL.createObjectURL(blob)
   }
 
   async deleteObservabilityCall(callShortId: string): Promise<{ message: string }> {
@@ -4689,12 +4684,7 @@ class ApiClient {
 
   async runEvaluatorSuite(
     suiteId: string,
-    data: {
-      runs_per_combination: number
-      to_number?: string
-      from_number?: string
-      twilio_sms_trial_body_template?: string
-    },
+    data: { runs_per_combination: number; to_number?: string; from_number?: string },
   ): Promise<RunEvaluatorSuiteResponse> {
     const response = await this.client.post(`/api/v1/evaluator-suites/${suiteId}/run`, data)
     return response.data
@@ -5306,12 +5296,17 @@ class ApiClient {
     return response.data as ArrayBuffer
   }
 
-  async getEvaluatorResultAudioUrl(resultId: string): Promise<string> {
+  async getEvaluatorResultAudioBlob(resultId: string): Promise<Blob> {
     const response = await this.client.get(
       `/api/v1/evaluator-results/${resultId}/audio`,
       { responseType: 'blob' },
     )
-    return URL.createObjectURL(response.data)
+    return response.data as Blob
+  }
+
+  async getEvaluatorResultAudioUrl(resultId: string): Promise<string> {
+    const blob = await this.getEvaluatorResultAudioBlob(resultId)
+    return URL.createObjectURL(blob)
   }
 
   async createEvaluatorResultManual(data: {

@@ -239,3 +239,216 @@ def test_resample_mono_int16_helper():
     src = np.arange(240, dtype=np.int16)
     out = resample_mono_int16(src, 24_000, 16_000)
     assert len(out) == 160
+
+
+async def _wait_for(predicate, timeout: float = 1.0) -> None:
+    deadline = asyncio.get_event_loop().time() + timeout
+    while not predicate() and asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(0.02)
+
+
+@pytest.mark.asyncio
+async def test_provider_stop_flush_survives_awaiting_on_flush():
+    """Regression: the flush must not cancel its own provider-stop task."""
+    completed: list[str] = []
+
+    async def on_flush(text: str) -> None:
+        await asyncio.sleep(0.05)  # simulates LLM + TTS
+        completed.append(text)
+
+    vad = FakeVAD([VADState.QUIET])
+    gate = ProductionTurnGate(
+        on_flush=on_flush,
+        stop_secs=0.05,
+        flush_on_vad_quiet=False,
+        vad_analyzer=vad,
+    )
+    await gate.start()
+
+    await gate.hold_transcript("ElevenLabs turn")
+    await gate.on_provider_stop_talking()
+    await _wait_for(lambda: completed)
+
+    assert completed == ["ElevenLabs turn"]
+    await gate.stop()
+
+
+@pytest.mark.asyncio
+async def test_start_talking_does_not_cancel_in_flight_flush():
+    started = asyncio.Event()
+    completed: list[str] = []
+
+    async def on_flush(text: str) -> None:
+        started.set()
+        await asyncio.sleep(0.1)
+        completed.append(text)
+
+    vad = FakeVAD([VADState.QUIET])
+    gate = ProductionTurnGate(
+        on_flush=on_flush,
+        stop_secs=0.05,
+        flush_on_vad_quiet=False,
+        vad_analyzer=vad,
+    )
+    await gate.start()
+
+    await gate.hold_transcript("First turn")
+    await gate.on_provider_stop_talking()
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+    await gate.on_production_start_talking()
+    await _wait_for(lambda: completed)
+
+    assert completed == ["First turn"]
+    await gate.stop()
+
+
+@pytest.mark.asyncio
+async def test_transcript_deferred_during_flush_is_retried():
+    started = asyncio.Event()
+    completed: list[str] = []
+
+    async def on_flush(text: str) -> None:
+        started.set()
+        await asyncio.sleep(0.05)
+        completed.append(text)
+
+    vad = FakeVAD([VADState.QUIET])
+    gate = ProductionTurnGate(
+        on_flush=on_flush,
+        stop_secs=0.02,
+        flush_on_vad_quiet=False,
+        vad_analyzer=vad,
+    )
+    await gate.start()
+
+    await gate.hold_transcript("First turn")
+    await gate.on_provider_stop_talking()
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    await gate.hold_transcript("Second turn")
+    await gate.on_provider_stop_talking()
+    await _wait_for(lambda: len(completed) >= 2)
+
+    assert completed == ["First turn", "Second turn"]
+    await gate.stop()
+
+
+@pytest.mark.asyncio
+async def test_late_text_timeout_flush_survives_awaiting_on_flush():
+    completed: list[str] = []
+
+    async def on_flush(text: str) -> None:
+        await asyncio.sleep(0.05)
+        completed.append(text)
+
+    vad = FakeVAD([VADState.SPEAKING, VADState.QUIET])
+    gate = ProductionTurnGate(
+        on_flush=on_flush,
+        stop_secs=0.05,
+        late_text_wait_secs=0.1,
+        vad_analyzer=vad,
+    )
+    await gate.start()
+
+    await gate.ingest_audio(_pcm_chunk())
+    await gate.ingest_audio(_pcm_chunk())
+    # Held without cancelling the late-text task so its timeout performs the flush.
+    gate._held_transcript = "Late text"
+    await _wait_for(lambda: completed)
+
+    assert completed == ["Late text"]
+    await gate.stop()
+
+
+@pytest.mark.asyncio
+async def test_hold_while_speaking_defers_flush_until_agent_stops():
+    """Agent resumes during the stop fallback window: no reply over its speech."""
+    flushed: list[str] = []
+    talking = {"value": False}
+
+    async def on_flush(text: str) -> None:
+        flushed.append(text)
+
+    gate = ProductionTurnGate(
+        on_flush=on_flush,
+        stop_secs=0.05,
+        flush_on_vad_quiet=False,
+        vad_analyzer=FakeVAD([VADState.QUIET]),
+        hold_while_speaking=True,
+        speaking_probe=lambda: talking["value"],
+    )
+    await gate.start()
+
+    await gate.hold_transcript("First half.")
+    await gate.on_provider_stop_talking()
+    talking["value"] = True  # agent resumes before the fallback fires
+    await asyncio.sleep(0.15)
+    assert flushed == []
+
+    await gate.hold_transcript("Second half.")
+    talking["value"] = False
+    await gate.on_provider_stop_talking()
+    await _wait_for(lambda: flushed)
+    assert flushed == ["First half. Second half."]
+
+    await gate.stop()
+
+
+@pytest.mark.asyncio
+async def test_hold_while_speaking_rearms_on_vad_quiet():
+    flushed: list[str] = []
+
+    async def on_flush(text: str) -> None:
+        flushed.append(text)
+
+    vad = FakeVAD([VADState.SPEAKING, VADState.SPEAKING, VADState.QUIET])
+    gate = ProductionTurnGate(
+        on_flush=on_flush,
+        stop_secs=0.05,
+        flush_on_vad_quiet=False,
+        vad_analyzer=vad,
+        hold_while_speaking=True,
+    )
+    await gate.start()
+
+    await gate.ingest_audio(_pcm_chunk())  # VAD speaking
+    await gate.hold_transcript("Still talking")
+    await gate.on_provider_stop_talking()
+    await asyncio.sleep(0.1)
+    assert flushed == []  # deferred: VAD hears speech
+
+    await gate.ingest_audio(_pcm_chunk())
+    await gate.ingest_audio(_pcm_chunk())  # VAD quiet re-arms the flush
+    await _wait_for(lambda: flushed)
+    assert flushed == ["Still talking"]
+
+    await gate.stop()
+
+
+@pytest.mark.asyncio
+async def test_on_production_speech_fires_once_per_vad_rising_edge():
+    edges: list[int] = []
+
+    async def on_flush(text: str) -> None:
+        pass
+
+    async def on_speech() -> None:
+        edges.append(1)
+
+    vad = FakeVAD(
+        [VADState.STARTING, VADState.SPEAKING, VADState.SPEAKING, VADState.QUIET, VADState.SPEAKING]
+    )
+    gate = ProductionTurnGate(on_flush=on_flush, vad_analyzer=vad, on_production_speech=on_speech)
+    await gate.start()
+
+    for _ in range(3):
+        await gate.ingest_audio(_pcm_chunk())
+    assert edges == [1]
+    assert gate.production_speaking
+
+    await gate.ingest_audio(_pcm_chunk())
+    assert not gate.production_speaking
+    await gate.ingest_audio(_pcm_chunk())
+    assert edges == [1, 1]
+
+    await gate.stop()

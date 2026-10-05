@@ -15,7 +15,11 @@ def test_get_audio_file_extension_smallest_is_wav():
 
 def test_synthesize_smallest_dispatches_to_smallest_handler(monkeypatch):
     service = TTSService()
-    monkeypatch.setattr(service, "_get_api_key_for_provider", lambda *_args, **_kwargs: "key-1")
+    monkeypatch.setattr(
+        service,
+        "_resolve_synthesis_credentials",
+        lambda *_args, **_kwargs: ("key-1", {}),
+    )
     monkeypatch.setattr(
         tts_module,
         "synthesize_smallest_bytes",

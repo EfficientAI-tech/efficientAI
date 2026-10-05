@@ -21,8 +21,24 @@ from app.core.encryption import encrypt_api_key, decrypt_api_key
 from app.services.credentials.resolver import clear_other_defaults
 from app.services.voice_providers import get_voice_provider
 from app.services.ai.llm_gateway import get_credential_effective_routing_label
+from app.services.voice_providers.elevenlabs_api_url import normalize_elevenlabs_api_base_url
 
 router = APIRouter(prefix="/integrations", tags=["Integrations"])
+
+
+def _resolve_integration_api_base_url(platform_value: str, raw: Optional[str]) -> Optional[str]:
+    """Validate and normalize api_base_url; only persisted for ElevenLabs."""
+    if platform_value.lower() != IntegrationPlatform.ELEVENLABS.value:
+        if raw is not None and str(raw).strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="api_base_url is only supported for ElevenLabs integrations",
+            )
+        return None
+    try:
+        return normalize_elevenlabs_api_base_url(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 def _integration_response(
@@ -102,12 +118,18 @@ async def create_integration(
     will_be_default = requested_default or existing_default is None
     insert_as_default = will_be_default and existing_default is None
 
+    api_base_url = _resolve_integration_api_base_url(
+        platform_value,
+        integration_data.api_base_url,
+    )
+
     integration = Integration(
         organization_id=organization_id,
         platform=platform_value,
         name=integration_name,
         api_key=encrypted_api_key,
         public_key=integration_data.public_key,
+        api_base_url=api_base_url,
         is_active=True,
         is_default=insert_as_default,
         routing_mode=integration_data.routing_mode.value,
@@ -283,6 +305,17 @@ async def update_integration(
     
     if integration_update.public_key is not None:
         integration.public_key = integration_update.public_key
+
+    if "api_base_url" in integration_update.model_fields_set:
+        platform_value = (
+            integration.platform.value
+            if hasattr(integration.platform, "value")
+            else integration.platform
+        )
+        integration.api_base_url = _resolve_integration_api_base_url(
+            platform_value,
+            integration_update.api_base_url,
+        )
     
     if integration_update.is_active is not None:
         integration.is_active = integration_update.is_active
@@ -467,7 +500,11 @@ async def preview_integration_agent_prompt(
     try:
         from app.services.voice_providers.prompt_sync import fetch_provider_prompt
 
-        prompt = fetch_provider_prompt(integration, body.voice_ai_agent_id)
+        prompt = fetch_provider_prompt(
+            integration,
+            body.voice_ai_agent_id,
+            agent_channel=body.agent_channel,
+        )
     except Exception as e:
         raise HTTPException(
             status_code=502,
