@@ -349,6 +349,7 @@ export enum TelephonyProvider {
   VOBIZ = 'vobiz',
   TWILIO = 'twilio',
   TELNYX = 'telnyx',
+  META_WHATSAPP = 'meta_whatsapp',
 }
 
 export type CredentialRoutingMode = 'inherit' | 'gateway' | 'direct'

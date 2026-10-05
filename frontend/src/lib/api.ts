@@ -1308,8 +1308,21 @@ class ApiClient {
     public_base_url: string
     twilio_public_base_url?: string
     telnyx_public_base_url?: string
+    meta_whatsapp_inbound_webhook_url?: string
+    meta_whatsapp_webhook_verify_token?: string
   }> {
     const response = await this.client.get('/api/v1/chat/messaging/public-base-url')
+    return response.data
+  }
+
+  async simulateAgentMetaWhatsappInbound(
+    agentId: string,
+    payload: { messaging_recipient: string; body?: string },
+  ): Promise<{ ok: boolean }> {
+    const response = await this.client.post(
+      `/api/v1/agents/${agentId}/chat-messaging/simulate-meta-whatsapp-inbound`,
+      payload,
+    )
     return response.data
   }
 
@@ -1329,6 +1342,43 @@ class ApiClient {
   }> {
     const response = await this.client.post(
       `/api/v1/agents/${agentId}/chat-messaging/test-twilio-sms`,
+      overrides ?? {},
+    )
+    return response.data
+  }
+
+  async testAgentMetaWhatsapp(
+    agentId: string,
+    overrides?: { messaging_recipient?: string },
+  ): Promise<{
+    ok: boolean
+    message_id: string
+    to: string
+    wa_id: string
+    template_sent: string
+  }> {
+    const response = await this.client.post(
+      `/api/v1/agents/${agentId}/chat-messaging/test-meta-whatsapp`,
+      overrides ?? {},
+    )
+    return response.data
+  }
+
+  async testAgentTelnyxSms(
+    agentId: string,
+    overrides?: {
+      messaging_recipient?: string
+      telnyx_from?: string
+    },
+  ): Promise<{
+    ok: boolean
+    message_id: string
+    to: string
+    from: string
+    body_sent: string
+  }> {
+    const response = await this.client.post(
+      `/api/v1/agents/${agentId}/chat-messaging/test-telnyx-sms`,
       overrides ?? {},
     )
     return response.data

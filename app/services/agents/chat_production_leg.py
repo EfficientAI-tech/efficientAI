@@ -56,6 +56,32 @@ def normalized_chat_eval_mode(agent: Agent) -> str:
     return mode
 
 
+def generate_internal_agent_reply(
+    db: Session,
+    *,
+    agent: Agent,
+    organization_id: UUID,
+    transcript: list[dict[str, str]],
+) -> str:
+    main_llm = resolve_simulation_llm(db, agent=agent, organization_id=organization_id, leg="main")
+    agent_system = build_agent_system_prompt(agent)
+    messages = _agent_messages(agent_system, transcript)
+    result = llm_service.generate_response(
+        messages=messages,
+        llm_provider=main_llm.provider,
+        llm_model=main_llm.model,
+        organization_id=organization_id,
+        db=db,
+        llm_config=main_llm.llm_config,
+        credential_id=main_llm.credential_id,
+        task_defaults={"temperature": 0.7, "max_tokens": 400},
+    )
+    text = (result.get("text") or "").strip()
+    if not text:
+        raise ValueError("Production LLM returned an empty message")
+    return text
+
+
 def uses_live_production_leg(agent: Agent) -> bool:
     conn = normalized_chat_connection_type(agent)
     if conn == ChatConnectionTypeEnum.PROVIDER_CHAT.value:
@@ -78,9 +104,34 @@ def _fail_live_messaging(conn: str, leg: Optional[str], detail: str) -> None:
 
 
 def _live_messaging_failure_detail(leg: Optional[str]) -> str:
-    if leg and leg.startswith("messaging_send_failed:"):
+    if not leg:
+        return (
+            "No production reply (check send credentials, recipient, inbound webhook, "
+            "and messaging_sync_reply_url for send-only setups)"
+        )
+    if leg.startswith("messaging_send_failed:"):
         return leg.split(":", 1)[1]
-    if leg and (leg.endswith("_send_only") or "send_only" in leg):
+    if leg.startswith("messaging_turn_wait_failed:"):
+        return leg.split(":", 1)[1]
+    if "concurrent_turn" in leg:
+        return (
+            "Another messaging eval turn is still pending for this agent and recipient. "
+            "Wait about two minutes and try again, or run only one suite at a time."
+        )
+    leg_l = leg.lower()
+    if "meta_whatsapp" in leg_l and "send_only" in leg_l:
+        return (
+            "WhatsApp was accepted by Meta but no reply was received in ~90s. "
+            "Confirm the suite recipient is your real WhatsApp number (E.164, on Meta’s test list), "
+            "you received the hello_world message, you replied on WhatsApp, and the inbound webhook is verified."
+        )
+    if "telnyx" in leg_l and "send_only" in leg_l:
+        return (
+            "Telnyx SMS was sent but no inbound production reply arrived in time (~90s). "
+            "Reply by SMS to your Telnyx number with the agent answer and ensure the Telnyx "
+            "inbound webhook URL is configured on the messaging profile."
+        )
+    if "send_only" in leg_l:
         return (
             "Outbound SMS was sent but no inbound production reply arrived in time (~90s). "
             "From the eval recipient phone, send an SMS reply to your Twilio From number with "
@@ -190,20 +241,42 @@ def generate_production_chat_reply(
 
     if conn == ChatConnectionTypeEnum.MESSAGING_CHANNELS.value and mode == ChatEvalModeEnum.POST_PROD_LIVE.value:
         from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
-        from app.services.agents.messaging_channel_chat import try_messaging_worker_send
+        from app.services.agents.messaging_channel_chat import (
+            is_meta_whatsapp_live_cfg,
+            run_meta_whatsapp_live_production_turn,
+            try_messaging_worker_send,
+        )
 
         cfg = _apply_run_messaging_overrides(chat_connection_config_for_runtime(cfg_raw))
-        reply, leg = try_messaging_worker_send(
-            db,
-            organization_id=organization_id,
-            cfg=cfg,
-            transcript=transcript,
-            telephony_phone_number_id=getattr(agent, "telephony_phone_number_id", None),
-            agent_id=agent.id,
-        )
-        if reply:
-            meta["production_leg"] = leg
-            return reply, meta
+        if is_meta_whatsapp_live_cfg(cfg):
+            reply, leg = run_meta_whatsapp_live_production_turn(
+                db,
+                organization_id=organization_id,
+                cfg=cfg,
+                transcript=transcript,
+                agent_id=agent.id,
+                generate_agent_reply=lambda aug: generate_internal_agent_reply(
+                    db,
+                    agent=agent,
+                    organization_id=organization_id,
+                    transcript=aug,
+                ),
+            )
+            if reply:
+                meta["production_leg"] = leg
+                return reply, meta
+        else:
+            reply, leg = try_messaging_worker_send(
+                db,
+                organization_id=organization_id,
+                cfg=cfg,
+                transcript=transcript,
+                telephony_phone_number_id=getattr(agent, "telephony_phone_number_id", None),
+                agent_id=agent.id,
+            )
+            if reply:
+                meta["production_leg"] = leg
+                return reply, meta
 
         webhook = (cfg.get("outbound_webhook_url") or cfg.get("messaging_webhook_url") or "").strip()
         if webhook:
@@ -246,27 +319,19 @@ def generate_production_chat_reply(
             "Check agent connection settings and platform credentials."
         )
 
-    main_llm = resolve_simulation_llm(db, agent=agent, organization_id=organization_id, leg="main")
-    agent_system = build_agent_system_prompt(agent)
-    messages = _agent_messages(agent_system, transcript)
     try:
-        result = llm_service.generate_response(
-            messages=messages,
-            llm_provider=main_llm.provider,
-            llm_model=main_llm.model,
+        text = generate_internal_agent_reply(
+            db,
+            agent=agent,
             organization_id=organization_id,
-            db=db,
-            llm_config=main_llm.llm_config,
-            credential_id=main_llm.credential_id,
-            task_defaults={"temperature": 0.7, "max_tokens": 400},
+            transcript=transcript,
         )
     except RuntimeError as exc:
+        main_llm = resolve_simulation_llm(db, agent=agent, organization_id=organization_id, leg="main")
         raise RuntimeError(
             f"Production-side LLM simulation failed ({main_llm.source}): {exc}"
         ) from exc
-    text = (result.get("text") or "").strip()
-    if not text:
-        raise ValueError("Production LLM returned an empty message")
+    main_llm = resolve_simulation_llm(db, agent=agent, organization_id=organization_id, leg="main")
     meta["production_leg"] = "internal_llm_sim"
     meta["main_llm_source"] = main_llm.source
     return text, meta

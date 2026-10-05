@@ -27,6 +27,7 @@ from app.api.v1.routes import (
     evaluator_result_metric_clusters,
     chat,
     chat_messaging_webhooks,
+    meta_whatsapp_webhooks,
     twilio_sms_webhooks,
     twilio_voice_webhooks,
     telnyx_sms_webhooks,
@@ -88,6 +89,7 @@ api_router.include_router(evaluator_result_metric_clusters.router)
 api_router.include_router(evaluator_results.router)
 api_router.include_router(chat.router)
 api_router.include_router(chat_messaging_webhooks.router)
+api_router.include_router(meta_whatsapp_webhooks.router)
 api_router.include_router(twilio_sms_webhooks.router)
 api_router.include_router(twilio_voice_webhooks.router)
 api_router.include_router(telnyx_sms_webhooks.router)

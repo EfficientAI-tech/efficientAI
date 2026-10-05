@@ -143,6 +143,7 @@ class TelephonyProvider(str, enum.Enum):
     VOBIZ = "vobiz"
     TWILIO = "twilio"
     TELNYX = "telnyx"
+    META_WHATSAPP = "meta_whatsapp"
 
 
 class CredentialRoutingMode(str, enum.Enum):

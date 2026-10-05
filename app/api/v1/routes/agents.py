@@ -1526,6 +1526,107 @@ async def test_chat_messaging_telnyx_sms(
     return {"ok": True, **result}
 
 
+class ChatMessagingTestMetaWhatsappRequest(BaseModel):
+    messaging_recipient: Optional[str] = None
+
+
+@router.post("/{agent_id}/chat-messaging/test-meta-whatsapp")
+async def test_chat_messaging_meta_whatsapp(
+    agent_id: str,
+    body: ChatMessagingTestMetaWhatsappRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Send one WhatsApp template message using saved Meta credentials."""
+    from app.models.enums import ChatConnectionTypeEnum
+    from app.services.agents.chat_connection import normalized_chat_connection_type
+    from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
+    from app.services.agents.messaging_channel_chat import test_meta_whatsapp_send
+
+    db_agent = _get_agent_for_org_workspace(db, agent_id, organization_id, workspace_id)
+    conn = normalized_chat_connection_type(db_agent)
+    if conn != ChatConnectionTypeEnum.MESSAGING_CHANNELS.value:
+        raise HTTPException(status_code=400, detail="Agent is not a messaging chat agent")
+
+    cfg = chat_connection_config_for_runtime(db_agent.chat_connection_config)
+    overrides: dict[str, str] = {}
+    if body.messaging_recipient and body.messaging_recipient.strip():
+        overrides["messaging_recipient"] = body.messaging_recipient.strip()
+    try:
+        result = test_meta_whatsapp_send(
+            db,
+            organization_id=organization_id,
+            cfg=cfg,
+            overrides=overrides or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        detail = str(exc)
+        raise HTTPException(status_code=502, detail=detail[:500]) from exc
+
+    return {"ok": True, **result}
+
+
+class ChatMessagingSimulateMetaInboundRequest(BaseModel):
+    messaging_recipient: str
+    body: str = "hey i need help"
+
+
+@router.post("/{agent_id}/chat-messaging/simulate-meta-whatsapp-inbound")
+async def simulate_chat_messaging_meta_whatsapp_inbound(
+    agent_id: str,
+    body: ChatMessagingSimulateMetaInboundRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Complete a waiting live-eval turn when Meta webhooks are not reaching your API (local dev)."""
+    from app.models.enums import ChatConnectionTypeEnum
+    from app.services.agents.chat_connection import normalized_chat_connection_type
+    from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
+    from app.services.agents.chat_messaging_turn_wait import complete_messaging_inbound_routed
+    from app.services.agents.messaging_channel_chat import _resolve_messaging_meta_whatsapp_context
+
+    db_agent = _get_agent_for_org_workspace(db, agent_id, organization_id, workspace_id)
+    conn = normalized_chat_connection_type(db_agent)
+    if conn != ChatConnectionTypeEnum.MESSAGING_CHANNELS.value:
+        raise HTTPException(status_code=400, detail="Agent is not a messaging chat agent")
+
+    recipient = (body.messaging_recipient or "").strip()
+    if not recipient:
+        raise HTTPException(status_code=400, detail="messaging_recipient is required")
+
+    cfg = chat_connection_config_for_runtime(db_agent.chat_connection_config)
+    phone_id, _token = _resolve_messaging_meta_whatsapp_context(
+        db,
+        organization_id=organization_id,
+        cfg=cfg,
+    )
+    if not phone_id:
+        raise HTTPException(status_code=400, detail="Meta WhatsApp phone number ID is not configured")
+
+    text = (body.body or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="body is required")
+
+    ok = complete_messaging_inbound_routed(
+        line_to=phone_id,
+        reply_from=recipient,
+        body=text,
+    )
+    if not ok:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "No eval turn is waiting for this recipient. Queue a suite run first, "
+                "then signal the reply within ~2 minutes (or fix Meta webhook delivery)."
+            ),
+        )
+    return {"ok": True}
+
+
 def _get_agent_for_org_workspace(db, agent_id: str, organization_id: UUID, workspace_id: UUID) -> Agent:
     try:
         agent_uuid = UUID(agent_id)

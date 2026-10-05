@@ -9,6 +9,13 @@ import EvaluatorTtsMismatchBanner from './EvaluatorTtsMismatchBanner'
 import EvaluatorMessagingTrialTemplateField from './EvaluatorMessagingTrialTemplateField'
 import { suiteHasTtsProviderMismatch } from '../utils/evaluatorTtsMismatch'
 import { trialSmsTemplateFromAgentConfig } from '../../../lib/twilioSmsTrialTemplates'
+import {
+  messagingEvalProfile,
+  messagingChannelFromConfig,
+  shouldSendTwilioTrialTemplateOnRun,
+  smsCarrierFromTelephony,
+} from '../../../lib/messagingEvalUi'
+import { useOrgTelephony } from '../../../hooks/useOrgTelephony'
 
 interface Props {
   open: boolean
@@ -72,6 +79,15 @@ export default function EvaluatorSmartRunModal({
   const chatRunContextFailed = needsChatAgentContext && runAgentError && !runAgentPending
 
   const isMessagingChat = runAgent?.chat_connection_type === 'messaging_channels'
+  const { activeNumbers: telephonyNumbers } = useOrgTelephony(open && isMessagingChat)
+  const messagingProfile =
+    isMessagingChat && runAgent
+      ? messagingEvalProfile({
+          chatConnectionConfig: runAgent.chat_connection_config ?? null,
+          telephonyPhoneNumberId: runAgent.telephony_phone_number_id,
+          smsCarrier: smsCarrierFromTelephony(runAgent.telephony_phone_number_id, telephonyNumbers),
+        })
+      : null
   const needsRecipientNumber = isPhoneOutbound || isMessagingChat
 
   useEffect(() => {
@@ -85,10 +101,18 @@ export default function EvaluatorSmartRunModal({
   useEffect(() => {
     if (!open || trialTemplateControlled || !runAgent) return
     if (runAgent.chat_connection_type !== 'messaging_channels') return
+    if (messagingChannelFromConfig(runAgent.chat_connection_config ?? null) !== 'sms') return
+    const carrier = smsCarrierFromTelephony(runAgent.telephony_phone_number_id, telephonyNumbers)
+    const profile = messagingEvalProfile({
+      chatConnectionConfig: runAgent.chat_connection_config ?? null,
+      telephonyPhoneNumberId: runAgent.telephony_phone_number_id,
+      smsCarrier: carrier,
+    })
+    if (!profile.showTrialTemplate) return
     setInternalTrialSmsTemplate(
       trialSmsTemplateFromAgentConfig(runAgent.chat_connection_config ?? null),
     )
-  }, [open, trialTemplateControlled, singleSuite?.id, runAgent?.id])
+  }, [open, trialTemplateControlled, singleSuite?.id, runAgent?.id, runAgent?.chat_connection_config, runAgent?.telephony_phone_number_id, telephonyNumbers])
 
   const { data: dialTargets = [] } = useQuery({
     queryKey: ['telephony-dial-targets'],
@@ -101,7 +125,7 @@ export default function EvaluatorSmartRunModal({
       apiClient.runEvaluatorSuite(suiteId, {
         runs_per_combination: runs,
         to_number: toNumber || undefined,
-        ...(isMessagingChat
+        ...(messagingProfile && shouldSendTwilioTrialTemplateOnRun(messagingProfile)
           ? { twilio_sms_trial_body_template: trialSmsTemplate.trim() }
           : {}),
       }),
@@ -209,7 +233,9 @@ export default function EvaluatorSmartRunModal({
                 {needsRecipientNumber && !chatRunContextLoading && (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                      {isMessagingChat ? 'Recipient number *' : 'To number *'}
+                      {isMessagingChat
+                        ? messagingProfile?.recipientLabel ?? 'Recipient *'
+                        : 'To number *'}
                     </label>
                     <input
                       type="tel"
@@ -233,11 +259,18 @@ export default function EvaluatorSmartRunModal({
                   </div>
                 )}
 
-                {isMessagingChat && !chatRunContextLoading && (
+                {isMessagingChat && !chatRunContextLoading && messagingProfile?.showTrialTemplate && (
                   <EvaluatorMessagingTrialTemplateField
                     value={trialSmsTemplate}
                     onChange={setTrialSmsTemplate}
+                    helperText={messagingProfile.trialTemplateHelper}
                   />
+                )}
+
+                {isMessagingChat && !chatRunContextLoading && messagingProfile?.queueRunHint && (
+                  <p className="text-sm text-gray-600 rounded-lg bg-gray-50 border border-gray-100 p-3">
+                    {messagingProfile.queueRunHint}
+                  </p>
                 )}
 
                 {isChat &&

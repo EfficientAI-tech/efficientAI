@@ -13,10 +13,12 @@ from sqlalchemy.orm import Session
 from app.models.database import Agent, Evaluator, EvaluatorResult, Persona, Scenario
 from app.services.agents.chat_connection import normalized_chat_connection_type
 from app.services.agents.chat_llm_config import resolve_simulation_llm
+from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
 from app.services.agents.chat_production_leg import (
     generate_production_chat_reply,
     uses_live_production_leg,
 )
+from app.services.agents.messaging_channel_chat import is_meta_whatsapp_live_cfg
 from app.services.agents.provider_platform_chat import (
     ProviderChatState,
     close_provider_chat_session,
@@ -58,6 +60,13 @@ _THANKS_CLOSING_RE = re.compile(
 
 _SIMULATION_LLM_RETRIES = 3
 _SIMULATION_TASK_DEFAULTS = {"temperature": 0.7, "max_tokens": 2048}
+
+
+def _uses_meta_whatsapp_live_customer_on_phone(agent: Agent) -> bool:
+    if not uses_live_production_leg(agent):
+        return False
+    cfg = chat_connection_config_for_runtime(agent.chat_connection_config)
+    return is_meta_whatsapp_live_cfg(cfg)
 
 
 def _production_turn_needs_user_seed(transcript: list[dict[str, str]]) -> bool:
@@ -315,7 +324,11 @@ def run_llm_to_llm_evaluator_simulation(
 
     try:
         while exchanges < max_turns:
-            if uses_live_production_leg(agent) and _production_turn_needs_user_seed(transcript):
+            if (
+                uses_live_production_leg(agent)
+                and not _uses_meta_whatsapp_live_customer_on_phone(agent)
+                and _production_turn_needs_user_seed(transcript)
+            ):
                 transcript.append(
                     {
                         "speaker": "Speaker 1",
@@ -365,6 +378,9 @@ def run_llm_to_llm_evaluator_simulation(
             exchanges += 1
             if _should_end_conversation(agent_text, turn_index=exchanges):
                 break
+
+            if _uses_meta_whatsapp_live_customer_on_phone(agent):
+                continue
 
             try:
                 with llm_usage_context(caller_ctx):
