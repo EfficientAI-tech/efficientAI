@@ -44,6 +44,16 @@ from app.services.ai.llm_gateway import (
 # rather than raising an error.
 litellm.drop_params = True
 
+_TOGETHER_TEV_DIRECT_CTX = CredentialRoutingContext(routing_mode="direct")
+
+
+def _requires_direct_together_tev(provider_value: str, llm_model: str | None) -> bool:
+    """Together Tev must hit Together's API with the org's Together key."""
+    if (provider_value or "").lower() != "together":
+        return False
+    return "tev" in (llm_model or "").lower()
+
+
 # Map our internal ModelProvider enum to the prefix LiteLLM expects.
 _LITELLM_PROVIDER_PREFIX: Dict[str, str] = {
     "openai": "openai",
@@ -612,13 +622,31 @@ class LLMService:
         if remaining_config:
             call_kwargs.update(remaining_config)
 
-        call_kwargs = apply_llm_gateway(
-            call_kwargs,
-            organization_id=organization_id,
-            db=db,
-            model=model_str,
-            credential=credential_ctx,
-        )
+        if _requires_direct_together_tev(provider_value, llm_model):
+            # Tev uses Together's native chat API (see tev1 examples). LLM gateway
+            # proxy settings strip provider keys or substitute placeholders, which
+            # Together rejects with 401 invalid_api_key.
+            if ai_provider and not call_kwargs.get("api_key"):
+                tev_key = resolve_litellm_api_key(
+                    organization_id,
+                    db,
+                    ai_provider,
+                    credential=_TOGETHER_TEV_DIRECT_CTX,
+                )
+                if not tev_key:
+                    raise RuntimeError(
+                        "Together Tev requires a direct Together API key on this "
+                        "credential. Gateway-managed keys are not supported for Tev."
+                    )
+                call_kwargs["api_key"] = tev_key
+        else:
+            call_kwargs = apply_llm_gateway(
+                call_kwargs,
+                organization_id=organization_id,
+                db=db,
+                model=model_str,
+                credential=credential_ctx,
+            )
 
         if provider_value == "custom" and ai_provider is not None:
             call_kwargs = _apply_direct_custom_provider_kwargs(

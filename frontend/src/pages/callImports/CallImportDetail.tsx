@@ -4007,7 +4007,7 @@ export default function CallImportDetail() {
                                 {hasClassificationSelected && !hasStandardSelected
                                   ? 'Only classification metrics are selected — they use the System 1 model above. Pick an LLM here only if you add standard metrics.'
                                   : hasClassificationSelected
-                                    ? `Scores the ${standardTargetCount} standard metric${standardTargetCount === 1 ? '' : 's'}. System 1 (Jev) models are hidden here. Leave empty to keep the default (OpenAI · gpt-4o).`
+                                    ? `Scores the ${standardTargetCount} standard metric${standardTargetCount === 1 ? '' : 's'}. Jev (classification) models are hidden here; Together Tev models are available. Leave empty to keep the default (OpenAI · gpt-4o).`
                                     : 'Pick the LLM that scores every selected metric. Leave empty to keep the default (OpenAI · gpt-4o).'}
                               </p>
                               <AIProviderModelPicker
@@ -4015,7 +4015,7 @@ export default function CallImportDetail() {
                                 model={runLLM.model ?? ''}
                                 credentialId={runLLM.credential_id ?? ''}
                                 modelFilter={isStandardJudgeModel}
-                                incompatibleHint="This credential only exposes System 1 (Jev) models, which cannot score standard metrics."
+                                incompatibleHint="This credential only exposes Jev classification models, which cannot score standard metrics. Use Together Tev or a chat model instead."
                                 onSelectionChange={(next) =>
                                   setRunLLM((prev) => ({
                                     ...prev,

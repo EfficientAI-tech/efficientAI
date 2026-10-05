@@ -64,3 +64,78 @@ def test_systemone_response_to_text():
     )
     parsed = json.loads(text)
     assert parsed["answers"]["q1"]["noul"] == 0.9
+
+
+def test_call_systemone_preserves_gateway_authorization_header():
+    mod = _load_module()
+    captured = {}
+
+    class _Response:
+        def read(self):
+            return b'{"answers": {}}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def fake_urlopen(request, timeout=120.0):
+        captured["headers"] = dict(request.header_items())
+        return _Response()
+
+    import urllib.request
+
+    original = urllib.request.urlopen
+    urllib.request.urlopen = fake_urlopen
+    try:
+        mod.call_systemone(
+            url="http://gateway/typesafe/v1/systemone",
+            api_key="sk-provider-key",
+            model_id="jev-1.13.0",
+            state="s",
+            questions={"q": {"type": "noul"}},
+            extra_headers={"Authorization": "Bearer gateway-vk"},
+        )
+    finally:
+        urllib.request.urlopen = original
+
+    assert captured["headers"]["Authorization"] == "Bearer gateway-vk"
+
+
+def test_call_systemone_sets_authorization_when_only_non_auth_extra_headers():
+    mod = _load_module()
+    captured = {}
+
+    class _Response:
+        def read(self):
+            return b'{"answers": {}}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def fake_urlopen(request, timeout=120.0):
+        captured["headers"] = dict(request.header_items())
+        return _Response()
+
+    import urllib.request
+
+    original = urllib.request.urlopen
+    urllib.request.urlopen = fake_urlopen
+    try:
+        mod.call_systemone(
+            url="http://gateway/typesafe/v1/systemone",
+            api_key="sk-provider-key",
+            model_id="jev-1.13.0",
+            state="s",
+            questions={"q": {"type": "noul"}},
+            extra_headers={"x-bf-vk": "gateway-vk"},
+        )
+    finally:
+        urllib.request.urlopen = original
+
+    assert captured["headers"]["Authorization"] == "Bearer sk-provider-key"
+    assert captured["headers"]["X-bf-vk"] == "gateway-vk"

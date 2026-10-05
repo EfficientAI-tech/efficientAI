@@ -96,11 +96,12 @@ describe('classification model helpers', () => {
     expect(isClassificationCapableModel('gpt-4o')).toBe(false)
   })
 
-  it('treats only non-System 1 models as standard judges', () => {
+  it('allows standard chat and Together Tev models; excludes Jev for classification picker', () => {
     expect(isStandardJudgeModel('gpt-4o')).toBe(true)
     expect(isStandardJudgeModel('anthropic/claude-sonnet-5-5')).toBe(true)
     expect(isStandardJudgeModel('typesafe/jev-1.13.0')).toBe(false)
-    expect(isStandardJudgeModel('typesafe/tev-1')).toBe(false)
+    expect(isStandardJudgeModel('typesafe/tev-1')).toBe(true)
+    expect(isStandardJudgeModel('together/Tev1-4B-experimental')).toBe(true)
   })
 
   it('detects classification metrics by custom_data_type', () => {

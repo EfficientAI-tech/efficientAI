@@ -394,14 +394,37 @@ def _resolve_gateway_interface(
     return "litellm_shim"
 
 
+def _org_gateway_type_for_url(org: Dict[str, Any], platform: Dict[str, Any]) -> GatewayType:
+    """Gateway type implied by org settings when inheriting org base_url."""
+    org_type = org.get("gateway_type")
+    if org_type in ("bifrost", "litellm_proxy"):
+        return org_type
+    platform_type = platform.get("gateway_type", "bifrost")
+    if platform_type in ("bifrost", "litellm_proxy"):
+        return platform_type
+    return "bifrost"
+
+
 def _resolve_gateway_base_url(
     credential: Optional[CredentialRoutingContext],
     org: Dict[str, Any],
     platform: Dict[str, Any],
+    *,
+    gateway_type: GatewayType,
 ) -> str:
     if credential and credential.gateway_base_url:
         return credential.gateway_base_url.strip()
-    return (org.get("base_url") or platform.get("base_url") or "").strip()
+
+    org_url = (org.get("base_url") or "").strip()
+    if org_url and _org_gateway_type_for_url(org, platform) == gateway_type:
+        return org_url
+
+    platform_url = (platform.get("base_url") or "").strip()
+    platform_type = platform.get("gateway_type", "bifrost")
+    if platform_url and platform_type == gateway_type:
+        return platform_url
+
+    return ""
 
 
 def _resolve_gateway_auth_header(
@@ -482,7 +505,9 @@ def _build_gateway_config(
     """Resolve gateway connection details from org/platform/credential settings."""
     gateway_type = _resolve_gateway_type(credential, org, platform)
     gateway_interface = _resolve_gateway_interface(credential, org, platform)
-    base_url = _resolve_gateway_base_url(credential, org, platform)
+    base_url = _resolve_gateway_base_url(
+        credential, org, platform, gateway_type=gateway_type
+    )
 
     if not base_url:
         message = (

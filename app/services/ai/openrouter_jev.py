@@ -116,11 +116,11 @@ def call_systemone(
 ) -> Dict[str, Any]:
     """POST a System One request (OpenRouter or a gateway's TypeSafe pass-through)."""
     payload = {"model": model_id, "state": state, "questions": questions}
-    headers = {
-        **(extra_headers or {}),
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+    headers = dict(extra_headers or {})
+    has_authorization = any(k.lower() == "authorization" for k in headers)
+    if not has_authorization:
+        headers["Authorization"] = f"Bearer {api_key}"
+    headers["Content-Type"] = "application/json"
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),

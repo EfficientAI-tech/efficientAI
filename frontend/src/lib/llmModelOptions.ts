@@ -28,9 +28,14 @@ export function isClassificationCapableModel(model: string): boolean {
   return /jev/i.test(model) && !/tev/i.test(model)
 }
 
-/** Standard LLM-judge models; System 1 (Jev/Tev) models cannot score these metrics. */
+/**
+ * Models allowed for standard rubric metrics (boolean, enum, rating, categories).
+ * Jev models are excluded — use the System 1 picker for classification metrics.
+ * Together Tev models are included; the backend scores them via the Tev1 path.
+ */
 export function isStandardJudgeModel(model: string): boolean {
-  return !/jev|tev/i.test(model)
+  if (/tev/i.test(model)) return true
+  return !/jev/i.test(model)
 }
 
 export function isClassificationMetric(metric: { custom_data_type?: string | null }): boolean {

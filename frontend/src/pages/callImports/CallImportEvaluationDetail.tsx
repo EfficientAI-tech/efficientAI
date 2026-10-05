@@ -4634,7 +4634,7 @@ export default function CallImportEvaluationDetail() {
                       allowCredentialPick
                       defaultLabel="Pick an LLM provider"
                       modelFilter={isStandardJudgeModel}
-                      incompatibleHint="This credential only exposes System 1 (Jev) models, which cannot score standard metrics."
+                      incompatibleHint="This credential only exposes Jev classification models, which cannot score standard metrics. Use Together Tev or a chat model instead."
                     />
                   )}
                   {retryClassificationIds.length > 0 && (
@@ -4957,7 +4957,7 @@ export default function CallImportEvaluationDetail() {
                           allowCredentialPick
                           defaultLabel="Pick an LLM provider"
                           modelFilter={isStandardJudgeModel}
-                          incompatibleHint="This credential only exposes System 1 (Jev) models, which cannot score standard metrics."
+                          incompatibleHint="This credential only exposes Jev classification models, which cannot score standard metrics. Use Together Tev or a chat model instead."
                         />
                       )}
                       {rerunClassificationIds.length > 0 && (

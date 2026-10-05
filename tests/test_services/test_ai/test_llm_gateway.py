@@ -645,6 +645,56 @@ def test_gateway_auth_header_overrides_duplicate_extra_header():
     assert result["extra_headers"]["x-bf-vk"] == "resolved-vk"
 
 
+def test_litellm_credential_without_url_does_not_inherit_bifrost_org_url():
+    _set_platform_gateway(
+        enabled=True,
+        gateway_type="bifrost",
+        base_url="http://bifrost.example.com/litellm",
+    )
+    org_id, db = _org_db(
+        {
+            "enabled": True,
+            "gateway_type": "bifrost",
+            "base_url": "http://org-bifrost:9090/litellm",
+        }
+    )
+    ctx = CredentialRoutingContext(
+        routing_mode="inherit",
+        gateway_type="litellm_proxy",
+    )
+    assert resolve_llm_gateway(org_id, db, credential=ctx) is None
+
+    strict_ctx = CredentialRoutingContext(
+        routing_mode="gateway",
+        gateway_type="litellm_proxy",
+    )
+    with pytest.raises(RuntimeError, match="no base_url"):
+        resolve_effective_routing(org_id, db, strict_ctx)
+
+
+def test_litellm_credential_without_url_uses_matching_platform_url():
+    _set_platform_gateway(
+        enabled=True,
+        gateway_type="litellm_proxy",
+        base_url="http://platform-proxy:4000",
+    )
+    org_id, db = _org_db(
+        {
+            "enabled": True,
+            "gateway_type": "bifrost",
+            "base_url": "http://org-bifrost:9090/litellm",
+        }
+    )
+    ctx = CredentialRoutingContext(
+        routing_mode="gateway",
+        gateway_type="litellm_proxy",
+    )
+    config, effective = resolve_effective_routing(org_id, db, ctx)
+    assert effective == "litellm_proxy"
+    assert config is not None
+    assert config.api_base == "http://platform-proxy:4000"
+
+
 def test_credential_gateway_type_overrides_org_type():
     _set_platform_gateway(
         enabled=True,
