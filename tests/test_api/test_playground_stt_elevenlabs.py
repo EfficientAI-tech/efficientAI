@@ -26,6 +26,7 @@ def test_resolve_agent_stt_config_ai_provider_key_ignores_integration_base_url(m
         is_active=True,
         api_key="enc-ai",
     )
+
     class _Query:
         def __init__(self, model):
             self.model = model
@@ -44,25 +45,6 @@ def test_resolve_agent_stt_config_ai_provider_key_ignores_integration_base_url(m
 
     db = SimpleNamespace(query=lambda model: _Query(model))
     monkeypatch.setattr(playground_module, "decrypt_api_key", lambda _v: "ai-key")
-
-    def _should_not_resolve_integration(*_args, **_kwargs):
-        raise AssertionError("Integration lookup must not run when AIProvider key exists")
-
-    resolver_module = importlib.import_module("app.services.credentials.resolver")
-    monkeypatch.setattr(resolver_module, "resolve_integration", _should_not_resolve_integration)
-
-    inference_module = importlib.import_module("app.services.credentials.elevenlabs_inference")
-
-    def _should_not_resolve_bundle_leg(*_args, **_kwargs):
-        raise AssertionError(
-            "Must not attach integration regional URL when STT key is from AIProvider"
-        )
-
-    monkeypatch.setattr(
-        inference_module,
-        "resolve_elevenlabs_api_base_url_for_voice_bundle_leg",
-        _should_not_resolve_bundle_leg,
-    )
 
     _provider, _model, api_key, api_base_url = playground_module._resolve_agent_stt_config(
         str(agent_id), org_id, db

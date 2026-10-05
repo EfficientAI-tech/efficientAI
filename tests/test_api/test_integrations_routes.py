@@ -107,7 +107,7 @@ def test_preview_integration_agent_prompt_success(authenticated_client, monkeypa
     monkeypatch.setattr(
         prompt_sync_module,
         "fetch_provider_prompt",
-        lambda _integration, agent_id: f"Prompt for {agent_id}",
+        lambda _integration, agent_id, **_: f"Prompt for {agent_id}",
     )
 
     response = authenticated_client.post(
@@ -158,7 +158,7 @@ def test_preview_integration_agent_prompt_empty(authenticated_client, monkeypatc
     monkeypatch.setattr(
         prompt_sync_module,
         "fetch_provider_prompt",
-        lambda _integration, _agent_id: None,
+        lambda _integration, _agent_id, **_: None,
     )
 
     response = authenticated_client.post(
