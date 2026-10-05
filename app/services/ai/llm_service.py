@@ -54,6 +54,23 @@ def _requires_direct_together_tev(provider_value: str, llm_model: str | None) ->
     return "tev" in (llm_model or "").lower()
 
 
+def canonical_litellm_model_id(model_str: str) -> str:
+    """Normalize provider prefixes on the final model string passed to LiteLLM."""
+    from app.services.ai.together_models import normalize_together_model_name
+
+    text = (model_str or "").strip()
+    if not text:
+        return text
+    lower = text.lower()
+    if lower.startswith("together/") or lower.startswith("together_ai/"):
+        prefix = "together_ai"
+        body = text.split("/", 1)[1]
+        return f"{prefix}/{normalize_together_model_name(body)}"
+    if lower.startswith("meta-llama/"):
+        return normalize_together_model_name(text)
+    return text
+
+
 # Map our internal ModelProvider enum to the prefix LiteLLM expects.
 _LITELLM_PROVIDER_PREFIX: Dict[str, str] = {
     "openai": "openai",
@@ -565,10 +582,12 @@ class LLMService:
         _, effective_routing = resolve_effective_routing(
             organization_id, db, credential_ctx
         )
-        model_str = resolve_litellm_model(
-            workload_model_str=workload_model_str,
-            gateway_active=effective_routing != "direct",
-            credential=credential_ctx,
+        model_str = canonical_litellm_model_id(
+            resolve_litellm_model(
+                workload_model_str=workload_model_str,
+                gateway_active=effective_routing != "direct",
+                credential=credential_ctx,
+            )
         )
 
         call_kwargs: Dict[str, Any] = {
