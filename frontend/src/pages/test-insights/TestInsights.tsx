@@ -291,8 +291,7 @@ export default function TestInsights() {
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Calls</h1>
           <p className="mt-2 text-sm text-gray-600 max-w-2xl">
-            One list for production webhook calls and pipeline traces. Webhook rows show provider telephony;
-            pipeline rows show OTLP timing (WebRTC) or phone-eval turn timing—open a row to see what applies.
+            Production calls for this workspace—open a row for transcript, metadata, and trace details.
           </p>
         </div>
         <Button
