@@ -1304,6 +1304,36 @@ class ApiClient {
   }
 
   // Agents endpoints
+  async getMessagingPublicBaseUrl(): Promise<{
+    public_base_url: string
+    twilio_public_base_url?: string
+    telnyx_public_base_url?: string
+  }> {
+    const response = await this.client.get('/api/v1/chat/messaging/public-base-url')
+    return response.data
+  }
+
+  async testAgentTwilioSms(
+    agentId: string,
+    overrides?: {
+      messaging_recipient?: string
+      twilio_from?: string
+      twilio_sms_trial_body_template?: string
+    },
+  ): Promise<{
+    ok: boolean
+    message_sid: string
+    to: string
+    from: string
+    body_sent: string
+  }> {
+    const response = await this.client.post(
+      `/api/v1/agents/${agentId}/chat-messaging/test-twilio-sms`,
+      overrides ?? {},
+    )
+    return response.data
+  }
+
   async createAgent(data: {
     name: string
     phone_number?: string
@@ -1911,17 +1941,21 @@ class ApiClient {
   async previewIntegrationAgentPrompt(
     integrationId: string,
     voiceAiAgentId: string,
+    options?: { agentChannel?: 'voice' | 'chat' },
   ): Promise<{ provider_prompt: string }> {
     const response = await this.client.post(
       `/api/v1/integrations/${integrationId}/preview-agent-prompt`,
-      { voice_ai_agent_id: voiceAiAgentId },
+      {
+        voice_ai_agent_id: voiceAiAgentId,
+        ...(options?.agentChannel ? { agent_channel: options.agentChannel } : {}),
+      },
     )
     return response.data
   }
 
   async listIntegrationVoiceAgents(
     integrationId: string,
-    options?: { refresh?: boolean; search?: string },
+    options?: { refresh?: boolean; search?: string; agentKind?: 'voice' | 'chat' },
   ): Promise<ListIntegrationVoiceAgentsResponse> {
     const response = await this.client.get(
       `/api/v1/integrations/${integrationId}/voice-agents`,
@@ -1929,6 +1963,7 @@ class ApiClient {
         params: {
           ...(options?.refresh ? { refresh: true } : {}),
           ...(options?.search ? { search: options.search } : {}),
+          ...(options?.agentKind ? { agent_kind: options.agentKind } : {}),
         },
       },
     )
@@ -2250,6 +2285,8 @@ class ApiClient {
        * select the schema dropdown.
        */
       schemaId?: string | null
+      /** Set to `chat` for post-prod transcript-only imports. */
+      contentModality?: 'chat' | 'voice'
     },
   ): Promise<CallImport> {
     const formData = new FormData()
@@ -2262,6 +2299,9 @@ class ApiClient {
     }
     if (options.schemaId) {
       formData.append('schema_id', options.schemaId)
+    }
+    if (options.contentModality) {
+      formData.append('content_modality', options.contentModality)
     }
     const response = await this.client.post('/api/v1/call-imports', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
@@ -5337,7 +5377,7 @@ class ApiClient {
 
   async generateMetric(data: {
     mode: 'description' | 'examples'
-    surface: 'agent' | 'voice_playground' | 'blind_test'
+    surface: 'agent' | 'chat_agent' | 'voice_playground'
     description?: string
     examples?: Array<{ transcript: string; rating: any; notes?: string }>
     provider?: string
@@ -5362,7 +5402,7 @@ class ApiClient {
 
   async parseBulkMetric(data: {
     prompt: string
-    surface: 'agent' | 'voice_playground' | 'blind_test'
+    surface: 'agent' | 'chat_agent' | 'voice_playground'
     /** When set, the response includes a ``parent`` block + all labels are children. */
     parent_name?: string
     parent_description?: string
