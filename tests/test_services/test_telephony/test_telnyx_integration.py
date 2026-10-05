@@ -21,6 +21,24 @@ def test_messaging_profile_ignores_provider_app_id_voice_connection():
     assert telnyx_messaging_profile_for_number(integration, number_row) == ""
 
 
+def test_messaging_profile_ignores_provider_app_id_when_it_matches_connection_id():
+    integration = SimpleNamespace(voice_app_id=None, verify_app_uuid=None, auth_token="x")
+    number_row = SimpleNamespace(
+        provider_app_id="connection-abc",
+        capabilities={"voice": True, "sms": True, "connection_id": "connection-abc"},
+    )
+    assert telnyx_messaging_profile_for_number(integration, number_row) == ""
+
+
+def test_messaging_profile_legacy_provider_app_id_when_sms_capable():
+    integration = SimpleNamespace(voice_app_id=None, verify_app_uuid=None, auth_token="x")
+    number_row = SimpleNamespace(
+        provider_app_id="profile-legacy",
+        capabilities={"voice": True, "sms": True},
+    )
+    assert telnyx_messaging_profile_for_number(integration, number_row) == "profile-legacy"
+
+
 def test_messaging_profile_prefers_integration_voice_app_id():
     integration = SimpleNamespace(voice_app_id="profile-on-integration", verify_app_uuid=None, auth_token="x")
     number_row = SimpleNamespace(

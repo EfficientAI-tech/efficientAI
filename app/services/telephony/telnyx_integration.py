@@ -21,6 +21,22 @@ def telnyx_webhook_public_key(integration: TelephonyIntegration) -> str:
     return (integration.verify_app_uuid or "").strip()
 
 
+def _legacy_messaging_profile_from_provider_app_id(
+    provider_app_id: object,
+    caps: dict,
+) -> str:
+    """Older imports stored the messaging profile on provider_app_id only."""
+    app_id = str(provider_app_id or "").strip()
+    if not app_id:
+        return ""
+    if not caps.get("sms"):
+        return ""
+    connection_id = str(caps.get("connection_id") or "").strip()
+    if connection_id and app_id == connection_id:
+        return ""
+    return app_id
+
+
 def telnyx_messaging_profile_for_number(
     integration: TelephonyIntegration,
     number_row,
@@ -36,4 +52,10 @@ def telnyx_messaging_profile_for_number(
         raw = caps.get("messaging_profile_id")
         if raw:
             return str(raw).strip()
+        legacy = _legacy_messaging_profile_from_provider_app_id(
+            getattr(number_row, "provider_app_id", None),
+            caps,
+        )
+        if legacy:
+            return legacy
     return ""
