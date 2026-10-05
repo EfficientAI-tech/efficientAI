@@ -11,6 +11,7 @@
     "evaluator",
     "evaluation-suite",
     "prompts",
-    "traces-and-logs"
+    "traces-and-logs",
+    "production-calls"
   ]
 }

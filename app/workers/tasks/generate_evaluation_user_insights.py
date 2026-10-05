@@ -35,7 +35,7 @@ def generate_evaluation_user_insights_task(
         _metrics_for_ids,
         _serialize_selected_metric_ids,
     )
-    from app.services.ai.llm_resolver import get_llm_provider_and_model
+    from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
 
     db = SessionLocal()
     try:
@@ -48,7 +48,7 @@ def generate_evaluation_user_insights_task(
             logger.error("User insights: evaluation {} not found", evaluation_id)
             return
 
-        provider_enum, model_str = get_llm_provider_and_model(
+        provider_enum, model_str = get_llm_provider_and_model_for_request(
             evaluation.organization_id,
             db,
             provider,

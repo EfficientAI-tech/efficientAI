@@ -525,6 +525,7 @@ async def list_integration_voice_agents_route(
     integration_id: UUID,
     refresh: bool = Query(False),
     search: Optional[str] = Query(None),
+    agent_kind: str = Query("voice", alias="agent_kind"),
     organization_id: UUID = Depends(get_organization_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
@@ -559,6 +560,7 @@ async def list_integration_voice_agents_route(
             integration,
             refresh=refresh,
             search=search,
+            agent_kind=agent_kind,
         )
     except Exception as e:
         raise HTTPException(

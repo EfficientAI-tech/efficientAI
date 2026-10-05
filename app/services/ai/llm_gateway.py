@@ -163,8 +163,10 @@ def resolve_litellm_model(
     credential: Optional[CredentialRoutingContext],
 ) -> str:
     """Pick a Bifrost custom model or use the workload-built model string."""
+    from app.services.ai.llm_service import canonical_litellm_model_id
+
     if gateway_active and credential and credential.gateway_model:
-        return credential.gateway_model
+        return canonical_litellm_model_id(credential.gateway_model)
     return workload_model_str
 
 

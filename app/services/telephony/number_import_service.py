@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from loguru import logger
 from sqlalchemy.orm import Session
+
+import httpx
 
 from app.config import settings
 from app.models.database import Agent, TelephonyIntegration, TelephonyPhoneNumber
@@ -27,6 +31,8 @@ IMPORT_SUPPORTED_PROVIDERS = frozenset(
         TelephonyProvider.VOBIZ.value,
         TelephonyProvider.PLIVO.value,
         TelephonyProvider.EXOTEL.value,
+        TelephonyProvider.TWILIO.value,
+        TelephonyProvider.TELNYX.value,
     }
 )
 
@@ -39,6 +45,101 @@ def _assert_import_provider(provider: str) -> str:
             f"Supported: {', '.join(sorted(IMPORT_SUPPORTED_PROVIDERS))}"
         )
     return provider_key
+
+
+def _provider_display_name(provider: str) -> str:
+    key = (provider or "").strip().lower()
+    return {
+        "vobiz": "Vobiz",
+        "plivo": "Plivo",
+        "twilio": "Twilio",
+        "telnyx": "Telnyx",
+        "exotel": "Exotel",
+    }.get(key, key.capitalize() or "Telephony")
+
+
+def _extract_nested_provider_message(raw: str) -> Optional[str]:
+    text = (raw or "").strip()
+    if not text:
+        return None
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict):
+            err = data.get("error")
+            if isinstance(err, dict):
+                msg = err.get("message")
+                if isinstance(msg, str) and msg.strip():
+                    return msg.strip()
+            msg = data.get("message")
+            if isinstance(msg, str) and msg.strip():
+                return msg.strip()
+    lower = text.lower()
+    if "invalid authentication" in lower:
+        return "Authentication failed."
+    if "unauthorized" in lower or "invalid credentials" in lower:
+        return "Authentication failed."
+    return None
+
+
+def _credential_configuration_error(provider: str, exc: BaseException) -> ValueError:
+    name = _provider_display_name(provider)
+    settings_hint = f"Check your API credentials in Settings → Integrations."
+
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        if code in (401, 403):
+            return ValueError(f"Could not connect to {name}. {settings_hint}")
+
+    nested = _extract_nested_provider_message(str(exc))
+    if nested and len(nested) <= 160 and "{" not in nested:
+        return ValueError(f"Could not connect to {name}. {nested} {settings_hint}")
+
+    return ValueError(f"Could not connect to {name}. {settings_hint}")
+
+
+def _is_provider_credential_error(exc: BaseException) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        if exc.response.status_code in (401, 403):
+            return True
+    name = type(exc).__name__.lower()
+    if "authentication" in name or "auth" in name and "error" in name:
+        return True
+    msg = str(exc).lower()
+    return (
+        "invalid auth_id" in msg
+        or "invalid credentials" in msg
+        or "authentication" in msg
+        or "401 unauthorized" in msg
+        or "403 forbidden" in msg
+    )
+
+
+def _twilio_sms_inbound_webhook_url() -> str:
+    from app.services.telephony.twilio_webhook_urls import twilio_sms_inbound_webhook_url
+
+    return twilio_sms_inbound_webhook_url()
+
+
+def _twilio_voice_webhook_url() -> str:
+    from app.services.telephony.twilio_webhook_urls import twilio_voice_webhook_url
+
+    return twilio_voice_webhook_url()
+
+
+def _telnyx_voice_webhook_url() -> str:
+    from app.services.telephony.telnyx_webhook_urls import telnyx_voice_webhook_url
+
+    return telnyx_voice_webhook_url()
+
+
+def _telnyx_sms_inbound_webhook_url() -> str:
+    from app.services.telephony.telnyx_webhook_urls import telnyx_sms_inbound_webhook_url
+
+    return telnyx_sms_inbound_webhook_url()
 
 
 def _vobiz_answer_webhook_url() -> str:
@@ -137,12 +238,17 @@ def _build_provider_client(
         provider=provider_key,
         credential_id=credential_id,
     )
-    client = telephony_service.get_provider_client(
-        org_id,
-        db,
-        provider=provider_key,
-        credential_id=credential_id,
-    )
+    try:
+        client = telephony_service.get_provider_client(
+            org_id,
+            db,
+            provider=provider_key,
+            credential_id=credential_id,
+        )
+    except Exception as exc:
+        if _is_provider_credential_error(exc):
+            raise _credential_configuration_error(provider_key, exc) from exc
+        raise
     return client, integration
 
 
@@ -151,13 +257,22 @@ def _list_remote_numbers(
     client: Any,
 ) -> List[Dict[str, Any]]:
     provider_key = provider.lower()
-    if provider_key == TelephonyProvider.VOBIZ.value:
-        return client.list_account_numbers()
-    if provider_key == TelephonyProvider.PLIVO.value:
-        return client.list_numbers()
-    if provider_key == TelephonyProvider.EXOTEL.value:
-        return client.list_incoming_phone_numbers()
-    raise ValueError(f"Unsupported provider: {provider}")
+    try:
+        if provider_key == TelephonyProvider.VOBIZ.value:
+            return client.list_account_numbers()
+        if provider_key == TelephonyProvider.PLIVO.value:
+            return client.list_numbers()
+        if provider_key == TelephonyProvider.EXOTEL.value:
+            return client.list_incoming_phone_numbers()
+        if provider_key == TelephonyProvider.TWILIO.value:
+            return client.list_incoming_phone_numbers()
+        if provider_key == TelephonyProvider.TELNYX.value:
+            return client.list_phone_numbers()
+        raise ValueError(f"Unsupported provider: {provider}")
+    except Exception as exc:
+        if _is_provider_credential_error(exc):
+            raise _credential_configuration_error(provider_key, exc) from exc
+        raise
 
 
 def _normalize_country_iso2(
@@ -232,6 +347,20 @@ _CALLING_CODE_TO_ISO2 = {
 }
 
 
+def _capabilities_for_import(provider_key: str, remote: Dict[str, Any]) -> Optional[Any]:
+    caps = remote.get("capabilities")
+    if provider_key != TelephonyProvider.TELNYX.value:
+        return caps
+    merged: Dict[str, Any] = dict(caps) if isinstance(caps, dict) else {}
+    msg_profile = remote.get("messaging_profile_id")
+    if msg_profile and str(msg_profile).strip():
+        merged["messaging_profile_id"] = str(msg_profile).strip()
+    conn = remote.get("connection_id")
+    if conn and str(conn).strip():
+        merged["connection_id"] = str(conn).strip()
+    return merged or None
+
+
 def _remote_metadata(
     provider: str,
     item: Dict[str, Any],
@@ -276,6 +405,10 @@ def _answer_url_for_provider(provider: str) -> str:
         return _plivo_answer_webhook_url()
     if provider_key == TelephonyProvider.EXOTEL.value:
         return _exotel_voice_webhook_url()
+    if provider_key == TelephonyProvider.TWILIO.value:
+        return _twilio_voice_webhook_url()
+    if provider_key == TelephonyProvider.TELNYX.value:
+        return _telnyx_voice_webhook_url()
     raise ValueError(f"Unsupported provider: {provider}")
 
 
@@ -311,6 +444,30 @@ def _configure_inbound_webhook(
         if not sid:
             return False, "Missing Exotel incoming-number SID", None
         return client.set_number_voice_url(sid, answer_url)
+    if provider_key == TelephonyProvider.TWILIO.value:
+        sid = remote.get("sid") or remote.get("Sid") or remote.get("provider_number_id")
+        if not sid:
+            return False, "Missing Twilio incoming-number SID", None
+        voice_ok, voice_msg, app_id = client.set_number_voice_webhook(sid, answer_url)
+        sms_ok, sms_msg, _ = client.set_number_sms_webhook(sid, _twilio_sms_inbound_webhook_url())
+        if voice_ok and sms_ok:
+            return True, "Twilio voice and SMS inbound webhooks configured", app_id
+        if voice_ok:
+            return True, f"Voice webhook set; SMS: {sms_msg}", app_id
+        if sms_ok:
+            return True, f"SMS webhook set; voice: {voice_msg}", app_id
+        return False, f"{voice_msg}; {sms_msg}", app_id
+    if provider_key == TelephonyProvider.TELNYX.value:
+        profile_id = remote.get("messaging_profile_id")
+        integration_profile = getattr(client, "messaging_profile_id", None)
+        effective_profile = profile_id or integration_profile
+        sms_url = _telnyx_sms_inbound_webhook_url()
+        return (
+            False,
+            "Imported. Set messaging profile webhook in Telnyx (profile is shared across its numbers): "
+            f"{sms_url}. Voice Call Control webhook: {answer_url}",
+            str(effective_profile).strip() if effective_profile else None,
+        )
     raise ValueError(f"Unsupported provider: {provider}")
 
 
@@ -459,7 +616,7 @@ def import_numbers(
             row.source = "imported"
             row.country_iso2 = remote.get("country_iso2") or row.country_iso2
             row.region = remote.get("region") or row.region
-            row.capabilities = remote.get("capabilities") or row.capabilities
+            row.capabilities = _capabilities_for_import(provider_key, remote) or row.capabilities
             row.provider_app_id = remote.get("application_id") or row.provider_app_id
             if integration_id:
                 row.telephony_integration_id = integration_id
@@ -470,7 +627,7 @@ def import_numbers(
                 phone_number=e164,
                 country_iso2=remote.get("country_iso2"),
                 region=remote.get("region"),
-                capabilities=remote.get("capabilities"),
+                capabilities=_capabilities_for_import(provider_key, remote),
                 provider_app_id=remote.get("application_id"),
                 inbound_enabled=True,
                 outbound_enabled=True,

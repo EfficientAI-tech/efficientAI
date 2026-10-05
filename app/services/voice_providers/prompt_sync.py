@@ -45,10 +45,15 @@ def _build_voice_provider(integration: Integration):
 def fetch_provider_prompt(
     integration: Integration,
     voice_ai_agent_id: str,
+    *,
+    agent_channel: Optional[str] = None,
 ) -> Optional[str]:
     """Fetch a provider agent prompt without persisting it."""
     provider = _build_voice_provider(integration)
-    return provider.extract_agent_prompt(voice_ai_agent_id)
+    return provider.extract_agent_prompt(
+        voice_ai_agent_id,
+        agent_channel=agent_channel,
+    )
 
 
 def sync_provider_prompt(
@@ -68,7 +73,13 @@ def sync_provider_prompt(
         if hasattr(integration.platform, "value")
         else integration.platform
     )
-    prompt = fetch_provider_prompt(integration, agent.voice_ai_agent_id)
+    medium = getattr(agent, "call_medium", None)
+    agent_channel = "chat" if str(medium or "").lower() == "chat" else None
+    prompt = fetch_provider_prompt(
+        integration,
+        agent.voice_ai_agent_id,
+        agent_channel=agent_channel,
+    )
 
     if prompt is not None:
         agent.provider_prompt = prompt

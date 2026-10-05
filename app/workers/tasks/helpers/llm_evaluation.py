@@ -2992,6 +2992,10 @@ def evaluate_with_llm(
         else:
             llm_provider = evaluator_llm_provider
         llm_model = evaluator_llm_model
+        from app.services.ai.together_models import normalize_together_model_name
+
+        if llm_provider.value in ("together", "meta"):
+            llm_model = normalize_together_model_name(llm_model)
     else:
         llm_provider = ModelProvider.OPENAI
         llm_model = "gpt-4o"

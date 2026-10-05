@@ -40,6 +40,29 @@ def get_organization_root_prefix(prefix: str, organization_id: str) -> str:
     return f"{normalize_prefix(prefix)}organizations/{organization_id}/"
 
 
+def trace_workspace_id_in_key(
+    file_key: str,
+    organization_id: uuid.UUID,
+    *,
+    traces_prefix: str,
+) -> Optional[uuid.UUID]:
+    """Return workspace UUID embedded in a trace object key, if any."""
+    normalized = normalize_prefix(traces_prefix)
+    marker = f"{normalized}organizations/{organization_id}/workspaces/"
+    if not file_key.startswith(marker):
+        return None
+    rest = file_key[len(marker) :]
+    if "/traces/" not in rest:
+        return None
+    segment = rest.split("/", 1)[0].strip()
+    if not segment:
+        return None
+    try:
+        return uuid.UUID(segment)
+    except ValueError:
+        return None
+
+
 def assert_key_belongs_to_org(
     file_key: str,
     organization_id: uuid.UUID,
@@ -47,6 +70,8 @@ def assert_key_belongs_to_org(
     storage_prefix: str,
     decode: bool = False,
     extra_storage_prefixes: Optional[Iterable[str]] = None,
+    active_workspace_id: Optional[uuid.UUID] = None,
+    traces_s3_prefix: Optional[str] = None,
 ) -> str:
     """Validate that a blob key belongs to the caller's organization namespace."""
     key = unquote(file_key) if decode else file_key
@@ -55,11 +80,29 @@ def assert_key_belongs_to_org(
     prefixes = [storage_prefix]
     if extra_storage_prefixes:
         prefixes.extend(extra_storage_prefixes)
+    matched = False
     for prefix in prefixes:
         expected = get_organization_root_prefix(prefix, str(organization_id))
         if key.startswith(expected):
-            return key
-    raise HTTPException(status_code=403, detail="Access denied")
+            matched = True
+            break
+    if not matched:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    trace_prefix = traces_s3_prefix
+    if trace_prefix is None and extra_storage_prefixes:
+        for extra in extra_storage_prefixes:
+            if key.startswith(get_organization_root_prefix(extra, str(organization_id))):
+                trace_prefix = extra
+                break
+    if trace_prefix:
+        key_ws = trace_workspace_id_in_key(
+            key, organization_id, traces_prefix=trace_prefix
+        )
+        if key_ws is not None:
+            if active_workspace_id is None or key_ws != active_workspace_id:
+                raise HTTPException(status_code=403, detail="Access denied")
+    return key
 
 
 def build_trace_spans_object_key(

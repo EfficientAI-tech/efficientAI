@@ -73,6 +73,7 @@ interface VoiceBundleParamsModalProps {
   expanded?: boolean
   /** readonly: summary only; collapsible: summary + click to expand inline; modal: summary + modal editor */
   mode?: 'readonly' | 'collapsible' | 'modal' | 'expanded'
+  pipelineScope?: 'full' | 'chat_llm'
 }
 
 export default function VoiceBundleParamsModal({
@@ -81,8 +82,10 @@ export default function VoiceBundleParamsModal({
   disabled = false,
   expanded = false,
   mode: modeProp,
+  pipelineScope = 'full',
 }: VoiceBundleParamsModalProps) {
   const mode = modeProp ?? (expanded ? 'expanded' : 'modal')
+  const chatLlmOnly = pipelineScope === 'chat_llm'
   const [open, setOpen] = useState(false)
   const [inlineExpanded, setInlineExpanded] = useState(false)
   const queryClient = useQueryClient()
@@ -202,15 +205,18 @@ export default function VoiceBundleParamsModal({
   })
 
   const handleSave = () => {
-    saveMutation.mutate({
+    const payload: VoiceBundleUpdate = {
       llm_model: draft.llm_model || undefined,
       llm_config: draft.llm_config || undefined,
       llm_temperature: null,
       llm_max_tokens: null,
-      stt_model: draft.stt_model || undefined,
-      tts_voice: draft.tts_voice || null,
-      tts_config: draft.tts_config,
-    })
+    }
+    if (!chatLlmOnly) {
+      payload.stt_model = draft.stt_model || undefined
+      payload.tts_voice = draft.tts_voice || null
+      payload.tts_config = draft.tts_config
+    }
+    saveMutation.mutate(payload)
   }
 
   const updateLlmConfig = (patch: Partial<LLMGenerationConfig>) => {
@@ -237,13 +243,31 @@ export default function VoiceBundleParamsModal({
   if (bundle.bundle_type === VoiceBundleType.S2S) {
     return (
       <p className="text-sm text-gray-500">
-        Speech-to-speech bundle — use Voice Bundles to adjust the S2S model.
+        {chatLlmOnly
+          ? 'Chat simulation needs an STT + LLM + TTS bundle (LLM layer). Pick a different bundle or edit this one under Voice Bundles.'
+          : 'Speech-to-speech bundle — use Voice Bundles to adjust the S2S model.'}
       </p>
     )
   }
 
+  const renderReadonlyProvider = (provider?: ModelProvider | null) => (
+    <div className="flex items-center gap-2 text-sm text-gray-800 bg-white border border-gray-200 rounded-lg px-3 py-2 min-h-[2.5rem]">
+      {provider && getProviderLogo(provider) ? (
+        <img src={getProviderLogo(provider)!} alt="" className="h-5 w-5 object-contain shrink-0" />
+      ) : null}
+      <span className="truncate">{provider ? getProviderLabel(provider) : '—'}</span>
+    </div>
+  )
+
+  const renderReadonlyModel = (value?: string | null) => (
+    <div className="text-sm text-gray-800 bg-white border border-gray-200 rounded-lg px-3 py-2 min-h-[2.5rem] flex items-center">
+      <span className="truncate font-mono text-xs sm:text-sm">{value?.trim() || '—'}</span>
+    </div>
+  )
+
   const pipelineEditorBody = (idPrefix: string) => (
     <div className="space-y-5">
+      {!chatLlmOnly ? (
       <section className="rounded-lg border border-blue-100 bg-blue-50/50 p-4 space-y-4">
         <h4 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
           <MessageSquare className="h-4 w-4 text-blue-600" />
@@ -279,6 +303,7 @@ export default function VoiceBundleParamsModal({
           </div>
         </div>
       </section>
+      ) : null}
 
       <section className="rounded-lg border border-purple-100 bg-purple-50/30 p-4 space-y-4">
         <h4 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
@@ -362,6 +387,7 @@ export default function VoiceBundleParamsModal({
         </div>
       </section>
 
+      {!chatLlmOnly ? (
       <section className="rounded-lg border border-green-100 bg-green-50/50 p-4 space-y-4">
         <h4 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
           <Volume2 className="h-4 w-4 text-green-600" />
@@ -446,6 +472,7 @@ export default function VoiceBundleParamsModal({
           })()}
         </div>
       </section>
+      ) : null}
     </div>
   )
 
@@ -478,23 +505,9 @@ export default function VoiceBundleParamsModal({
     </div>
   )
 
-  const renderReadonlyProvider = (provider?: ModelProvider | null) => (
-    <div className="flex items-center gap-2 text-sm text-gray-800 bg-white border border-gray-200 rounded-lg px-3 py-2 min-h-[2.5rem]">
-      {provider && getProviderLogo(provider) ? (
-        <img src={getProviderLogo(provider)!} alt="" className="h-5 w-5 object-contain shrink-0" />
-      ) : null}
-      <span className="truncate">{provider ? getProviderLabel(provider) : '—'}</span>
-    </div>
-  )
-
-  const renderReadonlyModel = (value?: string | null) => (
-    <div className="text-sm text-gray-800 bg-white border border-gray-200 rounded-lg px-3 py-2 min-h-[2.5rem] flex items-center">
-      <span className="truncate font-mono text-xs sm:text-sm">{value?.trim() || '—'}</span>
-    </div>
-  )
-
   const pipelineOverview = (
     <div className="space-y-4">
+      {!chatLlmOnly ? (
       <section className="rounded-lg border border-blue-100 bg-blue-50/50 p-4 space-y-3">
         <h4 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
           <MessageSquare className="h-4 w-4 text-blue-600" />
@@ -511,6 +524,7 @@ export default function VoiceBundleParamsModal({
           </div>
         </div>
       </section>
+      ) : null}
 
       <section className="rounded-lg border border-purple-100 bg-purple-50/30 p-4 space-y-3">
         <h4 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
@@ -534,6 +548,7 @@ export default function VoiceBundleParamsModal({
         ) : null}
       </section>
 
+      {!chatLlmOnly ? (
       <section className="rounded-lg border border-green-100 bg-green-50/50 p-4 space-y-3">
         <h4 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
           <Volume2 className="h-4 w-4 text-green-600" />
@@ -554,14 +569,20 @@ export default function VoiceBundleParamsModal({
           </div>
         </div>
       </section>
+      ) : null}
     </div>
   )
+
+  const paramsPanelTitle = chatLlmOnly ? 'Chat test customer LLM' : 'Voice pipeline parameters'
+  const paramsPanelHint = chatLlmOnly
+    ? 'Text-only evals use this model — STT/TTS apply to voice calls only'
+    : 'Providers and models shown below — click to tune parameters'
 
   if (mode === 'expanded') {
     return (
       <div className="rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/80">
-          <h4 className="text-sm font-semibold text-gray-900">Voice pipeline parameters</h4>
+          <h4 className="text-sm font-semibold text-gray-900">{paramsPanelTitle}</h4>
           <p className="text-xs text-gray-500 mt-0.5">{bundle.name}</p>
         </div>
         <div className="p-4 max-h-[min(70vh,720px)] overflow-y-auto">{pipelineEditorBody('inline')}</div>
@@ -584,9 +605,9 @@ export default function VoiceBundleParamsModal({
           aria-expanded={inlineExpanded}
         >
           <div className="min-w-0">
-            <h4 className="text-sm font-semibold text-gray-900">Voice pipeline parameters</h4>
+            <h4 className="text-sm font-semibold text-gray-900">{paramsPanelTitle}</h4>
             <p className="text-xs text-gray-500 mt-0.5">
-              {inlineExpanded ? 'Click to collapse' : 'Providers and models shown below — click to tune parameters'}
+              {inlineExpanded ? 'Click to collapse' : paramsPanelHint}
             </p>
           </div>
           {inlineExpanded ? (
@@ -620,7 +641,7 @@ export default function VoiceBundleParamsModal({
           leftIcon={<SlidersHorizontal className="h-4 w-4" />}
           className="w-full sm:w-auto"
         >
-          Tune STT, LLM & TTS
+          {chatLlmOnly ? 'Tune LLM parameters' : 'Tune STT, LLM & TTS'}
         </Button>
       </div>
 
@@ -633,7 +654,7 @@ export default function VoiceBundleParamsModal({
             >
               <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-gray-200 shrink-0">
                 <div>
-                  <h3 className="text-lg font-semibold text-gray-900">Voice pipeline parameters</h3>
+                  <h3 className="text-lg font-semibold text-gray-900">{paramsPanelTitle}</h3>
                   <p className="text-sm text-gray-500 mt-0.5">{bundle.name}</p>
                 </div>
                 <button

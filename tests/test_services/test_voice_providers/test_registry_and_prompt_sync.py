@@ -22,7 +22,7 @@ def test_sync_provider_prompt_updates_agent_and_commits(monkeypatch):
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
-        def extract_agent_prompt(self, _agent_id):
+        def extract_agent_prompt(self, _agent_id, *, agent_channel=None):
             return "hello provider prompt"
 
     class _DB:

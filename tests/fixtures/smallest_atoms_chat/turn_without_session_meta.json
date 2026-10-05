@@ -1,0 +1,10 @@
+[
+  {
+    "type": "transcript",
+    "role": "assistant",
+    "text": "Hi there."
+  },
+  {
+    "type": "agent_stop_talking"
+  }
+]

@@ -14,8 +14,7 @@ Use traces when you need to answer: *Was this call slow because of speech recogn
 Your production agent sends **OpenTelemetry spans** to EfficientAI. We assign a six-digit **Call ID**,
 group spans into **turns**, and show a **waterfall** in the trace detail view.
 
-Rows labeled **Pipeline trace** in **Observability → Calls** use this pipeline view.
-**Webhook call** rows are production ingest — see [Calls](/docs/monitoring/calls/).
+Rows labeled **Pipeline trace** in **Observability → Calls** use this pipeline view. For webhook-ingested production calls (Retell, Vapi, custom), see [Production calls](/docs/platform/production-calls/).
 
 ## View traces in the app
 
@@ -34,11 +33,5 @@ Rows labeled **Pipeline trace** in **Observability → Calls** use this pipeline
 
 ![Settings — API keys](/screenshots/Calls/Calls_api_keys.png)
 
-3. Configure your Pipecat project (see [Pipecat integration](/docs/monitoring/call-traces/pipecat-integration/)).
+3. Configure your Pipecat project (see [Pipecat](/docs/integrations/pipecat/)).
 4. Run a call, then refresh **Observability → Calls** after hang-up.
-
-## Go deeper
-
-- [Call Traces overview](/docs/monitoring/call-traces/)
-- [Latency metrics](/docs/monitoring/call-traces/latency-metrics/)
-- [Pipecat integration](/docs/monitoring/call-traces/pipecat-integration/)

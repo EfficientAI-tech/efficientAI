@@ -42,9 +42,20 @@ def test_run_llm_to_llm_evaluator_simulation_builds_transcript(monkeypatch):
     agent = SimpleNamespace(
         id=agent_id,
         name="Support Bot",
+        call_medium="phone_call",
         voice_bundle_id=bundle_id,
         description="You help customers with orders.",
         provider_prompt=None,
+        chat_connection_type=None,
+        chat_eval_mode=None,
+        main_llm_provider=None,
+        main_llm_model=None,
+        main_llm_credential_id=None,
+        main_llm_config=None,
+        test_llm_provider=None,
+        test_llm_model=None,
+        test_llm_credential_id=None,
+        test_llm_config=None,
     )
     persona = SimpleNamespace(
         id=persona_id,
@@ -80,13 +91,15 @@ def test_run_llm_to_llm_evaluator_simulation_builds_transcript(monkeypatch):
     )
     db = SimpleNamespace()
 
+    from app.models.database import VoiceBundle
+
     def _query(model):
         class _Q:
             def filter(self, *_args, **_kwargs):
                 return self
 
             def first(self):
-                if model.__name__ == "VoiceBundle":
+                if model is VoiceBundle:
                     return voice_bundle
                 return None
 
@@ -109,3 +122,106 @@ def test_run_llm_to_llm_evaluator_simulation_builds_transcript(monkeypatch):
     assert "Speaker 1:" in result.transcription
     assert "Speaker 2:" in result.transcription
     assert result.call_data["source"] == "llm_to_llm_simulation"
+
+
+def test_run_llm_to_llm_evaluator_simulation_chat_modality(monkeypatch):
+    org_id = uuid4()
+    agent_id = uuid4()
+    evaluator_id = uuid4()
+    persona_id = uuid4()
+    scenario_id = uuid4()
+    result_id = uuid4()
+    cred_id = uuid4()
+
+    responses = iter(
+        [
+            {"text": "Hello, how can I help?"},
+            {"text": "I need help with billing."},
+            {"text": "Sure, I can help with that."},
+            {"text": "Thanks, goodbye."},
+            {"text": "You're welcome, goodbye."},
+        ]
+    )
+
+    def _fake_generate(**_kwargs):
+        return next(responses)
+
+    import app.services.testing.llm_to_llm_evaluator_simulation as sim_mod
+
+    monkeypatch.setattr(sim_mod.llm_service, "generate_response", _fake_generate)
+
+    evaluator = SimpleNamespace(
+        id=evaluator_id,
+        evaluator_id="ev-chat",
+        workspace_id=uuid4(),
+    )
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Chat Bot",
+        call_medium="chat",
+        chat_connection_type="internal_llm",
+        chat_eval_mode="pre_prod_sim",
+        voice_bundle_id=None,
+        description="You help with billing.",
+        provider_prompt="You help with billing.",
+        main_llm_provider="openai",
+        main_llm_model="gpt-4o-mini",
+        main_llm_credential_id=cred_id,
+        main_llm_config=None,
+        test_llm_provider="openai",
+        test_llm_model="gpt-4o-mini",
+        test_llm_credential_id=cred_id,
+        test_llm_config=None,
+    )
+    persona = SimpleNamespace(
+        id=persona_id,
+        name="Sam",
+        description="Confused customer",
+        gender=None,
+        max_turns=3,
+        tts_provider=None,
+        tts_voice_name=None,
+        tts_voice_id=None,
+    )
+    scenario = SimpleNamespace(
+        id=scenario_id,
+        name="Billing",
+        description="Fix a bill",
+        required_info={"goal": "Refund"},
+    )
+    result = SimpleNamespace(
+        id=result_id,
+        result_id="res-chat",
+        transcription=None,
+        speaker_segments=None,
+        provider_platform=None,
+        call_data=None,
+        duration_seconds=None,
+    )
+    db = SimpleNamespace()
+
+    def _query(model):
+        class _Q:
+            def filter(self, *_args, **_kwargs):
+                return self
+
+            def first(self):
+                return None
+
+        return _Q()
+
+    db.query = _query
+
+    run_llm_to_llm_evaluator_simulation(
+        evaluator=evaluator,
+        result=result,
+        agent=agent,
+        persona=persona,
+        scenario=scenario,
+        organization_id=org_id,
+        db=db,
+    )
+
+    assert result.call_data["modality"] == "chat"
+    assert result.call_data["chat_connection_type"] == "internal_llm"
+    assert "Hi, this is Sam" in result.transcription

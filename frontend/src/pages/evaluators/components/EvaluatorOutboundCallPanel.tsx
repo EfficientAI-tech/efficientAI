@@ -16,6 +16,8 @@ interface Props {
   suite: EvaluatorSuite
   onEditPersonas?: () => void
   showToast: (message: string, type: 'success' | 'error') => void
+  toNumber: string
+  onToNumberChange: (value: string) => void
 }
 
 export default function EvaluatorOutboundCallPanel({
@@ -30,6 +32,8 @@ export default function EvaluatorOutboundCallPanel({
   suite,
   onEditPersonas,
   showToast,
+  toNumber,
+  onToNumberChange,
 }: Props) {
   if (callMedium !== 'phone_call' || callType === 'inbound') return null
 
@@ -63,6 +67,8 @@ export default function EvaluatorOutboundCallPanel({
           scenarioId={scenarioId}
           personaName={personaName}
           scenarioName={scenarioName}
+          toNumber={toNumber}
+          onToNumberChange={onToNumberChange}
           disabled={callBlocked}
           showToast={showToast}
         />

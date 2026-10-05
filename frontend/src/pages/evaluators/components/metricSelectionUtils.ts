@@ -4,6 +4,8 @@
  * selectable unit — only the parent ID is stored/shown.
  */
 
+import { isVoiceOnlyMetric } from '../../../lib/voiceOnlyMetrics'
+
 export interface MetricRow {
   id: string
   name: string
@@ -14,6 +16,7 @@ export interface MetricRow {
   metric_type?: string
   metric_origin?: string
   custom_data_type?: string | null
+  tags?: string[] | null
   children?: MetricRow[]
 }
 
@@ -23,6 +26,34 @@ export function isCategorizationParent(metric: MetricRow): boolean {
 
 export function getTopLevelMetrics(metrics: MetricRow[]): MetricRow[] {
   return metrics.filter((m) => m.enabled !== false && !m.parent_metric_id)
+}
+
+export function getTopLevelMetricsForAgentMedium(
+  metrics: MetricRow[],
+  medium: 'voice' | 'chat',
+): MetricRow[] {
+  const top = getTopLevelMetrics(metrics)
+  if (medium === 'voice') return top
+
+  return top
+    .map((m) => {
+      if (isCategorizationParent(m)) {
+        const children = getEnabledChildren(m).filter((c) => !isVoiceOnlyMetric(c))
+        if (children.length === 0) return null
+        return { ...m, children }
+      }
+      return isVoiceOnlyMetric(m) ? null : m
+    })
+    .filter((m): m is MetricRow => m !== null)
+}
+
+export function stripVoiceOnlyMetricIds(selectedIds: string[], metrics: MetricRow[]): string[] {
+  const flat = flattenMetrics(metrics)
+  const byId = new Map(flat.map((m) => [m.id, m]))
+  return selectedIds.filter((id) => {
+    const metric = byId.get(id)
+    return metric && !isVoiceOnlyMetric(metric)
+  })
 }
 
 export function getEnabledChildren(metric: MetricRow): MetricRow[] {

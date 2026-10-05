@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Loader2, Sparkles } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import AIGeneratePanel from '../../components/shared/AIGeneratePanel'
 import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
+import { filterAgentsByMedium } from '../../lib/agentMedium'
 
 interface PersonaPromptPanelProps {
   value: string
@@ -45,6 +46,15 @@ export default function PersonaPromptPanel({
     ? 'w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-none'
     : 'w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent text-sm'
 
+  const voiceAgents = useMemo(
+    () =>
+      filterAgentsByMedium(
+        agents as { id: string; name: string; call_medium?: string | null }[],
+        'voice',
+      ),
+    [agents],
+  )
+
   const handleAgentChange = (agentId: string) => {
     setSelectedAgentId(agentId)
     setShowAiPanel(false)
@@ -66,7 +76,7 @@ export default function PersonaPromptPanel({
           className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white"
         >
           <option value="">Select an agent…</option>
-          {agents.map((agent: { id: string; name: string }) => (
+          {voiceAgents.map((agent: { id: string; name: string }) => (
             <option key={agent.id} value={agent.id}>
               {agent.name}
             </option>

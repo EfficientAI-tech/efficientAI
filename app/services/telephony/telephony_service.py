@@ -41,6 +41,19 @@ from app.services.telephony.vobiz_xml import (
 )
 
 
+def _format_linked_agent_name(agent: Agent) -> str:
+    name = (agent.name or "").strip() or "Agent"
+    medium = getattr(agent, "call_medium", None)
+    if hasattr(medium, "value"):
+        medium = medium.value
+    medium_key = str(medium or "").lower()
+    if medium_key == "chat":
+        return f"{name} (chat)"
+    if medium_key == "phone_call":
+        return f"{name} (voice)"
+    return name
+
+
 class TelephonyService:
     """Encapsulates telephony business operations for API routes."""
 
@@ -114,6 +127,18 @@ class TelephonyService:
                 account_sid=integration.voice_app_id,
                 api_host=integration.sip_domain,
                 credential_fingerprint=fingerprint_for_integration(integration),
+            )
+        if provider_key == "twilio":
+            from app.services.telephony.twilio_client import TwilioClient
+
+            return TwilioClient(auth_id, auth_token)
+        if provider_key == "telnyx":
+            from app.services.telephony.telnyx_client import TelnyxClient
+            from app.services.telephony.telnyx_integration import telnyx_messaging_profile_id
+
+            return TelnyxClient(
+                auth_token,
+                messaging_profile_id=telnyx_messaging_profile_id(integration),
             )
         raise ValueError(f"Unsupported telephony provider: {provider}")
 
@@ -375,11 +400,23 @@ class TelephonyService:
         if not numbers:
             return []
 
+        number_ids = [n.id for n in numbers]
         agent_ids = {n.agent_id for n in numbers if n.agent_id}
-        agents: Dict[UUID, str] = {}
-        if agent_ids:
-            for agent in db.query(Agent).filter(Agent.id.in_(agent_ids)).all():
-                agents[agent.id] = agent.name
+        linked_agents: Dict[UUID, Agent] = {}
+        if agent_ids or number_ids:
+            filters = []
+            if agent_ids:
+                filters.append(Agent.id.in_(agent_ids))
+            if number_ids:
+                filters.append(Agent.telephony_phone_number_id.in_(number_ids))
+            for agent in db.query(Agent).filter(or_(*filters)).all():
+                linked_agents[agent.id] = agent
+
+        agents_by_number_id: Dict[UUID, Agent] = {
+            agent.telephony_phone_number_id: agent
+            for agent in linked_agents.values()
+            if agent.telephony_phone_number_id
+        }
 
         integration_ids = {n.telephony_integration_id for n in numbers if n.telephony_integration_id}
         providers: Dict[UUID, str] = {}
@@ -398,6 +435,15 @@ class TelephonyService:
                 if number.telephony_integration_id
                 else "vobiz"
             )
+            linked_agent: Optional[Agent] = None
+            if number.agent_id and number.agent_id in linked_agents:
+                linked_agent = linked_agents[number.agent_id]
+            elif number.id in agents_by_number_id:
+                linked_agent = agents_by_number_id[number.id]
+            linked_agent_name = _format_linked_agent_name(linked_agent) if linked_agent else None
+            effective_agent_id = (
+                number.agent_id or (linked_agent.id if linked_agent else None)
+            )
             enriched.append(
                 {
                     "id": number.id,
@@ -410,8 +456,8 @@ class TelephonyService:
                     "inbound_enabled": number.inbound_enabled,
                     "outbound_enabled": number.outbound_enabled,
                     "source": number.source,
-                    "agent_id": number.agent_id,
-                    "linked_agent_name": agents.get(number.agent_id) if number.agent_id else None,
+                    "agent_id": effective_agent_id,
+                    "linked_agent_name": linked_agent_name,
                     "provider": number_provider,
                     "is_active": number.is_active,
                     "created_at": number.created_at,

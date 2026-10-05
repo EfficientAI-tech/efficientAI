@@ -6,11 +6,19 @@ import { apiClient } from '../../lib/api'
 import Button from '../../components/Button'
 import { useAgentStore } from '../../store/agentStore'
 import { useToast } from '../../hooks/useToast'
-import { TestAgentConversation, VoiceBundle, Integration } from '../../types/api'
+import {
+  AIProvider,
+  TestAgentConversation,
+  VoiceBundle,
+  Integration,
+  IntegrationPlatform,
+} from '../../types/api'
 import { AgentDetailHeader, AgentInfoView, DeleteAgentModal } from './components'
+import { agentProductionTabLabel, isChatMedium } from '../../lib/agentMedium'
+import { CallTypeBadge } from '../evaluators/components/evaluatorUi'
 import type { AgentDetailTab } from './components/AgentInfoView'
 import AgentEditForm from './components/AgentEditForm'
-import AgentTalkSidebar, { type AgentTalkMode } from './components/AgentTalkSidebar'
+import AgentTalkSidebar from './components/AgentTalkSidebar'
 import { Save, X } from 'lucide-react'
 import { extractPhoneConflictDetail } from './components/agentPhoneValidation'
 import {
@@ -19,6 +27,28 @@ import {
   defaultTestAgentTemplate,
   templateFromApi,
 } from './components/agentTestSetupConstants'
+import type { ChatConnectionForm } from './components/create/ChatConnectionStep'
+import {
+  chatConnectionValidationMessage,
+  validateChatConnection,
+} from './components/create/ChatConnectionStep'
+import {
+  applyTestAgentLlmPayload,
+  testAgentLlmValidationMessage,
+  validateTestAgentLlm,
+} from './components/create/ChatTestAgentLlmStep'
+import type { ChatConnectionConfigForm } from './components/create/ChatConnectionDetailsStep'
+import {
+  DEFAULT_CHAT_CONNECTION_CONFIG,
+  validateChatConnectionDetails,
+} from './components/create/ChatConnectionDetailsStep'
+import {
+  buildChatConnectionConfigPayload,
+  chatConfigFromAgent,
+  chatConnectionFromAgent,
+} from './components/create/chatAgentFormUtils'
+import { chatEvalModeForConnection } from './components/create/chatPreprodScope'
+import type { ChatIntegrationOptionId } from './components/create/ChatIntegrationTypeStep'
 
 const VALID_TABS: AgentDetailTab[] = ['overview', 'test_agent', 'voice_ai_agent']
 
@@ -30,8 +60,10 @@ function parseTabFromSearch(params: URLSearchParams): AgentDetailTab {
   return 'overview'
 }
 
-function normalizeCallMedium(value: string | undefined | null): 'phone_call' | 'web_call' {
-  return value === 'web_call' ? 'web_call' : 'phone_call'
+function normalizeCallMedium(value: string | undefined | null): 'phone_call' | 'web_call' | 'chat' {
+  if (value === 'web_call') return 'web_call'
+  if (value === 'chat') return 'chat'
+  return 'phone_call'
 }
 
 function agentToFormData(agent: NonNullable<Awaited<ReturnType<typeof apiClient.getAgent>>>): FormData {
@@ -62,7 +94,7 @@ interface FormData {
   prompt_variables: Record<string, string>
   silence_hangup_secs: number
   call_type: string
-  call_medium: 'phone_call' | 'web_call'
+  call_medium: 'phone_call' | 'web_call' | 'chat'
   telephony_phone_number_id: string
   voice_bundle_id: string
   voice_ai_integration_id: string
@@ -103,8 +135,6 @@ export default function AgentWorkspaceDetail({
   )
 
   const [isEditMode, setIsEditMode] = useState(false)
-  const [talkSidebarOpen, setTalkSidebarOpen] = useState(false)
-  const [talkMode, setTalkMode] = useState<AgentTalkMode>('test_agent')
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [blockingConversations, setBlockingConversations] = useState<TestAgentConversation[]>([])
   const [showSavePromptModal, setShowSavePromptModal] = useState(false)
@@ -128,6 +158,20 @@ export default function AgentWorkspaceDetail({
     voice_ai_agent_id: '',
     provider_prompt: '',
   })
+  const [chatConnection, setChatConnection] = useState<ChatConnectionForm>({
+    connectionType: 'internal_llm',
+    mainLlmProvider: '',
+    mainLlmCredentialId: '',
+    mainLlmModel: '',
+    useSeparateTestLlm: false,
+    testLlmProvider: '',
+    testLlmCredentialId: '',
+    testLlmModel: '',
+  })
+  const [chatConnectionConfig, setChatConnectionConfig] =
+    useState<ChatConnectionConfigForm>(DEFAULT_CHAT_CONNECTION_CONFIG)
+  const [chatEditPlatform, setChatEditPlatform] = useState<IntegrationPlatform | null>(null)
+  const [talkSidebarOpen, setTalkSidebarOpen] = useState(false)
 
   useEffect(() => {
     setIsEditMode(false)
@@ -145,6 +189,8 @@ export default function AgentWorkspaceDetail({
     enabled: Boolean(agentRouteId),
   })
 
+  const isChatAgent = agent ? isChatMedium(agent.call_medium) : false
+
   const { data: voiceBundles = [] } = useQuery<VoiceBundle[]>({
     queryKey: ['voicebundles'],
     queryFn: () => apiClient.listVoiceBundles(),
@@ -155,6 +201,22 @@ export default function AgentWorkspaceDetail({
     queryFn: () => apiClient.listIntegrations(),
   })
 
+  const { data: aiProviders = [] } = useQuery<AIProvider[]>({
+    queryKey: ['ai-providers'],
+    queryFn: () => apiClient.listAIProviders(),
+  })
+
+  const syncChatStateFromAgent = useCallback(
+    (a: NonNullable<Awaited<ReturnType<typeof apiClient.getAgent>>>) => {
+      if (!isChatMedium(a.call_medium)) return
+      setChatConnection(chatConnectionFromAgent(a))
+      setChatConnectionConfig(chatConfigFromAgent(a))
+      const integ = integrations.find((i) => i.id === a.voice_ai_integration_id)
+      setChatEditPlatform((integ?.platform as IntegrationPlatform) ?? null)
+    },
+    [integrations],
+  )
+
   const renderModal = (content: ReactNode) => {
     if (typeof document === 'undefined') return null
     return createPortal(content, document.body)
@@ -163,8 +225,19 @@ export default function AgentWorkspaceDetail({
   useEffect(() => {
     if (agent && !isEditMode) {
       setFormData(agentToFormData(agent))
+      syncChatStateFromAgent(agent)
     }
-  }, [agent, isEditMode])
+  }, [agent, isEditMode, syncChatStateFromAgent])
+
+  useEffect(() => {
+    if (!agent || !isChatMedium(agent.call_medium)) return
+    const integrationId = (isEditMode ? formData.voice_ai_integration_id : agent.voice_ai_integration_id) || ''
+    if (!integrationId) return
+    const integ = integrations.find((i) => i.id === integrationId)
+    if (integ?.platform) {
+      setChatEditPlatform(integ.platform as IntegrationPlatform)
+    }
+  }, [agent, integrations, isEditMode, formData.voice_ai_integration_id])
 
   const updateMutation = useMutation({
     mutationFn: (data: FormData) => {
@@ -189,16 +262,63 @@ export default function AgentWorkspaceDetail({
         payload.telephony_phone_number_id = null
       }
 
-      payload.voice_bundle_id = data.voice_bundle_id?.trim() || null
-      payload.voice_ai_integration_id = data.voice_ai_integration_id?.trim() || null
-      payload.voice_ai_agent_id = data.voice_ai_agent_id?.trim() || null
-      payload.provider_prompt = data.provider_prompt?.trim() || null
+      if (data.call_medium === 'chat') {
+        payload.voice_bundle_id = data.voice_bundle_id?.trim() || null
+        payload.phone_number = null
+        payload.provider_prompt = data.provider_prompt?.trim() || null
+        payload.test_agent_template = data.test_agent_template
+        payload.description =
+          data.description?.trim() ||
+          assembleTestAgentPrompt(data.test_agent_template.sections) ||
+          data.provider_prompt?.trim() ||
+          data.name
+
+        const connType = (agent?.chat_connection_type || 'internal_llm') as ChatConnectionForm['connectionType']
+        payload.chat_connection_type = connType
+        payload.chat_eval_mode = chatEvalModeForConnection(connType)
+
+        if (connType === 'messaging_channels' && data.telephony_phone_number_id?.trim()) {
+          payload.telephony_phone_number_id = data.telephony_phone_number_id.trim()
+        } else {
+          payload.telephony_phone_number_id = null
+        }
+
+        if (connType === 'internal_llm' && chatConnection.mainLlmProvider) {
+          payload.main_llm_provider = chatConnection.mainLlmProvider
+          payload.main_llm_model = chatConnection.mainLlmModel
+          if (chatConnection.mainLlmCredentialId) {
+            payload.main_llm_credential_id = chatConnection.mainLlmCredentialId
+          }
+        }
+
+        if (connType === 'provider_chat') {
+          payload.voice_ai_integration_id = data.voice_ai_integration_id?.trim() || null
+          payload.voice_ai_agent_id = data.voice_ai_agent_id?.trim() || null
+        } else {
+          payload.voice_ai_integration_id = null
+          payload.voice_ai_agent_id = null
+        }
+
+        const configPayload = buildChatConnectionConfigPayload(connType, chatConnectionConfig)
+        if (configPayload) {
+          payload.chat_connection_config = configPayload
+        }
+
+        applyTestAgentLlmPayload(payload, chatConnection, aiProviders)
+
+      } else {
+        payload.voice_bundle_id = data.voice_bundle_id?.trim() || null
+        payload.voice_ai_integration_id = data.voice_ai_integration_id?.trim() || null
+        payload.voice_ai_agent_id = data.voice_ai_agent_id?.trim() || null
+        payload.provider_prompt = data.provider_prompt?.trim() || null
+      }
 
       return apiClient.updateAgent(agentRouteId!, payload)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['agent', agentRouteId] })
       queryClient.invalidateQueries({ queryKey: ['agents'] })
+      queryClient.invalidateQueries({ queryKey: ['voicebundles'] })
       queryClient.invalidateQueries({ queryKey: ['telephony-numbers'] })
       setIsEditMode(false)
       showToast('Agent updated successfully!', 'success')
@@ -286,12 +406,56 @@ export default function AgentWorkspaceDetail({
       return
     }
 
+    if (agent && isChatMedium(agent.call_medium)) {
+      if (!formData.provider_prompt?.trim()) {
+        showToast('Production prompt is required.', 'error')
+        return
+      }
+      const connType = (agent.chat_connection_type || 'internal_llm') as ChatConnectionForm['connectionType']
+      const integrationOption = (
+        connType === 'messaging_channels'
+          ? 'messaging_channels'
+          : connType
+      ) as ChatIntegrationOptionId
+      if (
+        integrationOption !== 'internal_llm' &&
+        !validateChatConnectionDetails(
+          integrationOption,
+          formData,
+          chatConnectionConfig,
+          formData.provider_prompt,
+          chatEditPlatform,
+        )
+      ) {
+        showToast('Complete connection details.', 'error')
+        return
+      }
+      if (
+        connType === 'internal_llm' &&
+        !validateChatConnection({ ...chatConnection, connectionType: connType }, aiProviders)
+      ) {
+        showToast(
+          chatConnectionValidationMessage({ ...chatConnection, connectionType: connType }),
+          'error',
+        )
+        return
+      }
+      if (
+        connType !== 'internal_llm' &&
+        !validateTestAgentLlm(chatConnection, aiProviders)
+      ) {
+        showToast(testAgentLlmValidationMessage(), 'error')
+        return
+      }
+    }
+
     updateMutation.mutate(formData)
   }
 
   const handleEditClick = () => {
     if (agent) {
       setFormData(agentToFormData(agent))
+      syncChatStateFromAgent(agent)
     }
     setIsEditMode(true)
   }
@@ -299,6 +463,7 @@ export default function AgentWorkspaceDetail({
   const handleCancelEdit = () => {
     if (agent) {
       setFormData(agentToFormData(agent))
+      syncChatStateFromAgent(agent)
     }
     setIsEditMode(false)
   }
@@ -338,11 +503,6 @@ export default function AgentWorkspaceDetail({
       content: savePromptContent.trim(),
       tags: tags.length > 0 ? tags : undefined,
     })
-  }
-
-  const openTalkSidebar = (mode: AgentTalkMode) => {
-    setTalkMode(mode)
-    setTalkSidebarOpen(true)
   }
 
   const handleEditVoiceBundle = (bundleId: string) => {
@@ -386,9 +546,14 @@ export default function AgentWorkspaceDetail({
         <div className="shrink-0 border-b border-gray-200 px-4 pt-3 pb-0">
           <div className="flex flex-wrap items-start justify-between gap-2 mb-2">
             <div className="min-w-0 flex-1">
-              <h2 className="text-lg font-semibold text-gray-900 truncate">
-                {isEditMode ? 'Editing' : agent.name}
-              </h2>
+              <div className="flex flex-wrap items-center gap-2 min-w-0">
+                <h2 className="text-lg font-semibold text-gray-900 truncate">
+                  {isEditMode ? 'Editing' : agent.name}
+                </h2>
+                {isChatMedium(agent.call_medium) ? (
+                  <CallTypeBadge medium={agent.call_medium} callType={agent.call_type} />
+                ) : null}
+              </div>
               {agent.agent_id && (
                 <p className="text-xs text-gray-500 mt-0.5">
                   Agent ID:{' '}
@@ -409,11 +574,17 @@ export default function AgentWorkspaceDetail({
           </div>
           <nav className="-mb-px flex space-x-6 overflow-x-auto" aria-label="Agent detail tabs">
             {(
-              [
-                { id: 'overview' as const, label: 'Overview' },
-                { id: 'test_agent' as const, label: 'Test Agent' },
-                { id: 'voice_ai_agent' as const, label: 'Voice AI Agent' },
-              ] as const
+              isChatAgent
+                ? [
+                    { id: 'overview' as const, label: 'Overview' },
+                    { id: 'test_agent' as const, label: 'Test Agent' },
+                    { id: 'voice_ai_agent' as const, label: agentProductionTabLabel('chat') },
+                  ]
+                : [
+                    { id: 'overview' as const, label: 'Overview' },
+                    { id: 'test_agent' as const, label: 'Test Agent' },
+                    { id: 'voice_ai_agent' as const, label: agentProductionTabLabel('voice') },
+                  ]
             ).map((tab) => (
               <button
                 key={tab.id}
@@ -440,7 +611,9 @@ export default function AgentWorkspaceDetail({
               activeTab={activeTab}
               onSyncProviderPrompt={() => syncPromptMutation.mutate()}
               isSyncingPrompt={syncPromptMutation.isPending}
-              onTalk={openTalkSidebar}
+              onTalkToProduction={
+                isChatAgent ? undefined : () => setTalkSidebarOpen(true)
+              }
               onEditVoiceBundle={handleEditVoiceBundle}
             />
           ) : (
@@ -460,6 +633,15 @@ export default function AgentWorkspaceDetail({
                 )
               }
               agentId={agent.id}
+              chatConnectionType={agent.chat_connection_type || 'internal_llm'}
+              chatConnection={chatConnection}
+              onChatConnectionChange={(patch) => setChatConnection((prev) => ({ ...prev, ...patch }))}
+              chatConnectionConfig={chatConnectionConfig}
+              onChatConnectionConfigChange={(patch) =>
+                setChatConnectionConfig((prev) => ({ ...prev, ...patch }))
+              }
+              chatEditPlatform={chatEditPlatform}
+              onChatEditPlatformChange={setChatEditPlatform}
             />
           )}
         </div>
@@ -563,14 +745,16 @@ export default function AgentWorkspaceDetail({
           </div>
         )}
 
-      <AgentTalkSidebar
-        isOpen={talkSidebarOpen}
-        mode={talkMode}
-        agent={agent}
-        integrations={integrations}
-        onClose={() => setTalkSidebarOpen(false)}
-        showToast={showToast}
-      />
+      {!isChatAgent ? (
+        <AgentTalkSidebar
+          isOpen={talkSidebarOpen}
+          mode="voice_ai_agent"
+          agent={agent}
+          integrations={integrations}
+          onClose={() => setTalkSidebarOpen(false)}
+          showToast={showToast}
+        />
+      ) : null}
 
       <ToastContainer />
     </div>

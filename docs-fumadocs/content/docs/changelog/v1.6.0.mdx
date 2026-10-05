@@ -1,0 +1,47 @@
+---
+title: v1.6.0
+description: Release notes for v1.6.0.
+---
+
+# v1.6.0
+
+Released Sep 28, 2026. [View on GitHub](https://github.com/EfficientAI-tech/efficientAI/releases/tag/v1.6.0).
+
+Primary pull request: [#123](https://github.com/EfficientAI-tech/efficientAI/pull/123) by [@MSami625](https://github.com/MSami625).
+
+## What changed
+
+Adds **Call Traces** — per-turn STT/LLM/TTS latency for voice agent calls.
+
+- New `/api/v1/observability/traces` API (session create, OTLP ingest, list/detail, close)
+- DB tables for trace storage (`078_synthetic_call_traces`)
+- Pipecat integration SDK (`efficientai.integrations.efficientai_traces`) for external bots
+- In-process OTLP export for playground voice agents
+- **Call Traces** UI with waterfall, charts, and turn breakdown
+- Trace panels on evaluator results, playground calls, and observability views
+- Pipecat example bots + local test scripts
+
+## Why
+
+Reviewers need per-turn latency (STT / LLM / TTS) during playground runs, phone evals, and external Pipecat agents. This adds OTLP-based trace ingest correlated by `call_short_id`, so latency is visible in one place in the UI.
+
+## How to test
+
+1. Run `eai start-all` and confirm migration `078` applied.
+2. API smoke test:
+   ```bash
+   export EFFICIENTAI_API_KEY="..." EFFICIENTAI_WORKSPACE_ID="..."
+   uv run python scripts/test_local_pipecat_trace.py
+   ```
+3. Pipecat WebRTC: follow `docs/synthetic-call-traces-pipecat.md` → talk 2–3 turns → check **Call Traces** UI.
+4. Playground: run a voice agent call → confirm trace panel on call detail.
+5. Evaluator: run a trace-enabled eval → confirm trace on result detail.
+6. Run tests:
+   ```bash
+   uv run pytest tests/test_synthetic_trace_*.py tests/test_efficientai_traces_correlation.py tests/test_services/test_playground_tracing.py -q
+   ```
+
+## Contributors
+
+- [@MSami625](https://github.com/MSami625)
+

@@ -20,7 +20,7 @@ export default function WalkthroughToggleButton({
       type="button"
       onClick={() => setCollapsed(false)}
       className={clsx(
-        'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-amber-300 bg-white text-amber-700 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:bg-amber-50 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 z-[10040]',
+        'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-amber-300 bg-white text-amber-700 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:bg-amber-50 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 relative z-0',
         className
       )}
       aria-label="Show how to guide"

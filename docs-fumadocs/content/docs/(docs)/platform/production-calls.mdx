@@ -1,0 +1,37 @@
+---
+title: Production calls
+icon: PhoneIncoming
+description: Forward live voice calls from Retell, Vapi, or your backend into the Calls hub.
+---
+
+# Production calls
+
+Send **real customer calls** to EfficientAI so they appear under **Observability → Calls** (transcript, metadata, evaluations).
+
+Create an **API key** under **Settings → API keys** in your workspace. The key goes in the webhook URL (no extra headers).
+
+## Retell
+
+Configure in Retell **Settings → Webhooks**:
+
+```text
+POST https://<your-efficientai-host>/api/v1/observability/calls/webhook/retell/<YOUR_API_KEY>
+```
+
+Retell sends its own event payload; EfficientAI maps it automatically.
+
+## Other providers (Vapi, custom backend, scripts)
+
+Use the generic webhook:
+
+```text
+POST https://<your-efficientai-host>/api/v1/observability/calls/webhook/<YOUR_API_KEY>
+```
+
+Send a JSON body with call id, messages, and timestamps. See the [generic webhook API](/docs/api-reference/observability/ingest_call_via_webhook_url_api_v1_observability_calls_webhook__api_key__post/) for the schema.
+
+## After ingest
+
+Open **Observability → Calls**, find the row, and run evaluations from the call detail view when needed.
+
+For per-turn **pipeline traces** (Pipecat / OTLP), see [Traces and Logs](/docs/platform/traces-and-logs/).

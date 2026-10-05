@@ -26,7 +26,9 @@ MANIFEST
 secrets/
 *.json
 !package.json
+!tests/fixtures/**/*.json
 !docs-fumadocs/content/docs/**/meta.json
+!docs-fumadocs/data/changelog-releases-feed.json
 .cursorrules
 
 # Local scratch / MCP / Confluence publish artifacts
