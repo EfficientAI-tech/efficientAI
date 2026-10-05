@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { Sparkles, Loader2, Eye, Code, Trash2, Save, PhoneOutgoing, PhoneIncoming } from 'lucide-react'
+import { Eye, Code, Trash2, PhoneOutgoing, PhoneIncoming } from 'lucide-react'
 import ParamSlider from './ParamSlider'
 import { OverviewSection, formatSilenceHangupLabel, OverviewConfigBadge, OverviewDetailRow, OVERVIEW_NOT_CONFIGURED } from './AgentOverviewLayout'
 import ReactMarkdown from 'react-markdown'
@@ -14,18 +14,21 @@ import { TelephonyProvider } from '../../../types/api'
 import type { AgentDetailTab } from './AgentInfoView'
 import TestAgentSubTabNav, { type TestAgentSubTab } from './TestAgentSubTabNav'
 import VoiceBundleDetailCard from './VoiceBundleDetailCard'
-import {
-  formatGatewayCredentialLabel,
-  resolveLLMModelsForCredential,
-} from '../../../lib/llmModelOptions'
+import { resolveLLMModelsForCredential } from '../../../lib/llmModelOptions'
 import { useAgentPhoneAssignmentCheck } from './useAgentPhoneAssignmentCheck'
 import { formatAgentPhoneConflictMessage } from './agentPhoneValidation'
-import TestAgentTemplateEditor, { applyGeneratedTemplate } from './TestAgentTemplateEditor'
+import { applyGeneratedTemplate } from './TestAgentTemplateEditor'
 import {
   TestAgentTemplateDraft,
   assembleTestAgentPrompt,
   isTemplateFilled,
 } from './agentTestSetupConstants'
+import { agentProductionTabLabel, isChatMedium } from '../../../lib/agentMedium'
+import { CallTypeBadge } from '../../evaluators/components/evaluatorUi'
+import ChatAgentEditSection from './ChatAgentEditSection'
+import TestAgentPromptEditPanel from './TestAgentPromptEditPanel'
+import type { ChatConnectionForm } from './create/ChatConnectionStep'
+import type { ChatConnectionConfigForm } from './create/ChatConnectionDetailsStep'
 
 interface FormData {
   name: string
@@ -36,7 +39,7 @@ interface FormData {
   prompt_variables: Record<string, string>
   silence_hangup_secs: number
   call_type: string
-  call_medium: 'phone_call' | 'web_call'
+  call_medium: 'phone_call' | 'web_call' | 'chat'
   telephony_phone_number_id: string
   voice_bundle_id: string
   voice_ai_integration_id: string
@@ -55,6 +58,13 @@ interface AgentEditFormProps {
   activeTab: AgentDetailTab
   onSaveSystemPrompt: () => void
   agentId?: string
+  chatConnectionType?: string
+  chatConnection?: ChatConnectionForm
+  onChatConnectionChange?: (patch: Partial<ChatConnectionForm>) => void
+  chatConnectionConfig?: ChatConnectionConfigForm
+  onChatConnectionConfigChange?: (patch: Partial<ChatConnectionConfigForm>) => void
+  chatEditPlatform?: IntegrationPlatform | null
+  onChatEditPlatformChange?: (p: IntegrationPlatform | null) => void
 }
 
 const SUPPORTED_VOICE_AI_PLATFORMS: IntegrationPlatform[] = [
@@ -75,6 +85,13 @@ export default function AgentEditForm({
   activeTab,
   onSaveSystemPrompt,
   agentId,
+  chatConnectionType = 'internal_llm',
+  chatConnection,
+  onChatConnectionChange,
+  chatConnectionConfig,
+  onChatConnectionConfigChange,
+  chatEditPlatform = null,
+  onChatEditPlatformChange,
 }: AgentEditFormProps) {
   const navigate = useNavigate()
   const [providerPromptEditorMode, setProviderPromptEditorMode] = useState<'write' | 'preview'>('write')
@@ -178,9 +195,13 @@ export default function AgentEditForm({
       if (!formData.provider_prompt?.trim()) {
         throw new Error('Production prompt is required')
       }
+      const agentName = formData.name?.trim()
+      if (!agentName) {
+        throw new Error('Agent name is required before generating a test prompt')
+      }
       return apiClient.generateTestPromptFromProduction({
         production_prompt: formData.provider_prompt,
-        agent_name: formData.name,
+        agent_name: agentName,
         language: formData.language,
         call_type: formData.call_type,
         additional_context: setupAdditionalContext.trim() || undefined,
@@ -224,9 +245,14 @@ export default function AgentEditForm({
     ? voiceBundles.find((vb) => vb.id === formData.voice_bundle_id)
     : undefined
 
-  const testAgentConfigured = Boolean(
-    linkedVoiceBundle && linkedVoiceBundle.is_active !== false,
+  const isChatAgent = isChatMedium(formData.call_medium)
+
+  const chatTestLlmConfigured = Boolean(
+    chatConnection?.testLlmCredentialId && chatConnection?.testLlmModel?.trim(),
   )
+  const testAgentConfigured = isChatAgent
+    ? chatTestLlmConfigured
+    : Boolean(linkedVoiceBundle && linkedVoiceBundle.is_active !== false)
   const voiceAiConfigured = Boolean(
     formData.voice_ai_integration_id?.trim() && formData.voice_ai_agent_id?.trim(),
   )
@@ -258,9 +284,11 @@ export default function AgentEditForm({
         <div className="space-y-5 w-full min-w-0">
           <div>
             <h2 className="text-lg font-semibold text-gray-900 tracking-tight">Overview</h2>
-            <p className="text-sm text-gray-500 mt-1">
-              Identity, call routing, voice stacks, and session behavior.
-            </p>
+            {!isChatAgent ? (
+              <p className="text-sm text-gray-500 mt-1">
+                Identity, call routing, voice stacks, and session behavior.
+              </p>
+            ) : null}
           </div>
 
           <div className="grid grid-cols-1 xl:grid-cols-3 gap-5 items-start">
@@ -303,8 +331,14 @@ export default function AgentEditForm({
             </div>
           </OverviewSection>
 
-          <OverviewSection title="Call setup" description="How sessions are placed and routed.">
+          <OverviewSection
+            title={isChatAgent ? 'Chat setup' : 'Call setup'}
+            description={isChatAgent ? undefined : 'How sessions are placed and routed.'}
+          >
             <div className="space-y-5">
+              {isChatAgent ? (
+                <CallTypeBadge medium={formData.call_medium} callType={formData.call_type} />
+              ) : (
               <div>
                 <span className="block text-sm font-medium text-gray-700 mb-2">Call medium *</span>
                 <div className="inline-flex rounded-xl border border-gray-200 bg-gray-50/80 p-1 shadow-sm">
@@ -330,7 +364,9 @@ export default function AgentEditForm({
                   ))}
                 </div>
               </div>
+              )}
 
+              {!isChatAgent ? (
               <div>
                 <span className="block text-sm font-medium text-gray-700 mb-2">Call type</span>
                 <div className="inline-flex rounded-xl border border-gray-200 bg-gray-50/80 p-1 shadow-sm">
@@ -366,6 +402,7 @@ export default function AgentEditForm({
                   ))}
                 </div>
               </div>
+              ) : null}
 
               {formData.call_medium === 'phone_call' && (
                 <div className="space-y-3 rounded-lg border border-gray-100 bg-gray-50/50 p-4">
@@ -479,23 +516,25 @@ export default function AgentEditForm({
             </div>
           </OverviewSection>
 
-          <OverviewSection title="Live session" description="Hang up when neither side speaks for too long.">
-            <ParamSlider
-              label="End call after silence"
-              helpText={`${formatSilenceHangupLabel(formData.silence_hangup_secs)} · Resets on voice activity. Default 15. Set to 0 to disable.`}
-              min={0}
-              max={600}
-              step={1}
-              integer
-              value={formData.silence_hangup_secs}
-              onChange={(next) =>
-                onChange({
-                  ...formData,
-                  silence_hangup_secs: next ?? 0,
-                })
-              }
-            />
-          </OverviewSection>
+          {!isChatAgent ? (
+            <OverviewSection title="Live session" description="Hang up when neither side speaks for too long.">
+              <ParamSlider
+                label="End call after silence"
+                helpText={`${formatSilenceHangupLabel(formData.silence_hangup_secs)} · Resets on voice activity. Default 15. Set to 0 to disable.`}
+                min={0}
+                max={600}
+                step={1}
+                integer
+                value={formData.silence_hangup_secs}
+                onChange={(next) =>
+                  onChange({
+                    ...formData,
+                    silence_hangup_secs: next ?? 0,
+                  })
+                }
+              />
+            </OverviewSection>
+          ) : null}
 
           <div className="flex gap-3 pt-2">
             <Button
@@ -513,20 +552,39 @@ export default function AgentEditForm({
             <div className="space-y-5 min-w-0">
               <OverviewSection
                 title="Test agent (EfficientAI)"
-                description="Configure voice stack on the Test Agent tab."
+                description={
+                  isChatAgent
+                    ? 'Test agent template on the Test Agent tab.'
+                    : 'Configure voice stack on the Test Agent tab.'
+                }
               >
                 <dl>
                   <OverviewDetailRow
                     label="Status"
                     value={<OverviewConfigBadge configured={testAgentConfigured} />}
                   />
-                  <OverviewDetailRow label="Voice bundle" value={voiceBundleLabel} />
+                  {!isChatAgent ? (
+                    <OverviewDetailRow label="Voice bundle" value={voiceBundleLabel} />
+                  ) : (
+                    <OverviewDetailRow
+                      label="Test agent LLM"
+                      value={
+                        chatConnection?.testLlmModel?.trim()
+                          ? `${chatConnection.testLlmProvider || '?'} / ${chatConnection.testLlmModel}`
+                          : OVERVIEW_NOT_CONFIGURED
+                      }
+                    />
+                  )}
                 </dl>
               </OverviewSection>
 
               <OverviewSection
-                title="Voice AI agent"
-                description="Configure integration on the Voice AI Agent tab."
+                title={agentProductionTabLabel(formData.call_medium)}
+                description={
+                  isChatAgent
+                    ? 'Production prompt and provider on the Chat Agent tab.'
+                    : 'Configure integration on the Voice Agent tab.'
+                }
               >
                 <dl>
                   <OverviewDetailRow
@@ -553,12 +611,44 @@ export default function AgentEditForm({
         </div>
       )}
 
-      {activeTab === 'test_agent' && (
+      {activeTab === 'test_agent' &&
+        (!isChatAgent || (chatConnection && onChatConnectionChange)) && (
         <div className="w-full space-y-4">
           <TestAgentSubTabNav value={testAgentSubTab} onChange={setTestAgentSubTab} />
 
-          {testAgentSubTab === 'configuration' && (
+          {testAgentSubTab === 'configuration' && isChatAgent && chatConnection && onChatConnectionChange ? (
             <div className="space-y-4">
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">Test Agent Configuration</h3>
+                <p className="text-sm text-gray-500 mt-0.5">Language model for the customer role in chat evals.</p>
+              </div>
+              <ChatAgentEditSection
+                mode="test"
+                connectionType={chatConnectionType}
+                formData={formData}
+                onFormChange={(patch) => onChange({ ...formData, ...patch })}
+                providerPrompt={formData.provider_prompt}
+                onProviderPromptChange={(value) => onChange({ ...formData, provider_prompt: value })}
+                chatConnection={chatConnection}
+                onChatConnectionChange={onChatConnectionChange}
+                chatConfig={chatConnectionConfig!}
+                onChatConfigChange={onChatConnectionConfigChange!}
+                integrations={integrations}
+                selectedPlatform={chatEditPlatform ?? null}
+                onSelectPlatform={onChatEditPlatformChange!}
+                showToast={showToast}
+              />
+            </div>
+          ) : null}
+
+          {testAgentSubTab === 'configuration' && !isChatAgent && (
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">Test Agent Configuration</h3>
+                <p className="text-sm text-gray-500 mt-0.5">
+                  Voice stack for EfficientAI test caller and evaluator runs.
+                </p>
+              </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Voice Bundle</label>
                 <select
@@ -598,229 +688,57 @@ export default function AgentEditForm({
           )}
 
           {testAgentSubTab === 'prompt' && (
-            <div className="border border-gray-200 rounded-lg p-4 bg-white space-y-4">
-              <div className="flex items-center justify-between mb-1">
-                <label className="block text-sm font-medium text-gray-700">EfficientAI Test Agent Template</label>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowGenerateFromProductionPanel(!showGenerateFromProductionPanel)}
-                    disabled={generateFromProductionMutation.isPending}
-                    className={`inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-lg border transition-colors ${
-                      showGenerateFromProductionPanel
-                        ? 'bg-amber-100 text-amber-800 border-amber-300'
-                        : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
-                    }`}
-                  >
-                    {generateFromProductionMutation.isPending ? (
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                    ) : (
-                      <Sparkles className="h-3 w-3" />
-                    )}
-                    {generateFromProductionMutation.isPending ? 'Generating...' : 'Generate from production'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={onSaveSystemPrompt}
-                    disabled={!isTemplateFilled(formData.test_agent_template)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
-                  >
-                    <Save className="h-3 w-3" />
-                    Save Prompt
-                  </button>
-                </div>
-              </div>
-
-              {showGenerateFromProductionPanel && (
-                <div className="p-3 bg-amber-50 rounded-lg border border-amber-200 space-y-3">
-                  <p className="text-xs text-amber-700">
-                    Uses the production agent prompt from the Voice AI Agent tab to generate complementary
-                    caller sections and first-message settings.
-                  </p>
-                  {!formData.provider_prompt?.trim() ? (
-                    <p className="text-xs text-red-600">
-                      Add a production prompt on the Voice AI Agent tab first.
-                    </p>
-                  ) : null}
-                  <textarea
-                    value={setupAdditionalContext}
-                    onChange={(e) => setSetupAdditionalContext(e.target.value)}
-                    rows={2}
-                    placeholder="Additional context (optional)…"
-                    className="w-full px-3 py-2 text-sm border border-amber-200 rounded-lg bg-white"
-                  />
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">LLM Provider</label>
-                      <select
-                        value={aiCredentialId}
-                        onChange={(e) => {
-                          setAiCredentialId(e.target.value)
-                          setAiModel('')
-                        }}
-                        className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white"
-                      >
-                        <option value="">Auto-detect</option>
-                        {aiProviders
-                          .filter((p) => p.is_active)
-                          .map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {formatGatewayCredentialLabel(p, {
-                                custom: 'Custom',
-                                openai: 'OpenAI',
-                                anthropic: 'Anthropic',
-                                google: 'Google',
-                              })}
-                            </option>
-                          ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">Model</label>
-                      <select
-                        value={aiModel}
-                        onChange={(e) => setAiModel(e.target.value)}
-                        disabled={!aiCredentialId || !!gatewayDirectModel}
-                        className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white disabled:bg-gray-100"
-                      >
-                        {gatewayDirectModel ? (
-                          <option value="">{gatewayDirectModel}</option>
-                        ) : (
-                          selectableModels.map((m: string) => (
-                            <option key={m} value={m}>
-                              {m}
-                            </option>
-                          ))
-                        )}
-                      </select>
-                    </div>
-                  </div>
-                  <div className="flex justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setShowGenerateFromProductionPanel(false)}
-                      className="px-3 py-1.5 text-xs font-medium text-gray-600"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => generateFromProductionMutation.mutate()}
-                      disabled={
-                        generateFromProductionMutation.isPending ||
-                        !formData.provider_prompt?.trim()
-                      }
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-amber-600 text-white rounded-lg disabled:opacity-50"
-                    >
-                      {generateFromProductionMutation.isPending ? (
-                        <>
-                          <Loader2 className="h-3 w-3 animate-spin" /> Generating...
-                        </>
-                      ) : (
-                        <>
-                          <Sparkles className="h-3 w-3" /> Generate
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              <TestAgentTemplateEditor
-                template={formData.test_agent_template}
-                onChange={(test_agent_template) =>
-                  onChange({
-                    ...formData,
-                    test_agent_template,
-                    description: assembleTestAgentPrompt(test_agent_template.sections),
-                  })
-                }
-                legacyDescription={formData.description}
-                showLegacy={showLegacyPrompt}
-                variant="workspace"
-              />
-
-              <div className="rounded-lg border border-gray-200 bg-white p-3">
-                <div className="flex items-center justify-between gap-2 mb-2">
-                  <label className="text-sm font-medium text-gray-700">Custom prompt variables</label>
-                  <button
-                    type="button"
-                    className="text-xs font-medium text-primary-600 hover:text-primary-800"
-                    onClick={() => {
-                      const base = { ...(formData.prompt_variables || {}) }
-                      let n = 1
-                      let key = 'custom_var'
-                      while (base[key]) {
-                        n += 1
-                        key = `custom_var_${n}`
-                      }
-                      base[key] = ''
-                      onChange({ ...formData, prompt_variables: base })
-                    }}
-                  >
-                    + Add variable
-                  </button>
-                </div>
-                <p className="text-xs text-gray-500 mb-2">
-                  Define keys you can insert with <code className="text-gray-700">{'{'}</code> or{' '}
-                  <code className="text-gray-700">@</code>. Values are optional descriptions for your team.
-                </p>
-                {Object.keys(formData.prompt_variables || {}).length === 0 ? (
-                  <p className="text-xs text-gray-400 italic">No custom variables yet.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {Object.entries(formData.prompt_variables || {}).map(([key, desc]) => (
-                      <div key={key} className="flex flex-wrap items-center gap-2">
-                        <input
-                          type="text"
-                          value={key}
-                          onChange={(e) => {
-                            const nextKey = e.target.value.replace(/\s+/g, '_')
-                            const vars = { ...(formData.prompt_variables || {}) }
-                            delete vars[key]
-                            if (nextKey) vars[nextKey] = desc
-                            onChange({ ...formData, prompt_variables: vars })
-                          }}
-                          className="w-36 px-2 py-1.5 text-xs font-mono border border-gray-300 rounded-md"
-                          placeholder="variable_key"
-                        />
-                        <input
-                          type="text"
-                          value={desc}
-                          onChange={(e) =>
-                            onChange({
-                              ...formData,
-                              prompt_variables: {
-                                ...(formData.prompt_variables || {}),
-                                [key]: e.target.value,
-                              },
-                            })
-                          }
-                          className="flex-1 min-w-[120px] px-2 py-1.5 text-xs border border-gray-300 rounded-md"
-                          placeholder="Description (optional)"
-                        />
-                        <button
-                          type="button"
-                          className="text-xs text-red-600 hover:text-red-800"
-                          onClick={() => {
-                            const vars = { ...(formData.prompt_variables || {}) }
-                            delete vars[key]
-                            onChange({ ...formData, prompt_variables: vars })
-                          }}
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
+            <TestAgentPromptEditPanel
+              medium={isChatAgent ? 'chat' : 'voice'}
+              formData={formData}
+              onChange={(patch) => onChange({ ...formData, ...patch })}
+              showLegacy={showLegacyPrompt}
+              onSaveSystemPrompt={onSaveSystemPrompt}
+              showGeneratePanel={showGenerateFromProductionPanel}
+              onToggleGeneratePanel={() =>
+                setShowGenerateFromProductionPanel(!showGenerateFromProductionPanel)
+              }
+              setupAdditionalContext={setupAdditionalContext}
+              onSetupAdditionalContextChange={setSetupAdditionalContext}
+              aiProviders={aiProviders}
+              aiCredentialId={aiCredentialId}
+              onAiCredentialIdChange={setAiCredentialId}
+              aiModel={aiModel}
+              onAiModelChange={setAiModel}
+              gatewayDirectModel={gatewayDirectModel}
+              selectableModels={selectableModels}
+              generateMutation={generateFromProductionMutation}
+            />
           )}
         </div>
       )}
 
-      {activeTab === 'voice_ai_agent' && hasPlatformLink && (
+      {activeTab === 'voice_ai_agent' &&
+        isChatAgent &&
+        chatConnection &&
+        onChatConnectionChange &&
+        onChatConnectionConfigChange &&
+        onChatEditPlatformChange && (
+          <ChatAgentEditSection
+            mode="production"
+            connectionType={chatConnectionType}
+            formData={formData}
+            onFormChange={(patch) => onChange({ ...formData, ...patch })}
+            providerPrompt={formData.provider_prompt}
+            onProviderPromptChange={(value) => onChange({ ...formData, provider_prompt: value })}
+            chatConnection={chatConnection}
+            onChatConnectionChange={onChatConnectionChange}
+            chatConfig={chatConnectionConfig!}
+            onChatConfigChange={onChatConnectionConfigChange}
+            integrations={integrations}
+            selectedPlatform={chatEditPlatform ?? null}
+            onSelectPlatform={onChatEditPlatformChange}
+            showToast={showToast}
+            agentId={agentId}
+          />
+        )}
+
+      {activeTab === 'voice_ai_agent' && !isChatAgent && hasPlatformLink && (
         <div className="w-full space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Integration Provider</label>
@@ -872,7 +790,7 @@ export default function AgentEditForm({
         </div>
       )}
 
-      {activeTab === 'voice_ai_agent' && !hasPlatformLink && (
+      {activeTab === 'voice_ai_agent' && !isChatAgent && !hasPlatformLink && (
         <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
           <div className="flex items-center justify-between mb-3">
             <label className="block text-sm font-medium text-gray-700">Production Agent Prompt</label>

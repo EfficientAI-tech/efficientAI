@@ -31,12 +31,26 @@ class SmallestVoiceProvider(BaseVoiceProvider):
         try:
             error_json = response.json()
             if isinstance(error_json, dict):
-                return (
-                    str(error_json.get("message"))
-                    or str(error_json.get("detail"))
-                    or str(error_json.get("error"))
-                    or str(error_json)
-                )
+                errors = error_json.get("errors")
+                if isinstance(errors, list):
+                    parts = [str(item).strip() for item in errors if item is not None and str(item).strip()]
+                    if parts:
+                        return "; ".join(parts)
+                for key in ("message", "detail", "error", "reason"):
+                    val = error_json.get(key)
+                    if isinstance(val, str) and val.strip():
+                        return val.strip()
+                    if val is not None and not isinstance(val, (str, dict, list)):
+                        text = str(val).strip()
+                        if text and text.lower() != "none":
+                            return text
+                nested = error_json.get("data")
+                if isinstance(nested, dict):
+                    for key in ("message", "detail", "error"):
+                        val = nested.get(key)
+                        if isinstance(val, str) and val.strip():
+                            return val.strip()
+                return str(error_json)[:500]
             return str(error_json)
         except Exception:
             return response.text[:500] if response.text else "Unknown error"
@@ -407,7 +421,12 @@ class SmallestVoiceProvider(BaseVoiceProvider):
             "raw_data": data,
         }
 
-    def extract_agent_prompt(self, agent_id: str) -> Optional[str]:
+    def extract_agent_prompt(
+        self,
+        agent_id: str,
+        *,
+        agent_channel: Optional[str] = None,
+    ) -> Optional[str]:
         def _extract_from_paths(payload: Dict[str, Any], paths: List[tuple[str, ...]]) -> Optional[str]:
             for path in paths:
                 node: Any = payload

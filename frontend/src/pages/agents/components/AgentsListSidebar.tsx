@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react'
 import { Search } from 'lucide-react'
 import { TestAgent, Integration, IntegrationPlatform } from '../../../types/api'
 import { getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../../config/providers'
+import { CallTypeBadge } from '../../evaluators/components/evaluatorUi'
+import { agentMediumFilterLabel, isChatMedium } from '../../../lib/agentMedium'
 
 export function agentRouteId(agent: TestAgent): string {
   return agent.agent_id || agent.id
@@ -33,17 +35,24 @@ export default function AgentsListSidebar({
   onSelectAll,
 }: AgentsListSidebarProps) {
   const [search, setSearch] = useState('')
+  const [mediumFilter, setMediumFilter] = useState<'all' | 'voice' | 'chat'>('all')
 
   const filteredAgents = useMemo(() => {
+    let list = agents
+    if (mediumFilter === 'chat') {
+      list = list.filter((a) => isChatMedium(a.call_medium))
+    } else if (mediumFilter === 'voice') {
+      list = list.filter((a) => !isChatMedium(a.call_medium))
+    }
     const q = search.trim().toLowerCase()
-    if (!q) return agents
-    return agents.filter((agent) => {
+    if (!q) return list
+    return list.filter((agent) => {
       const id = agent.agent_id?.toLowerCase() || ''
       const name = agent.name.toLowerCase()
       const internal = agent.id.toLowerCase()
       return id.includes(q) || name.includes(q) || internal.includes(q)
     })
-  }, [agents, search])
+  }, [agents, search, mediumFilter])
 
   const getIntegrationLogo = (agent: TestAgent) => {
     const integration = integrations.find((i) => i.id === agent.voice_ai_integration_id)
@@ -63,6 +72,22 @@ export default function AgentsListSidebar({
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-sm font-semibold text-gray-900">Agents</h2>
           <span className="text-xs text-gray-500">{agents.length} total</span>
+        </div>
+        <div className="flex gap-1">
+          {(['all', 'voice', 'chat'] as const).map((key) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setMediumFilter(key)}
+              className={`flex-1 rounded-md px-1.5 py-1 text-[10px] font-medium border transition-colors ${
+                mediumFilter === key
+                  ? 'border-primary-300 bg-primary-50 text-primary-800'
+                  : 'border-gray-200 text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              {key === 'all' ? 'All' : key === 'chat' ? agentMediumFilterLabel('chat') : agentMediumFilterLabel('voice')}
+            </button>
+          ))}
         </div>
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 -h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
@@ -125,10 +150,12 @@ export default function AgentsListSidebar({
                   </span>
                 </div>
                 <p className="text-sm font-medium text-gray-900 truncate mt-0.5">{agent.name}</p>
-                <p className="text-xs text-gray-500 mt-0.5 capitalize">
-                  {agent.call_medium === 'phone_call' ? 'Phone' : 'Web'} · {agent.language.toUpperCase()} ·{' '}
-                  {agent.call_type}
-                </p>
+                <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                  <CallTypeBadge medium={agent.call_medium} callType={agent.call_type} />
+                  <span className="text-xs text-gray-500">
+                    {agent.language.toUpperCase()} · {agent.call_type}
+                  </span>
+                </div>
               </button>
             </div>
           )

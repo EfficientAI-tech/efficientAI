@@ -14,6 +14,9 @@ const pullUrlPattern = /https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/(\d+)/gi;
 
 const RELEASES_BASE_URL =
   `https://api.github.com/repos/${githubOwner}/${githubRepo}/releases`;
+const SIDEBAR_RELEASE_LIMIT = 40;
+const INDEX_FEED_LIMIT = 15;
+const feedPath = path.join(docsRoot, 'data', 'changelog-releases-feed.json');
 
 function parseReleaseBody(body) {
   const changes = [];
@@ -197,6 +200,80 @@ function hasCommittedReleasePages() {
   return fs.readdirSync(changelogDir).some((entry) => /^v\d/.test(entry) && entry.endsWith('.mdx'));
 }
 
+function buildFeedFromCommittedPages() {
+  if (!fs.existsSync(metaPath)) return;
+  const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+  const slugs = (meta.pages || []).filter((page) => page !== 'index').slice(0, INDEX_FEED_LIMIT);
+  const feed = [];
+
+  for (const slug of slugs) {
+    const filePath = path.join(changelogDir, `${slug}.mdx`);
+    if (!fs.existsSync(filePath)) continue;
+    const content = fs.readFileSync(filePath, 'utf8');
+    const tagMatch = content.match(/^title:\s*(.+)$/m);
+    const tagName = tagMatch ? tagMatch[1].trim() : slug;
+    const ghMatch = content.match(/\[View on GitHub\]\((https:[^)]+)\)/);
+    const htmlUrl =
+      ghMatch?.[1] ??
+      `https://github.com/${githubOwner}/${githubRepo}/releases/tag/${encodeURIComponent(tagName)}`;
+    const dateMatch = content.match(/Released ([^.]+)\./);
+    let publishedAt = new Date().toISOString();
+    if (dateMatch) {
+      const parsed = Date.parse(dateMatch[1].trim());
+      if (!Number.isNaN(parsed)) publishedAt = new Date(parsed).toISOString();
+    }
+
+    const changes = [];
+    const contributors = [];
+    const whatChanged = content.split('## What changed')[1];
+    if (whatChanged) {
+      const body = whatChanged.split(/^## /m)[0] ?? '';
+      for (const line of body.split('\n')) {
+        const trimmed = line.trim();
+        if (/^[-*]\s/.test(trimmed)) {
+          changes.push(trimmed.replace(/^[-*]\s+/, ''));
+        }
+      }
+    }
+    const contribBlock = content.split('## Contributors')[1];
+    if (contribBlock) {
+      for (const line of contribBlock.split('\n')) {
+        const match = line.match(/@([A-Za-z0-9-]+)/);
+        if (match) contributors.push(match[1]);
+      }
+    }
+
+    feed.push({
+      tagName,
+      name: tagName,
+      publishedAt,
+      htmlUrl,
+      docsSlug: slug,
+      changes,
+      contributors,
+    });
+  }
+
+  fs.mkdirSync(path.dirname(feedPath), { recursive: true });
+  fs.writeFileSync(feedPath, `${JSON.stringify(feed, null, 2)}\n`);
+  console.log(`Wrote ${feed.length} releases to ${path.relative(docsRoot, feedPath)} from committed pages.`);
+}
+
+function exitWithCommittedFallback(reason) {
+  if (!hasCommittedReleasePages()) {
+    throw new Error(reason);
+  }
+  console.warn(`Skipping changelog regeneration (${reason}); using committed pages.`);
+  if (!fs.existsSync(feedPath)) {
+    buildFeedFromCommittedPages();
+  } else {
+    console.warn(
+      `Keeping existing ${path.relative(docsRoot, feedPath)} (MDX date parsing is not used to avoid skew vs GitHub).`,
+    );
+  }
+  process.exit(0);
+}
+
 async function fetchReleases() {
   const token = process.env.GITHUB_TOKEN?.trim();
   const headers = {
@@ -212,13 +289,7 @@ async function fetchReleases() {
     const response = await fetch(`${RELEASES_BASE_URL}?per_page=100&page=${page}`, { headers });
 
     if (!response.ok) {
-      if (hasCommittedReleasePages()) {
-        console.warn(
-          `Skipping changelog regeneration (GitHub releases request failed with ${response.status}); using committed pages.`,
-        );
-        process.exit(0);
-      }
-      throw new Error(`GitHub releases request failed (${response.status})`);
+      exitWithCommittedFallback(`GitHub releases request failed with ${response.status}`);
     }
 
     const batch = await response.json();
@@ -242,7 +313,13 @@ function cleanupGeneratedReleasePages() {
   }
 }
 
-const releases = await fetchReleases();
+let releases;
+try {
+  releases = await fetchReleases();
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  exitWithCommittedFallback(message);
+}
 cleanupGeneratedReleasePages();
 const token = process.env.GITHUB_TOKEN?.trim();
 
@@ -268,13 +345,31 @@ for (const release of releases) {
     }
   }
 
-  pages.push(slug);
   fs.writeFileSync(path.join(changelogDir, `${slug}.mdx`), buildReleaseMdx(release, prDetails));
+}
+
+for (const release of releases.slice(0, SIDEBAR_RELEASE_LIMIT)) {
+  pages.push(slugFromTag(release.tag_name));
 }
 
 fs.writeFileSync(
   metaPath,
   `${JSON.stringify({ title: 'Changelog', pages }, null, 2)}\n`,
 );
+
+const feed = releases.slice(0, INDEX_FEED_LIMIT).map((release) => {
+  const { changes, contributors } = parseReleaseBody(release.body);
+  return {
+    tagName: release.tag_name,
+    name: release.name || release.tag_name,
+    publishedAt: release.published_at,
+    htmlUrl: release.html_url,
+    docsSlug: slugFromTag(release.tag_name),
+    changes,
+    contributors,
+  };
+});
+fs.mkdirSync(path.dirname(feedPath), { recursive: true });
+fs.writeFileSync(feedPath, `${JSON.stringify(feed, null, 2)}\n`);
 
 console.log(`Generated ${releases.length} changelog pages in ${path.relative(docsRoot, changelogDir)}`);

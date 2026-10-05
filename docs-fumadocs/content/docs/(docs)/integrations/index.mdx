@@ -72,11 +72,19 @@ This section focuses on platform-level integration guides for teams connecting e
 <div className="not-prose mt-4 mb-6 grid grid-cols-2 gap-3 sm:max-w-md">
   {[
     { name: 'Plivo', logo: '/plivo.png' },
+    { name: 'Twilio', logo: '/twilio.svg' },
+    { name: 'Telnyx', logo: null },
     { name: 'Exotel', logo: '/exotel.jpg' },
     { name: 'Vobiz', logo: '/vobiz.png' },
   ].map((item) => (
     <div key={item.name} className="rounded-md border border-fd-border/70 bg-fd-card px-2 py-2">
-      <img src={item.logo} alt={`${item.name} logo`} className="docs-integration-grid-logo" loading="lazy" />
+      {item.logo ? (
+        <img src={item.logo} alt={`${item.name} logo`} className="docs-integration-grid-logo" loading="lazy" />
+      ) : (
+        <div className="docs-integration-grid-logo flex items-center justify-center text-xs font-medium text-fd-muted-foreground">
+          {item.name}
+        </div>
+      )}
       <p className="mt-1.5 truncate text-center text-xs text-fd-muted-foreground">{item.name}</p>
     </div>
   ))}
@@ -88,7 +96,10 @@ This section focuses on platform-level integration guides for teams connecting e
 - [ElevenLabs](/docs/integrations/elevenlabs/)
 - [Vapi](/docs/integrations/vapi/)
 - [Smallest (Alpha)](/docs/integrations/smallest/)
+- [Pipecat](/docs/integrations/pipecat/)
 - [Plivo](/docs/integrations/plivo/)
+- [Twilio](/docs/integrations/twilio/)
+- [Telnyx](/docs/integrations/telnyx/)
 - [Vobiz](/docs/integrations/vobiz/)
 
 For broader provider coverage and advanced routing details, see [Platform Setup](/docs/platform/setup/).

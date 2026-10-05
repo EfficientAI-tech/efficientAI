@@ -36,6 +36,8 @@ def agent_persona_tts_mismatch(
     persona: Persona,
 ) -> Optional[AgentPersonaTtsMismatch]:
     """Return mismatch details when persona and bundle TTS providers differ."""
+    if (agent.call_medium or "").lower() == "chat":
+        return None
     if not agent.voice_bundle_id or not persona.tts_provider:
         return None
     voice_bundle = db.query(VoiceBundle).filter(VoiceBundle.id == agent.voice_bundle_id).first()
@@ -195,6 +197,8 @@ def validate_metric_ids(
     db: Session,
     organization_id: UUID,
     metric_ids: Optional[List[UUID]],
+    *,
+    eval_surface: str = "agent",
 ) -> Optional[List[str]]:
     """Validate and normalize metric IDs. Returns None when metric_ids is None."""
     if metric_ids is None:
@@ -220,11 +224,13 @@ def validate_metric_ids(
                 status_code=400,
                 detail=f"Metric '{m.name}' is disabled. Enable it before selecting it.",
             )
-        surfaces = m.enabled_surfaces or []
-        if surfaces and "agent" not in surfaces:
+        from app.services.metrics.surfaces import metric_enabled_for_eval_surface
+
+        if not metric_enabled_for_eval_surface(m.enabled_surfaces, eval_surface):
+            label = "chat agent" if eval_surface == "chat_agent" else "voice agent"
             raise HTTPException(
                 status_code=400,
-                detail=f"Metric '{m.name}' is not enabled for the agent surface.",
+                detail=f"Metric '{m.name}' is not enabled for the {label} surface.",
             )
     stored = [str(mid) for mid in metric_uuids]
     return normalize_metric_ids_for_storage(db, organization_id, stored)

@@ -1,7 +1,7 @@
 """Queue evaluator runs (web bridge via Celery)."""
 
 import random
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -28,6 +28,7 @@ def queue_evaluator_runs(
     organization_id: UUID,
     workspace_id: UUID,
     evaluator_ids: List[UUID],
+    initial_call_data: Optional[dict] = None,
 ) -> Tuple[List[str], List[EvaluatorResultResponse]]:
     """Create EvaluatorResult rows and dispatch Celery run_evaluator tasks."""
     from app.workers.celery_app import run_evaluator_task
@@ -95,6 +96,7 @@ def queue_evaluator_runs(
                 name=scenario_name,
                 status=EvaluatorResultStatus.QUEUED.value,
                 audio_s3_key=None,
+                call_data=dict(initial_call_data) if initial_call_data else None,
             )
             db.add(evaluator_result)
             db.commit()

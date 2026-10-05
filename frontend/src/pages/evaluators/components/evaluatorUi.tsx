@@ -1,5 +1,6 @@
 import { type ReactNode } from 'react'
-import { Globe, PhoneIncoming, PhoneOutgoing, type LucideIcon } from 'lucide-react'
+import { Globe, MessagesSquare, PhoneIncoming, PhoneOutgoing, type LucideIcon } from 'lucide-react'
+import { isChatEvalResult } from '../../../lib/agentMedium'
 
 export const MODERN_INPUT_CLASS =
   'w-full rounded-lg border border-gray-200 bg-white px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 shadow-sm transition focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 disabled:bg-gray-50 disabled:text-gray-500'
@@ -19,6 +20,15 @@ export function getCallTypeConfig(
   medium?: string | null,
   callType?: string | null,
 ): CallTypeConfig {
+  if (medium === 'chat') {
+    return {
+      label: 'Chat',
+      icon: MessagesSquare,
+      bg: 'bg-violet-50',
+      text: 'text-violet-700',
+      border: 'border-violet-100',
+    }
+  }
   if (medium === 'web_call') {
     return {
       label: 'Web',
@@ -44,6 +54,56 @@ export function getCallTypeConfig(
     text: 'text-emerald-700',
     border: 'border-emerald-100',
   }
+}
+
+export function evalRunTypeLabel(input: {
+  agent?: { call_medium?: string | null } | null
+  call_data?: { modality?: string } | null
+}): string {
+  if (isChatEvalResult(input)) return 'Chat'
+  const medium = (input.agent?.call_medium || '').toLowerCase()
+  if (medium === 'web_call') return 'WebRTC'
+  return 'Voice'
+}
+
+export function EvalRunKindBadge({
+  isChat,
+  chatConnectionType: _chatConnectionType,
+  agentCallMedium,
+  result,
+}: {
+  isChat?: boolean
+  chatConnectionType?: string | null
+  agentCallMedium?: string | null
+  result?: {
+    agent?: { call_medium?: string | null } | null
+    call_data?: { modality?: string } | null
+  }
+}) {
+  const label =
+    result != null
+      ? evalRunTypeLabel(result)
+      : isChat
+        ? 'Chat'
+        : (agentCallMedium || '').toLowerCase() === 'web_call'
+          ? 'WebRTC'
+          : 'Voice'
+
+  const isChatRun = label === 'Chat'
+
+  return (
+    <span
+      className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${
+        isChatRun
+          ? 'bg-violet-50 text-violet-800 border-violet-200'
+          : label === 'WebRTC'
+            ? 'bg-indigo-50 text-indigo-800 border-indigo-200'
+            : 'bg-gray-50 text-gray-700 border-gray-200'
+      }`}
+    >
+      {label}
+    </span>
+  )
 }
 
 export function CallTypeBadge({

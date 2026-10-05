@@ -566,7 +566,19 @@ class Agent(Base):
     prompt_variables = Column(JSON, nullable=True)
     test_agent_template = Column(JSON, nullable=True)
     silence_hangup_secs = Column(Integer, nullable=False, server_default="15")
-    
+
+    chat_connection_type = Column(String(32), nullable=True)
+    main_llm_provider = Column(String(64), nullable=True)
+    main_llm_model = Column(String(255), nullable=True)
+    main_llm_credential_id = Column(UUID(as_uuid=True), nullable=True)
+    main_llm_config = Column(JSON, nullable=True)
+    test_llm_provider = Column(String(64), nullable=True)
+    test_llm_model = Column(String(255), nullable=True)
+    test_llm_credential_id = Column(UUID(as_uuid=True), nullable=True)
+    test_llm_config = Column(JSON, nullable=True)
+    chat_connection_config = Column(JSON, nullable=True)
+    chat_eval_mode = Column(String(32), nullable=True)
+
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     created_by = Column(String)
@@ -588,6 +600,7 @@ class Persona(Base):
         index=True,
     )
     name = Column(String, nullable=False)
+    simulation_medium = Column(String(16), nullable=False, default="voice")
     gender = Column(String, nullable=False, default=GenderEnum.NEUTRAL.value)
     tts_provider = Column(String(100), nullable=True)
     tts_voice_id = Column(String(255), nullable=True)
@@ -1033,7 +1046,7 @@ class Metric(Base):
     )
     trigger = Column(String, nullable=False, default=MetricTrigger.ALWAYS.value)
     metric_origin = Column(String(30), nullable=False, default="default")
-    supported_surfaces = Column(JSON, nullable=False, default=list)  # ["agent", "voice_playground", "blind_test"]
+    supported_surfaces = Column(JSON, nullable=False, default=list)  # agent, chat_agent, voice_playground
     enabled_surfaces = Column(JSON, nullable=False, default=list)  # subset of supported_surfaces
     custom_data_type = Column(String(30), nullable=True)  # "boolean" | "enum" | "number_range"
     custom_config = Column(JSON, nullable=True)  # enum options / number range config
@@ -2229,6 +2242,7 @@ class CallImport(Base):
     # Free-text high-level segregation label. Powers the "Dataset" filter
     # at the top of the imports page; multiple imports can share a value.
     dataset = Column(String(255), nullable=True, index=True)
+    content_modality = Column(String(16), nullable=True)
 
     # Reusable Input Parameter schema this batch was uploaded against.
     # NULL on legacy batches uploaded before the schema-driven flow

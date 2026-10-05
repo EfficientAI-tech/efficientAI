@@ -64,3 +64,55 @@ def test_resolve_uses_trace_workspace_when_header_workspace_is_default(
         content_type="",
     )
     assert resolved == demo_ws.id
+
+
+def test_resolve_keeps_request_workspace_for_user_bound_key_cross_workspace_trace(
+    db_session,
+    org_id,
+    seed_org,
+    default_workspace,
+):
+    from app.models.database import SyntheticCallTrace, Workspace
+    from app.core.auth.principal import AuthMethod, Principal
+
+    demo_ws = Workspace(
+        id=uuid4(),
+        organization_id=org_id,
+        name="Demo",
+        slug="demo-ingest-bound",
+        is_default=False,
+        is_active=True,
+    )
+    db_session.add(demo_ws)
+    db_session.flush()
+
+    trace = SyntheticCallTrace(
+        id=uuid4(),
+        organization_id=org_id,
+        workspace_id=demo_ws.id,
+        call_short_id="991122",
+        transport="webrtc",
+        tier="component",
+        status="open",
+        environment="pre_prod",
+    )
+    db_session.add(trace)
+    db_session.commit()
+
+    principal = Principal(
+        organization_id=org_id,
+        user_id=uuid4(),
+        auth_method=AuthMethod.API_KEY,
+        api_key_id=uuid4(),
+    )
+
+    resolved = resolve_otlp_ingest_workspace_id(
+        db_session,
+        organization_id=org_id,
+        request_workspace_id=default_workspace.id,
+        principal=principal,
+        header_call_short_id="991122",
+        body=None,
+        content_type="",
+    )
+    assert resolved == default_workspace.id

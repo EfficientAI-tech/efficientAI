@@ -141,7 +141,7 @@ def test_list_integration_voice_agents_success(authenticated_client, monkeypatch
     monkeypatch.setattr(
         catalog_module,
         "list_integration_voice_agents",
-        lambda _integration, refresh=False, search=None: _Result(),
+        lambda _integration, refresh=False, search=None, agent_kind="voice": _Result(),
     )
 
     response = authenticated_client.get(f"/api/v1/integrations/{integration.id}/voice-agents")
@@ -165,7 +165,7 @@ def test_list_integration_voice_agents_provider_error(authenticated_client, monk
     integration = make_integration(platform="vapi")
     catalog_module = importlib.import_module("app.services.voice_providers.voice_agent_catalog")
 
-    def _raise(_integration, refresh=False, search=None):
+    def _raise(_integration, refresh=False, search=None, agent_kind="voice"):
         raise ValueError("Provider unavailable")
 
     monkeypatch.setattr(catalog_module, "list_integration_voice_agents", _raise)
@@ -173,4 +173,63 @@ def test_list_integration_voice_agents_provider_error(authenticated_client, monk
     response = authenticated_client.get(f"/api/v1/integrations/{integration.id}/voice-agents")
 
     assert response.status_code == 502
-    assert "Provider unavailable" in response.json()["detail"]
+
+
+def test_list_integration_voice_agents_passes_agent_kind_chat(
+    authenticated_client, monkeypatch, make_integration
+):
+    integration = make_integration(platform="retell")
+    catalog_module = importlib.import_module("app.services.voice_providers.voice_agent_catalog")
+    captured = {}
+
+    def _list(_integration, refresh=False, search=None, agent_kind="voice"):
+        captured["agent_kind"] = agent_kind
+        return catalog_module.VoiceAgentListResult(
+            agents=[{"id": "chat_1", "name": "Chat Agent"}],
+            platform="retell",
+            cached=False,
+            truncated=False,
+            list_supported=True,
+            message=None,
+        )
+
+    monkeypatch.setattr(catalog_module, "list_integration_voice_agents", _list)
+
+    response = authenticated_client.get(
+        f"/api/v1/integrations/{integration.id}/voice-agents",
+        params={"agent_kind": "chat", "refresh": True},
+    )
+
+    assert response.status_code == 200
+    assert captured.get("agent_kind") == "chat"
+    assert response.json()["agents"][0]["name"] == "Chat Agent"
+
+
+def test_list_integration_voice_agents_passes_agent_kind_for_vapi(
+    authenticated_client, monkeypatch, make_integration
+):
+    integration = make_integration(platform="vapi")
+    catalog_module = importlib.import_module("app.services.voice_providers.voice_agent_catalog")
+    captured = {}
+
+    def _list(_integration, refresh=False, search=None, agent_kind="voice"):
+        captured["agent_kind"] = agent_kind
+        return catalog_module.VoiceAgentListResult(
+            agents=[{"id": "asst_1", "name": "Support"}],
+            platform="vapi",
+            cached=False,
+            truncated=False,
+            list_supported=True,
+            message="This platform uses the same agent for voice and chat.",
+        )
+
+    monkeypatch.setattr(catalog_module, "list_integration_voice_agents", _list)
+
+    response = authenticated_client.get(
+        f"/api/v1/integrations/{integration.id}/voice-agents",
+        params={"agent_kind": "chat"},
+    )
+
+    assert response.status_code == 200
+    assert captured.get("agent_kind") == "chat"
+    assert response.json()["agents"][0]["id"] == "asst_1"

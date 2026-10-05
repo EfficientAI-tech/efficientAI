@@ -2,6 +2,7 @@ import { useNavigate } from 'react-router-dom'
 import { Phone } from 'lucide-react'
 import { TestAgent, Integration, IntegrationPlatform } from '../../../types/api'
 import { getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../../config/providers'
+import { CallTypeBadge } from '../../evaluators/components/evaluatorUi'
 
 interface AgentsTableProps {
   agents: TestAgent[]
@@ -101,14 +102,10 @@ export default function AgentsTable({
                   </div>
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm text-gray-500 capitalize">
-                      {agent.call_medium === 'phone_call' ? 'Phone Call' : 'Web Call'}
-                    </span>
-                  </div>
+                  <CallTypeBadge medium={agent.call_medium} callType={agent.call_type} />
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap">
-                  {agent.call_medium === 'web_call' ? (
+                  {agent.call_medium === 'web_call' || agent.call_medium === 'chat' ? (
                     <span className="text-sm text-gray-500 italic">Not applicable</span>
                   ) : agent.phone_number ? (
                     <div className="flex items-center gap-2 text-sm text-gray-500">

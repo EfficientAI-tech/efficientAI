@@ -1,6 +1,7 @@
 """API tests for evaluator results routes."""
 
 import pytest
+from unittest.mock import MagicMock
 
 
 def test_derive_speaker_segments_supports_smallest_payload():
@@ -578,20 +579,7 @@ def test_stream_evaluator_result_audio_proxies_elevenlabs(
     monkeypatch.setattr("app.core.encryption.decrypt_api_key", lambda _key: "test-xi-key")
 
     captured = {}
-
-    class FakeResponse:
-        status_code = 200
-        headers = {"content-type": "audio/mpeg"}
-
-        def iter_content(self, chunk_size=8192):
-            yield b"proxied-audio"
-
-    def fake_get(url, headers=None, stream=False, timeout=60):
-        captured["url"] = url
-        captured["headers"] = headers
-        return FakeResponse()
-
-    monkeypatch.setattr("requests.get", fake_get)
+    _patch_provider_recording_httpx_stream(monkeypatch, captured, body=b"proxied-audio")
 
     response = authenticated_client.get("/api/v1/evaluator-results/992233/audio")
 
@@ -609,6 +597,35 @@ def mock_recording_hostname_dns(monkeypatch):
         "getaddrinfo",
         lambda *args, **kwargs: [(None, None, None, None, ("52.0.0.1", 0))],
     )
+
+
+def _patch_provider_recording_httpx_stream(monkeypatch, captured, *, body=b"proxied-audio", status_code=200):
+    import httpx
+
+    import app.services.telephony.recording_download as recording_download
+
+    class FakeResponse:
+        def __init__(self):
+            self.status_code = status_code
+            self.headers = httpx.Headers({"content-type": "audio/wav"})
+
+        def iter_bytes(self, chunk_size=8192):
+            yield body
+
+    fake_resp = FakeResponse()
+    stream_cm = MagicMock()
+    stream_cm.__enter__.return_value = fake_resp
+    stream_cm.__exit__.return_value = False
+    mock_client = MagicMock()
+
+    def fake_stream(method, url, headers=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        return stream_cm
+
+    mock_client.stream = fake_stream
+    mock_client.close = MagicMock()
+    monkeypatch.setattr(recording_download.httpx, "Client", lambda **kwargs: mock_client)
 
 
 def test_stream_evaluator_result_audio_proxies_vapi_with_bearer(
@@ -637,19 +654,7 @@ def test_stream_evaluator_result_audio_proxies_vapi_with_bearer(
     monkeypatch.setattr("app.core.encryption.decrypt_api_key", lambda _key: "vapi-private-key")
 
     captured = {}
-
-    class FakeResponse:
-        status_code = 200
-        headers = {"content-type": "audio/wav"}
-
-        def iter_content(self, chunk_size=8192):
-            yield b"vapi-audio"
-
-    def fake_get(url, headers=None, stream=False, timeout=60):
-        captured["headers"] = headers
-        return FakeResponse()
-
-    monkeypatch.setattr("requests.get", fake_get)
+    _patch_provider_recording_httpx_stream(monkeypatch, captured, body=b"vapi-audio")
 
     response = authenticated_client.get("/api/v1/evaluator-results/994455/audio")
 
@@ -658,10 +663,11 @@ def test_stream_evaluator_result_audio_proxies_vapi_with_bearer(
     assert captured["headers"]["Authorization"] == "Bearer vapi-private-key"
 
 
-def test_stream_evaluator_result_audio_redirects_vapi_presigned_url(
+def test_stream_evaluator_result_audio_proxies_vapi_presigned_url(
     authenticated_client,
     make_evaluator_result,
     mock_recording_hostname_dns,
+    monkeypatch,
 ):
     signed_url = (
         "https://hipaa-recordings.s3.amazonaws.com/recording.wav?"
@@ -679,13 +685,15 @@ def test_stream_evaluator_result_audio_redirects_vapi_presigned_url(
         },
     )
 
-    response = authenticated_client.get(
-        "/api/v1/evaluator-results/994466/audio",
-        follow_redirects=False,
-    )
+    captured = {}
+    _patch_provider_recording_httpx_stream(monkeypatch, captured, body=b"presigned-audio")
 
-    assert response.status_code in {302, 307}
-    assert response.headers["location"] == signed_url
+    response = authenticated_client.get("/api/v1/evaluator-results/994466/audio")
+
+    assert response.status_code == 200
+    assert response.content == b"presigned-audio"
+    assert captured["url"] == signed_url
+    assert captured["headers"] == {}
 
 
 def test_stream_evaluator_result_audio_not_found(

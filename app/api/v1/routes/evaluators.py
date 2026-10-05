@@ -121,10 +121,6 @@ def create_evaluator(
             detail="agent_id, persona_id, and scenario_id are required",
         )
 
-    validated_metric_ids = validate_metric_ids(
-        db, organization_id, evaluator_data.metric_ids
-    ) if evaluator_data.metric_ids else None
-
     agent = db.query(Agent).filter(
         and_(
             Agent.id == evaluator_data.agent_id,
@@ -134,6 +130,20 @@ def create_evaluator(
     ).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
+
+    from app.services.metrics.surfaces import metric_eval_surface_for_call_medium
+
+    eval_surface = metric_eval_surface_for_call_medium(agent.call_medium)
+    validated_metric_ids = (
+        validate_metric_ids(
+            db,
+            organization_id,
+            evaluator_data.metric_ids,
+            eval_surface=eval_surface,
+        )
+        if evaluator_data.metric_ids
+        else None
+    )
 
     persona = db.query(Persona).filter(
         and_(
@@ -400,31 +410,24 @@ def update_evaluator(
 
     if evaluator_data.metric_ids is not None:
         if evaluator_data.metric_ids:
-            metric_uuids = list({m for m in evaluator_data.metric_ids})
-            metrics = db.query(Metric).filter(
+            from app.services.metrics.surfaces import metric_eval_surface_for_call_medium
+
+            agent_for_metrics = db.query(Agent).filter(
                 and_(
-                    Metric.id.in_(metric_uuids),
-                    Metric.organization_id == organization_id,
+                    Agent.id == evaluator.agent_id,
+                    Agent.organization_id == organization_id,
+                    Agent.workspace_id == workspace_id,
                 )
-            ).all()
-            if len(metrics) != len(metric_uuids):
-                raise HTTPException(
-                    status_code=404,
-                    detail="One or more selected metrics were not found in this organization",
-                )
-            for m in metrics:
-                if not m.enabled:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Metric '{m.name}' is disabled. Enable it before selecting it.",
-                    )
-                surfaces = m.enabled_surfaces or []
-                if surfaces and "agent" not in surfaces:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Metric '{m.name}' is not enabled for the agent surface.",
-                    )
-            evaluator.metric_ids = [str(mid) for mid in metric_uuids]
+            ).first()
+            eval_surface = metric_eval_surface_for_call_medium(
+                agent_for_metrics.call_medium if agent_for_metrics else None
+            )
+            evaluator.metric_ids = validate_metric_ids(
+                db,
+                organization_id,
+                evaluator_data.metric_ids,
+                eval_surface=eval_surface,
+            )
         else:
             evaluator.metric_ids = None
 

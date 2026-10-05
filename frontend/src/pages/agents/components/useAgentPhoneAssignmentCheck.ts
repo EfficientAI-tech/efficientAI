@@ -23,7 +23,7 @@ export function useAgentPhoneAssignmentCheck({
   const [isChecking, setIsChecking] = useState(false)
 
   useEffect(() => {
-    if (!enabled || callMedium !== 'phone_call') {
+    if (!enabled || (callMedium !== 'phone_call' && callMedium !== 'chat')) {
       setConflict(null)
       setIsChecking(false)
       return
@@ -31,7 +31,13 @@ export function useAgentPhoneAssignmentCheck({
 
     const trimmedPhone = phoneNumber?.trim() || ''
     const trimmedTelephonyId = telephonyPhoneNumberId?.trim() || ''
-    if (!trimmedPhone && !trimmedTelephonyId) {
+    if (callMedium === 'chat') {
+      if (!trimmedTelephonyId) {
+        setConflict(null)
+        setIsChecking(false)
+        return
+      }
+    } else if (!trimmedPhone && !trimmedTelephonyId) {
       setConflict(null)
       setIsChecking(false)
       return

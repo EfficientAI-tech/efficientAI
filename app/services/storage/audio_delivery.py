@@ -110,29 +110,40 @@ def stream_audio_from_provider_url(
     *,
     filename: str,
     headers: Optional[Dict[str, str]] = None,
+    range_header: Optional[str] = None,
 ) -> StreamingResponse:
     """Fetch a provider/presigned recording URL server-side and stream to the client."""
-    import requests as http_requests
-
     from app.services.telephony.exotel_client import ExotelInvalidContentError
-    from app.services.telephony.recording_download import assert_safe_provider_recording_url
+    from app.services.telephony.recording_download import (
+        ProviderRecordingUpstreamError,
+        open_provider_recording_stream,
+    )
 
     try:
-        assert_safe_provider_recording_url(str(url))
+        status_code, upstream_headers, chunk_iter = open_provider_recording_stream(
+            str(url),
+            headers=headers,
+            range_header=range_header,
+        )
+    except ProviderRecordingUpstreamError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except ExotelInvalidContentError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    upstream = http_requests.get(url, headers=headers or {}, stream=True, timeout=60)
-    if upstream.status_code != 200:
-        raise HTTPException(
-            status_code=upstream.status_code,
-            detail=f"Recording audio fetch failed ({upstream.status_code})",
-        )
-    content_type = upstream.headers.get("content-type", "audio/mpeg")
+    content_type = upstream_headers.get("content-type", "audio/mpeg")
+    response_headers: Dict[str, str] = {
+        "Content-Disposition": f'inline; filename="{filename}"',
+    }
+    passthrough = ("Accept-Ranges", "Content-Range")
+    if not upstream_headers.get("content-encoding"):
+        passthrough = (*passthrough, "Content-Length")
+    for name in passthrough:
+        value = upstream_headers.get(name)
+        if value:
+            response_headers[name] = value
     return StreamingResponse(
-        upstream.iter_content(chunk_size=8192),
+        chunk_iter,
+        status_code=status_code,
         media_type=content_type,
-        headers={
-            "Content-Disposition": f'inline; filename="{filename}"',
-        },
+        headers=response_headers,
     )

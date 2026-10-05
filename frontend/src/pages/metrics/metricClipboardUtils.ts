@@ -193,10 +193,10 @@ export function singleFormFromMetricClipboard(
     metric_type: payload.metric_type,
     metric_origin: payload.metric_origin || 'custom',
     supported_surfaces: [...payload.supported_surfaces] as Array<
-      'agent' | 'voice_playground' | 'blind_test'
+      'agent' | 'chat_agent' | 'voice_playground'
     >,
     enabled_surfaces: [...payload.enabled_surfaces] as Array<
-      'agent' | 'voice_playground' | 'blind_test'
+      'agent' | 'chat_agent' | 'voice_playground'
     >,
     custom_data_type: customDataType as 'boolean' | 'enum' | 'number_range',
     enum_options_csv: Array.isArray(payload.custom_config?.options)
@@ -224,7 +224,7 @@ export function categoryFormFromMetricClipboard(
     name: pastedMetricName(payload.name),
     description: payload.description || '',
     surfaces: [...payload.supported_surfaces] as Array<
-      'agent' | 'voice_playground' | 'blind_test'
+      'agent' | 'chat_agent' | 'voice_playground'
     >,
     capture_rationale: !!payload.capture_rationale,
     selection_mode: payload.selection_mode,

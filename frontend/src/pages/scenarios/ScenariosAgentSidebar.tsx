@@ -1,11 +1,14 @@
 import { useMemo, useState } from 'react'
 import { Bot, Link2Off, Search } from 'lucide-react'
+import { filterAgentsByMedium, type AgentMediumFilter } from '../../lib/agentMedium'
+import ScenarioAgentMediumTabs from './ScenarioAgentMediumTabs'
 
 export type ScenariosNavAgentId = string
 
 interface AgentNavItem {
   id: string
   name: string
+  call_medium?: string | null
 }
 
 interface ScenariosAgentSidebarProps {
@@ -24,17 +27,16 @@ export default function ScenariosAgentSidebar({
   onSelectAgent,
 }: ScenariosAgentSidebarProps) {
   const [search, setSearch] = useState('')
+  const [mediumFilter, setMediumFilter] = useState<AgentMediumFilter>('voice')
 
   const filteredAgents = useMemo(() => {
+    const byMedium = filterAgentsByMedium(agents, mediumFilter)
     const q = search.trim().toLowerCase()
-    if (!q) return agents
-    return agents.filter((agent) => agent.name.toLowerCase().includes(q))
-  }, [agents, search])
+    if (!q) return byMedium
+    return byMedium.filter((agent) => agent.name.toLowerCase().includes(q))
+  }, [agents, search, mediumFilter])
 
-  const showUnlinked =
-    unlinkedCount > 0 ||
-    search.trim().length === 0 ||
-    'unlinked'.includes(search.trim().toLowerCase())
+  const showUnlinked = unlinkedCount > 0
 
   return (
     <aside className="w-full lg:w-72 shrink-0 rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden flex flex-col max-h-[70vh] lg:max-h-[calc(100vh-11rem)]">
@@ -43,6 +45,7 @@ export default function ScenariosAgentSidebar({
           <h2 className="text-sm font-semibold text-gray-900">Agents</h2>
           <span className="text-xs text-gray-500">{agents.length} total</span>
         </div>
+        <ScenarioAgentMediumTabs value={mediumFilter} onChange={setMediumFilter} />
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 -h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
           <input

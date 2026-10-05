@@ -51,6 +51,8 @@ router = APIRouter(prefix="/evaluator-suites", tags=["evaluator-suites"])
 def _resolve_run_strategy(agent: Agent) -> str:
     call_medium = agent.call_medium or "phone_call"
     call_type = agent.call_type or "outbound"
+    if call_medium == "chat":
+        return "web_bridge"
     if call_medium == "web_call":
         return "web_bridge"
     if call_medium == "phone_call":
@@ -209,6 +211,14 @@ def run_suite(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
+    call_medium = (agent.call_medium or "phone_call").lower()
+    if call_medium == "chat":
+        from app.services.agents.chat_connection import validate_chat_connection_for_agent
+
+        chat_err = validate_chat_connection_for_agent(agent)
+        if chat_err:
+            raise HTTPException(status_code=400, detail=chat_err)
+
     combinations = load_suite_combinations(db, suite.id, organization_id, workspace_id)
     if not combinations:
         raise HTTPException(status_code=400, detail="Suite has no scenario combinations")
@@ -222,8 +232,29 @@ def run_suite(
     phone_call_refs: List[str] = []
 
     if strategy == "web_bridge":
+        from app.models.enums import ChatConnectionTypeEnum
+        from app.services.agents.chat_connection import normalized_chat_connection_type
+
+        initial_call_data = None
+        conn = normalized_chat_connection_type(agent)
+        if conn == ChatConnectionTypeEnum.MESSAGING_CHANNELS.value:
+            if not request.to_number or not str(request.to_number).strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="to_number (recipient) is required for messaging chat evaluator runs",
+                )
+            initial_call_data: dict[str, str] = {
+                "run_messaging_recipient": str(request.to_number).strip(),
+            }
+            trial_tpl = request.twilio_sms_trial_body_template
+            if trial_tpl is not None:
+                initial_call_data["run_twilio_sms_trial_body_template"] = str(trial_tpl).strip()
         task_ids, evaluator_results = queue_evaluator_runs(
-            db, organization_id, workspace_id, expanded
+            db,
+            organization_id,
+            workspace_id,
+            expanded,
+            initial_call_data=initial_call_data,
         )
     elif strategy == "phone_outbound":
         if not request.to_number:

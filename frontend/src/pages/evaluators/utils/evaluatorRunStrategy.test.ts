@@ -28,6 +28,13 @@ const webAgent: AgentForRun = {
   call_type: 'outbound',
 }
 
+const chatAgent: AgentForRun = {
+  id: 'agent-chat',
+  call_medium: 'chat',
+  call_type: 'outbound',
+  voice_bundle_id: 'bundle-1',
+}
+
 const standardEvaluator: EvaluatorForRun = {
   id: 'eval-1',
   agent_id: 'agent-outbound',
@@ -51,6 +58,12 @@ describe('getEvaluatorRunStrategy', () => {
   it('returns web_bridge for web_call agents', () => {
     expect(
       getEvaluatorRunStrategy({ id: '1', agent_id: webAgent.id }, webAgent)
+    ).toBe('web_bridge')
+  })
+
+  it('returns web_bridge for chat agents', () => {
+    expect(
+      getEvaluatorRunStrategy({ id: '1', agent_id: chatAgent.id }, chatAgent)
     ).toBe('web_bridge')
   })
 

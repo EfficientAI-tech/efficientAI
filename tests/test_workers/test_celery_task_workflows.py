@@ -634,6 +634,150 @@ def test_run_evaluator_bridge_runs_without_existing_event_loop(db_session, monke
     assert result["bridge_result"] == {"status": "bridged"}
 
 
+def test_run_evaluator_chat_agent_never_uses_voice_bridge(db_session, monkeypatch):
+    """Chat medium must use text simulation even when agent also has voice bundle + platform link."""
+    from app.models.database import Persona, Scenario
+
+    task_module = _load_run_evaluator_module()
+
+    org = _seed_org(db_session)
+    workspace_id = _default_workspace_id(db_session, org.id)
+    voice_bundle = VoiceBundle(
+        id=uuid4(),
+        organization_id=org.id,
+        name="Chat Bundle",
+        bundle_type="stt_llm_tts",
+        stt_provider="openai",
+        stt_model="whisper-1",
+        llm_provider="openai",
+        llm_model="gpt-4o-mini",
+        tts_provider="openai",
+        tts_model="tts-1",
+        tts_voice="alloy",
+    )
+    integration = Integration(
+        id=uuid4(),
+        organization_id=org.id,
+        platform="retell",
+        name="Chat Integration",
+        api_key="encrypted-test-key",
+        is_active=True,
+        is_default=True,
+    )
+    agent = Agent(
+        id=uuid4(),
+        organization_id=org.id,
+        workspace_id=workspace_id,
+        name="Chat Provider Agent",
+        language="en",
+        description="Chat eval agent",
+        call_type="outbound",
+        call_medium="chat",
+        chat_connection_type="provider_chat",
+        voice_bundle_id=voice_bundle.id,
+        voice_ai_integration_id=integration.id,
+        voice_ai_agent_id="chat-agent-1",
+        provider_prompt="You are a helpful chat agent for support.",
+        test_llm_provider="openai",
+        test_llm_model="gpt-4.1-nano",
+    )
+    persona = Persona(
+        id=uuid4(),
+        organization_id=org.id,
+        workspace_id=workspace_id,
+        name="Test Persona",
+        simulation_medium="text",
+    )
+    scenario = Scenario(
+        id=uuid4(),
+        organization_id=org.id,
+        workspace_id=workspace_id,
+        name="Billing question",
+        agent_id=agent.id,
+    )
+    evaluator = Evaluator(
+        id=uuid4(),
+        evaluator_id="622221",
+        organization_id=org.id,
+        workspace_id=workspace_id,
+        name="Chat Evaluator",
+        agent_id=agent.id,
+        persona_id=persona.id,
+        scenario_id=scenario.id,
+    )
+    eval_result = EvaluatorResult(
+        id=uuid4(),
+        result_id="622222",
+        organization_id=org.id,
+        workspace_id=workspace_id,
+        evaluator_id=evaluator.id,
+        agent_id=agent.id,
+        status="queued",
+    )
+    db_session.add(voice_bundle)
+    db_session.add(integration)
+    db_session.flush()
+    db_session.add(agent)
+    db_session.flush()
+    db_session.add(persona)
+    db_session.flush()
+    db_session.add(scenario)
+    db_session.flush()
+    db_session.add(evaluator)
+    db_session.flush()
+    db_session.add(eval_result)
+    db_session.commit()
+
+    bridge_called = {"v": False}
+
+    async def fake_bridge(**_kwargs):
+        bridge_called["v"] = True
+        return {"status": "bridged"}
+
+    fake_bridge_module = types.ModuleType("app.services.testing.test_agent_bridge_service")
+    fake_bridge_module.test_agent_bridge_service = types.SimpleNamespace(
+        bridge_test_agent_to_voice_agent=fake_bridge
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "app.services.testing.test_agent_bridge_service",
+        fake_bridge_module,
+    )
+
+    sim_called = {"v": False}
+
+    def fake_sim(**_kwargs):
+        sim_called["v"] = True
+        result = _kwargs["result"]
+        result.transcription = "Speaker 1: hi\nSpeaker 2: hello"
+        result.status = "queued"
+
+    monkeypatch.setattr(
+        "app.services.testing.llm_to_llm_evaluator_simulation.run_llm_to_llm_evaluator_simulation",
+        fake_sim,
+    )
+
+    class _FakeProcessTask:
+        def delay(self, *_args, **_kwargs):
+            return types.SimpleNamespace(id="process-task-1")
+
+    monkeypatch.setattr(
+        "app.workers.celery_app.process_evaluator_result_task",
+        _FakeProcessTask(),
+    )
+    monkeypatch.setattr(task_module, "SessionLocal", lambda: _worker_db(db_session))
+
+    result = _invoke_bound_task(
+        task_module.run_evaluator_task,
+        str(evaluator.id),
+        str(eval_result.id),
+    )
+
+    assert bridge_called["v"] is False
+    assert sim_called["v"] is True
+    assert result["status"] == "simulated"
+
+
 def test_run_evaluator_returns_error_when_evaluator_missing(db_session, monkeypatch):
     task_module = _load_run_evaluator_module()
 

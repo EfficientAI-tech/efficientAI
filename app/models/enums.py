@@ -62,6 +62,30 @@ class CallMediumEnum(str, enum.Enum):
     PHONE_CALL = "phone_call"
     WEB_CALL = "web_call"
     SIP_CALL = "sip_call"
+    CHAT = "chat"
+
+
+class ChatConnectionTypeEnum(str, enum.Enum):
+    """How the platform reaches the production chat agent under test."""
+    INTERNAL_LLM = "internal_llm"
+    PROVIDER_CHAT = "provider_chat"
+    CUSTOMER_API = "customer_api"
+    CUSTOMER_WEBSOCKET = "customer_websocket"
+    MESSAGING_CHANNELS = "messaging_channels"
+
+
+class ChatEvalModeEnum(str, enum.Enum):
+    """How chat agents are exercised in evaluator suites vs production data."""
+    PRE_PROD_SIM = "pre_prod_sim"
+    POST_PROD_LIVE = "post_prod_live"
+    POST_PROD_IMPORT = "post_prod_import"
+
+
+class SimulationMediumEnum(str, enum.Enum):
+    """Whether a persona is for voice callers or text chat (simulation_medium on personas)."""
+    VOICE = "voice"
+    TEXT = "text"
+
 
 class GenderEnum(str, enum.Enum):
     """Gender options for personas"""
@@ -117,6 +141,8 @@ class TelephonyProvider(str, enum.Enum):
     PLIVO = "plivo"
     EXOTEL = "exotel"
     VOBIZ = "vobiz"
+    TWILIO = "twilio"
+    TELNYX = "telnyx"
 
 
 class CredentialRoutingMode(str, enum.Enum):

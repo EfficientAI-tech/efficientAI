@@ -8,21 +8,58 @@ import { AIProvider, VoiceBundle, Integration, IntegrationPlatform } from '../..
 import { resolveLLMModelsForCredential } from '../../../lib/llmModelOptions'
 import { useAgentPhoneAssignmentCheck } from './useAgentPhoneAssignmentCheck'
 import { extractPhoneConflictDetail } from './agentPhoneValidation'
-import CreateAgentPathSelector from './create/CreateAgentPathSelector'
+import CreateAgentEntryStep from './create/CreateAgentEntryStep'
+import {
+  type ChatIntegrationOptionId,
+  chatConnectionTypeFromOption,
+  isChatIntegrationAvailable,
+} from './create/ChatIntegrationTypeStep'
+import ChatConnectionDetailsStep, {
+  DEFAULT_CHAT_CONNECTION_CONFIG,
+  type ChatConnectionConfigForm,
+  validateChatConnectionDetails,
+} from './create/ChatConnectionDetailsStep'
+import ChatAgentStep, { validateChatAgentStep } from './create/ChatAgentStep'
+import { buildChatConnectionConfigPayload } from './create/chatAgentFormUtils'
+import { chatEvalModeForConnection } from './create/chatPreprodScope'
 import TelephonyBasicsStep, { validateTelephonyBasics } from './create/TelephonyBasicsStep'
 import PlatformConnectStep, { isPlatformConnectValid } from './create/PlatformConnectStep'
 import VoiceBundleStep from './create/VoiceBundleStep'
-import ProductionPromptStep, { isPromptStepValid } from './create/ProductionPromptStep'
+import ProductionPromptStep, {
+  isPromptStepValid,
+  promptStepValidationMessage,
+} from './create/ProductionPromptStep'
 import {
   type CreateAgentPath,
   type CreateAgentFormData,
   type CreateStepId,
+  type AgentMedium,
+  type CreateWizardPhase,
   DEFAULT_CREATE_AGENT_FORM,
   TELEPHONY_STEPS,
   PLATFORM_STEPS,
+  chatWizardMaxStep,
+  chatWizardSteps,
+  createWizardMaxStep,
 } from './create/createAgentTypes'
+import { NATIVE_PROVIDER_TEXT_CHAT_PLATFORMS } from '../../../lib/chatConnectionCapabilities'
+import ChatConnectionStep, {
+  type ChatConnectionForm,
+  chatConnectionValidationMessage,
+  validateChatConnection,
+} from './create/ChatConnectionStep'
+import ChatTestAgentLlmStep, {
+  applyTestAgentLlmPayload,
+  testAgentLlmValidationMessage,
+  validateTestAgentLlm,
+} from './create/ChatTestAgentLlmStep'
 import { applyGeneratedTemplate } from './TestAgentTemplateEditor'
-import { assembleTestAgentPrompt } from './agentTestSetupConstants'
+import {
+  type TestAgentTemplateDraft,
+  assembleTestAgentPrompt,
+} from './agentTestSetupConstants'
+
+const CREATE_PROMPT_VALIDATION = { requireGeneratedFromProduction: true }
 
 interface CreateAgentModalProps {
   isOpen: boolean
@@ -37,8 +74,12 @@ export default function CreateAgentModal({
   onSuccess,
   showToast,
 }: CreateAgentModalProps) {
+  const [wizardPhase, setWizardPhase] = useState<CreateWizardPhase>('entry_medium')
+  const [agentMedium, setAgentMedium] = useState<AgentMedium | null>(null)
   const [createPath, setCreatePath] = useState<CreateAgentPath>('telephony')
   const [currentStep, setCurrentStep] = useState<CreateStepId>(1)
+  const [chatIntegrationOption, setChatIntegrationOption] =
+    useState<ChatIntegrationOptionId>('provider_chat')
   const [formData, setFormData] = useState<CreateAgentFormData>(DEFAULT_CREATE_AGENT_FORM)
   const [productionPrompt, setProductionPrompt] = useState('')
   const [setupAdditionalContext, setSetupAdditionalContext] = useState('')
@@ -48,8 +89,30 @@ export default function CreateAgentModal({
   const [aiModel, setAiModel] = useState('')
   const [promptFetchError, setPromptFetchError] = useState<string | null>(null)
   const [hasFetchedPlatformPrompt, setHasFetchedPlatformPrompt] = useState(false)
+  const [chatConnectionConfig, setChatConnectionConfig] =
+    useState<ChatConnectionConfigForm>(DEFAULT_CHAT_CONNECTION_CONFIG)
+  const [chatProviderPlatform, setChatProviderPlatform] = useState<IntegrationPlatform | null>(null)
+  const [chatConnection, setChatConnection] = useState<ChatConnectionForm>({
+    connectionType: 'internal_llm',
+    mainLlmProvider: '',
+    mainLlmCredentialId: '',
+    mainLlmModel: '',
+    useSeparateTestLlm: false,
+    testLlmProvider: '',
+    testLlmCredentialId: '',
+    testLlmModel: '',
+  })
 
-  const steps = createPath === 'telephony' ? TELEPHONY_STEPS : PLATFORM_STEPS
+  const steps =
+    createPath === 'telephony'
+      ? TELEPHONY_STEPS
+      : createPath === 'chat'
+        ? chatWizardSteps(chatIntegrationOption)
+        : PLATFORM_STEPS
+  const maxStep =
+    createPath === 'chat'
+      ? chatWizardMaxStep(chatIntegrationOption)
+      : createWizardMaxStep(createPath)
 
   const { data: voiceBundles = [] } = useQuery<VoiceBundle[]>({
     queryKey: ['voicebundles'],
@@ -114,6 +177,32 @@ export default function CreateAgentModal({
     }
   }, [isOpen])
 
+  const invalidateGeneratedTestTemplate = () => {
+    setFormData((prev) => ({
+      ...prev,
+      test_agent_template: {
+        ...prev.test_agent_template,
+        generated_from_production: false,
+      },
+    }))
+  }
+
+  const handleProductionPromptChange = (value: string) => {
+    setProductionPrompt(value)
+    invalidateGeneratedTestTemplate()
+  }
+
+  const handleTestAgentTemplateChange = (test_agent_template: TestAgentTemplateDraft) => {
+    setFormData((prev) => ({
+      ...prev,
+      test_agent_template: {
+        ...test_agent_template,
+        generated_from_production: false,
+      },
+      description: assembleTestAgentPrompt(test_agent_template.sections),
+    }))
+  }
+
   const buildGenerationParams = () => ({
     ...(aiProvider ? { provider: aiProvider } : {}),
     ...(aiCredentialId ? { credential_id: aiCredentialId } : {}),
@@ -154,17 +243,23 @@ export default function CreateAgentModal({
   })
 
   const fetchPlatformPromptMutation = useMutation({
-    mutationFn: () => {
-      if (!formData.voice_ai_integration_id || !formData.voice_ai_agent_id) {
+    mutationFn: (override?: { integrationId?: string; agentId?: string }) => {
+      const integrationId = override?.integrationId ?? formData.voice_ai_integration_id
+      const agentId = (override?.agentId ?? formData.voice_ai_agent_id)?.trim()
+      if (!integrationId || !agentId) {
         throw new Error('Integration and Agent ID are required')
       }
-      return apiClient.previewIntegrationAgentPrompt(
-        formData.voice_ai_integration_id,
-        formData.voice_ai_agent_id.trim(),
-      )
+      const agentChannel =
+        formData.call_medium === 'chat' && chatIntegrationOption === 'provider_chat'
+          ? 'chat'
+          : undefined
+      return apiClient.previewIntegrationAgentPrompt(integrationId, agentId, {
+        agentChannel,
+      })
     },
     onSuccess: (data) => {
       setProductionPrompt(data.provider_prompt)
+      invalidateGeneratedTestTemplate()
       setPromptFetchError(null)
       setHasFetchedPlatformPrompt(true)
     },
@@ -185,9 +280,16 @@ export default function CreateAgentModal({
         description: assembledDescription,
         test_agent_template: data.test_agent_template,
         call_type: data.call_type,
-        call_medium: createPath === 'platform' ? 'web_call' : 'phone_call',
-        voice_bundle_id: data.voice_bundle_id.trim(),
+        call_medium:
+          createPath === 'platform'
+            ? 'web_call'
+            : createPath === 'chat'
+              ? 'chat'
+              : 'phone_call',
         silence_hangup_secs: data.silence_hangup_secs ?? 15,
+      }
+      if (data.voice_bundle_id?.trim()) {
+        payload.voice_bundle_id = data.voice_bundle_id.trim()
       }
 
       if (createPath === 'telephony') {
@@ -208,6 +310,51 @@ export default function CreateAgentModal({
         }
       }
 
+      if (createPath === 'chat') {
+        const prompt = productionPrompt.trim()
+        const connType = chatConnectionTypeFromOption(chatIntegrationOption)
+        payload.provider_prompt = prompt
+        payload.chat_connection_type = connType
+        payload.chat_eval_mode = chatEvalModeForConnection(connType)
+        if (chatIntegrationOption === 'internal_llm') {
+          if (chatConnection.mainLlmProvider && chatConnection.mainLlmModel.trim()) {
+            payload.main_llm_provider = chatConnection.mainLlmProvider
+            payload.main_llm_model = chatConnection.mainLlmModel
+            if (chatConnection.mainLlmCredentialId) {
+              payload.main_llm_credential_id = chatConnection.mainLlmCredentialId
+            }
+          }
+        }
+        if (chatIntegrationOption === 'customer_api') {
+          payload.chat_connection_config = buildChatConnectionConfigPayload(
+            'customer_api',
+            chatConnectionConfig,
+          )
+        }
+        if (chatIntegrationOption === 'customer_websocket') {
+          payload.chat_connection_config = buildChatConnectionConfigPayload(
+            'customer_websocket',
+            chatConnectionConfig,
+          )
+        }
+        if (chatIntegrationOption === 'messaging_channels') {
+          payload.chat_connection_config = buildChatConnectionConfigPayload(
+            'messaging_channels',
+            chatConnectionConfig,
+          )
+          if (data.telephony_phone_number_id?.trim()) {
+            payload.telephony_phone_number_id = data.telephony_phone_number_id.trim()
+          }
+        }
+        if (chatIntegrationOption === 'provider_chat') {
+          payload.voice_ai_integration_id = formData.voice_ai_integration_id.trim()
+          payload.voice_ai_agent_id = formData.voice_ai_agent_id.trim()
+        }
+        if (chatIntegrationOption !== 'internal_llm') {
+          applyTestAgentLlmPayload(payload, chatConnection, aiProviders)
+        }
+      }
+
       return apiClient.createAgent(payload as Parameters<typeof apiClient.createAgent>[0])
     },
     onSuccess: () => {
@@ -217,11 +364,23 @@ export default function CreateAgentModal({
     },
     onError: (error: any) => {
       const conflictMessage = extractPhoneConflictDetail(error.response?.data?.detail)
-      showToast(conflictMessage || `Failed to create agent: ${error.message}`, 'error')
+      const detail = error.response?.data?.detail
+      let message = conflictMessage
+      if (!message && Array.isArray(detail)) {
+        message = detail.map((d: { msg?: string }) => d.msg).filter(Boolean).join(' · ')
+      } else if (!message && typeof detail === 'string') {
+        message = detail
+      }
+      showToast(message || `Failed to create agent: ${error.message}`, 'error')
     },
   })
 
   const resetForm = () => {
+    setWizardPhase('entry_medium')
+    setAgentMedium(null)
+    setChatIntegrationOption('provider_chat')
+    setChatConnectionConfig(DEFAULT_CHAT_CONNECTION_CONFIG)
+    setChatProviderPlatform(null)
     setFormData(DEFAULT_CREATE_AGENT_FORM)
     setCreatePath('telephony')
     setCurrentStep(1)
@@ -233,9 +392,20 @@ export default function CreateAgentModal({
     setAiModel('')
     setPromptFetchError(null)
     setHasFetchedPlatformPrompt(false)
+    setChatConnection({
+      connectionType: 'internal_llm',
+      mainLlmProvider: '',
+      mainLlmCredentialId: '',
+      mainLlmModel: '',
+      useSeparateTestLlm: false,
+      testLlmProvider: '',
+      testLlmCredentialId: '',
+      testLlmModel: '',
+    })
   }
 
-  const handlePathChange = (path: CreateAgentPath) => {
+  const handleVoicePathChange = (path: CreateAgentPath) => {
+    if (path === 'chat') return
     setCreatePath(path)
     setCurrentStep(1)
     setFormData(DEFAULT_CREATE_AGENT_FORM)
@@ -244,6 +414,63 @@ export default function CreateAgentModal({
     setSelectedPlatform(null)
     setPromptFetchError(null)
     setHasFetchedPlatformPrompt(false)
+  }
+
+  const syncChatIntegrationOption = (option: ChatIntegrationOptionId) => {
+    setChatIntegrationOption(option)
+    const connType = chatConnectionTypeFromOption(option)
+    setChatConnection((prev) => ({
+      ...prev,
+      connectionType: connType,
+      useSeparateTestLlm: connType !== 'internal_llm' ? true : prev.useSeparateTestLlm,
+    }))
+    const max = chatWizardMaxStep(option)
+    if (currentStep > max) {
+      setCurrentStep(max)
+    }
+    if (option !== 'provider_chat') {
+      setChatProviderPlatform(null)
+      setFormData((prev) => ({
+        ...prev,
+        voice_ai_integration_id: '',
+        voice_ai_agent_id: '',
+      }))
+    }
+    if (option === 'messaging_channels') {
+      setChatConnectionConfig((prev) =>
+        prev.messagingChannel ? prev : { ...prev, messagingChannel: 'sms' },
+      )
+    }
+  }
+
+  const handleChatPlatformSelect = (platform: IntegrationPlatform | null) => {
+    setChatProviderPlatform(platform)
+    setFormData((prev) => ({
+      ...prev,
+      voice_ai_integration_id: '',
+      voice_ai_agent_id: '',
+    }))
+    setProductionPrompt('')
+  }
+
+  const handleChatPlatformIntegrationChange = (integrationId: string) => {
+    setFormData((prev) => ({ ...prev, voice_ai_integration_id: integrationId, voice_ai_agent_id: '' }))
+    setProductionPrompt('')
+  }
+
+  const handleChatPlatformAgentIdChange = (agentId: string) => {
+    const integrationId = formData.voice_ai_integration_id
+    setFormData((prev) => ({ ...prev, voice_ai_agent_id: agentId }))
+    setProductionPrompt('')
+    setPromptFetchError(null)
+    setHasFetchedPlatformPrompt(false)
+    if (
+      chatIntegrationOption === 'provider_chat' &&
+      integrationId?.trim() &&
+      agentId.trim()
+    ) {
+      fetchPlatformPromptMutation.mutate({ integrationId, agentId: agentId.trim() })
+    }
   }
 
   const validateCurrentStep = (): boolean => {
@@ -265,9 +492,15 @@ export default function CreateAgentModal({
         return true
       }
       if (currentStep === 2) {
-        if (!isPromptStepValid(productionPrompt, formData.test_agent_template)) {
-          if (!productionPrompt.trim()) showToast('Production prompt is required.', 'error')
-          else showToast('Test agent prompt must be at least 10 words.', 'error')
+        if (!isPromptStepValid(productionPrompt, formData.test_agent_template, CREATE_PROMPT_VALIDATION)) {
+          showToast(
+            promptStepValidationMessage(
+              productionPrompt,
+              formData.test_agent_template,
+              CREATE_PROMPT_VALIDATION,
+            ),
+            'error',
+          )
           return false
         }
         return true
@@ -275,6 +508,77 @@ export default function CreateAgentModal({
       if (currentStep === 3) {
         if (!formData.voice_bundle_id?.trim()) {
           showToast('Voice bundle is required.', 'error')
+          return false
+        }
+        return true
+      }
+    }
+
+    if (createPath === 'chat') {
+      if (currentStep === 1) {
+        if (!validateChatAgentStep(formData, productionPrompt, { requireProductionPrompt: false })) {
+          showToast('Name is required.', 'error')
+          return false
+        }
+        if (
+          chatIntegrationOption !== 'internal_llm' &&
+          !validateChatConnectionDetails(
+            chatIntegrationOption,
+            formData,
+            chatConnectionConfig,
+            productionPrompt,
+            chatProviderPlatform,
+            { requireProductionPrompt: false },
+          )
+        ) {
+          if (chatIntegrationOption === 'provider_chat') {
+            if (!chatProviderPlatform) showToast('Connect a provider platform (e.g. Retell).', 'error')
+            else if (!formData.voice_ai_integration_id?.trim()) showToast('Select an integration.', 'error')
+            else showToast('Select or enter an agent ID from your platform.', 'error')
+          } else {
+            showToast('Complete the connection details for this integration type.', 'error')
+          }
+          return false
+        }
+        if (chatIntegrationOption === 'internal_llm') {
+          if (!isPromptStepValid(productionPrompt, formData.test_agent_template, CREATE_PROMPT_VALIDATION)) {
+            showToast(
+              promptStepValidationMessage(
+                productionPrompt,
+                formData.test_agent_template,
+                CREATE_PROMPT_VALIDATION,
+              ),
+              'error',
+            )
+            return false
+          }
+        }
+        return true
+      }
+      if (currentStep === 2) {
+        if (chatIntegrationOption === 'internal_llm') {
+          if (!validateChatConnection(chatConnection, aiProviders)) {
+            showToast(chatConnectionValidationMessage(chatConnection), 'error')
+            return false
+          }
+          return true
+        }
+        if (!isPromptStepValid(productionPrompt, formData.test_agent_template, CREATE_PROMPT_VALIDATION)) {
+          showToast(
+            promptStepValidationMessage(
+              productionPrompt,
+              formData.test_agent_template,
+              CREATE_PROMPT_VALIDATION,
+            ),
+            'error',
+          )
+          return false
+        }
+        return true
+      }
+      if (currentStep === 3) {
+        if (!validateTestAgentLlm(chatConnection, aiProviders)) {
+          showToast(testAgentLlmValidationMessage(), 'error')
           return false
         }
         return true
@@ -292,16 +596,22 @@ export default function CreateAgentModal({
         return true
       }
       if (currentStep === 2) {
-        if (!formData.voice_bundle_id?.trim()) {
-          showToast('Voice bundle is required.', 'error')
+        if (!isPromptStepValid(productionPrompt, formData.test_agent_template, CREATE_PROMPT_VALIDATION)) {
+          showToast(
+            promptStepValidationMessage(
+              productionPrompt,
+              formData.test_agent_template,
+              CREATE_PROMPT_VALIDATION,
+            ),
+            'error',
+          )
           return false
         }
         return true
       }
       if (currentStep === 3) {
-        if (!isPromptStepValid(productionPrompt, formData.test_agent_template)) {
-          if (!productionPrompt.trim()) showToast('Production prompt must be fetched from the provider.', 'error')
-          else showToast('Test agent prompt must be at least 10 words.', 'error')
+        if (!formData.voice_bundle_id?.trim()) {
+          showToast('Voice bundle is required.', 'error')
           return false
         }
         return true
@@ -314,31 +624,129 @@ export default function CreateAgentModal({
   const handleNext = () => {
     if (!validateCurrentStep()) return
 
-    if (createPath === 'platform' && currentStep === 2) {
-      setCurrentStep(3)
+    if (createPath === 'platform' && currentStep === 1) {
+      setCurrentStep(2)
       if (!hasFetchedPlatformPrompt) {
-        fetchPlatformPromptMutation.mutate()
+        fetchPlatformPromptMutation.mutate({})
       }
       return
     }
 
-    setCurrentStep((step) => Math.min(step + 1, 3) as CreateStepId)
+    if (
+      createPath === 'chat' &&
+      chatIntegrationOption === 'provider_chat' &&
+      currentStep === 1
+    ) {
+      setCurrentStep(2)
+      if (!hasFetchedPlatformPrompt) {
+        fetchPlatformPromptMutation.mutate({})
+      }
+      return
+    }
+
+    setCurrentStep((step) => Math.min(step + 1, maxStep) as CreateStepId)
   }
 
   const handleBack = () => {
+    if (wizardPhase === 'entry_integration') {
+      setWizardPhase('entry_medium')
+      return
+    }
+    if (wizardPhase === 'steps' && currentStep === 1) {
+      setWizardPhase('entry_integration')
+      return
+    }
     setCurrentStep((step) => Math.max(step - 1, 1) as CreateStepId)
   }
 
+  const handleAgentMediumChange = (medium: AgentMedium) => {
+    setAgentMedium(medium)
+    if (medium === 'chat') {
+      setCreatePath('chat')
+      setChatIntegrationOption('provider_chat')
+      return
+    }
+    if (createPath === 'chat') {
+      setCreatePath('telephony')
+    }
+  }
+
+  const handleContinueFromMedium = () => {
+    if (!agentMedium) {
+      showToast('Choose voice or chat to continue.', 'error')
+      return
+    }
+    if (agentMedium === 'chat') {
+      setCreatePath('chat')
+    }
+    setWizardPhase('entry_integration')
+  }
+
+  const handleContinueFromIntegration = () => {
+    if (agentMedium === 'voice') {
+      if (createPath !== 'telephony' && createPath !== 'platform') {
+        showToast('Choose telephony or platform.', 'error')
+        return
+      }
+    } else if (agentMedium === 'chat') {
+      if (!isChatIntegrationAvailable(chatIntegrationOption)) {
+        showToast('Choose a chat connection.', 'error')
+        return
+      }
+    } else {
+      showToast('Choose voice or chat to continue.', 'error')
+      return
+    }
+    setCurrentStep(1)
+    setWizardPhase('steps')
+  }
+
   const handleCreate = () => {
-    if (currentStep !== 3 || !validateCurrentStep()) return
+    if (currentStep !== maxStep || !validateCurrentStep()) return
+    if (createPath === 'chat') {
+      if (!isPromptStepValid(productionPrompt, formData.test_agent_template, CREATE_PROMPT_VALIDATION)) {
+        showToast(
+          promptStepValidationMessage(
+            productionPrompt,
+            formData.test_agent_template,
+            CREATE_PROMPT_VALIDATION,
+          ),
+          'error',
+        )
+        return
+      }
+      if (
+        chatIntegrationOption === 'internal_llm' &&
+        !validateChatConnection(chatConnection, aiProviders)
+      ) {
+        showToast(chatConnectionValidationMessage(chatConnection), 'error')
+        return
+      }
+      if (
+        chatIntegrationOption !== 'internal_llm' &&
+        !validateTestAgentLlm(chatConnection, aiProviders)
+      ) {
+        showToast(testAgentLlmValidationMessage(), 'error')
+        return
+      }
+      createMutation.mutate(formData)
+      return
+    }
     if (createPath === 'telephony') {
       if (!validateTelephonyBasics(formData, phoneNumberInputMode, isCheckingPhoneAssignment, hasPhoneConflict)) {
         showToast('Please fix telephony settings.', 'error')
         return
       }
     }
-    if (!isPromptStepValid(productionPrompt, formData.test_agent_template)) {
-      showToast('Production and test agent prompts are required.', 'error')
+    if (!isPromptStepValid(productionPrompt, formData.test_agent_template, CREATE_PROMPT_VALIDATION)) {
+      showToast(
+        promptStepValidationMessage(
+          productionPrompt,
+          formData.test_agent_template,
+          CREATE_PROMPT_VALIDATION,
+        ),
+        'error',
+      )
       return
     }
     if (!formData.voice_bundle_id?.trim()) {
@@ -368,15 +776,167 @@ export default function CreateAgentModal({
   }
 
   const handlePlatformAgentIdChange = (agentId: string) => {
+    const integrationId = formData.voice_ai_integration_id
     setFormData((prev) => ({ ...prev, voice_ai_agent_id: agentId }))
     setProductionPrompt('')
     setPromptFetchError(null)
     setHasFetchedPlatformPrompt(false)
+    if (createPath === 'platform' && integrationId?.trim() && agentId.trim()) {
+      fetchPlatformPromptMutation.mutate({ integrationId, agentId: agentId.trim() })
+    }
   }
 
   if (!isOpen) return null
 
+  const isEntryPhase =
+    wizardPhase === 'entry_medium' || wizardPhase === 'entry_integration'
+
+  const entryModalWidthClass =
+    wizardPhase === 'entry_medium'
+      ? 'w-[min(92vw,34rem)]'
+      : agentMedium === 'chat'
+        ? 'w-[min(92vw,48rem)]'
+        : 'w-[min(92vw,38rem)]'
+
   const renderStepContent = () => {
+    const canGenerateTestPrompt = Boolean(
+      formData.name.trim() &&
+        productionPrompt.trim() &&
+        aiCredentialId &&
+        (aiModel.trim() || gatewayDirectModel),
+    )
+
+    if (isEntryPhase) {
+      return (
+        <CreateAgentEntryStep
+          phase={wizardPhase}
+          agentMedium={agentMedium}
+          onAgentMediumChange={handleAgentMediumChange}
+          voicePath={createPath === 'chat' ? 'telephony' : createPath}
+          onVoicePathChange={handleVoicePathChange}
+          chatIntegration={chatIntegrationOption}
+          onChatIntegrationChange={syncChatIntegrationOption}
+          compact
+        />
+      )
+    }
+
+    if (createPath === 'chat') {
+      const chatPromptsStep = (
+        <ProductionPromptStep
+          agentName={formData.name}
+          language={formData.language}
+          callType={formData.call_type}
+          productionPrompt={productionPrompt}
+          onProductionPromptChange={handleProductionPromptChange}
+          isFetchingProductionPrompt={
+            chatIntegrationOption === 'provider_chat' && fetchPlatformPromptMutation.isPending
+          }
+          fetchError={chatIntegrationOption === 'provider_chat' ? promptFetchError : null}
+          importFromProvider={
+            chatIntegrationOption === 'provider_chat'
+              ? {
+                  onClick: () => fetchPlatformPromptMutation.mutate({}),
+                  isPending: fetchPlatformPromptMutation.isPending,
+                  disabled:
+                    !formData.voice_ai_integration_id?.trim() ||
+                    !formData.voice_ai_agent_id?.trim(),
+                }
+              : undefined
+          }
+          testAgentTemplate={formData.test_agent_template}
+          onTestAgentTemplateChange={handleTestAgentTemplateChange}
+          additionalContext={setupAdditionalContext}
+          onAdditionalContextChange={setSetupAdditionalContext}
+          aiProviders={aiProviders}
+          aiCredentialId={aiCredentialId}
+          onAiCredentialIdChange={setAiCredentialId}
+          aiModel={aiModel}
+          onAiModelChange={setAiModel}
+          selectableModels={selectableModels}
+          gatewayDirectModel={gatewayDirectModel}
+          onGenerateTestPrompt={() => generateTestPromptMutation.mutate()}
+          isGenerating={generateTestPromptMutation.isPending}
+          canGenerate={canGenerateTestPrompt}
+        />
+      )
+
+      if (currentStep === 1) {
+        return (
+          <div className="w-full max-w-4xl mx-auto space-y-6">
+            <ChatAgentStep
+              formData={formData}
+              productionPrompt={productionPrompt}
+              onFormChange={(patch) => setFormData((prev) => ({ ...prev, ...patch }))}
+              onProductionPromptChange={handleProductionPromptChange}
+              showProductionPrompt={false}
+            />
+            {chatIntegrationOption === 'provider_chat' ? (
+              <PlatformConnectStep
+                showNameField={false}
+                integrations={integrations}
+                agentName={formData.name}
+                onAgentNameChange={() => {}}
+                selectedPlatform={chatProviderPlatform}
+                onSelectPlatform={handleChatPlatformSelect}
+                voiceAiIntegrationId={formData.voice_ai_integration_id}
+                voiceAiAgentId={formData.voice_ai_agent_id}
+                onIntegrationChange={handleChatPlatformIntegrationChange}
+                onAgentIdChange={handleChatPlatformAgentIdChange}
+                introTitle="Existing platform integration"
+                introSubtitle="Vapi, Retell, ElevenLabs, or Smallest."
+                platformOptions={NATIVE_PROVIDER_TEXT_CHAT_PLATFORMS}
+                remoteAgentKind="chat"
+              />
+            ) : null}
+            {chatIntegrationOption !== 'internal_llm' &&
+            chatIntegrationOption !== 'provider_chat' ? (
+              <ChatConnectionDetailsStep
+                embedded
+                integrationType={chatIntegrationOption}
+                formData={formData}
+                onFormChange={(patch) => setFormData((prev) => ({ ...prev, ...patch }))}
+                integrations={integrations}
+                selectedPlatform={chatProviderPlatform}
+                onSelectPlatform={setChatProviderPlatform}
+                config={chatConnectionConfig}
+                onConfigChange={(patch) =>
+                  setChatConnectionConfig((prev) => ({ ...prev, ...patch }))
+                }
+                productionPrompt={productionPrompt}
+                onProductionPromptChange={handleProductionPromptChange}
+                onPromptFetched={() => {}}
+                showToast={showToast}
+              />
+            ) : null}
+            {chatIntegrationOption === 'internal_llm' ? chatPromptsStep : null}
+          </div>
+        )
+      }
+      if (currentStep === 2) {
+        if (chatIntegrationOption === 'internal_llm') {
+          return (
+            <div className="space-y-6 max-w-4xl mx-auto">
+              <ChatConnectionStep
+                value={chatConnection}
+                onChange={(patch) => setChatConnection((prev) => ({ ...prev, ...patch }))}
+              />
+            </div>
+          )
+        }
+        return <div className="w-full max-w-4xl mx-auto space-y-6">{chatPromptsStep}</div>
+      }
+      if (currentStep === 3) {
+        return (
+          <ChatTestAgentLlmStep
+            value={chatConnection}
+            onChange={(patch) => setChatConnection((prev) => ({ ...prev, ...patch }))}
+          />
+        )
+      }
+      return null
+    }
+
     if (createPath === 'telephony') {
       if (currentStep === 1) {
         return (
@@ -396,15 +956,9 @@ export default function CreateAgentModal({
             language={formData.language}
             callType={formData.call_type}
             productionPrompt={productionPrompt}
-            onProductionPromptChange={setProductionPrompt}
+            onProductionPromptChange={handleProductionPromptChange}
             testAgentTemplate={formData.test_agent_template}
-            onTestAgentTemplateChange={(test_agent_template) =>
-              setFormData((prev) => ({
-                ...prev,
-                test_agent_template,
-                description: assembleTestAgentPrompt(test_agent_template.sections),
-              }))
-            }
+            onTestAgentTemplateChange={handleTestAgentTemplateChange}
             additionalContext={setupAdditionalContext}
             onAdditionalContextChange={setSetupAdditionalContext}
             aiProviders={aiProviders}
@@ -414,10 +968,9 @@ export default function CreateAgentModal({
             onAiModelChange={setAiModel}
             selectableModels={selectableModels}
             gatewayDirectModel={gatewayDirectModel}
-            aiProvider={aiProvider}
             onGenerateTestPrompt={() => generateTestPromptMutation.mutate()}
             isGenerating={generateTestPromptMutation.isPending}
-            canGenerate={Boolean(formData.name.trim() && productionPrompt.trim())}
+            canGenerate={canGenerateTestPrompt}
           />
         )
       }
@@ -447,44 +1000,37 @@ export default function CreateAgentModal({
     }
     if (currentStep === 2) {
       return (
-        <VoiceBundleStep
-          voiceBundles={voiceBundles}
-          value={formData.voice_bundle_id}
-          onChange={(voiceBundleId) => setFormData((prev) => ({ ...prev, voice_bundle_id: voiceBundleId }))}
+        <ProductionPromptStep
+          agentName={formData.name}
+          language={formData.language}
+          callType={formData.call_type}
+          productionPrompt={productionPrompt}
+          onProductionPromptChange={handleProductionPromptChange}
+          productionPromptReadOnly
+          isFetchingProductionPrompt={fetchPlatformPromptMutation.isPending}
+          fetchError={promptFetchError}
+          testAgentTemplate={formData.test_agent_template}
+          onTestAgentTemplateChange={handleTestAgentTemplateChange}
+          additionalContext={setupAdditionalContext}
+          onAdditionalContextChange={setSetupAdditionalContext}
+          aiProviders={aiProviders}
+          aiCredentialId={aiCredentialId}
+          onAiCredentialIdChange={setAiCredentialId}
+          aiModel={aiModel}
+          onAiModelChange={setAiModel}
+          selectableModels={selectableModels}
+          gatewayDirectModel={gatewayDirectModel}
+          onGenerateTestPrompt={() => generateTestPromptMutation.mutate()}
+          isGenerating={generateTestPromptMutation.isPending}
+          canGenerate={canGenerateTestPrompt}
         />
       )
     }
     return (
-      <ProductionPromptStep
-        agentName={formData.name}
-        language={formData.language}
-        callType={formData.call_type}
-        productionPrompt={productionPrompt}
-        onProductionPromptChange={setProductionPrompt}
-        productionPromptReadOnly
-        isFetchingProductionPrompt={fetchPlatformPromptMutation.isPending}
-        fetchError={promptFetchError}
-        testAgentTemplate={formData.test_agent_template}
-        onTestAgentTemplateChange={(test_agent_template) =>
-          setFormData((prev) => ({
-            ...prev,
-            test_agent_template,
-            description: assembleTestAgentPrompt(test_agent_template.sections),
-          }))
-        }
-        additionalContext={setupAdditionalContext}
-        onAdditionalContextChange={setSetupAdditionalContext}
-        aiProviders={aiProviders}
-        aiCredentialId={aiCredentialId}
-        onAiCredentialIdChange={setAiCredentialId}
-        aiModel={aiModel}
-        onAiModelChange={setAiModel}
-        selectableModels={selectableModels}
-        gatewayDirectModel={gatewayDirectModel}
-        aiProvider={aiProvider}
-        onGenerateTestPrompt={() => generateTestPromptMutation.mutate()}
-        isGenerating={generateTestPromptMutation.isPending}
-        canGenerate={Boolean(formData.name.trim() && productionPrompt.trim())}
+      <VoiceBundleStep
+        voiceBundles={voiceBundles}
+        value={formData.voice_bundle_id}
+        onChange={(voiceBundleId) => setFormData((prev) => ({ ...prev, voice_bundle_id: voiceBundleId }))}
       />
     )
   }
@@ -496,33 +1042,69 @@ export default function CreateAgentModal({
       role="presentation"
     >
       <div
-        className="bg-white rounded-2xl shadow-2xl ring-1 ring-gray-200/80 w-[min(96vw,88rem)] h-[min(92vh,920px)] flex flex-col overflow-hidden"
+        className={`bg-white rounded-2xl shadow-2xl ring-1 ring-gray-200/80 flex flex-col overflow-hidden transition-[width] duration-200 ease-out ${
+          isEntryPhase
+            ? `${entryModalWidthClass} min-h-[min(88vh,26rem)] max-h-[88vh]`
+            : 'w-[min(92vw,70rem)] h-[min(86vh,700px)]'
+        }`}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         aria-labelledby="create-agent-modal-title"
       >
-        <div className="flex items-center justify-between shrink-0 px-6 py-5 border-b border-gray-100">
-          <div>
-            <h2 id="create-agent-modal-title" className="text-2xl font-bold text-gray-900 tracking-tight">
-              Create Test Agent
+        <div
+          className={`flex items-start justify-between shrink-0 border-b border-gray-100 ${
+            isEntryPhase ? 'px-5 py-4' : 'px-6 py-5'
+          }`}
+        >
+          <div className={isEntryPhase ? 'flex-1 min-w-0 pr-2' : undefined}>
+            <h2
+              id="create-agent-modal-title"
+              className={`font-bold text-gray-900 tracking-tight ${
+                isEntryPhase ? 'text-base text-gray-700' : 'text-xl'
+              }`}
+            >
+              Create agent
             </h2>
-            <p className="text-sm text-gray-500 mt-1">
-              Step {currentStep} of {steps.length} · {steps[currentStep - 1]?.title}
-            </p>
+            {!isEntryPhase ? (
+              <p className="text-sm text-gray-500 mt-1">
+                {`Step ${currentStep} of ${steps.length} · ${steps[currentStep - 1]?.title}`}
+              </p>
+            ) : (
+              <p className="text-xs text-gray-400 mt-1">
+                Step {wizardPhase === 'entry_medium' ? 1 : 2} of 2
+              </p>
+            )}
+            {isEntryPhase ? (
+              <div
+                className="flex items-center gap-2 mt-2.5"
+                aria-hidden
+              >
+                <span
+                  className={`h-1 rounded-full transition-all ${
+                    wizardPhase === 'entry_medium' ? 'w-8 bg-primary-600' : 'w-5 bg-gray-200'
+                  }`}
+                />
+                <span
+                  className={`h-1 rounded-full transition-all ${
+                    wizardPhase === 'entry_integration' ? 'w-8 bg-primary-600' : 'w-5 bg-gray-200'
+                  }`}
+                />
+              </div>
+            ) : null}
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+            className="rounded-lg p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors shrink-0"
             aria-label="Close"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <div className="shrink-0 px-6 py-4 border-b border-gray-100 bg-gray-50/50 space-y-4">
-          <CreateAgentPathSelector value={createPath} onChange={handlePathChange} />
+        {wizardPhase === 'steps' ? (
+        <div className="shrink-0 px-6 py-4 border-b border-gray-100 bg-gray-50/50">
           <div className="flex items-center">
             {steps.map((step, index) => {
               const isComplete = currentStep > step.id
@@ -556,22 +1138,61 @@ export default function CreateAgentModal({
             })}
           </div>
         </div>
+        ) : null}
 
-        <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5">
-          {renderStepContent()}
+        <div
+          className={
+            isEntryPhase
+              ? 'shrink-0 px-5 pb-2 pt-4 sm:px-7 sm:pt-5'
+              : 'flex-1 min-h-0 overflow-y-auto px-6 py-6'
+          }
+        >
+          {isEntryPhase ? (
+            <div
+              className="rounded-xl border border-gray-100/90 bg-gradient-to-b from-gray-50/80 via-white to-white px-4 py-5 sm:px-6 sm:py-6 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)]"
+            >
+              {renderStepContent()}
+            </div>
+          ) : (
+            renderStepContent()
+          )}
         </div>
 
-        <div className="shrink-0 px-6 py-4 border-t border-gray-100 bg-gray-50/80 flex gap-3">
+        <div className="shrink-0 px-5 py-3 border-t border-gray-100 bg-gray-50/80 flex gap-3">
           <Button type="button" variant="outline" onClick={onClose}>
             Cancel
           </Button>
-          {currentStep > 1 && (
+          {wizardPhase !== 'entry_medium' && (
             <Button type="button" variant="outline" onClick={handleBack}>
               Back
             </Button>
           )}
           <div className="flex-1" />
-          {currentStep < 3 ? (
+          {wizardPhase === 'entry_medium' ? (
+            <Button
+              type="button"
+              variant="primary"
+              onClick={handleContinueFromMedium}
+              disabled={!agentMedium}
+            >
+              Continue
+            </Button>
+          ) : wizardPhase === 'entry_integration' ? (
+            <Button
+              type="button"
+              variant="primary"
+              onClick={handleContinueFromIntegration}
+              disabled={
+                agentMedium === 'voice'
+                  ? createPath !== 'telephony' && createPath !== 'platform'
+                  : agentMedium === 'chat'
+                    ? !isChatIntegrationAvailable(chatIntegrationOption)
+                    : true
+              }
+            >
+              Continue
+            </Button>
+          ) : currentStep < maxStep ? (
             <Button type="button" variant="primary" onClick={handleNext}>
               Next
             </Button>
@@ -582,7 +1203,7 @@ export default function CreateAgentModal({
               onClick={handleCreate}
               isLoading={createMutation.isPending}
             >
-              Create Agent
+              Create agent
             </Button>
           )}
         </div>

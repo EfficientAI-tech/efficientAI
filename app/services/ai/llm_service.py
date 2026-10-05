@@ -46,7 +46,49 @@ _LITELLM_PROVIDER_PREFIX: Dict[str, str] = {
     "xai": "xai",
     "fireworks": "fireworks_ai",
     "sarvam": "sarvam",
+    "together": "together_ai",
+    "meta": "together_ai",
+    "openrouter": "openrouter",
 }
+
+
+def _strip_litellm_provider_prefix(model: str, *, provider_value: str, litellm_prefix: str) -> str:
+    """Drop a leading provider segment when the model id was stored fully qualified."""
+    text = (model or "").strip()
+    if not text or "/" not in text:
+        return text
+    heads = {
+        provider_value.lower(),
+        litellm_prefix.lower(),
+        "together",
+        "together_ai",
+    }
+    lower = text.lower()
+    for head in sorted(heads, key=len, reverse=True):
+        if not head:
+            continue
+        marker = f"{head}/"
+        if lower.startswith(marker):
+            return text[len(marker) :]
+    return text
+
+
+def canonical_litellm_model_id(model_str: str) -> str:
+    """Normalize provider prefixes on the final model string passed to LiteLLM."""
+    from app.services.ai.together_models import normalize_together_model_name
+
+    text = (model_str or "").strip()
+    if not text:
+        return text
+    lower = text.lower()
+    if lower.startswith("together/") or lower.startswith("together_ai/"):
+        prefix = "together_ai"
+        body = text.split("/", 1)[1]
+        return f"{prefix}/{normalize_together_model_name(body)}"
+    if lower.startswith("meta-llama/"):
+        return normalize_together_model_name(text)
+    return text
+
 
 # Matches the model-name half of the Gemini 2.5 family: ``gemini-2.5-pro``,
 # ``gemini-2.5-flash``, ``gemini-2.5-flash-lite``, plus the ``-stt`` /
@@ -61,6 +103,11 @@ _GEMINI_25_RE = re.compile(r"(?:^|[/-])gemini-2\.5(?:[-.]|$)", re.IGNORECASE)
 # branch without code edits.
 _GEMINI_3_RE = re.compile(
     r"(?:^|[/-])gemini-3(?:\.\d+)?(?:[-.]|$)", re.IGNORECASE
+)
+
+_HARMONY_FINAL_RE = re.compile(
+    r"<\|channel\|>final<\|message\|>(.*)",
+    re.DOTALL | re.IGNORECASE,
 )
 
 
@@ -148,6 +195,126 @@ def _gemini_thinking_kwargs(model: str) -> Dict[str, Any]:
     # diariser/evaluator to HIGH thinking on a model we haven't
     # explicitly characterised.
     return {"reasoning_effort": "low"}
+
+
+def _is_fireworks_route(provider_value: str, model_str: str) -> bool:
+    provider = (provider_value or "").lower()
+    model = (model_str or "").lower()
+    return provider == "fireworks" or model.startswith("fireworks_ai/")
+
+
+_FIREWORKS_REASONING_EFFORT = frozenset(
+    {"low", "medium", "high", "xhigh", "max", "none", "adaptive"}
+)
+_OPENAI_REASONING_EFFORT = frozenset({"minimal", "low", "medium", "high"})
+
+
+def _is_openai_route(provider_value: str, model_str: str) -> bool:
+    provider = (provider_value or "").lower()
+    model = (model_str or "").lower()
+    return provider in ("openai", "azure") or model.startswith("openai/")
+
+
+def _sanitize_reasoning_effort(
+    call_kwargs: Dict[str, Any], *, provider_value: str, model_str: str
+) -> None:
+    """Normalize reasoning_effort from llm_config for the routed provider (no model guessing)."""
+    effort = call_kwargs.get("reasoning_effort")
+    if effort is None:
+        return
+    token = str(effort).strip().lower()
+
+    if _is_fireworks_route(provider_value, model_str):
+        if token in _FIREWORKS_REASONING_EFFORT:
+            call_kwargs["reasoning_effort"] = token
+            return
+        if token in ("minimal", "disable", "disabled"):
+            call_kwargs["reasoning_effort"] = "low"
+            return
+        call_kwargs.pop("reasoning_effort", None)
+        return
+
+    if _is_openai_route(provider_value, model_str):
+        if token in ("disable", "disabled"):
+            call_kwargs["reasoning_effort"] = "minimal"
+            return
+        if token in _OPENAI_REASONING_EFFORT:
+            call_kwargs["reasoning_effort"] = token
+            return
+        call_kwargs.pop("reasoning_effort", None)
+        return
+
+    # Unknown provider / future model: drop cross-vendor reasoning_effort rather than 400.
+    call_kwargs.pop("reasoning_effort", None)
+
+
+def _parse_model_visible_text(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    match = _HARMONY_FINAL_RE.search(text)
+    if match:
+        return match.group(1).strip()
+    return text
+
+
+def _litellm_message_mapping(message: Any) -> Dict[str, Any]:
+    if message is None:
+        return {}
+    if isinstance(message, dict):
+        return message
+    dump = getattr(message, "model_dump", None)
+    if callable(dump):
+        try:
+            return dump()
+        except Exception:
+            pass
+    legacy_dump = getattr(message, "dict", None)
+    if callable(legacy_dump):
+        try:
+            return legacy_dump()
+        except Exception:
+            pass
+    keys = (
+        "content",
+        "text",
+        "output_text",
+        "refusal",
+        "reasoning_content",
+        "tool_calls",
+    )
+    return {key: getattr(message, key) for key in keys if hasattr(message, key)}
+
+
+def _extract_assistant_text(message: Any) -> Tuple[str, Optional[str]]:
+    data = _litellm_message_mapping(message)
+    for key in ("content", "text", "output_text"):
+        visible = _parse_model_visible_text(_coerce_llm_message_text(data.get(key)))
+        if visible:
+            return visible, None
+    refusal = data.get("refusal")
+    if isinstance(refusal, str) and refusal.strip():
+        return "", refusal.strip()
+    return "", None
+
+
+def _coerce_llm_message_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                if block.get("type") == "text":
+                    parts.append(str(block.get("text") or ""))
+                elif "text" in block:
+                    parts.append(str(block.get("text") or ""))
+        return "".join(parts)
+    return str(content)
 
 
 def _looks_like_url(value: str) -> bool:
@@ -358,8 +525,15 @@ class LLMService:
     @staticmethod
     def _litellm_model_name(provider: ModelProvider, model: str) -> str:
         """Build the ``provider/model`` string that LiteLLM expects."""
+        from app.services.ai.together_models import normalize_together_model_name
+
         provider_value = provider.value if hasattr(provider, "value") else str(provider)
         prefix = _LITELLM_PROVIDER_PREFIX.get(provider_value.lower(), provider_value.lower())
+        model = _strip_litellm_provider_prefix(
+            model, provider_value=provider_value, litellm_prefix=prefix
+        )
+        if provider_value.lower() in ("together", "meta"):
+            model = normalize_together_model_name(model)
         if provider_value.lower() == "azure":
             model = _azure_deployment_name(model)
         if provider_value.lower() == "fireworks" and not model.startswith("accounts/"):
@@ -425,11 +599,17 @@ class LLMService:
         _, effective_routing = resolve_effective_routing(
             organization_id, db, credential_ctx
         )
-        model_str = resolve_litellm_model(
-            workload_model_str=workload_model_str,
-            gateway_active=effective_routing != "direct",
-            credential=credential_ctx,
+        model_str = canonical_litellm_model_id(
+            resolve_litellm_model(
+                workload_model_str=workload_model_str,
+                gateway_active=effective_routing != "direct",
+                credential=credential_ctx,
+            )
         )
+
+        provider_value = (
+            llm_provider.value if hasattr(llm_provider, "value") else str(llm_provider)
+        ).lower()
 
         call_kwargs: Dict[str, Any] = {
             "model": model_str,
@@ -467,9 +647,6 @@ class LLMService:
                 effective_max_tokens = 4096
             call_kwargs["max_tokens"] = effective_max_tokens
 
-        provider_value = (
-            llm_provider.value if hasattr(llm_provider, "value") else str(llm_provider)
-        ).lower()
         remaining_config = config
         if provider_value == "azure":
             azure_kwargs, remaining_config, azure_v1_routing = _build_azure_litellm_kwargs(
@@ -479,6 +656,7 @@ class LLMService:
             if azure_v1_routing:
                 model_str = f"openai/{_azure_deployment_name(llm_model)}"
                 call_kwargs["model"] = model_str
+        call_kwargs["model"] = canonical_litellm_model_id(call_kwargs["model"])
         if remaining_config:
             call_kwargs.update(remaining_config)
 
@@ -489,6 +667,11 @@ class LLMService:
             model=model_str,
             credential=credential_ctx,
         )
+        _sanitize_reasoning_effort(
+            call_kwargs,
+            provider_value=provider_value,
+            model_str=str(call_kwargs.get("model") or model_str),
+        )
 
         try:
             response = litellm.completion(**call_kwargs)
@@ -497,11 +680,22 @@ class LLMService:
             raise RuntimeError(f"LLM generation failed for {model_str}: {e}") from e
 
         # --- normalise response into our standard shape --------------------
-        text = response.choices[0].message.content if response.choices else ""
+        message = response.choices[0].message if response.choices else None
+        text, refusal = _extract_assistant_text(message)
         finish_reason = (
             response.choices[0].finish_reason if response.choices else None
         )
         usage = getattr(response, "usage", None)
+
+        if not (text or "").strip() and message is not None:
+            logger.warning(
+                "[LLMService] {} returned empty assistant text "
+                "(finish_reason={}, max_tokens={}, refusal={}).",
+                model_str,
+                finish_reason,
+                call_kwargs.get("max_tokens"),
+                refusal or None,
+            )
 
         # Surface output truncation clearly. Without this, callers (notably
         # the JSON parser for evaluator results) only see a cryptic
@@ -517,6 +711,7 @@ class LLMService:
 
         result: Dict[str, Any] = {
             "text": text or "",
+            "refusal": refusal,
             "model": llm_model,
             "finish_reason": finish_reason,
             "truncated": finish_reason == "length",

@@ -235,3 +235,31 @@ def test_round_robin_visits_all_persona_scenario_combinations(
         seen.add((data["persona_id"], data["scenario_id"]))
 
     assert len(seen) == 4
+
+
+def test_create_chat_evaluator_suite_without_persona_ids(
+    authenticated_client, make_agent, make_scenario
+):
+    agent = make_agent(
+        call_medium="chat",
+        phone_number=None,
+        description="Chat bot production prompt",
+        provider_prompt="Chat bot production prompt",
+    )
+    s1 = make_scenario(name="Chat Scenario One", agent_id=agent.id)
+    s2 = make_scenario(name="Chat Scenario Two", agent_id=agent.id)
+
+    response = authenticated_client.post(
+        "/api/v1/evaluator-suites",
+        json={
+            "name": "Chat Suite",
+            "agent_id": str(agent.id),
+            "scenario_ids": [str(s1.id), str(s2.id)],
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["combination_count"] == 2
+    assert len(body["combinations"]) == 2
+    assert len(body["persona_ids"]) == 1

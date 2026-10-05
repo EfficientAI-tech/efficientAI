@@ -12,7 +12,7 @@ This runbook tracks the Fumadocs rollout strategy.
    - `https://docs.efficientai.cloud/docs/getting-started/integrations/`
    - `https://docs.efficientai.cloud/docs/getting-started/installation/`
    - `https://docs.efficientai.cloud/docs/products/agents/`
-   - `https://docs.efficientai.cloud/docs/monitoring/calls/`
+   - `https://docs.efficientai.cloud/docs/platform/traces-and-logs/`
    - `https://docs.efficientai.cloud/docs/reference/configuration/`
 5. Verify contributor sections render on all feature pages.
 6. Record cutover timestamp in the release notes.

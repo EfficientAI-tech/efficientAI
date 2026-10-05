@@ -48,6 +48,12 @@ import {
   serializeMetricPartialContent,
   type MetricPartialContent,
 } from '../promptPartials/metricPartialUtils'
+import {
+  ALL_SURFACES,
+  metricSurfaceLabel,
+  type MetricSurface,
+} from '../../lib/metricSurfaces'
+import MetricSurfacesField from './MetricSurfacesField'
 
 interface Metric {
   id: string
@@ -68,8 +74,8 @@ interface Metric {
   example?: string | null
   metric_type: 'number' | 'boolean' | 'rating' | 'text'
   metric_origin: 'default' | 'custom'
-  supported_surfaces: Array<'agent' | 'voice_playground' | 'blind_test'>
-  enabled_surfaces: Array<'agent' | 'voice_playground' | 'blind_test'>
+  supported_surfaces: MetricSurface[]
+  enabled_surfaces: MetricSurface[]
   custom_data_type?: 'boolean' | 'enum' | 'number_range' | null
   custom_config?: Record<string, any> | null
   tags?: string[] | null
@@ -94,7 +100,6 @@ interface Metric {
   children?: Metric[]
 }
 
-type MetricSurface = 'agent' | 'voice_playground' | 'blind_test'
 type CustomDataType = 'boolean' | 'enum' | 'number_range'
 
 // Quantitative: Raw acoustic measurements (Parselmouth - signal processing)
@@ -126,14 +131,6 @@ const isAIVoiceMetric = (metricName: string): boolean => AI_VOICE_METRICS.has(me
 // Quantitative = raw physical measurements (acoustic signal analysis)
 // Qualitative = quality assessments (human perception, emotion, LLM evaluation)
 const isQuantitativeMetric = (metricName: string): boolean => ACOUSTIC_METRICS.has(metricName)
-
-const ALL_SURFACES: MetricSurface[] = ['agent', 'voice_playground', 'blind_test']
-
-const SURFACE_LABELS: Record<MetricSurface, string> = {
-  agent: 'Agent',
-  voice_playground: 'Voice Playground',
-  blind_test: 'Blind Test',
-}
 
 // Shared "modernized" form-control styling used across the Create /
 // Edit Metric modal. Lighter border, larger padding, smooth focus
@@ -769,8 +766,15 @@ export default function MetricsManagement({
   })
 
   const toggleSurfaceMutation = useMutation({
-    mutationFn: ({ id, enabled_surfaces }: { id: string; enabled_surfaces: MetricSurface[] }) =>
-      apiClient.updateMetric(id, { enabled_surfaces }),
+    mutationFn: ({
+      id,
+      supported_surfaces,
+      enabled_surfaces,
+    }: {
+      id: string
+      supported_surfaces: MetricSurface[]
+      enabled_surfaces: MetricSurface[]
+    }) => apiClient.updateMetric(id, { supported_surfaces, enabled_surfaces }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['metrics'] })
     },
@@ -1001,16 +1005,21 @@ export default function MetricsManagement({
   }
 
   const handleToggleSurface = (metric: Metric, surface: MetricSurface) => {
-    const current = new Set<MetricSurface>(metric.enabled_surfaces || [])
-    if (current.has(surface)) {
-      current.delete(surface)
-    } else {
-      current.add(surface)
-    }
-    const next = Array.from(current).filter((s) =>
-      (metric.supported_surfaces || []).includes(s),
+    const supported = new Set<MetricSurface>(
+      (metric.supported_surfaces?.length ? metric.supported_surfaces : ['agent']) as MetricSurface[],
     )
-    toggleSurfaceMutation.mutate({ id: metric.id, enabled_surfaces: next })
+    const enabled = new Set<MetricSurface>((metric.enabled_surfaces || []) as MetricSurface[])
+    if (enabled.has(surface)) {
+      enabled.delete(surface)
+    } else {
+      enabled.add(surface)
+      supported.add(surface)
+    }
+    toggleSurfaceMutation.mutate({
+      id: metric.id,
+      supported_surfaces: [...supported],
+      enabled_surfaces: [...enabled],
+    })
   }
 
   const resetAIForm = () => {
@@ -1575,9 +1584,11 @@ export default function MetricsManagement({
                 className="text-sm border border-gray-300 rounded-md px-2 py-1"
               >
                 <option value="all">All</option>
-                <option value="agent">Agent</option>
-                <option value="voice_playground">Voice Playground</option>
-                <option value="blind_test">Blind Test</option>
+                {ALL_SURFACES.map((surface) => (
+                  <option key={surface} value={surface}>
+                    {metricSurfaceLabel(surface)}
+                  </option>
+                ))}
               </select>
             </div>
           </div>
@@ -1761,33 +1772,34 @@ export default function MetricsManagement({
                           className="px-6 py-4 whitespace-nowrap"
                           onClick={(e) => e.stopPropagation()}
                         >
-                          <div className="flex flex-wrap gap-1.5">
-                            {(metric.supported_surfaces || []).map(
-                              (surface) => {
-                                const isEnabled = (
-                                  metric.enabled_surfaces || []
-                                ).includes(surface)
-                                return (
-                                  <button
-                                    key={surface}
-                                    type="button"
-                                    onClick={() =>
-                                      handleToggleSurface(metric, surface)
-                                    }
-                                    disabled={toggleSurfaceMutation.isPending}
-                                    title={`${isEnabled ? 'Disable' : 'Enable'} on ${SURFACE_LABELS[surface]}`}
-                                    className={`px-2 py-0.5 text-[11px] rounded-full border transition-colors ${
-                                      isEnabled
-                                        ? 'bg-emerald-100 text-emerald-800 border-emerald-200 hover:bg-emerald-200'
-                                        : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200'
-                                    }`}
-                                  >
-                                    {SURFACE_LABELS[surface]}
-                                    {isEnabled ? ' ✓' : ''}
-                                  </button>
-                                )
-                              },
-                            )}
+                          <div className="flex flex-wrap gap-1.5 max-w-xs">
+                            {ALL_SURFACES.map((surface) => {
+                              const isSupported = (
+                                metric.supported_surfaces || ['agent']
+                              ).includes(surface)
+                              const isEnabled = (
+                                metric.enabled_surfaces || []
+                              ).includes(surface)
+                              return (
+                                <button
+                                  key={surface}
+                                  type="button"
+                                  onClick={() => handleToggleSurface(metric, surface)}
+                                  disabled={toggleSurfaceMutation.isPending}
+                                  title={`${isEnabled ? 'Disable' : 'Enable'} ${metricSurfaceLabel(surface)}`}
+                                  className={`px-2 py-0.5 text-[11px] rounded-full border transition-colors ${
+                                    isEnabled
+                                      ? 'bg-emerald-100 text-emerald-800 border-emerald-200 hover:bg-emerald-200'
+                                      : isSupported
+                                        ? 'bg-gray-100 text-gray-600 border-gray-200 hover:bg-gray-200'
+                                        : 'bg-white text-gray-400 border-dashed border-gray-300 hover:border-gray-400'
+                                  }`}
+                                >
+                                  {metricSurfaceLabel(surface)}
+                                  {isEnabled ? ' ✓' : ''}
+                                </button>
+                              )
+                            })}
                           </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
@@ -2491,43 +2503,17 @@ export default function MetricsManagement({
                     )}
 
                   <div className="lg:col-span-2">
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Supported Surfaces
-                    </label>
-                    <div className="flex flex-wrap gap-3">
-                      {ALL_SURFACES.map((surface) => {
-                        const checked = formData.supported_surfaces.includes(surface)
-                        return (
-                          <label
-                            key={surface}
-                            className={`inline-flex items-center gap-2 text-sm cursor-pointer rounded-lg border px-3 py-2 transition ${
-                              checked
-                                ? 'border-primary-300 bg-primary-50 text-primary-800'
-                                : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
-                            }`}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={(e) => {
-                                const supported = e.target.checked
-                                  ? [...new Set([...formData.supported_surfaces, surface])]
-                                  : formData.supported_surfaces.filter((s) => s !== surface)
-                                const enabledSurfaces = e.target.checked
-                                  ? [...new Set([...formData.enabled_surfaces, surface])]
-                                  : formData.enabled_surfaces.filter((s) => supported.includes(s))
-                                setFormData({ ...formData, supported_surfaces: supported, enabled_surfaces: enabledSurfaces })
-                              }}
-                              className="h-4 w-4 text-primary-600 border-gray-300 rounded"
-                            />
-                            {SURFACE_LABELS[surface]}
-                          </label>
-                        )
-                      })}
-                    </div>
-                    <p className="mt-1.5 text-xs text-gray-500">
-                      Custom metrics on Agent / Voice Playground are evaluated by an LLM judge using the conversation transcript.
-                    </p>
+                    <MetricSurfacesField
+                      supported={formData.supported_surfaces}
+                      enabled={formData.enabled_surfaces}
+                      onChange={({ supported, enabled }) =>
+                        setFormData({
+                          ...formData,
+                          supported_surfaces: supported,
+                          enabled_surfaces: enabled,
+                        })
+                      }
+                    />
                   </div>
 
                   <div>
@@ -2716,6 +2702,17 @@ export default function MetricsManagement({
                           </span>
                         </span>
                       </label>
+                    </div>
+
+                    <div className="md:col-span-2">
+                      <MetricSurfacesField
+                        compact
+                        supported={categoryForm.surfaces}
+                        enabled={categoryForm.surfaces}
+                        onChange={({ supported }) =>
+                          setCategoryForm((s) => ({ ...s, surfaces: supported }))
+                        }
+                      />
                     </div>
 
                     {/* Visibility scope picker. Same shape + semantics
@@ -3052,6 +3049,17 @@ export default function MetricsManagement({
                           </span>
                         </span>
                       </label>
+                    </div>
+
+                    <div className="md:col-span-2">
+                      <MetricSurfacesField
+                        compact
+                        supported={editCategoryForm.surfaces}
+                        enabled={editCategoryForm.surfaces}
+                        onChange={({ supported }) =>
+                          setEditCategoryForm((s) => ({ ...s, surfaces: supported }))
+                        }
+                      />
                     </div>
                   </div>
 

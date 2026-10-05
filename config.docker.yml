@@ -172,6 +172,10 @@ judge_alignment:
 # license:
 #   key: "eyJhbGciOi..."
 
+# Telnyx voice + SMS webhooks (public API host for ngrok/prod).
+# telnyx:
+#   webhook_base_url: "https://your-public-api.example.com"
+
 # Flexprice usage metering (optional). api_key from FLEXPRICE_API_KEY env.
 flexprice:
   enabled: true

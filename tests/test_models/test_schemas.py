@@ -70,6 +70,41 @@ def test_agent_create_requires_voice_bundle():
         )
 
 
+def test_agent_create_chat_provider_without_test_llm():
+    prompt = (
+        "You are a helpful support agent that answers billing questions clearly "
+        "and professionally for customers."
+    )
+    agent = AgentCreate(
+        name="Platform Chat",
+        description=prompt,
+        provider_prompt=prompt,
+        call_type="outbound",
+        call_medium="chat",
+        chat_connection_type="provider_chat",
+        voice_ai_integration_id=uuid4(),
+        voice_ai_agent_id="retell-chat-agent-1",
+    )
+    assert agent.chat_connection_type.value == "provider_chat"
+    assert agent.test_llm_provider is None
+
+
+def test_agent_create_chat_internal_llm_requires_main_llm():
+    prompt = (
+        "You are a helpful support agent that answers billing questions clearly "
+        "and professionally for customers."
+    )
+    with pytest.raises(ValidationError, match="main_llm"):
+        AgentCreate(
+            name="LLM Chat",
+            description=prompt,
+            provider_prompt=prompt,
+            call_type="outbound",
+            call_medium="chat",
+            chat_connection_type="internal_llm",
+        )
+
+
 def test_agent_response_converts_legacy_enum_strings():
     response = AgentResponse(
         id=uuid4(),
