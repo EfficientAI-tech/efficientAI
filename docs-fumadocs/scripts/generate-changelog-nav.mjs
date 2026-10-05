@@ -259,6 +259,15 @@ function buildFeedFromCommittedPages() {
   console.log(`Wrote ${feed.length} releases to ${path.relative(docsRoot, feedPath)} from committed pages.`);
 }
 
+function exitWithCommittedFallback(reason) {
+  if (!hasCommittedReleasePages()) {
+    throw new Error(reason);
+  }
+  console.warn(`Skipping changelog regeneration (${reason}); using committed pages.`);
+  buildFeedFromCommittedPages();
+  process.exit(0);
+}
+
 async function fetchReleases() {
   const token = process.env.GITHUB_TOKEN?.trim();
   const headers = {
@@ -274,15 +283,7 @@ async function fetchReleases() {
     const response = await fetch(`${RELEASES_BASE_URL}?per_page=100&page=${page}`, { headers });
 
     if (!response.ok) {
-      const inCi = process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true';
-      if (!inCi && hasCommittedReleasePages()) {
-        console.warn(
-          `Skipping changelog regeneration (GitHub releases request failed with ${response.status}); using committed pages.`,
-        );
-        buildFeedFromCommittedPages();
-        process.exit(0);
-      }
-      throw new Error(`GitHub releases request failed (${response.status})`);
+      exitWithCommittedFallback(`GitHub releases request failed with ${response.status}`);
     }
 
     const batch = await response.json();
@@ -310,14 +311,8 @@ let releases;
 try {
   releases = await fetchReleases();
 } catch (error) {
-  const inCi = process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true';
-  if (!inCi && hasCommittedReleasePages()) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(`Skipping changelog regeneration (${message}); using committed pages.`);
-    buildFeedFromCommittedPages();
-    process.exit(0);
-  }
-  throw error;
+  const message = error instanceof Error ? error.message : String(error);
+  exitWithCommittedFallback(message);
 }
 cleanupGeneratedReleasePages();
 const token = process.env.GITHUB_TOKEN?.trim();

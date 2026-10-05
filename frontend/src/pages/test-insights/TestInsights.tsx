@@ -291,7 +291,7 @@ export default function TestInsights() {
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Calls</h1>
           <p className="mt-2 text-sm text-gray-600 max-w-2xl">
-            Production calls for this workspace—open a row for transcript, metadata, and trace details.
+            Production traffic and evaluation traces for this workspace—open a row for transcript, metadata, and timing.
           </p>
         </div>
         <Button
