@@ -1795,15 +1795,6 @@ def _resolve_agent_stt_config(
         if env_key:
             api_key = os.getenv(env_key)
 
-    if stt_provider == "elevenlabs" and api_base_url is None:
-        from app.services.credentials.elevenlabs_inference import (
-            resolve_elevenlabs_api_base_url_for_voice_bundle_leg,
-        )
-
-        api_base_url = resolve_elevenlabs_api_base_url_for_voice_bundle_leg(
-            db, organization_id, voice_bundle, "stt"
-        )
-
     return stt_provider, stt_model, api_key, api_base_url
 
 

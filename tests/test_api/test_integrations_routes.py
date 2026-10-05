@@ -119,6 +119,31 @@ def test_preview_integration_agent_prompt_success(authenticated_client, monkeypa
     assert response.json()["provider_prompt"] == "Prompt for external-agent-123"
 
 
+def test_preview_integration_agent_prompt_forwards_agent_channel(
+    authenticated_client, monkeypatch, make_integration
+):
+    integration = make_integration(platform="retell")
+    captured = {}
+
+    def _fetch(_integration, agent_id, *, agent_channel=None):
+        captured["agent_id"] = agent_id
+        captured["agent_channel"] = agent_channel
+        return "chat prompt"
+
+    monkeypatch.setattr(prompt_sync_module, "fetch_provider_prompt", _fetch)
+
+    response = authenticated_client.post(
+        f"/api/v1/integrations/{integration.id}/preview-agent-prompt",
+        json={"voice_ai_agent_id": "external-agent-123", "agent_channel": "chat"},
+    )
+
+    assert response.status_code == 200
+    assert captured == {
+        "agent_id": "external-agent-123",
+        "agent_channel": "chat",
+    }
+
+
 def test_preview_integration_agent_prompt_not_found(authenticated_client):
     response = authenticated_client.post(
         "/api/v1/integrations/11111111-1111-1111-1111-111111111111/preview-agent-prompt",

@@ -500,7 +500,11 @@ async def preview_integration_agent_prompt(
     try:
         from app.services.voice_providers.prompt_sync import fetch_provider_prompt
 
-        prompt = fetch_provider_prompt(integration, body.voice_ai_agent_id)
+        prompt = fetch_provider_prompt(
+            integration,
+            body.voice_ai_agent_id,
+            agent_channel=body.agent_channel,
+        )
     except Exception as e:
         raise HTTPException(
             status_code=502,
