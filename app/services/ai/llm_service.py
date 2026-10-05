@@ -578,17 +578,30 @@ class LLMService:
             )
 
         # --- call LiteLLM --------------------------------------------------
+        provider_value = (
+            llm_provider.value if hasattr(llm_provider, "value") else str(llm_provider)
+        ).lower()
         workload_model_str = self._litellm_model_name(llm_provider, llm_model)
         _, effective_routing = resolve_effective_routing(
             organization_id, db, credential_ctx
         )
-        model_str = canonical_litellm_model_id(
-            resolve_litellm_model(
-                workload_model_str=workload_model_str,
-                gateway_active=effective_routing != "direct",
-                credential=credential_ctx,
+        tev_direct = _requires_direct_together_tev(provider_value, llm_model)
+        if tev_direct:
+            if effective_routing != "direct":
+                raise RuntimeError(
+                    "Together Tev models require direct provider routing and cannot be "
+                    "used when the LLM gateway is active for this credential. "
+                    "Switch the credential to direct routing or choose a non-Tev judge model."
+                )
+            model_str = canonical_litellm_model_id(workload_model_str)
+        else:
+            model_str = canonical_litellm_model_id(
+                resolve_litellm_model(
+                    workload_model_str=workload_model_str,
+                    gateway_active=effective_routing != "direct",
+                    credential=credential_ctx,
+                )
             )
-        )
 
         call_kwargs: Dict[str, Any] = {
             "model": model_str,
@@ -626,9 +639,6 @@ class LLMService:
                 effective_max_tokens = 4096
             call_kwargs["max_tokens"] = effective_max_tokens
 
-        provider_value = (
-            llm_provider.value if hasattr(llm_provider, "value") else str(llm_provider)
-        ).lower()
         remaining_config = config
         if provider_value == "azure":
             azure_kwargs, remaining_config, azure_v1_routing = _build_azure_litellm_kwargs(
@@ -641,7 +651,7 @@ class LLMService:
         if remaining_config:
             call_kwargs.update(remaining_config)
 
-        if _requires_direct_together_tev(provider_value, llm_model):
+        if tev_direct:
             # Tev uses Together's native chat API (see tev1 examples). LLM gateway
             # proxy settings strip provider keys or substitute placeholders, which
             # Together rejects with 401 invalid_api_key.

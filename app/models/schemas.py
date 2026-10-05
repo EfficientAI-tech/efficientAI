@@ -3603,6 +3603,10 @@ class CallImportResponse(BaseModel):
     original_filename: Optional[str] = None
     sheet_name: Optional[str] = None
     dataset: Optional[str] = None
+    content_modality: Optional[str] = Field(
+        None,
+        description="voice (default) or chat for transcript-only import batches.",
+    )
     tags: List[CallImportTagResponse] = Field(default_factory=list)
     # New schema-driven mapping. Empty on legacy batches; pre-schema
     # batches keep their values in ``column_mapping`` / ``extra_columns``

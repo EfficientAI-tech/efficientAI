@@ -212,7 +212,7 @@ def test_generate_response_applies_llm_gateway(monkeypatch):
 
 
 def test_generate_response_together_tev_skips_gateway_and_uses_provider_key(monkeypatch):
-    """Together Tev must call Together directly with the org API key."""
+    """Together Tev must call Together directly with the org API key when routing is direct."""
     from app.config import settings
 
     settings.LLM_GATEWAY_ENABLED = True
@@ -227,7 +227,113 @@ def test_generate_response_together_tev_skips_gateway_and_uses_provider_key(monk
         lambda *_args, **_kwargs: SimpleNamespace(
             api_key="encrypted-together",
             provider="together",
-            routing_mode="inherit",
+            routing_mode="direct",
+        ),
+    )
+    encryption_module = importlib.import_module("app.core.encryption")
+    monkeypatch.setattr(
+        encryption_module,
+        "decrypt_api_key",
+        lambda value: "together-real-key" if value == "encrypted-together" else value,
+    )
+
+    captured = {}
+    completion_called = {"value": False}
+
+    def _fake_completion(**kwargs):
+        completion_called["value"] = True
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(message=SimpleNamespace(content="A"), finish_reason="stop")
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+
+    monkeypatch.setattr(llm_module.litellm, "completion", _fake_completion)
+
+    service.generate_response(
+        messages=[
+            {"role": "system", "content": "pick one"},
+            {"role": "user", "content": '{"state":"hi","question":"q?","options":[]}'},
+        ],
+        llm_provider=ModelProvider.TOGETHER,
+        llm_model="together/Tev1-4B-experimental",
+        organization_id=uuid4(),
+        db=_mock_org_db({"enabled": True}),
+    )
+
+    assert completion_called["value"] is True
+    assert captured["api_key"] == "together-real-key"
+    assert captured["model"] == "together_ai/together/Tev1-4B-experimental"
+    assert "api_base" not in captured
+
+
+def test_generate_response_together_tev_fails_when_gateway_required(monkeypatch):
+    """Together Tev must not bypass gateway routing when the credential requires the gateway."""
+    from app.config import settings
+
+    settings.LLM_GATEWAY_ENABLED = True
+    settings.LLM_GATEWAY_BASE_URL = "http://localhost:8080/litellm"
+    settings.LLM_GATEWAY_VIRTUAL_KEY = "test-vk"
+    settings.LLM_GATEWAY_PASSTHROUGH_PROVIDER_KEYS = False
+
+    license_module = importlib.import_module("app.core.license")
+    monkeypatch.setattr(license_module, "has_valid_license", lambda *_a, **_k: True)
+
+    service = LLMService()
+    monkeypatch.setattr(
+        service,
+        "_get_ai_provider",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            api_key="encrypted-together",
+            provider="together",
+            routing_mode="gateway",
+        ),
+    )
+    encryption_module = importlib.import_module("app.core.encryption")
+    monkeypatch.setattr(
+        encryption_module,
+        "decrypt_api_key",
+        lambda value: "together-real-key" if value == "encrypted-together" else value,
+    )
+
+    completion_called = {"value": False}
+    monkeypatch.setattr(
+        llm_module.litellm,
+        "completion",
+        lambda **_kwargs: completion_called.update(value=True),
+    )
+
+    with pytest.raises(RuntimeError, match="direct provider routing"):
+        service.generate_response(
+            messages=[{"role": "user", "content": "hello"}],
+            llm_provider=ModelProvider.TOGETHER,
+            llm_model="together/Tev1-4B-experimental",
+            organization_id=uuid4(),
+            db=_mock_org_db({"enabled": True}),
+        )
+
+    assert completion_called["value"] is False
+
+
+def test_generate_response_together_tev_ignores_gateway_model_alias(monkeypatch):
+    """Direct Tev calls must use the workload model, not a gateway-only alias."""
+    from app.config import settings
+
+    settings.LLM_GATEWAY_ENABLED = True
+    settings.LLM_GATEWAY_BASE_URL = "http://localhost:8080/litellm"
+    settings.LLM_GATEWAY_VIRTUAL_KEY = "test-vk"
+
+    service = LLMService()
+    monkeypatch.setattr(
+        service,
+        "_get_ai_provider",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            api_key="encrypted-together",
+            provider="together",
+            routing_mode="direct",
+            gateway_model="org-gateway-only/tev-alias",
         ),
     )
     encryption_module = importlib.import_module("app.core.encryption")
@@ -251,18 +357,15 @@ def test_generate_response_together_tev_skips_gateway_and_uses_provider_key(monk
     monkeypatch.setattr(llm_module.litellm, "completion", _fake_completion)
 
     service.generate_response(
-        messages=[
-            {"role": "system", "content": "pick one"},
-            {"role": "user", "content": '{"state":"hi","question":"q?","options":[]}'},
-        ],
+        messages=[{"role": "user", "content": "hello"}],
         llm_provider=ModelProvider.TOGETHER,
         llm_model="together/Tev1-4B-experimental",
         organization_id=uuid4(),
         db=_mock_org_db({"enabled": True}),
     )
 
-    assert captured["api_key"] == "together-real-key"
-    assert "api_base" not in captured
+    assert captured["model"] == "together_ai/together/Tev1-4B-experimental"
+    assert "gateway-only" not in captured["model"]
 
 
 def test_generate_response_sarvam_integration_direct_skips_gateway(monkeypatch):
