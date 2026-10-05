@@ -264,7 +264,13 @@ function exitWithCommittedFallback(reason) {
     throw new Error(reason);
   }
   console.warn(`Skipping changelog regeneration (${reason}); using committed pages.`);
-  buildFeedFromCommittedPages();
+  if (!fs.existsSync(feedPath)) {
+    buildFeedFromCommittedPages();
+  } else {
+    console.warn(
+      `Keeping existing ${path.relative(docsRoot, feedPath)} (MDX date parsing is not used to avoid skew vs GitHub).`,
+    );
+  }
   process.exit(0);
 }
 
