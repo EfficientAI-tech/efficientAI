@@ -19,3 +19,24 @@ def telnyx_messaging_profile_id(integration: TelephonyIntegration) -> Optional[s
 
 def telnyx_webhook_public_key(integration: TelephonyIntegration) -> str:
     return (integration.verify_app_uuid or "").strip()
+
+
+def telnyx_messaging_profile_for_number(
+    integration: TelephonyIntegration,
+    number_row,
+) -> str:
+    """Resolve messaging profile ID from integration or imported number metadata."""
+    profile = telnyx_messaging_profile_id(integration) or ""
+    if profile:
+        return profile
+    if number_row is None:
+        return ""
+    app_id = getattr(number_row, "provider_app_id", None)
+    if app_id and str(app_id).strip():
+        return str(app_id).strip()
+    caps = getattr(number_row, "capabilities", None)
+    if isinstance(caps, dict):
+        raw = caps.get("messaging_profile_id")
+        if raw:
+            return str(raw).strip()
+    return ""

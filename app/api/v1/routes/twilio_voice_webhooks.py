@@ -38,30 +38,36 @@ async def twilio_voice_inbound_webhook(
     to_number = params.get("To") or ""
     _, _, integration_id = resolve_inbound_agent_for_number(db, to_number)
     auth_token = _twilio_auth_token_for_integration(db, integration_id)
-    if auth_token:
-        signature = request.headers.get("X-Twilio-Signature") or ""
-        public_base = twilio_webhook_base()
-        signed_url = public_webhook_url_for_validation(str(request.url), public_base)
+    if not auth_token:
+        logger.warning("[TwilioVoice] missing credentials for To={}", to_number)
+        return Response(
+            content='<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>',
+            media_type="text/xml",
+            status_code=403,
+        )
+    signature = request.headers.get("X-Twilio-Signature") or ""
+    public_base = twilio_webhook_base()
+    signed_url = public_webhook_url_for_validation(str(request.url), public_base)
+    ok = validate_twilio_request(
+        auth_token=auth_token,
+        url=signed_url,
+        params=params,
+        signature=signature,
+    )
+    if not ok and str(request.url) != signed_url:
         ok = validate_twilio_request(
             auth_token=auth_token,
-            url=signed_url,
+            url=str(request.url),
             params=params,
             signature=signature,
         )
-        if not ok and str(request.url) != signed_url:
-            ok = validate_twilio_request(
-                auth_token=auth_token,
-                url=str(request.url),
-                params=params,
-                signature=signature,
-            )
-        if not ok:
-            logger.warning("[TwilioVoice] invalid signature for To={}", to_number)
-            return Response(
-                content='<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>',
-                media_type="text/xml",
-                status_code=403,
-            )
+    if not ok:
+        logger.warning("[TwilioVoice] invalid signature for To={}", to_number)
+        return Response(
+            content='<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>',
+            media_type="text/xml",
+            status_code=403,
+        )
 
     xml = build_inbound_stream_answer_xml(db, params, provider_platform="twilio")
     return Response(content=xml, media_type="text/xml")

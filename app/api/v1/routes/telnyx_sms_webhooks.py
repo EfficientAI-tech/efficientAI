@@ -82,6 +82,8 @@ def process_telnyx_sms_inbound(
     if not text:
         return
 
+    logger.info("[TelnyxSMS] verified inbound from={} to={}", msg_from, msg_to)
+
     matched = complete_messaging_sms_turn(
         agent_id=agent.id,
         line_to=msg_to,
@@ -120,14 +122,7 @@ async def telnyx_sms_inbound_platform_webhook(
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON")
 
-    text_preview, msg_from, msg_to = _extract_inbound_sms(body)
-    logger.info(
-        "[TelnyxSMS] platform inbound from={} to={} body={!r}",
-        msg_from,
-        msg_to,
-        text_preview[:80],
-    )
-
+    _, msg_from, msg_to = _extract_inbound_sms(body)
     if not msg_to:
         return Response(status_code=status.HTTP_200_OK)
 

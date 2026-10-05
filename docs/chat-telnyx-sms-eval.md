@@ -25,7 +25,7 @@ telnyx:
   webhook_base_url: "https://your-ngrok-subdomain.ngrok-free.dev"
 ```
 
-Import may PATCH the messaging profile webhook when `voice_app_id` (messaging profile id) is set on the integration.
+Import does **not** change the messaging profile webhook (profiles are shared across numbers). Set the profile webhook manually in Telnyx to the platform SMS URL above.
 
 ## Webhook
 

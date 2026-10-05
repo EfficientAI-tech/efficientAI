@@ -331,7 +331,7 @@ def _resolve_messaging_telnyx_context(
     from app.models.database import TelephonyPhoneNumber
     from app.services.telephony.telnyx_integration import (
         telnyx_api_key,
-        telnyx_messaging_profile_id,
+        telnyx_messaging_profile_for_number,
     )
 
     tp_id = telephony_phone_number_id
@@ -359,7 +359,7 @@ def _resolve_messaging_telnyx_context(
                 integration_id_raw=number_row.telephony_integration_id,
             )
             if telephony and telephony.provider.lower() == "telnyx":
-                profile = telnyx_messaging_profile_id(telephony) or ""
+                profile = telnyx_messaging_profile_for_number(telephony, number_row)
                 return (
                     telnyx_api_key(telephony),
                     profile,

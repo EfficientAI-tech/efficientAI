@@ -447,17 +447,12 @@ def _configure_inbound_webhook(
         profile_id = remote.get("messaging_profile_id")
         integration_profile = getattr(client, "messaging_profile_id", None)
         effective_profile = profile_id or integration_profile
-        if effective_profile:
-            ok, msg = client.patch_messaging_profile_webhook(
-                str(effective_profile),
-                _telnyx_sms_inbound_webhook_url(),
-            )
-            return ok, msg, str(effective_profile)
+        sms_url = _telnyx_sms_inbound_webhook_url()
         return (
             False,
-            "Set messaging profile on integration (voice_app_id) or assign on number; "
-            f"point Call Control app webhook to {answer_url}",
-            remote.get("connection_id"),
+            "Imported. Set messaging profile webhook in Telnyx (profile is shared across its numbers): "
+            f"{sms_url}. Voice Call Control webhook: {answer_url}",
+            str(effective_profile) if effective_profile else remote.get("connection_id"),
         )
     raise ValueError(f"Unsupported provider: {provider}")
 

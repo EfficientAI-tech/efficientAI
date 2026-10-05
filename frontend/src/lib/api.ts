@@ -1304,7 +1304,11 @@ class ApiClient {
   }
 
   // Agents endpoints
-  async getMessagingPublicBaseUrl(): Promise<{ public_base_url: string }> {
+  async getMessagingPublicBaseUrl(): Promise<{
+    public_base_url: string
+    twilio_public_base_url?: string
+    telnyx_public_base_url?: string
+  }> {
     const response = await this.client.get('/api/v1/chat/messaging/public-base-url')
     return response.data
   }

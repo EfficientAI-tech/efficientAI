@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.dependencies import get_db
 from app.core.public_url import configured_public_base_url
+from app.services.telephony.telnyx_webhook_urls import telnyx_webhook_base
 from app.services.telephony.twilio_webhook_urls import twilio_webhook_base
 from app.models.database import Agent
 from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
@@ -22,13 +23,23 @@ from app.api.v1.routes.twilio_sms_webhooks import (
 router = APIRouter(prefix="/chat/messaging", tags=["Chat Messaging Webhooks"])
 
 
+def _webhook_base_or_public(getter) -> str:
+    try:
+        return getter()
+    except ValueError:
+        return configured_public_base_url()
+
+
 @router.get("/public-base-url")
 async def messaging_public_base_url() -> dict[str, str]:
-    """Same base as Twilio SMS import + signature validation (twilio.webhook_base_url, then public_base_url)."""
-    try:
-        return {"public_base_url": twilio_webhook_base()}
-    except ValueError:
-        return {"public_base_url": configured_public_base_url()}
+    """Public API bases for messaging webhook URLs (per provider config, then security.public_base_url)."""
+    twilio_base = _webhook_base_or_public(twilio_webhook_base)
+    telnyx_base = _webhook_base_or_public(telnyx_webhook_base)
+    return {
+        "public_base_url": twilio_base,
+        "twilio_public_base_url": twilio_base,
+        "telnyx_public_base_url": telnyx_base,
+    }
 
 
 def _agent_for_webhook_token(db: Session, token: str) -> Optional[Agent]:

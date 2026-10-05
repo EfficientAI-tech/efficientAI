@@ -328,7 +328,10 @@ export default function ChatConnectionDetailsStep({
     queryFn: () => apiClient.getMessagingPublicBaseUrl(),
     staleTime: 60_000,
   })
-  const twilioWebhookPublicBase = messagingPublicBase?.public_base_url || null
+  const twilioWebhookPublicBase =
+    messagingPublicBase?.twilio_public_base_url || messagingPublicBase?.public_base_url || null
+  const telnyxWebhookPublicBase =
+    messagingPublicBase?.telnyx_public_base_url || messagingPublicBase?.public_base_url || null
 
   const sectionClass = embedded ? 'w-full' : 'space-y-4'
   const fieldClass =
@@ -451,7 +454,7 @@ export default function ChatConnectionDetailsStep({
     const channel = config.messagingChannel || 'sms'
     const platformWebhookUrl =
       selectedSmsProvider === 'telnyx'
-        ? buildPlatformTelnyxSmsInboundWebhookUrl(twilioWebhookPublicBase)
+        ? buildPlatformTelnyxSmsInboundWebhookUrl(telnyxWebhookPublicBase)
         : buildPlatformTwilioSmsInboundWebhookUrl(twilioWebhookPublicBase)
 
     const copyWebhook = async () => {
