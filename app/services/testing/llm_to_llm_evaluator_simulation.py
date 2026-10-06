@@ -18,7 +18,6 @@ from app.services.agents.chat_production_leg import (
     generate_production_chat_reply,
     uses_live_production_leg,
 )
-from app.services.agents.messaging_channel_chat import is_meta_whatsapp_live_cfg
 from app.services.agents.provider_platform_chat import (
     ProviderChatState,
     close_provider_chat_session,
@@ -60,13 +59,6 @@ _THANKS_CLOSING_RE = re.compile(
 
 _SIMULATION_LLM_RETRIES = 3
 _SIMULATION_TASK_DEFAULTS = {"temperature": 0.7, "max_tokens": 2048}
-
-
-def _uses_meta_whatsapp_live_customer_on_phone(agent: Agent) -> bool:
-    if not uses_live_production_leg(agent):
-        return False
-    cfg = chat_connection_config_for_runtime(agent.chat_connection_config)
-    return is_meta_whatsapp_live_cfg(cfg)
 
 
 def _production_turn_needs_user_seed(transcript: list[dict[str, str]]) -> bool:
@@ -120,14 +112,30 @@ def _should_end_conversation(text: str, *, turn_index: int, min_turns: int = 2) 
     return bool(_THANKS_CLOSING_RE.search(stripped))
 
 
-def _caller_messages(system_prompt: str, transcript: list[dict[str, str]]) -> list[dict[str, str]]:
+_CUSTOMER_CHAT_TURN_NUDGE = (
+    "The company's agent sent the last message above. "
+    "Write the customer's next chat reply only (plain text, stay in character as the customer)."
+)
+
+
+def _caller_messages(
+    system_prompt: str,
+    transcript: list[dict[str, str]],
+    *,
+    chat: bool = False,
+) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     for entry in transcript:
         speaker = entry.get("speaker")
         text = (entry.get("text") or "").strip()
         if not text:
             continue
-        if speaker == "Speaker 1":
+        if chat:
+            if speaker == "Speaker 1":
+                messages.append({"role": "user", "content": text})
+            else:
+                messages.append({"role": "assistant", "content": text})
+        elif speaker == "Speaker 1":
             messages.append({"role": "assistant", "content": text})
         else:
             messages.append({"role": "user", "content": text})
@@ -135,9 +143,15 @@ def _caller_messages(system_prompt: str, transcript: list[dict[str, str]]) -> li
         messages.append(
             {
                 "role": "user",
-                "content": "The call has just connected. Start the conversation.",
+                "content": (
+                    "Start the conversation as the customer (one short message)."
+                    if chat
+                    else "The call has just connected. Start the conversation."
+                ),
             }
         )
+    elif chat:
+        messages.append({"role": "user", "content": _CUSTOMER_CHAT_TURN_NUDGE})
     return messages
 
 
@@ -326,7 +340,6 @@ def run_llm_to_llm_evaluator_simulation(
         while exchanges < max_turns:
             if (
                 uses_live_production_leg(agent)
-                and not _uses_meta_whatsapp_live_customer_on_phone(agent)
                 and _production_turn_needs_user_seed(transcript)
             ):
                 transcript.append(
@@ -379,13 +392,10 @@ def run_llm_to_llm_evaluator_simulation(
             if _should_end_conversation(agent_text, turn_index=exchanges):
                 break
 
-            if _uses_meta_whatsapp_live_customer_on_phone(agent):
-                continue
-
             try:
                 with llm_usage_context(caller_ctx):
                     caller_text = _generate_turn(
-                        messages=_caller_messages(caller_system, transcript),
+                        messages=_caller_messages(caller_system, transcript, chat=chat_mode),
                         llm_provider=test_llm.provider,
                         llm_model=test_llm.model,
                         organization_id=organization_id,

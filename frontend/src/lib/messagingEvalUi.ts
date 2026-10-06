@@ -12,7 +12,6 @@ export interface MessagingEvalProfile {
   testSend: 'twilio_sms' | 'telnyx_sms' | 'meta_whatsapp' | null
   testSendButtonLabel: string | null
   testSendSuccessPrefix: string
-  queueRunHint: string | null
 }
 
 export function messagingChannelFromConfig(
@@ -48,14 +47,12 @@ export function messagingEvalProfile(args: {
       channelLabel: 'WhatsApp',
       panelSubtitle: 'Test messaging for the first combination below',
       recipientLabel: 'Recipient *',
-      recipientHelper: 'E.164. Used for test sends and suite runs.',
+      recipientHelper: 'E.164 used for test send and suite runs.',
       showTrialTemplate: false,
       trialTemplateHelper: '',
       testSend: 'meta_whatsapp',
       testSendButtonLabel: 'Test send',
       testSendSuccessPrefix: 'Message',
-      queueRunHint:
-        'Queue a run, then reply on WhatsApp within ~2 minutes. Your API must receive POSTs on the Meta webhook URL (Meta’s “Test webhooks” list does not call your server).',
     }
   }
 
@@ -66,17 +63,14 @@ export function messagingEvalProfile(args: {
   return {
     channel: 'sms',
     channelLabel: 'SMS',
-    panelSubtitle: `Test ${carrierName} SMS and eval runs for the first combination below`,
+    panelSubtitle: `Test ${carrierName} SMS for the first combination below`,
     recipientLabel: 'Recipient number *',
-    recipientHelper: `Same number is used for test send and when you queue suite runs.`,
+    recipientHelper: 'Same number for test send and suite runs.',
     showTrialTemplate: isTwilio,
     trialTemplateHelper: 'Twilio trial only. Used when you queue runs.',
     testSend: isTelnyx ? 'telnyx_sms' : 'twilio_sms',
-    testSendButtonLabel: isTelnyx ? 'Test send SMS' : 'Test send SMS',
+    testSendButtonLabel: 'Test send SMS',
     testSendSuccessPrefix: 'SMS',
-    queueRunHint: isTelnyx
-      ? 'Queue a run, then reply by SMS within ~2 minutes. Configure the inbound webhook URL (shown on the agent) in Telnyx and set the webhook public key on the Telnyx integration.'
-      : 'Queue a run, then reply by SMS within ~2 minutes. Point your Twilio number’s inbound SMS webhook at the URL shown on the agent.',
   }
 }
 

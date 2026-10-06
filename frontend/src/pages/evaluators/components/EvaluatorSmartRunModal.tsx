@@ -267,12 +267,6 @@ export default function EvaluatorSmartRunModal({
                   />
                 )}
 
-                {isMessagingChat && !chatRunContextLoading && messagingProfile?.queueRunHint && (
-                  <p className="text-sm text-gray-600 rounded-lg bg-gray-50 border border-gray-100 p-3">
-                    {messagingProfile.queueRunHint}
-                  </p>
-                )}
-
                 {isChat &&
                   !isMessagingChat &&
                   !chatRunContextLoading &&

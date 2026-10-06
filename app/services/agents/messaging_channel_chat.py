@@ -261,6 +261,14 @@ def is_meta_whatsapp_live_cfg(cfg: dict[str, Any]) -> bool:
     return (_cfg_str(cfg, "messaging_channel").lower() or "sms") == "whatsapp"
 
 
+def meta_whatsapp_prod_mode(cfg: dict[str, Any]) -> str:
+    """manual_inbound: Recipient plays prod (reply on WhatsApp). simulated_llm: internal prod LLM sends replies."""
+    raw = _cfg_str(cfg, "meta_whatsapp_prod_mode", "whatsapp_prod_mode").lower()
+    if raw in ("simulated_llm", "sim_llm", "llm", "sim"):
+        return "simulated_llm"
+    return "manual_inbound"
+
+
 def run_meta_whatsapp_live_production_turn(
     db: Session,
     *,
@@ -270,7 +278,7 @@ def run_meta_whatsapp_live_production_turn(
     agent_id: Optional[UUID],
     generate_agent_reply,
 ) -> tuple[str, str]:
-    """Wait for customer WhatsApp text, generate agent reply, send it back on WhatsApp."""
+    """Test-agent customer is in transcript; prod is manual inbound on Recipient or simulated LLM."""
     from app.services.agents.chat_messaging_turn_wait import (
         abandon_messaging_sms_turn,
         register_messaging_sms_turn,
@@ -285,6 +293,10 @@ def run_meta_whatsapp_live_production_turn(
     )
     if not recipient:
         return None, "messaging_skip_no_recipient"
+
+    user_text = _last_user_text(transcript)
+    if not user_text:
+        return None, "messaging_skip_no_user_text"
 
     meta_phone_id, meta_token = _resolve_messaging_meta_whatsapp_context(
         db,
@@ -301,46 +313,68 @@ def run_meta_whatsapp_live_production_turn(
         access_token=meta_token,
     )
 
+    mode = meta_whatsapp_prod_mode(cfg)
     agent_turns = sum(
         1 for t in transcript if (t.get("speaker") or "").strip() == "Speaker 2"
     )
     turn_agent_id = agent_id or organization_id
-    turn_id = register_messaging_sms_turn(
-        agent_id=turn_agent_id,
-        twilio_from=meta_phone_id,
-        messaging_recipient=recipient,
-        ttl_secs=120,
-        replace_stale_lock=True,
-    )
-    if not turn_id:
-        return None, "messaging_whatsapp_concurrent_turn"
-
-    if agent_turns == 0:
-        _send_meta_whatsapp(
-            phone_number_id=meta_phone_id,
-            access_token=meta_token,
-            to=recipient,
-            body="",
-            cfg=cfg,
-        )
-
-    try:
-        inbound = wait_messaging_sms_reply_or_raise(turn_id, timeout_secs=120)
-    except RuntimeError as exc:
-        return None, f"messaging_turn_wait_failed:{exc}"
-
-    if not inbound:
-        abandon_messaging_sms_turn(
+    turn_id = None
+    if mode == "manual_inbound":
+        turn_id = register_messaging_sms_turn(
             agent_id=turn_agent_id,
             twilio_from=meta_phone_id,
             messaging_recipient=recipient,
+            ttl_secs=120,
+            replace_stale_lock=True,
         )
-        return None, "messaging_meta_whatsapp_send_only"
+        if not turn_id:
+            return None, "messaging_whatsapp_concurrent_turn"
 
-    aug = list(transcript)
-    aug.append({"speaker": "Speaker 1", "text": inbound.strip()})
-    agent_text = generate_agent_reply(aug)
-    if not (agent_text or "").strip():
+    if agent_turns == 0:
+        try:
+            _send_meta_whatsapp(
+                phone_number_id=meta_phone_id,
+                access_token=meta_token,
+                to=recipient,
+                body="",
+                cfg=cfg,
+            )
+        except Exception as exc:
+            logger.warning("[MessagingChat] Meta WhatsApp opening template skipped: {}", exc)
+
+    if mode == "manual_inbound":
+        try:
+            _send_meta_whatsapp_text(
+                phone_number_id=meta_phone_id,
+                access_token=meta_token,
+                to=recipient,
+                body=user_text[:4096],
+            )
+        except Exception as exc:
+            if turn_id:
+                abandon_messaging_sms_turn(
+                    agent_id=turn_agent_id,
+                    twilio_from=meta_phone_id,
+                    messaging_recipient=recipient,
+                )
+            logger.warning("[MessagingChat] Meta WhatsApp customer line send failed: {}", exc)
+            return None, f"messaging_meta_whatsapp_customer_send_failed:{exc}"
+
+        try:
+            inbound = wait_messaging_sms_reply_or_raise(turn_id, timeout_secs=120)
+        except RuntimeError as exc:
+            return None, f"messaging_turn_wait_failed:{exc}"
+        if not inbound:
+            abandon_messaging_sms_turn(
+                agent_id=turn_agent_id,
+                twilio_from=meta_phone_id,
+                messaging_recipient=recipient,
+            )
+            return None, "messaging_meta_whatsapp_manual_prod_timeout"
+        return inbound.strip(), "messaging_meta_whatsapp_manual_prod"
+
+    agent_text = (generate_agent_reply(list(transcript)) or "").strip()
+    if not agent_text:
         return None, "messaging_meta_whatsapp_empty_agent_reply"
 
     try:
@@ -348,13 +382,13 @@ def run_meta_whatsapp_live_production_turn(
             phone_number_id=meta_phone_id,
             access_token=meta_token,
             to=recipient,
-            body=agent_text.strip(),
+            body=agent_text,
         )
     except Exception as exc:
         logger.warning("[MessagingChat] Meta WhatsApp agent text send failed: {}", exc)
         return None, f"messaging_meta_whatsapp_agent_send_failed:{exc}"
 
-    return agent_text.strip(), "messaging_meta_whatsapp_live"
+    return agent_text, "messaging_meta_whatsapp_sim_prod"
 
 
 def _send_twilio_message(
