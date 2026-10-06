@@ -39,8 +39,11 @@ def test_validate_provider_call_id_instantiates_voice_provider(monkeypatch):
 
     mock_provider = MagicMock()
     mock_provider.retrieve_call_metrics.return_value = {"assistantId": "assistant-1"}
-    mock_class = MagicMock(return_value=mock_provider)
-    monkeypatch.setattr(playground_routes, "get_voice_provider", lambda _platform: mock_class)
+    build_mock = MagicMock(return_value=mock_provider)
+    monkeypatch.setattr(
+        "app.services.voice_providers.prompt_sync.build_voice_provider_from_integration",
+        build_mock,
+    )
 
     recording = MagicMock()
     recording.provider_call_id = None
@@ -49,15 +52,17 @@ def test_validate_provider_call_id_instantiates_voice_provider(monkeypatch):
 
     agent = MagicMock()
     agent.voice_ai_agent_id = "assistant-1"
+    integration = MagicMock()
 
     playground_routes._validate_provider_call_id_for_recording(
         recording,
         "vapi-call-abc",
         agent,
+        integration,
         "plain-key",
     )
 
-    mock_class.assert_called_once_with(api_key="plain-key")
+    build_mock.assert_called_once_with(integration, decrypted_key="plain-key")
     mock_provider.retrieve_call_metrics.assert_called_once_with("vapi-call-abc")
 
 

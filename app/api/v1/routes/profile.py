@@ -62,8 +62,8 @@ def get_current_user(
       lazily provision a synthetic "api_user_*" record so legacy workflows
       keep working, then bind the key to it.
     """
-    # Bearer-style auth always carries a user_id from the provider.
-    if principal.user_id is not None and not principal.is_machine:
+    # Human login and user-bound API keys both carry a concrete user_id.
+    if principal.user_id is not None:
         user = db.query(User).filter(User.id == principal.user_id).first()
         if not user:
             raise HTTPException(status_code=401, detail="User no longer exists")
@@ -81,7 +81,7 @@ def get_current_user(
             db.commit()
         return user
 
-    # API-key path — preserve the historical "create a synthetic user" behaviour
+    # Unbound API-key path — preserve the historical "create a synthetic user" behaviour
     # so that scripts using a raw API key still get a full profile.
     from app.models.database import APIKey
 

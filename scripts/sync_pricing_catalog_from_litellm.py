@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
 MODELS_JSON = REPO_ROOT / "app" / "config" / "models.json"
 MANUAL_JSON = REPO_ROOT / "app" / "config" / "pricing_manual.json"
 OUTPUT_JSON = REPO_ROOT / "app" / "config" / "pricing_catalog.json"
@@ -26,6 +27,8 @@ LITELLM_PROVIDER_PREFIX = {
     "groq": "groq",
     "xai": "xai",
     "fireworks": "fireworks_ai",
+    "together": "together_ai",
+    "typesafe": "typesafe",
     "sarvam": "sarvam",
     "deepgram": "deepgram",
     "elevenlabs": "elevenlabs",
@@ -49,6 +52,9 @@ EXPLICIT_LITELLM_KEYS: Dict[str, str] = {
     "deepgram-flux": "deepgram/nova-3",
     "deepgram-nova-3-general-preview-12-2025": "deepgram/nova-3-general",
     "minimax-m2p5": "fireworks_ai/minimax-m2p7",
+    "deepseek-v4p1-flash": "fireworks_ai/accounts/fireworks/models/deepseek-v4p1-flash",
+    "glm-5p3": "fireworks_ai/accounts/fireworks/models/glm-5p3",
+    "glm-5p3-flash": "fireworks_ai/accounts/fireworks/models/glm-5p3-flash",
     "qwen3p6-plus": "openrouter/qwen/qwen3.6-plus",
     "grok-build-0.1": "xai/grok-3",
     "grok-4.20-0309-non-reasoning": "xai/grok-4-fast-non-reasoning",
@@ -58,6 +64,8 @@ EXPLICIT_LITELLM_KEYS: Dict[str, str] = {
     "scribe_v2_realtime": "elevenlabs/scribe_v1",
     "eleven_flash_v2_5": "elevenlabs/eleven_multilingual_v2",
     "eleven_turbo_v2_5": "elevenlabs/eleven_multilingual_v2",
+    "eleven_v4": "elevenlabs/eleven_v3",
+    "eleven_v4_turbo": "elevenlabs/eleven_flash_v2_5",
     "eleven_ttv_v3": "elevenlabs/eleven_v3",
     "eleven_multilingual_ttv_v2": "elevenlabs/eleven_multilingual_v2",
     "eleven_english_sts_v2": "elevenlabs/eleven_multilingual_v2",
@@ -89,6 +97,21 @@ FIREWORKS_SKIP_MODES = frozenset(
 )
 
 FIREWORKS_LONG_FORM_PREFIX = "fireworks_ai/accounts/fireworks/models/"
+
+TOGETHER_SKIP_MODES = frozenset(
+    {
+        "embedding",
+        "image_generation",
+        "audio_transcription",
+        "moderation",
+        "rerank",
+    }
+)
+
+TEV1_CATALOG_NAME = "together/Tev1-4B-experimental"
+TEV1_LITELLM_KEY = f"together_ai/{TEV1_CATALOG_NAME}"
+
+TYPESAFE_SKIP_MODES = TOGETHER_SKIP_MODES
 
 
 def _azure_deployment_name(catalog_model: str) -> str:
@@ -165,6 +188,20 @@ def _litellm_candidates(
                 f"fireworks_ai/{fw}",
                 f"fireworks_ai/{catalog_name}",
                 f"fireworks_ai/accounts/fireworks/models/{catalog_name}",
+                catalog_name,
+            ]
+        )
+    elif provider == "together" and model_type == "llm":
+        candidates.extend(
+            [
+                f"together_ai/{catalog_name}",
+                catalog_name,
+            ]
+        )
+    elif provider == "typesafe" and model_type == "llm":
+        candidates.extend(
+            [
+                f"typesafe/{catalog_name}",
                 catalog_name,
             ]
         )
@@ -282,8 +319,10 @@ def _micro_pricing_to_plan(micro: Dict[str, int], *, usage_kind: str = "llm") ->
     pricing: Dict[str, Any] = {"source": "litellm_import", "usage_kind": usage_kind}
     if micro.get("input_micro_usd_per_million"):
         pricing["input_per_1m"] = _usd_per_million(micro["input_micro_usd_per_million"])
-    if micro.get("output_micro_usd_per_million"):
-        pricing["output_per_1m"] = _usd_per_million(micro["output_micro_usd_per_million"])
+    if "output_micro_usd_per_million" in micro:
+        pricing["output_per_1m"] = _usd_per_million(
+            micro["output_micro_usd_per_million"]
+        )
     if micro.get("cache_read_micro_usd_per_million"):
         pricing["cache_read_per_1m"] = _usd_per_million(
             micro["cache_read_micro_usd_per_million"]
@@ -297,6 +336,55 @@ def _micro_pricing_to_plan(micro: Dict[str, int], *, usage_kind: str = "llm") ->
             micro["reasoning_micro_usd_per_million"]
         )
     return pricing
+
+
+def _catalog_pricing_from_models_json_block(
+    pricing: Dict[str, Any], *, usage_kind: str
+) -> Optional[Dict[str, int]]:
+    """Convert a models.json plan-format pricing block to catalog micro fields."""
+    if not isinstance(pricing, dict):
+        return None
+
+    def micro(field_micro: str, field_usd: str) -> int:
+        if pricing.get(field_micro) is not None:
+            return int(pricing[field_micro])
+        usd = pricing.get(field_usd)
+        if usd is None:
+            return 0
+        return int(round(float(usd) * MICRO_USD_PER_USD))
+
+    audio_micro = int(pricing.get("audio_micro_usd_per_second") or 0)
+    if not audio_micro and pricing.get("audio_per_minute") is not None:
+        audio_micro = int(
+            round(float(pricing["audio_per_minute"]) * MICRO_USD_PER_USD / 60.0)
+        )
+
+    tts_micro = int(pricing.get("tts_micro_usd_per_million_chars") or 0)
+    if not tts_micro and pricing.get("tts_per_1m_characters") is not None:
+        tts_micro = int(round(float(pricing["tts_per_1m_characters"]) * MICRO_USD_PER_USD))
+
+    converted = {
+        "input_micro_usd_per_million": micro(
+            "input_micro_usd_per_million", "input_per_1m"
+        ),
+        "output_micro_usd_per_million": micro(
+            "output_micro_usd_per_million", "output_per_1m"
+        ),
+        "cache_read_micro_usd_per_million": micro(
+            "cache_read_micro_usd_per_million", "cache_read_per_1m"
+        ),
+        "cache_creation_micro_usd_per_million": micro(
+            "cache_creation_micro_usd_per_million", "cache_write_per_1m"
+        ),
+        "reasoning_micro_usd_per_million": micro(
+            "reasoning_micro_usd_per_million", "reasoning_per_1m"
+        ),
+        "audio_micro_usd_per_second": audio_micro,
+        "tts_micro_usd_per_million_chars": tts_micro,
+    }
+    if not any(converted.values()):
+        return None
+    return converted
 
 
 def _fireworks_catalog_name(litellm_key: str, info: Dict[str, Any]) -> Optional[str]:
@@ -411,6 +499,254 @@ def import_missing_fireworks(*, remote: bool = True) -> Tuple[int, List[str]]:
     return len(new_entries), sorted(new_entries.keys())
 
 
+def _together_catalog_name(litellm_key: str, info: Dict[str, Any]) -> Optional[str]:
+    """Return models.json key for an importable Together chat model, else None."""
+    mode = str(info.get("mode") or "").lower()
+    if mode in TOGETHER_SKIP_MODES:
+        return None
+
+    if not litellm_key.startswith("together_ai/"):
+        return None
+
+    slug = litellm_key[len("together_ai/") :]
+    if not slug:
+        return None
+
+    if mode and mode not in {"chat", "completion"}:
+        return None
+
+    has_llm_cost = _first_cost(info, "input_cost_per_token") or _first_cost(
+        info, "output_cost_per_token"
+    )
+    if not has_llm_cost:
+        return None
+
+    return slug
+
+
+def _together_description(catalog_name: str) -> str:
+    return f"{catalog_name.replace('/', ' ').replace('-', ' ')} via Together"
+
+
+def discover_missing_together_models(
+    model_cost: Dict[str, Dict[str, Any]],
+    existing_models: Dict[str, Any],
+) -> Dict[str, Tuple[str, Dict[str, Any]]]:
+    """Map catalog_name -> (litellm_key, info) for Together models to import."""
+    discovered: Dict[str, Tuple[str, Dict[str, Any]]] = {}
+    for litellm_key, info in model_cost.items():
+        if litellm_key == "sample_spec" or not isinstance(info, dict):
+            continue
+        catalog_name = _together_catalog_name(litellm_key, info)
+        if not catalog_name or catalog_name in existing_models:
+            continue
+        discovered[catalog_name] = (litellm_key, info)
+    return discovered
+
+
+def _insert_after_together_block(
+    models: Dict[str, Any], new_entries: Dict[str, Any]
+) -> Dict[str, Any]:
+    if not new_entries:
+        return models
+
+    keys = [key for key in models if not key.startswith("_")]
+    insert_at = 0
+    for index, key in enumerate(keys):
+        cfg = models[key]
+        if isinstance(cfg, dict) and cfg.get("provider") == "together":
+            insert_at = index + 1
+
+    if insert_at == 0:
+        for index, key in enumerate(keys):
+            cfg = models[key]
+            if isinstance(cfg, dict) and cfg.get("provider") == "fireworks":
+                insert_at = index + 1
+
+    ordered_keys = keys[:insert_at] + sorted(new_entries.keys()) + keys[insert_at:]
+    ordered: Dict[str, Any] = {}
+    for key in ordered_keys:
+        if key in new_entries:
+            ordered[key] = new_entries[key]
+        else:
+            ordered[key] = models[key]
+    for key, value in models.items():
+        if key.startswith("_"):
+            ordered[key] = value
+    return ordered
+
+
+def _tev1_manual_entry() -> Dict[str, Any]:
+    return {
+        "provider": "together",
+        "model_type": "llm",
+        "description": "Tev1 4B Jev-style decision classifier on Qwen3.5 4B via Together",
+        "pricing": {
+            "source": "together.ai serverless listing",
+            "usage_kind": "llm",
+            "input_per_1m": 0.04,
+            "output_per_1m": 0,
+            "cache_read_per_1m": 0.04,
+        },
+    }
+
+
+def import_missing_together(*, remote: bool = True) -> Tuple[int, List[str]]:
+    """Add current Together serverless chat models missing from models.json."""
+    models = json.loads(MODELS_JSON.read_text(encoding="utf-8"))
+    model_cost = _load_model_cost(remote=remote)
+    missing = discover_missing_together_models(model_cost, models)
+
+    new_entries: Dict[str, Any] = {}
+    for catalog_name in sorted(missing):
+        _litellm_key, info = missing[catalog_name]
+        micro = _convert_litellm_pricing(info, usage_kind="llm")
+        pricing = _micro_pricing_to_plan(micro, usage_kind="llm")
+        if not pricing.get("input_per_1m") and not pricing.get("output_per_1m"):
+            continue
+        new_entries[catalog_name] = {
+            "provider": "together",
+            "model_type": "llm",
+            "description": _together_description(catalog_name),
+            "pricing": pricing,
+        }
+
+    if TEV1_CATALOG_NAME not in models and TEV1_CATALOG_NAME not in new_entries:
+        tev1_info = model_cost.get(TEV1_LITELLM_KEY)
+        if tev1_info:
+            micro = _convert_litellm_pricing(tev1_info, usage_kind="llm")
+            pricing = _micro_pricing_to_plan(micro, usage_kind="llm")
+            if pricing.get("input_per_1m") or pricing.get("output_per_1m"):
+                new_entries[TEV1_CATALOG_NAME] = {
+                    "provider": "together",
+                    "model_type": "llm",
+                    "description": _tev1_manual_entry()["description"],
+                    "pricing": pricing,
+                }
+            else:
+                new_entries[TEV1_CATALOG_NAME] = _tev1_manual_entry()
+        else:
+            new_entries[TEV1_CATALOG_NAME] = _tev1_manual_entry()
+
+    if not new_entries:
+        return 0, []
+
+    updated_models = _insert_after_together_block(models, new_entries)
+    MODELS_JSON.write_text(
+        json.dumps(updated_models, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return len(new_entries), sorted(new_entries.keys())
+
+
+def _typesafe_catalog_name(litellm_key: str, info: Dict[str, Any]) -> Optional[str]:
+    """Return models.json key for an importable TypeSafe chat model, else None."""
+    mode = str(info.get("mode") or "").lower()
+    if mode in TYPESAFE_SKIP_MODES:
+        return None
+
+    if not litellm_key.startswith("typesafe/"):
+        return None
+
+    slug = litellm_key[len("typesafe/") :]
+    if not slug:
+        return None
+
+    if mode and mode not in {"chat", "completion", "evaluation"}:
+        return None
+
+    has_llm_cost = _first_cost(info, "input_cost_per_token") or _first_cost(
+        info, "output_cost_per_token"
+    )
+    if not has_llm_cost:
+        return None
+
+    return slug
+
+
+def _typesafe_description(catalog_name: str) -> str:
+    return f"{catalog_name.replace('-', ' ')} via TypeSafe"
+
+
+def discover_missing_typesafe_models(
+    model_cost: Dict[str, Dict[str, Any]],
+    existing_models: Dict[str, Any],
+) -> Dict[str, Tuple[str, Dict[str, Any]]]:
+    """Map catalog_name -> (litellm_key, info) for TypeSafe models to import."""
+    discovered: Dict[str, Tuple[str, Dict[str, Any]]] = {}
+    for litellm_key, info in model_cost.items():
+        if litellm_key == "sample_spec" or not isinstance(info, dict):
+            continue
+        catalog_name = _typesafe_catalog_name(litellm_key, info)
+        if not catalog_name or catalog_name in existing_models:
+            continue
+        discovered[catalog_name] = (litellm_key, info)
+    return discovered
+
+
+def _insert_after_typesafe_block(
+    models: Dict[str, Any], new_entries: Dict[str, Any]
+) -> Dict[str, Any]:
+    if not new_entries:
+        return models
+
+    keys = [key for key in models if not key.startswith("_")]
+    insert_at = 0
+    for index, key in enumerate(keys):
+        cfg = models[key]
+        if isinstance(cfg, dict) and cfg.get("provider") == "typesafe":
+            insert_at = index + 1
+
+    if insert_at == 0:
+        for index, key in enumerate(keys):
+            cfg = models[key]
+            if isinstance(cfg, dict) and cfg.get("provider") == "together":
+                insert_at = index + 1
+
+    ordered_keys = keys[:insert_at] + sorted(new_entries.keys()) + keys[insert_at:]
+    ordered: Dict[str, Any] = {}
+    for key in ordered_keys:
+        if key in new_entries:
+            ordered[key] = new_entries[key]
+        else:
+            ordered[key] = models[key]
+    for key, value in models.items():
+        if key.startswith("_"):
+            ordered[key] = value
+    return ordered
+
+
+def import_missing_typesafe(*, remote: bool = True) -> Tuple[int, List[str]]:
+    """Add current TypeSafe chat models missing from models.json."""
+    models = json.loads(MODELS_JSON.read_text(encoding="utf-8"))
+    model_cost = _load_model_cost(remote=remote)
+    missing = discover_missing_typesafe_models(model_cost, models)
+
+    new_entries: Dict[str, Any] = {}
+    for catalog_name in sorted(missing):
+        _litellm_key, info = missing[catalog_name]
+        micro = _convert_litellm_pricing(info, usage_kind="llm")
+        pricing = _micro_pricing_to_plan(micro, usage_kind="llm")
+        if not pricing.get("input_per_1m") and not pricing.get("output_per_1m"):
+            continue
+        new_entries[catalog_name] = {
+            "provider": "typesafe",
+            "model_type": "llm",
+            "description": _typesafe_description(catalog_name),
+            "pricing": pricing,
+        }
+
+    if not new_entries:
+        return 0, []
+
+    updated_models = _insert_after_typesafe_block(models, new_entries)
+    MODELS_JSON.write_text(
+        json.dumps(updated_models, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return len(new_entries), sorted(new_entries.keys())
+
+
 def _load_model_cost(*, remote: bool) -> Dict[str, Dict[str, Any]]:
     if remote:
         from litellm.litellm_core_utils.get_model_cost_map import get_model_cost_map
@@ -495,25 +831,33 @@ def build_catalog(*, remote: bool = True) -> Tuple[Dict[str, Any], Dict[str, Any
         litellm_key, info = _resolve_litellm_key(
             catalog_name, provider, model_type, model_cost
         )
-        if not info:
-            meta["unresolved"].append(
-                {
-                    "model": catalog_name,
-                    "provider": provider,
-                    "model_type": model_type,
-                }
-            )
-            continue
+        pricing: Optional[Dict[str, int]] = None
+        price_source = "litellm_import"
 
-        pricing = _convert_litellm_pricing(info, usage_kind=usage_kind)
-        if not any(pricing.values()):
+        if info:
+            pricing = _convert_litellm_pricing(info, usage_kind=usage_kind)
+            if not any(pricing.values()):
+                pricing = None
+
+        if pricing is None:
+            embedded = cfg.get("pricing")
+            if isinstance(embedded, dict):
+                pricing = _catalog_pricing_from_models_json_block(
+                    embedded, usage_kind=usage_kind
+                )
+                if pricing:
+                    price_source = str(
+                        embedded.get("source") or "models.json"
+                    )
+
+        if not pricing:
             meta["unresolved"].append(
                 {
                     "model": catalog_name,
                     "provider": provider,
                     "model_type": model_type,
                     "litellm_key": litellm_key,
-                    "reason": "zero_cost",
+                    "reason": "no_litellm_match" if not info else "zero_cost",
                 }
             )
             continue
@@ -521,10 +865,14 @@ def build_catalog(*, remote: bool = True) -> Tuple[Dict[str, Any], Dict[str, Any
         catalog[catalog_name] = {
             "usage_kind": usage_kind,
             **pricing,
+            "_price_source": price_source,
             "_litellm_key": litellm_key,
-            "_litellm_proxy": catalog_name not in {litellm_key, litellm_key.split("/")[-1]},
+            "_litellm_proxy": bool(
+                litellm_key
+                and catalog_name not in {litellm_key, litellm_key.split("/")[-1]}
+            ),
         }
-        meta["resolved"][catalog_name] = litellm_key
+        meta["resolved"][catalog_name] = litellm_key or price_source
 
     _apply_manual_entries(catalog, meta, models)
     catalog["_metadata"] = meta
@@ -553,12 +901,40 @@ def main() -> int:
         action="store_true",
         help="Add current Fireworks serverless chat models missing from models.json",
     )
+    parser.add_argument(
+        "--import-missing-together",
+        action="store_true",
+        help="Add current Together serverless chat models missing from models.json",
+    )
+    parser.add_argument(
+        "--import-missing-typesafe",
+        action="store_true",
+        help="Add current TypeSafe chat models missing from models.json",
+    )
     args = parser.parse_args()
 
     if args.import_missing_fireworks:
         imported, names = import_missing_fireworks(remote=not args.local)
         print(
             f"fireworks import: {imported} model(s) added to models.json",
+            file=sys.stderr,
+        )
+        for name in names:
+            print(f"  added: {name}", file=sys.stderr)
+
+    if args.import_missing_together:
+        imported, names = import_missing_together(remote=not args.local)
+        print(
+            f"together import: {imported} model(s) added to models.json",
+            file=sys.stderr,
+        )
+        for name in names:
+            print(f"  added: {name}", file=sys.stderr)
+
+    if args.import_missing_typesafe:
+        imported, names = import_missing_typesafe(remote=not args.local)
+        print(
+            f"typesafe import: {imported} model(s) added to models.json",
             file=sys.stderr,
         )
         for name in names:

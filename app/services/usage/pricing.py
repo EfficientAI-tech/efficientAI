@@ -29,6 +29,7 @@ USAGE_KIND_TTS = "tts"
 MICRO_USD_PER_UNIT = 1_000_000
 RATE_SOURCE_CATALOG = "catalog"
 RATE_SOURCE_OVERRIDE = "override"
+MODELS_JSON_CATALOG_RATE_ID = UUID(int=0)
 
 _MODELS_JSON_PATH = (
     Path(__file__).resolve().parent.parent.parent / "config" / "models.json"
@@ -441,7 +442,7 @@ class PricingResolver:
             card = self._load_catalog_rate(candidate, usage_kind, usage_date)
             if card is not None:
                 return card
-        return None
+        return _rate_card_from_models_json(model, usage_kind)
 
     def _load_catalog_rate(
         self, model: str, usage_kind: str, usage_date: date
@@ -518,6 +519,51 @@ class PricingResolver:
             return None
         catalog = self._resolve_catalog(model, usage_kind, usage_date)
         return _merge_override_with_catalog(row, catalog)
+
+
+def _rate_card_from_models_json(model: str, usage_kind: str) -> Optional[RateCard]:
+    """Fallback catalog rates from models.json when DB rows are missing."""
+    entries = _pricing_entries_from_models_json()
+    rate_fields = (
+        "input_micro_usd_per_million",
+        "output_micro_usd_per_million",
+        "cache_read_micro_usd_per_million",
+        "cache_creation_micro_usd_per_million",
+        "reasoning_micro_usd_per_million",
+        "audio_micro_usd_per_second",
+        "tts_micro_usd_per_million_chars",
+    )
+    for candidate in _catalog_lookup_models(model, usage_kind):
+        block = entries.get(candidate)
+        if not block:
+            continue
+        kind = block.get("usage_kind") or USAGE_KIND_LLM
+        if kind != usage_kind:
+            continue
+        if not any(_int(block.get(field)) for field in rate_fields):
+            continue
+        return RateCard(
+            source=RATE_SOURCE_CATALOG,
+            rate_id=MODELS_JSON_CATALOG_RATE_ID,
+            input_micro_usd_per_million=_int(block.get("input_micro_usd_per_million")),
+            output_micro_usd_per_million=_int(
+                block.get("output_micro_usd_per_million")
+            ),
+            cache_read_micro_usd_per_million=_int(
+                block.get("cache_read_micro_usd_per_million")
+            ),
+            cache_creation_micro_usd_per_million=_int(
+                block.get("cache_creation_micro_usd_per_million")
+            ),
+            reasoning_micro_usd_per_million=_int(
+                block.get("reasoning_micro_usd_per_million")
+            ),
+            audio_micro_usd_per_second=_int(block.get("audio_micro_usd_per_second")),
+            tts_micro_usd_per_million_chars=_int(
+                block.get("tts_micro_usd_per_million_chars")
+            ),
+        )
+    return None
 
 
 def _pricing_entries_from_models_json() -> Dict[str, Dict[str, Any]]:

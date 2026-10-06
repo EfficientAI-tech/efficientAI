@@ -1,0 +1,9 @@
+{
+  "title": "Advanced",
+  "defaultOpen": true,
+  "pages": [
+    "index",
+    "iam",
+    "alerting"
+  ]
+}

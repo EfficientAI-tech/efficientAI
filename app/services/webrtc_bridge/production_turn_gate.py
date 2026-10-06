@@ -60,7 +60,20 @@ class ProductionTurnGate:
         late_text_wait_secs: float = 1.5,
         flush_on_vad_quiet: bool = True,
         vad_analyzer: Optional[VADAnalyzerProtocol] = None,
+        hold_while_speaking: bool = False,
+        speaking_probe: Optional[Callable[[], bool]] = None,
+        on_production_speech: Optional[Callable[[], Awaitable[None]]] = None,
     ) -> None:
+        """
+        Args:
+            hold_while_speaking: Never start a test-agent turn while the production
+                agent is audible (VAD speaking, or ``speaking_probe`` true). Mirrors
+                the telephony pipeline, where the user aggregator only pushes to the
+                LLM while the other side is not speaking.
+            speaking_probe: Extra "production agent is talking" signal from the bridge.
+            on_production_speech: Fired on each VAD rising edge into speech; used for
+                barge-in, like the telephony pipeline's interruption on VAD start.
+        """
         self._on_flush = on_flush
         self._stop_secs = stop_secs
         self._late_text_wait_secs = late_text_wait_secs
@@ -72,6 +85,11 @@ class ProductionTurnGate:
         self._saw_speech_this_turn = False
         self._outbound_active = False
         self._flush_in_progress = False
+        self._hold_while_speaking = hold_while_speaking
+        self._speaking_probe = speaking_probe
+        self._on_production_speech = on_production_speech
+        self._vad_speaking = False
+        self._deferred_for_speech = False
 
         self._last_real_audio_ts = 0.0
         self._silence_pump_task: Optional[asyncio.Task] = None
@@ -105,6 +123,18 @@ class ProductionTurnGate:
 
     def set_outbound_active(self, active: bool) -> None:
         self._outbound_active = active
+
+    @property
+    def outbound_active(self) -> bool:
+        """True while the test agent's turn (LLM, TTS, outbound audio) is running."""
+        return self._outbound_active
+
+    @property
+    def production_speaking(self) -> bool:
+        """True while the production agent is audible."""
+        if self._vad_speaking:
+            return True
+        return bool(self._speaking_probe and self._speaking_probe())
 
     async def hold_transcript(self, text: str) -> None:
         """Accumulate provider text; never invoke the test agent directly."""
@@ -186,11 +216,24 @@ class ProductionTurnGate:
         if current_state == VADState.SPEAKING:
             self._saw_speech_this_turn = True
             self._cancel_late_text_wait()
+            if not self._vad_speaking:
+                self._vad_speaking = True
+                if self._on_production_speech:
+                    try:
+                        await self._on_production_speech()
+                    except Exception as e:
+                        logger.error(f"[TurnGate] on_production_speech error: {e}", exc_info=True)
 
         if previous in (VADState.SPEAKING, VADState.STOPPING) and current_state == VADState.QUIET:
+            self._vad_speaking = False
             await self._on_vad_quiet()
 
     async def _on_vad_quiet(self) -> None:
+        if self._deferred_for_speech and not self._flush_on_vad_quiet:
+            # A flush was held back because the agent was talking; re-arm it.
+            self._deferred_for_speech = False
+            await self.on_provider_stop_talking()
+            return
         if self._flush_on_vad_quiet and self._held_transcript.strip():
             await self._try_flush("vad-quiet")
         elif self._flush_on_vad_quiet:
@@ -215,14 +258,19 @@ class ProductionTurnGate:
 
         self._late_text_task = asyncio.create_task(_wait(), name="production-turn-gate-late-text")
 
+    @staticmethod
+    def _cancel_unless_current(task: Optional[asyncio.Task]) -> None:
+        # _try_flush runs inside these tasks; cancelling the current task would
+        # abort the in-flight test-agent turn at its next await.
+        if task and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
     def _cancel_late_text_wait(self) -> None:
-        if self._late_text_task and not self._late_text_task.done():
-            self._late_text_task.cancel()
+        self._cancel_unless_current(self._late_text_task)
         self._late_text_task = None
 
     def _cancel_provider_stop_fallback(self) -> None:
-        if self._provider_stop_task and not self._provider_stop_task.done():
-            self._provider_stop_task.cancel()
+        self._cancel_unless_current(self._provider_stop_task)
         self._provider_stop_task = None
 
     async def _provider_stop_fallback(self) -> None:
@@ -249,6 +297,14 @@ class ProductionTurnGate:
         if not text:
             return
 
+        if self._hold_while_speaking and self.production_speaking:
+            # The production agent resumed talking; its next stop signal (or VAD
+            # quiet) retries with the combined transcript.
+            self._deferred_for_speech = True
+            logger.info(f"[TurnGate] Deferring flush ({reason}) — production agent still speaking")
+            return
+
+        self._deferred_for_speech = False
         self._flush_in_progress = True
         self._held_transcript = ""
         self._cancel_late_text_wait()
@@ -260,6 +316,12 @@ class ProductionTurnGate:
         finally:
             self._flush_in_progress = False
             self._reset_turn_state()
+            if self._held_transcript.strip():
+                # Text that arrived (and was deferred) during this flush.
+                asyncio.create_task(
+                    self._try_flush("deferred"),
+                    name="production-turn-gate-deferred-flush",
+                )
 
     def _reset_turn_state(self) -> None:
         self._saw_speech_this_turn = False

@@ -49,6 +49,7 @@ def _metric(
     selection_mode: Optional[str] = None,
     parent_id: Optional[UUID] = None,
     metric_type: str = "text",
+    custom_data_type: Optional[str] = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id=uuid4(),
@@ -56,6 +57,7 @@ def _metric(
         selection_mode=selection_mode,
         parent_metric_id=parent_id,
         metric_type=metric_type,
+        custom_data_type=custom_data_type,
     )
 
 
@@ -467,6 +469,35 @@ def test_aggregate_sort_places_parent_before_children(monkeypatch):
     # must sit cleanly outside the parent->children block (i.e. either
     # entirely before parent or entirely after the last child).
     assert standalone_idx < parent_idx or standalone_idx > child_b_idx
+
+
+def test_aggregate_mixed_classification_and_legacy_rows_count_both(monkeypatch):
+    metric = _metric(name="Intent", custom_data_type="classification")
+
+    monkeypatch.setattr(
+        routes_module, "_metrics_for_ids", lambda db, org_id, ids: [metric]
+    )
+
+    eval_rows = [
+        _FakeRow(
+            {
+                str(metric.id): {
+                    "type": "classification",
+                    "answers": {
+                        "choice": {
+                            "probabilities": {"billing": 0.9, "sales": 0.1},
+                        }
+                    },
+                }
+            }
+        ),
+        _FakeRow({str(metric.id): {"type": "rating", "value": 4}}),
+    ]
+
+    evaluation = _aggregate_eval_stub([metric.id])
+    aggregates = _compute_metric_aggregates(MagicMock(), evaluation, eval_rows)
+    assert len(aggregates) == 1
+    assert aggregates[0].count == 2
 
 
 def test_aggregate_non_multi_label_metric_keeps_legacy_count(monkeypatch):

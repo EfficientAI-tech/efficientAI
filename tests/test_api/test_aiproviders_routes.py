@@ -66,3 +66,34 @@ def test_update_azure_endpoint_url(authenticated_client, make_ai_provider):
 
     assert response.status_code == 200
     assert response.json()["endpoint_url"] == "https://new-resource.openai.azure.com"
+
+
+def test_create_and_update_aiprovider_gateway_type(authenticated_client):
+    response = authenticated_client.post(
+        "/api/v1/aiproviders",
+        json={
+            "provider": "openai",
+            "api_key": "sk-test",
+            "routing_mode": "gateway",
+            "gateway_type": "litellm_proxy",
+            "gateway_interface": "native_openai",
+            "gateway_base_url": "http://proxy.example.com:4000/",
+        },
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert data["gateway_type"] == "litellm_proxy"
+    assert data["effective_gateway_type"] == "litellm_proxy"
+    # Bifrost API surface does not apply to LiteLLM Proxy.
+    assert data["gateway_interface"] == "inherit"
+    assert data["gateway_base_url"] == "http://proxy.example.com:4000"
+
+    response = authenticated_client.put(
+        f"/api/v1/aiproviders/{data['id']}",
+        json={"gateway_type": "bifrost", "gateway_interface": "native_openai"},
+    )
+    assert response.status_code == 200
+    updated = response.json()
+    assert updated["gateway_type"] == "bifrost"
+    assert updated["effective_gateway_type"] == "bifrost"
+    assert updated["gateway_interface"] == "native_openai"

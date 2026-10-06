@@ -203,6 +203,26 @@ def _get_service(service_name: str):
 # ---------------------------------------------------------------------------
 
 
+def _elevenlabs_realtime_stt_factory(api_key, model, base_url=None):
+    from app.services.voice_providers.elevenlabs_api_url import elevenlabs_realtime_stt_host
+
+    return _get_service("ElevenLabsRealtimeSTTService")(
+        api_key=api_key,
+        base_url=elevenlabs_realtime_stt_host(base_url),
+        **({"model": model} if model else {}),
+    )
+
+
+def _deepgram_stt_factory(api_key, model):
+    # DeepgramSTTService has no ``model`` kwarg; it must go through LiveOptions.
+    kwargs = {}
+    if model:
+        from deepgram import LiveOptions
+
+        kwargs["live_options"] = LiveOptions(model=model)
+    return _get_service("DeepgramSTTService")(api_key=api_key, **kwargs)
+
+
 def _get_stt_providers():
     """Get STT provider registry with truly lazy-loaded service classes.
     
@@ -212,10 +232,7 @@ def _get_stt_providers():
         "deepgram": {
             "env_key": "DEEPGRAM_API_KEY",
             "default_model": None,
-            "factory": lambda api_key, model: _get_service("DeepgramSTTService")(
-                api_key=api_key,
-                **({"model": model} if model else {}),
-            ),
+            "factory": _deepgram_stt_factory,
         },
         "openai": {
             "env_key": "OPENAI_API_KEY",
@@ -228,10 +245,7 @@ def _get_stt_providers():
         "elevenlabs": {
             "env_key": "ELEVENLABS_API_KEY",
             "default_model": "scribe_v2_realtime",
-            "factory": lambda api_key, model: _get_service("ElevenLabsRealtimeSTTService")(
-                api_key=api_key,
-                **({"model": model} if model else {}),
-            ),
+            "factory": _elevenlabs_realtime_stt_factory,
         },
         "sarvam": {
             "env_key": "SARVAM_API_KEY",
@@ -304,6 +318,7 @@ def _instantiate_tts_service(
     voice_id: str,
     model: str | None,
     sample_rate: int,
+    elevenlabs_api_base_url: str | None = None,
 ):
     """Build a streaming TTS service for the voice bundle pipeline."""
     from app.services.voice_agent.tts_sample_rate import provider_accepts_sample_rate_kwarg
@@ -318,10 +333,13 @@ def _instantiate_tts_service(
             **sr_kw,
         )
     if provider == "elevenlabs":
+        from app.services.voice_providers.elevenlabs_api_url import elevenlabs_http_origin
+
         return _get_service("ElevenLabsHttpTTSService")(
             api_key=api_key,
             voice_id=voice_id,
             model=model,
+            base_url=elevenlabs_http_origin(elevenlabs_api_base_url),
             aiohttp_session=__import__("aiohttp").ClientSession(),
             **sr_kw,
         )
@@ -507,6 +525,8 @@ async def run_voice_bundle_fastapi(
     persona=None,
     stt_api_key: str | None = None,
     tts_api_key: str | None = None,
+    stt_elevenlabs_api_base_url: str | None = None,
+    tts_elevenlabs_api_base_url: str | None = None,
     llm_api_key: str | None = None,
     llm_endpoint_url: str | None = None,
     llm_base_url: str | None = None,
@@ -634,7 +654,14 @@ async def run_voice_bundle_fastapi(
 
         # Instantiate STT service from the provider registry
         stt_model = getattr(voice_bundle, "stt_model", None) or stt_cfg["default_model"]
-        stt = stt_cfg["factory"](api_key=stt_api_key, model=stt_model)
+        if stt_provider_value == "elevenlabs":
+            stt = stt_cfg["factory"](
+                api_key=stt_api_key,
+                model=stt_model,
+                base_url=stt_elevenlabs_api_base_url,
+            )
+        else:
+            stt = stt_cfg["factory"](api_key=stt_api_key, model=stt_model)
 
         # Instantiate TTS service from the provider registry
         from app.services.voice_agent.resolve_tts_voice import (
@@ -670,6 +697,9 @@ async def run_voice_bundle_fastapi(
             voice_id=tts_voice_id,
             model=tts_model,
             sample_rate=tts_sample_rate,
+            elevenlabs_api_base_url=(
+                tts_elevenlabs_api_base_url if tts_provider_value == "elevenlabs" else None
+            ),
         )
 
         llm_model = getattr(voice_bundle, "llm_model", None) or llm_cfg["default_model"]
