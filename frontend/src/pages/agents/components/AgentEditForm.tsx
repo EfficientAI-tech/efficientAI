@@ -8,7 +8,13 @@ import ReactMarkdown from 'react-markdown'
 import Button from '../../../components/Button'
 import { apiClient } from '../../../lib/api'
 import { VoiceBundle, Integration, AIProvider, IntegrationPlatform } from '../../../types/api'
-import { getIntegrationPlatformLabel, getIntegrationPlatformLogo, getTelephonyProviderLabel } from '../../../config/providers'
+import {
+  getIntegrationPlatformLabel,
+  getIntegrationPlatformLogo,
+  getTelephonyProviderLabel,
+} from '../../../config/providers'
+import { resolveChatProductionConnectionDisplay } from '../../../lib/chatProductionConnection'
+import ChatProductionConnectionValue from './ChatProductionConnectionValue'
 import { useOrgTelephony } from '../../../hooks/useOrgTelephony'
 import { TelephonyProvider } from '../../../types/api'
 import type { AgentDetailTab } from './AgentInfoView'
@@ -120,7 +126,9 @@ export default function AgentEditForm({
   const {
     canUseProviderNumbers,
     numbersForCallType,
-  } = useOrgTelephony(formData.call_medium === 'phone_call')
+    activeConfigs,
+    activeNumbers,
+  } = useOrgTelephony(formData.call_medium === 'phone_call' || formData.call_medium === 'chat')
   const telephonyNumbers = numbersForCallType(formData.call_type)
   const isTelephonyConfigError = !canUseProviderNumbers
   const { conflict: phoneConflict, isChecking: isCheckingPhoneAssignment, hasConflict: hasPhoneConflict } =
@@ -272,6 +280,29 @@ export default function AgentEditForm({
     : formData.voice_ai_integration_id
       ? 'Unknown integration'
       : OVERVIEW_NOT_CONFIGURED
+
+  const chatProdConnectionDisplay = isChatAgent
+    ? resolveChatProductionConnectionDisplay({
+        chatConnectionType: chatConnectionType,
+        chatConnectionConfig: chatConnectionConfig
+          ? {
+              messaging_channel: chatConnectionConfig.messagingChannel,
+              messaging_telephony_integration_id: chatConnectionConfig.messagingTelephonyIntegrationId,
+              messaging_integration_id: chatConnectionConfig.messagingIntegrationId,
+              meta_whatsapp_phone_number_id: chatConnectionConfig.metaWhatsappPhoneNumberId,
+              messaging_sender_id: chatConnectionConfig.messagingSenderId,
+              api_base_url: chatConnectionConfig.apiBaseUrl,
+              websocket_url: chatConnectionConfig.websocketUrl,
+            }
+          : null,
+        telephonyPhoneNumberId: formData.telephony_phone_number_id,
+        telephonyConfigs: activeConfigs,
+        telephonyNumbers: activeNumbers,
+        voiceIntegration: selectedVoiceIntegration,
+        mainLlmModel: chatConnection?.mainLlmModel,
+      })
+    : null
+  const chatConnType = (chatConnectionType || 'internal_llm').toLowerCase()
 
   const hasPlatformLink = Boolean(formData.voice_ai_integration_id || formData.voice_ai_agent_id)
 
@@ -558,7 +589,7 @@ export default function AgentEditForm({
                     : 'Configure voice stack on the Test Agent tab.'
                 }
               >
-                <dl>
+                <dl className="min-w-0">
                   <OverviewDetailRow
                     label="Status"
                     value={<OverviewConfigBadge configured={testAgentConfigured} />}
@@ -586,24 +617,38 @@ export default function AgentEditForm({
                     : 'Configure integration on the Voice Agent tab.'
                 }
               >
-                <dl>
+                <dl className="min-w-0">
                   <OverviewDetailRow
                     label="Status"
                     value={<OverviewConfigBadge configured={voiceAiConfigured} />}
                   />
-                  <OverviewDetailRow label="Integration" value={voiceAiIntegrationLabel} />
-                  <OverviewDetailRow
-                    label="Provider agent ID"
-                    value={
-                      formData.voice_ai_agent_id?.trim() ? (
-                        <span className="font-mono text-xs font-semibold text-primary-700">
-                          {formData.voice_ai_agent_id.trim()}
-                        </span>
-                      ) : (
-                        OVERVIEW_NOT_CONFIGURED
-                      )
-                    }
-                  />
+                  {isChatAgent && chatConnType === 'provider_chat' ? (
+                    <OverviewDetailRow label="Integration" value={voiceAiIntegrationLabel} />
+                  ) : isChatAgent && chatProdConnectionDisplay ? (
+                    <OverviewDetailRow
+                      label="Prod connection"
+                      value={<ChatProductionConnectionValue display={chatProdConnectionDisplay} />}
+                    />
+                  ) : !isChatAgent ? (
+                    <OverviewDetailRow label="Integration" value={voiceAiIntegrationLabel} />
+                  ) : null}
+                  {(chatConnType === 'provider_chat' || !isChatAgent) && (
+                    <OverviewDetailRow
+                      label="Provider agent ID"
+                      value={
+                        formData.voice_ai_agent_id?.trim() ? (
+                          <span
+                            className="font-mono text-xs font-semibold text-primary-700 block truncate"
+                            title={formData.voice_ai_agent_id.trim()}
+                          >
+                            {formData.voice_ai_agent_id.trim()}
+                          </span>
+                        ) : (
+                          OVERVIEW_NOT_CONFIGURED
+                        )
+                      }
+                    />
+                  )}
                 </dl>
               </OverviewSection>
             </div>

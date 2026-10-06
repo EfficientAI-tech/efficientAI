@@ -262,7 +262,7 @@ export const TELEPHONY_PROVIDER_CONFIG: Record<TelephonyProvider, TelephonyProvi
   },
   [TelephonyProvider.TELNYX]: {
     label: 'Telnyx',
-    logo: null,
+    logo: '/telnyx-mark.png',
     description: 'Voice and SMS',
     fields: [
       { key: 'auth_id', label: 'Connection ID', required: true, type: 'text' },
@@ -273,7 +273,7 @@ export const TELEPHONY_PROVIDER_CONFIG: Record<TelephonyProvider, TelephonyProvi
   },
   [TelephonyProvider.META_WHATSAPP]: {
     label: 'WhatsApp (Meta)',
-    logo: null,
+    logo: '/whatsapp.svg',
     description: 'WhatsApp Cloud API for messaging evals',
     fields: [
       { key: 'auth_id', label: 'Phone number ID', required: true, type: 'text' },

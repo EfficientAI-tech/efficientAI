@@ -16,6 +16,9 @@ import {
 } from 'lucide-react'
 import { agentProductionTabLabel, isChatMedium } from '../../../lib/agentMedium'
 import { connectionTypeLabel } from './create/chatAgentFormUtils'
+import { useOrgTelephony } from '../../../hooks/useOrgTelephony'
+import { resolveChatProductionConnectionFromAgent } from '../../../lib/chatProductionConnection'
+import ChatProductionConnectionValue from './ChatProductionConnectionValue'
 import { CallTypeBadge } from '../../evaluators/components/evaluatorUi'
 import ParamSlider from './ParamSlider'
 import {
@@ -130,9 +133,13 @@ export default function AgentInfoView({
     : 'Production'
 
   const providerPromptText = agent.provider_prompt ? stripCodeFences(agent.provider_prompt) : ''
+  const isChatAgentMedium = isChatMedium(agent.call_medium)
+  const { activeConfigs: telephonyConfigs, activeNumbers: telephonyNumbers } = useOrgTelephony(
+    isChatAgentMedium,
+  )
 
   if (activeTab === 'overview') {
-    const isChatAgent = isChatMedium(agent.call_medium)
+    const isChatAgent = isChatAgentMedium
     const silenceSecs = agent.silence_hangup_secs ?? 15
     const hasVoiceBundle = Boolean(agent.voice_bundle_id && linkedBundle)
     const testAgentConfigured = hasVoiceBundle && linkedBundle!.is_active !== false
@@ -173,6 +180,14 @@ export default function AgentInfoView({
       : voiceAiIntegrationId
         ? 'Unknown integration'
         : OVERVIEW_NOT_CONFIGURED
+
+    const chatProdConnectionDisplay = isChatAgent
+      ? resolveChatProductionConnectionFromAgent(agent, {
+          telephonyConfigs,
+          telephonyNumbers,
+          voiceIntegration,
+        })
+      : null
 
     return (
       <div className="space-y-5 w-full min-w-0">
@@ -233,8 +248,14 @@ export default function AgentInfoView({
                   <>
                     <OverviewStatCard
                       icon={Globe}
-                      label="Connection"
-                      value={connectionTypeLabel(agent.chat_connection_type)}
+                      label="Prod connection"
+                      value={
+                        chatProdConnectionDisplay ? (
+                          <ChatProductionConnectionValue display={chatProdConnectionDisplay} compact />
+                        ) : (
+                          connectionTypeLabel(agent.chat_connection_type)
+                        )
+                      }
                       accent="violet"
                     />
                     {agent.main_llm_model ? (
@@ -301,7 +322,7 @@ export default function AgentInfoView({
                   : 'Internal voice stack for playground and evaluator runs.'
               }
             >
-              <dl>
+              <dl className="min-w-0">
                 <OverviewDetailRow
                   label="Status"
                   value={
@@ -343,7 +364,7 @@ export default function AgentInfoView({
                   : 'Provider agent under evaluation.'
               }
             >
-              <dl>
+              <dl className="min-w-0">
                 <OverviewDetailRow
                   label="Status"
                   value={
@@ -352,7 +373,14 @@ export default function AgentInfoView({
                     />
                   }
                 />
-                {isChatAgent && chatConn !== 'provider_chat' ? (
+                {isChatAgent && chatConn === 'provider_chat' ? (
+                  <OverviewDetailRow label="Integration" value={voiceAiIntegrationLabel} />
+                ) : isChatAgent && chatProdConnectionDisplay ? (
+                  <OverviewDetailRow
+                    label="Prod connection"
+                    value={<ChatProductionConnectionValue display={chatProdConnectionDisplay} />}
+                  />
+                ) : isChatAgent ? (
                   <OverviewDetailRow
                     label="Connection"
                     value={connectionTypeLabel(agent.chat_connection_type)}
@@ -365,7 +393,10 @@ export default function AgentInfoView({
                     label="Provider agent ID"
                     value={
                       hasVoiceAiAgentId ? (
-                        <span className="font-mono text-xs font-semibold text-primary-700">
+                        <span
+                          className="font-mono text-xs font-semibold text-primary-700 block truncate"
+                          title={voiceAiAgentId}
+                        >
                           {voiceAiAgentId}
                         </span>
                       ) : (
@@ -563,6 +594,13 @@ export default function AgentInfoView({
   }
 
   const isChatProductionTab = isChatMedium(agent.call_medium)
+  const chatProdConnectionDisplay = isChatProductionTab
+    ? resolveChatProductionConnectionFromAgent(agent, {
+        telephonyConfigs,
+        telephonyNumbers,
+        voiceIntegration,
+      })
+    : null
 
   return (
     <div className="space-y-6">
@@ -593,6 +631,15 @@ export default function AgentInfoView({
           </Button>
         ) : null}
       </div>
+
+      {isChatProductionTab && chatProdConnectionDisplay && !hasPlatformLink ? (
+        <div className="rounded-lg border border-gray-200 bg-gray-50/80 px-4 py-3 min-w-0 overflow-hidden">
+          <p className="text-xs font-medium uppercase tracking-wide text-gray-500 mb-2">
+            Prod connection
+          </p>
+          <ChatProductionConnectionValue display={chatProdConnectionDisplay} />
+        </div>
+      ) : null}
 
       {hasPlatformLink && (
       <div className="border border-blue-200 rounded-lg p-5 bg-blue-50">
