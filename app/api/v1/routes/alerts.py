@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 from app.database import get_db
 from app.dependencies import get_organization_id, require_enterprise_feature
+from app.core.auth import Principal, get_principal
 from app.models.database import Alert, AlertHistory
 from app.models.enums import AlertStatus, AlertHistoryStatus
 from app.models.schemas import (
@@ -58,6 +59,7 @@ def create_alert(
         organization_id=organization_id,
         name=alert_data.name,
         description=alert_data.description,
+        data_source=alert_data.data_source.value,
         metric_type=alert_data.metric_type.value,
         aggregation=alert_data.aggregation.value,
         operator=alert_data.operator.value,
@@ -67,6 +69,7 @@ def create_alert(
         notify_frequency=alert_data.notify_frequency.value,
         notify_emails=alert_data.notify_emails,
         notify_webhooks=alert_data.notify_webhooks,
+        notify_pagerduty_routing_keys=alert_data.notify_pagerduty_routing_keys,
         status=AlertStatus.ACTIVE.value,
     )
     db.add(alert)
@@ -150,6 +153,9 @@ def update_alert(
     if alert_data.description is not None:
         alert.description = alert_data.description
 
+    if alert_data.data_source is not None:
+        alert.data_source = alert_data.data_source.value
+
     if alert_data.metric_type is not None:
         alert.metric_type = alert_data.metric_type.value
 
@@ -176,6 +182,9 @@ def update_alert(
 
     if alert_data.notify_webhooks is not None:
         alert.notify_webhooks = alert_data.notify_webhooks
+
+    if alert_data.notify_pagerduty_routing_keys is not None:
+        alert.notify_pagerduty_routing_keys = alert_data.notify_pagerduty_routing_keys
 
     if alert_data.status is not None:
         alert.status = alert_data.status.value
@@ -247,6 +256,9 @@ class TestNotificationRequest(BaseModel):
     """Schema for testing notifications."""
     webhook_url: Optional[str] = Field(None, description="Slack webhook URL to test")
     email: Optional[str] = Field(None, description="Email address to test")
+    pagerduty_routing_key: Optional[str] = Field(
+        None, description="PagerDuty Events API v2 routing key to test"
+    )
 
 
 class AlertEvaluationResponse(BaseModel):
@@ -407,11 +419,26 @@ def test_alert_notification(
                 )
                 results.append(result)
 
+    if request.pagerduty_routing_key:
+        result = alert_notification_service.send_pagerduty_notification(
+            routing_key=request.pagerduty_routing_key,
+            **common_params,
+        )
+        results.append(result)
+    elif getattr(alert, "notify_pagerduty_routing_keys", None):
+        for routing_key in alert.notify_pagerduty_routing_keys:
+            if routing_key and str(routing_key).strip():
+                result = alert_notification_service.send_pagerduty_notification(
+                    routing_key=str(routing_key).strip(),
+                    **common_params,
+                )
+                results.append(result)
+
     if not results:
         raise HTTPException(
             status_code=400,
-            detail="No notification channels configured. Provide a webhook_url or email, "
-                   "or configure notify_webhooks/notify_emails on the alert.",
+            detail="No notification channels configured. Provide webhook_url, email, or "
+                   "pagerduty_routing_key, or configure channels on the alert.",
         )
 
     return {
@@ -516,6 +543,7 @@ def update_alert_history(
     history_id: UUID,
     update_data: AlertHistoryUpdate,
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ):
     """Update alert history (acknowledge or resolve)."""
@@ -536,13 +564,19 @@ def update_alert_history(
         # Set timestamps based on status transition
         if new_status == AlertHistoryStatus.ACKNOWLEDGED.value and history.acknowledged_at is None:
             history.acknowledged_at = datetime.now(timezone.utc)
-            if update_data.acknowledged_by:
-                history.acknowledged_by = update_data.acknowledged_by
+            history.acknowledged_by = (
+                update_data.acknowledged_by
+                or principal.email
+                or (str(principal.user_id) if principal.user_id else None)
+            )
         
         if new_status == AlertHistoryStatus.RESOLVED.value and history.resolved_at is None:
             history.resolved_at = datetime.now(timezone.utc)
-            if update_data.resolved_by:
-                history.resolved_by = update_data.resolved_by
+            history.resolved_by = (
+                update_data.resolved_by
+                or principal.email
+                or (str(principal.user_id) if principal.user_id else None)
+            )
             if update_data.resolution_notes:
                 history.resolution_notes = update_data.resolution_notes
         

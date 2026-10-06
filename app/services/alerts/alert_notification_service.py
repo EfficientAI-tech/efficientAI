@@ -294,6 +294,97 @@ class AlertNotificationService:
             }
 
     # ============================================
+    # PAGERDUTY NOTIFICATIONS
+    # ============================================
+
+    def send_pagerduty_notification(
+        self,
+        routing_key: str,
+        alert_name: str,
+        alert_description: Optional[str],
+        metric_type: str,
+        aggregation: str,
+        operator: str,
+        threshold_value: float,
+        triggered_value: float,
+        time_window_minutes: int,
+        triggered_at: datetime,
+        agent_names: Optional[List[str]] = None,
+        alert_id: Optional[str] = None,
+        history_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        try:
+            metric_display = metric_type.replace("_", " ").title()
+            agent_scope = ", ".join(agent_names) if agent_names else "All Agents"
+            severity_label = self._get_severity_label(
+                operator, threshold_value, triggered_value
+            )
+            pd_severity = {
+                "CRITICAL": "critical",
+                "WARNING": "warning",
+                "ALERT": "error",
+            }.get(severity_label, "error")
+
+            payload = {
+                "routing_key": routing_key.strip(),
+                "event_action": "trigger",
+                "dedup_key": f"efficientai-alert-{alert_id or 'unknown'}",
+                "payload": {
+                    "summary": f"EfficientAI Alert: {alert_name} ({metric_display} {triggered_value})",
+                    "severity": pd_severity,
+                    "source": "EfficientAI",
+                    "component": "alerting",
+                    "custom_details": {
+                        "alert_name": alert_name,
+                        "description": alert_description,
+                        "metric": metric_display,
+                        "aggregation": aggregation.upper(),
+                        "condition": f"{operator} {threshold_value}",
+                        "actual_value": triggered_value,
+                        "time_window_minutes": time_window_minutes,
+                        "agent_scope": agent_scope,
+                        "triggered_at": triggered_at.strftime("%Y-%m-%d %H:%M:%S UTC"),
+                        "history_id": history_id,
+                    },
+                },
+            }
+
+            with httpx.Client(timeout=30.0) as client:
+                response = client.post(
+                    "https://events.pagerduty.com/v2/enqueue",
+                    json=payload,
+                )
+
+            if response.status_code in (200, 202):
+                logger.info(
+                    f"[AlertNotification] PagerDuty notification sent for alert '{alert_name}'"
+                )
+                return {
+                    "success": True,
+                    "channel": "pagerduty",
+                    "routing_key": routing_key[:8] + "...",
+                }
+
+            logger.error(
+                f"[AlertNotification] PagerDuty returned {response.status_code}: {response.text}"
+            )
+            return {
+                "success": False,
+                "channel": "pagerduty",
+                "error": f"HTTP {response.status_code}: {response.text}",
+            }
+        except Exception as e:
+            logger.error(
+                f"[AlertNotification] Failed to send PagerDuty notification: {e}",
+                exc_info=True,
+            )
+            return {
+                "success": False,
+                "channel": "pagerduty",
+                "error": str(e),
+            }
+
+    # ============================================
     # BATCH NOTIFICATION DISPATCHER
     # ============================================
 
@@ -344,6 +435,15 @@ class AlertNotificationService:
                         **common_params,
                     )
                     results.append(result)
+
+        routing_keys = getattr(alert, "notify_pagerduty_routing_keys", None) or []
+        for routing_key in routing_keys:
+            if routing_key and str(routing_key).strip():
+                result = self.send_pagerduty_notification(
+                    routing_key=str(routing_key).strip(),
+                    **common_params,
+                )
+                results.append(result)
 
         logger.info(
             f"[AlertNotification] Dispatched {len(results)} notifications for alert '{alert.name}': "

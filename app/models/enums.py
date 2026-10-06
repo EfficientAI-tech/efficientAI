@@ -243,6 +243,14 @@ class CallRecordingStatus(str, enum.Enum):
     UPDATED = "updated"
 
 
+class AlertDataSource(str, enum.Enum):
+    """Where alert metrics are computed from."""
+
+    EVALUATIONS = "evaluations"
+    PRODUCTION_CALLS = "production_calls"
+    PRODUCTION_TRACES = "production_traces"
+
+
 class AlertMetricType(str, enum.Enum):
     """Alert metric type enumeration."""
     NUMBER_OF_CALLS = "number_of_calls"

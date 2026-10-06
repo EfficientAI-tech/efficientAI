@@ -10,7 +10,7 @@ from app.models.enums import (
     LanguageEnum, CallTypeEnum, CallMediumEnum, ChatConnectionTypeEnum, ChatEvalModeEnum, SimulationMediumEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
     BackgroundNoiseSourceEnum,
     IntegrationPlatform, ModelProvider, CredentialRoutingMode, GatewayInterfaceMode, GatewayTypeMode, VoiceBundleType, TestAgentConversationStatus,
-    MetricType, MetricCategory, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
+    MetricType, MetricCategory, MetricTrigger, CallRecordingStatus, AlertDataSource, AlertMetricType, AlertAggregation,
     AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus, CronJobStatus,
     CallImportStatus, CallImportRowStatus, CallImportParameterType,
 )
@@ -2655,6 +2655,7 @@ class AlertCreate(BaseModel):
     """Schema for creating an alert."""
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
+    data_source: AlertDataSource = AlertDataSource.EVALUATIONS
     
     # Metric condition
     metric_type: AlertMetricType = AlertMetricType.NUMBER_OF_CALLS
@@ -2670,6 +2671,9 @@ class AlertCreate(BaseModel):
     notify_frequency: AlertNotifyFrequency = AlertNotifyFrequency.IMMEDIATE
     notify_emails: Optional[List[str]] = Field(default=None, description="List of email addresses to notify")
     notify_webhooks: Optional[List[str]] = Field(default=None, description="List of webhook URLs (Slack, etc.)")
+    notify_pagerduty_routing_keys: Optional[List[str]] = Field(
+        default=None, description="PagerDuty Events API v2 routing keys"
+    )
     
     model_config = ConfigDict(json_schema_extra={
             "example": {
@@ -2692,6 +2696,7 @@ class AlertUpdate(BaseModel):
     """Schema for updating an alert."""
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
+    data_source: Optional[AlertDataSource] = None
     
     # Metric condition
     metric_type: Optional[AlertMetricType] = None
@@ -2707,6 +2712,7 @@ class AlertUpdate(BaseModel):
     notify_frequency: Optional[AlertNotifyFrequency] = None
     notify_emails: Optional[List[str]] = None
     notify_webhooks: Optional[List[str]] = None
+    notify_pagerduty_routing_keys: Optional[List[str]] = None
     
     # Status
     status: Optional[AlertStatus] = None
@@ -2718,6 +2724,7 @@ class AlertResponse(BaseModel):
     organization_id: UUID
     name: str
     description: Optional[str]
+    data_source: AlertDataSource = AlertDataSource.EVALUATIONS
     
     # Metric condition
     metric_type: AlertMetricType
@@ -2733,6 +2740,7 @@ class AlertResponse(BaseModel):
     notify_frequency: AlertNotifyFrequency
     notify_emails: Optional[List[str]]
     notify_webhooks: Optional[List[str]]
+    notify_pagerduty_routing_keys: Optional[List[str]] = None
     
     # Status
     status: AlertStatus
@@ -2741,6 +2749,22 @@ class AlertResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     created_by: Optional[str]
+
+    @field_validator('data_source', mode='before')
+    @classmethod
+    def convert_data_source(cls, v):
+        if v is None:
+            return AlertDataSource.EVALUATIONS
+        if isinstance(v, str):
+            v_lower = v.lower()
+            try:
+                return AlertDataSource(v_lower)
+            except ValueError:
+                for enum_member in AlertDataSource:
+                    if enum_member.value == v_lower:
+                        return enum_member
+                raise ValueError(f"Invalid AlertDataSource value: {v}")
+        return v
 
     @field_validator('metric_type', mode='before')
     @classmethod
@@ -2901,7 +2925,18 @@ class CronJobCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     cron_expression: str = Field(..., min_length=1, max_length=100, description="Cron expression (e.g., '0 9 * * 1-5')")
     timezone: str = Field(default="UTC", max_length=100, description="Timezone for the cron schedule")
-    max_runs: int = Field(default=10, ge=1, le=1000, description="Maximum number of times to run")
+    max_runs: int = Field(
+        default=0,
+        ge=0,
+        le=1000,
+        description="Maximum runs (0 = unlimited)",
+    )
+    interval_days: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=365,
+        description="If set, schedule by fixed day interval instead of cron only",
+    )
     evaluator_ids: Optional[List[UUID]] = Field(
         None,
         description="Evaluator IDs to trigger (expanded with evaluator_suite_ids when both are set).",
@@ -2927,7 +2962,8 @@ class CronJobUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     cron_expression: Optional[str] = Field(None, min_length=1, max_length=100)
     timezone: Optional[str] = Field(None, max_length=100)
-    max_runs: Optional[int] = Field(None, ge=1, le=1000)
+    max_runs: Optional[int] = Field(None, ge=0, le=1000)
+    interval_days: Optional[int] = Field(None, ge=1, le=365)
     evaluator_ids: Optional[List[UUID]] = None
     evaluator_suite_ids: Optional[List[UUID]] = None
     status: Optional[CronJobStatus] = None

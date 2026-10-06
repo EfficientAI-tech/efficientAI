@@ -1,8 +1,8 @@
 """Alert evaluation service for checking alert conditions and triggering notifications."""
 
 import operator as op_module
-from datetime import datetime, timedelta
-from typing import Dict, Any, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Dict, Any, List, Optional
 from uuid import UUID
 
 from loguru import logger
@@ -25,6 +25,11 @@ from app.models.enums import (
     EvaluatorResultStatus,
 )
 from app.services.alerts.alert_notification_service import alert_notification_service
+from app.services.alerts.production_metrics import (
+    compute_production_calls_metric,
+    compute_production_traces_metric,
+)
+from app.models.enums import AlertDataSource
 
 
 # Operator mapping
@@ -95,8 +100,8 @@ class AlertEvaluationService:
 
                 if result.get("triggered"):
                     results["triggered"] += 1
-                elif result.get("skipped_cooldown"):
-                    results["skipped_cooldown"] += 1
+                    if result.get("skipped_cooldown"):
+                        results["skipped_cooldown"] += 1
                 else:
                     results["not_triggered"] += 1
 
@@ -134,20 +139,8 @@ class AlertEvaluationService:
         alert_name = alert.name
         logger.debug(f"[AlertEvaluation] Evaluating alert '{alert_name}'")
 
-        # Step 1: Check notification cooldown
-        if not self._should_notify(alert, db):
-            logger.debug(
-                f"[AlertEvaluation] Alert '{alert_name}' skipped due to notification cooldown"
-            )
-            return {
-                "alert_id": str(alert.id),
-                "alert_name": alert_name,
-                "triggered": False,
-                "skipped_cooldown": True,
-                "reason": "Notification cooldown active",
-            }
+        send_notifications = self._should_notify(alert, db)
 
-        # Step 2: Compute the metric value
         metric_value = self._compute_metric(alert, db)
 
         if metric_value is None:
@@ -187,11 +180,11 @@ class AlertEvaluationService:
         )
 
         if is_triggered:
-            # Step 4: Create alert history record and send notifications
             return self._trigger_alert(
                 alert=alert,
                 triggered_value=metric_value,
                 db=db,
+                send_notifications=send_notifications,
             )
 
         return {
@@ -240,12 +233,30 @@ class AlertEvaluationService:
         time_window = alert.time_window_minutes
         organization_id = alert.organization_id
         agent_ids = alert.agent_ids  # JSON list of agent UUID strings, or None
+        data_source = getattr(alert, "data_source", None) or AlertDataSource.EVALUATIONS.value
 
-        # Calculate the time boundary
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         window_start = now - timedelta(minutes=time_window)
 
-        # Route to the appropriate metric calculator
+        if data_source == AlertDataSource.PRODUCTION_CALLS.value:
+            return compute_production_calls_metric(
+                db,
+                organization_id,
+                agent_ids,
+                window_start,
+                metric_type,
+                aggregation,
+            )
+        if data_source == AlertDataSource.PRODUCTION_TRACES.value:
+            return compute_production_traces_metric(
+                organization_id,
+                agent_ids,
+                window_start,
+                metric_type,
+                aggregation,
+            )
+
+        # Route to the appropriate metric calculator (evaluations)
         if metric_type in (
             AlertMetricType.NUMBER_OF_CALLS.value,
             "number_of_calls",
@@ -495,7 +506,10 @@ class AlertEvaluationService:
         )
 
         if last_notified and last_notified.notified_at:
-            elapsed = (datetime.utcnow() - last_notified.notified_at).total_seconds()
+            notified_at = last_notified.notified_at
+            if notified_at.tzinfo is None:
+                notified_at = notified_at.replace(tzinfo=timezone.utc)
+            elapsed = (datetime.now(timezone.utc) - notified_at).total_seconds()
             if elapsed < cooldown_seconds:
                 logger.debug(
                     f"[AlertEvaluation] Alert '{alert.name}' cooldown: "
@@ -514,11 +528,13 @@ class AlertEvaluationService:
         alert: Alert,
         triggered_value: float,
         db: Session,
+        *,
+        send_notifications: bool = True,
     ) -> Dict[str, Any]:
         """
-        Trigger an alert: create history record and send notifications.
+        Trigger an alert: create history record and optionally send notifications.
         """
-        triggered_at = datetime.utcnow()
+        triggered_at = datetime.now(timezone.utc)
 
         # Resolve agent names for notification context
         agent_names = None
@@ -546,6 +562,7 @@ class AlertEvaluationService:
             threshold_value=alert.threshold_value,
             status=AlertHistoryStatus.TRIGGERED.value,
             context_data={
+                "data_source": getattr(alert, "data_source", None) or "evaluations",
                 "metric_type": alert.metric_type,
                 "aggregation": alert.aggregation,
                 "operator": alert.operator,
@@ -563,27 +580,34 @@ class AlertEvaluationService:
             f"value={triggered_value}, threshold={alert.operator} {alert.threshold_value}"
         )
 
-        # Send notifications
-        notification_results = alert_notification_service.send_all_notifications(
-            alert=alert,
-            triggered_value=triggered_value,
-            triggered_at=triggered_at,
-            agent_names=agent_names,
-            history_id=str(history.id),
-        )
+        notification_results: List[Dict[str, Any]] = []
+        if send_notifications:
+            notification_results = alert_notification_service.send_all_notifications(
+                alert=alert,
+                triggered_value=triggered_value,
+                triggered_at=triggered_at,
+                agent_names=agent_names,
+                history_id=str(history.id),
+            )
 
-        # Update history with notification details
-        any_success = any(r.get("success") for r in notification_results)
-        history.notified_at = datetime.utcnow() if any_success else None
-        history.notification_details = {
-            "results": notification_results,
-            "total_sent": len(notification_results),
-            "successful": sum(1 for r in notification_results if r.get("success")),
-            "failed": sum(1 for r in notification_results if not r.get("success")),
-        }
-
-        if any_success:
-            history.status = AlertHistoryStatus.NOTIFIED.value
+            any_success = any(r.get("success") for r in notification_results)
+            history.notified_at = datetime.now(timezone.utc) if any_success else None
+            history.notification_details = {
+                "results": notification_results,
+                "total_sent": len(notification_results),
+                "successful": sum(1 for r in notification_results if r.get("success")),
+                "failed": sum(1 for r in notification_results if not r.get("success")),
+            }
+            if any_success:
+                history.status = AlertHistoryStatus.NOTIFIED.value
+        else:
+            history.notification_details = {
+                "results": [],
+                "total_sent": 0,
+                "successful": 0,
+                "failed": 0,
+                "skipped_reason": "notification_cooldown",
+            }
 
         db.commit()
 
@@ -595,6 +619,7 @@ class AlertEvaluationService:
             "threshold": alert.threshold_value,
             "operator": alert.operator,
             "history_id": str(history.id),
+            "skipped_cooldown": not send_notifications,
             "notifications_sent": len(notification_results),
             "notifications_successful": sum(
                 1 for r in notification_results if r.get("success")

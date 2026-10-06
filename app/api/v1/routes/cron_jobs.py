@@ -18,6 +18,7 @@ from app.models.schemas import (
     CronJobUpdate,
     CronJobResponse,
 )
+from app.services.cron.scheduling import calculate_next_run, calculate_next_run_for_job
 
 router = APIRouter(prefix="/cron-jobs", tags=["cron-jobs"])
 
@@ -134,22 +135,25 @@ def create_cron_job(
                 detail=f"Evaluator not found: {evaluator_id}"
             )
 
-    # Calculate next run time
-    next_run = calculate_next_run(cron_job_data.cron_expression, cron_job_data.timezone)
+    job_config: dict = {}
+    if cron_job_data.interval_days:
+        job_config["interval_days"] = cron_job_data.interval_days
 
     cron_job = CronJob(
         organization_id=organization_id,
         name=cron_job_data.name,
         job_type="evaluator_run",
         is_system=False,
+        config=job_config,
         cron_expression=cron_job_data.cron_expression,
         timezone=cron_job_data.timezone,
         max_runs=cron_job_data.max_runs,
         current_runs=0,
         evaluator_ids=[str(eid) for eid in resolved_evaluator_ids],
         status=CronJobStatus.ACTIVE.value,
-        next_run_at=next_run,
+        next_run_at=None,
     )
+    cron_job.next_run_at = calculate_next_run_for_job(cron_job)
     db.add(cron_job)
     db.commit()
     db.refresh(cron_job)
@@ -266,6 +270,15 @@ def update_cron_job(
     if cron_job_data.max_runs is not None:
         cron_job.max_runs = cron_job_data.max_runs
 
+    if cron_job_data.interval_days is not None:
+        config = dict(cron_job.config or {})
+        if cron_job_data.interval_days:
+            config["interval_days"] = cron_job_data.interval_days
+        else:
+            config.pop("interval_days", None)
+        cron_job.config = config
+        recalculate_next_run = True
+
     if cron_job_data.evaluator_ids is not None or cron_job_data.evaluator_suite_ids is not None:
         resolved_evaluator_ids = _expand_evaluator_ids_for_cron(
             db,
@@ -295,12 +308,47 @@ def update_cron_job(
 
     # Recalculate next run if needed
     if recalculate_next_run and cron_job.status == CronJobStatus.ACTIVE.value:
-        cron_job.next_run_at = calculate_next_run(cron_job.cron_expression, cron_job.timezone)
+        cron_job.next_run_at = calculate_next_run_for_job(cron_job)
 
     db.commit()
     db.refresh(cron_job)
 
     return cron_job
+
+
+@router.post("/{cron_job_id}/run", status_code=202)
+def run_cron_job_now(
+    cron_job_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    """Enqueue an immediate evaluator run for this cron job."""
+    cron_job = db.query(CronJob).filter(
+        and_(
+            CronJob.id == cron_job_id,
+            CronJob.organization_id == organization_id,
+        )
+    ).first()
+
+    if not cron_job:
+        raise HTTPException(status_code=404, detail="Cron job not found")
+
+    if cron_job.is_system:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="System cron jobs cannot be run manually",
+        )
+
+    if cron_job.status == CronJobStatus.COMPLETED.value:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Completed cron jobs cannot be run",
+        )
+
+    from app.services.cron.job_dispatch import enqueue_cron_job
+
+    meta = enqueue_cron_job(cron_job)
+    return {"message": "Cron job enqueued", **meta}
 
 
 @router.delete("/{cron_job_id}", status_code=204)
@@ -369,7 +417,7 @@ def toggle_cron_job_status(
     else:
         cron_job.status = CronJobStatus.ACTIVE.value
         # Recalculate next run time
-        cron_job.next_run_at = calculate_next_run(cron_job.cron_expression, cron_job.timezone)
+        cron_job.next_run_at = calculate_next_run_for_job(cron_job)
 
     db.commit()
     db.refresh(cron_job)

@@ -5,6 +5,7 @@ import { apiClient } from '../../lib/api'
 import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
 import { Plus, Trash2, X, Bell, Mail, Globe, Zap, CheckCircle, AlertTriangle } from 'lucide-react'
+import { DATA_SOURCES, metricTypesForDataSource } from './alertFormConstants'
 
 // Types
 interface Alert {
@@ -31,15 +32,6 @@ interface Agent {
   name: string
   agent_id?: string
 }
-
-const METRIC_TYPES = [
-  { value: 'number_of_calls', label: 'Number of Calls' },
-  { value: 'call_duration', label: 'Call Duration' },
-  { value: 'error_rate', label: 'Error Rate' },
-  { value: 'success_rate', label: 'Success Rate' },
-  { value: 'latency', label: 'Latency' },
-  { value: 'custom', label: 'Custom' },
-]
 
 const AGGREGATIONS = [
   { value: 'sum', label: 'Sum' },
@@ -74,6 +66,7 @@ export default function Alerts() {
   const [formData, setFormData] = useState({
     name: '',
     description: '',
+    data_source: 'evaluations',
     metric_type: 'number_of_calls',
     aggregation: 'sum',
     operator: '>',
@@ -83,6 +76,7 @@ export default function Alerts() {
     notify_frequency: 'immediate',
     notify_emails: [''],
     notify_webhooks: [''],
+    notify_pagerduty_routing_keys: [''],
   })
 
   // Fetch alerts
@@ -147,6 +141,7 @@ export default function Alerts() {
     setFormData({
       name: '',
       description: '',
+      data_source: 'evaluations',
       metric_type: 'number_of_calls',
       aggregation: 'sum',
       operator: '>',
@@ -156,6 +151,7 @@ export default function Alerts() {
       notify_frequency: 'immediate',
       notify_emails: [''],
       notify_webhooks: [''],
+      notify_pagerduty_routing_keys: [''],
     })
   }
 
@@ -174,6 +170,7 @@ export default function Alerts() {
     const payload = {
       name: formData.name,
       description: formData.description || null,
+      data_source: formData.data_source,
       metric_type: formData.metric_type,
       aggregation: formData.aggregation,
       operator: formData.operator,
@@ -183,6 +180,7 @@ export default function Alerts() {
       notify_frequency: formData.notify_frequency,
       notify_emails: formData.notify_emails.filter(e => e.trim()),
       notify_webhooks: formData.notify_webhooks.filter(w => w.trim()),
+      notify_pagerduty_routing_keys: formData.notify_pagerduty_routing_keys.filter(k => k.trim()),
     }
 
     if (editingAlert) {
@@ -237,6 +235,29 @@ export default function Alerts() {
     webhooks[index] = value
     setFormData({ ...formData, notify_webhooks: webhooks })
   }
+
+  const addPagerDutyKey = () => {
+    setFormData({
+      ...formData,
+      notify_pagerduty_routing_keys: [...formData.notify_pagerduty_routing_keys, ''],
+    })
+  }
+
+  const removePagerDutyKey = (index: number) => {
+    const keys = formData.notify_pagerduty_routing_keys.filter((_, i) => i !== index)
+    setFormData({
+      ...formData,
+      notify_pagerduty_routing_keys: keys.length ? keys : [''],
+    })
+  }
+
+  const updatePagerDutyKey = (index: number, value: string) => {
+    const keys = [...formData.notify_pagerduty_routing_keys]
+    keys[index] = value
+    setFormData({ ...formData, notify_pagerduty_routing_keys: keys })
+  }
+
+  const metricTypeOptions = metricTypesForDataSource(formData.data_source)
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -499,6 +520,25 @@ export default function Alerts() {
                 {/* Metric Condition */}
                 <div className="space-y-4">
                   <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">Metric Condition</h3>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Data source</label>
+                    <select
+                      value={formData.data_source}
+                      onChange={(e) => {
+                        const nextSource = e.target.value
+                        const allowed = metricTypesForDataSource(nextSource)
+                        const nextMetric = allowed.some(m => m.value === formData.metric_type)
+                          ? formData.metric_type
+                          : allowed[0]?.value || 'number_of_calls'
+                        setFormData({ ...formData, data_source: nextSource, metric_type: nextMetric })
+                      }}
+                      className="w-full md:w-96 px-4 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
+                    >
+                      {DATA_SOURCES.map(s => (
+                        <option key={s.value} value={s.value}>{s.label}</option>
+                      ))}
+                    </select>
+                  </div>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -509,7 +549,7 @@ export default function Alerts() {
                         onChange={(e) => setFormData({ ...formData, metric_type: e.target.value })}
                         className="w-full px-4 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
                       >
-                        {METRIC_TYPES.map(m => (
+                        {metricTypeOptions.map(m => (
                           <option key={m.value} value={m.value}>{m.label}</option>
                         ))}
                       </select>
@@ -671,7 +711,7 @@ export default function Alerts() {
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
                       <Globe className="w-4 h-4 inline mr-2" />
-                      Webhook Notifications (Slack, etc.)
+                      Slack webhooks
                     </label>
                     <div className="space-y-2">
                       {formData.notify_webhooks.map((webhook, index) => (
@@ -698,6 +738,39 @@ export default function Alerts() {
                         className="text-sm text-gray-600 hover:text-gray-900 font-medium"
                       >
                         + Add another webhook
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      PagerDuty routing keys
+                    </label>
+                    <div className="space-y-2">
+                      {formData.notify_pagerduty_routing_keys.map((key, index) => (
+                        <div key={index} className="flex gap-2">
+                          <input
+                            type="password"
+                            value={key}
+                            onChange={(e) => updatePagerDutyKey(index, e.target.value)}
+                            placeholder="Events API v2 integration key"
+                            className="flex-1 px-4 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => removePagerDutyKey(index)}
+                            className="p-3 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                          >
+                            <X className="w-5 h-5" />
+                          </button>
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={addPagerDutyKey}
+                        className="text-sm text-gray-600 hover:text-gray-900 font-medium"
+                      >
+                        + Add PagerDuty key
                       </button>
                     </div>
                   </div>

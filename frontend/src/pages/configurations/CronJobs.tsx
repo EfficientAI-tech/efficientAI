@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
 import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
-import { Plus, Edit, Trash2, X, Play, Pause, Clock, Calendar, Globe, Info } from 'lucide-react'
+import { Plus, Edit, Trash2, X, Play, Pause, Clock, Calendar, Globe, Info, Zap } from 'lucide-react'
 import { CronJobStatus } from '../../types/api'
 import { useToast } from '../../hooks/useToast'
 
@@ -43,6 +43,8 @@ const CRON_PRESETS = [
   { value: '0 0 * * 1', label: 'Weekly (Monday)', description: 'Runs every Monday at 00:00' },
   { value: '0 9 * * 1-5', label: 'Weekdays at 9 AM', description: 'Runs Mon-Fri at 09:00' },
   { value: '0 0 1 * *', label: 'Monthly', description: 'Runs on the 1st of every month' },
+  { value: '0 0 1,15 * *', label: 'Twice monthly (1st & 15th)', description: 'Runs on the 1st and 15th at midnight' },
+  { value: 'interval:14', label: 'Every 14 days (rolling)', description: 'Fixed interval from each run' },
   { value: 'custom', label: 'Custom', description: 'Enter your own cron expression' },
 ]
 
@@ -75,11 +77,11 @@ export default function CronJobs() {
     name: '',
     cron_expression: '0 0 * * *',
     timezone: 'UTC',
-    max_runs: 10,
+    max_runs: 0,
+    interval_days: null as number | null,
     evaluator_ids: [] as string[],
   })
 
-  // Fetch cron jobs - handle case where backend endpoint doesn't exist yet
   const { data: cronJobs = [], isLoading, isError } = useQuery({
     queryKey: ['cron-jobs'],
     queryFn: () => apiClient.listCronJobs(),
@@ -149,6 +151,18 @@ export default function CronJobs() {
     },
   })
 
+  const runNowMutation = useMutation({
+    mutationFn: (id: string) => apiClient.runCronJobNow(id),
+    onSuccess: () => {
+      showToast('Cron job enqueued', 'success')
+      queryClient.invalidateQueries({ queryKey: ['cron-jobs'] })
+    },
+    onError: (error: any) => {
+      const message = error.response?.data?.detail || 'Failed to run cron job'
+      showToast(message, 'error')
+    },
+  })
+
   const toggleMutation = useMutation({
     mutationFn: (id: string) => apiClient.toggleCronJobStatus(id),
     onSuccess: () => {
@@ -188,7 +202,8 @@ export default function CronJobs() {
       name: '',
       cron_expression: '0 0 * * *',
       timezone: 'UTC',
-      max_runs: 10,
+      max_runs: 0,
+      interval_days: null,
       evaluator_ids: [],
     })
     setSelectedPreset('0 0 * * *')
@@ -207,6 +222,7 @@ export default function CronJobs() {
       cron_expression: cronJob.cron_expression,
       timezone: cronJob.timezone,
       max_runs: cronJob.max_runs,
+      interval_days: null,
       evaluator_ids: cronJob.evaluator_ids || [],
     })
     // Check if the cron expression matches a preset
@@ -217,9 +233,19 @@ export default function CronJobs() {
 
   const handlePresetChange = (presetValue: string) => {
     setSelectedPreset(presetValue)
-    if (presetValue !== 'custom') {
-      setFormData(prev => ({ ...prev, cron_expression: presetValue }))
+    if (presetValue === 'custom') {
+      return
     }
+    if (presetValue.startsWith('interval:')) {
+      const days = parseInt(presetValue.split(':')[1], 10)
+      setFormData(prev => ({
+        ...prev,
+        cron_expression: '0 0 * * *',
+        interval_days: days,
+      }))
+      return
+    }
+    setFormData(prev => ({ ...prev, cron_expression: presetValue, interval_days: null }))
   }
 
   const handleSubmit = () => {
@@ -235,8 +261,8 @@ export default function CronJobs() {
       alert('Please select at least one evaluator')
       return
     }
-    if (formData.max_runs < 1) {
-      alert('Number of runs must be at least 1')
+    if (formData.max_runs < 0) {
+      alert('Number of runs cannot be negative (use 0 for unlimited)')
       return
     }
 
@@ -245,6 +271,7 @@ export default function CronJobs() {
       cron_expression: formData.cron_expression,
       timezone: formData.timezone,
       max_runs: formData.max_runs,
+      interval_days: formData.interval_days,
       evaluator_ids: formData.evaluator_ids,
     }
 
@@ -276,7 +303,7 @@ export default function CronJobs() {
   }
 
   const getStatusBadge = (status: CronJobStatus, currentRuns: number, maxRuns: number) => {
-    if (status === CronJobStatus.COMPLETED || currentRuns >= maxRuns) {
+    if (status === CronJobStatus.COMPLETED || (maxRuns > 0 && currentRuns >= maxRuns)) {
       return (
         <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
           Completed
@@ -375,7 +402,8 @@ export default function CronJobs() {
                             {cronJob.timezone}
                           </span>
                           <span>
-                            Runs: {cronJob.current_runs} / {cronJob.max_runs}
+                            Runs: {cronJob.current_runs}
+                            {cronJob.max_runs > 0 ? ` / ${cronJob.max_runs}` : ' (unlimited)'}
                           </span>
                         </div>
                         <div className="mt-2 flex items-center gap-4 text-xs text-gray-500">
@@ -392,10 +420,18 @@ export default function CronJobs() {
                     {getStatusBadge(cronJob.status, cronJob.current_runs, cronJob.max_runs)}
                     <div className="flex items-center gap-2">
                       <button
+                        onClick={() => runNowMutation.mutate(cronJob.id)}
+                        className="p-2 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded"
+                        title="Run now"
+                        disabled={runNowMutation.isPending || cronJob.status === CronJobStatus.COMPLETED}
+                      >
+                        <Zap className="h-4 w-4" />
+                      </button>
+                      <button
                         onClick={() => toggleMutation.mutate(cronJob.id)}
                         className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded"
                         title={cronJob.status === CronJobStatus.ACTIVE ? 'Pause' : 'Resume'}
-                        disabled={cronJob.current_runs >= cronJob.max_runs}
+                        disabled={cronJob.max_runs > 0 && cronJob.current_runs >= cronJob.max_runs}
                       >
                         {cronJob.status === CronJobStatus.ACTIVE ? (
                           <Pause className="h-4 w-4" />
@@ -522,18 +558,18 @@ export default function CronJobs() {
                   {/* Max Runs */}
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Number of Times to Run <span className="text-red-500">*</span>
+                      Max runs (0 = unlimited)
                     </label>
                     <input
                       type="number"
-                      min="1"
+                      min="0"
                       max="1000"
                       value={formData.max_runs}
-                      onChange={e => setFormData(prev => ({ ...prev, max_runs: parseInt(e.target.value) || 1 }))}
+                      onChange={e => setFormData(prev => ({ ...prev, max_runs: parseInt(e.target.value) || 0 }))}
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
                     />
                     <p className="mt-1 text-xs text-gray-500">
-                      The cron job will stop after running this many times
+                      Use 0 to keep running until paused. Otherwise stops after N executions.
                     </p>
                   </div>
 

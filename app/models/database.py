@@ -1450,6 +1450,8 @@ class Alert(Base):
     name = Column(String(255), nullable=False)
     description = Column(String, nullable=True)
     
+    data_source = Column(String, nullable=False, default="evaluations")
+
     # Metric condition configuration
     metric_type = Column(String, nullable=False, default=AlertMetricType.NUMBER_OF_CALLS.value)
     aggregation = Column(String, nullable=False, default=AlertAggregation.SUM.value)
@@ -1464,7 +1466,8 @@ class Alert(Base):
     notify_frequency = Column(String, nullable=False, default=AlertNotifyFrequency.IMMEDIATE.value)
     notify_emails = Column(JSON, nullable=True)  # Array of email addresses
     notify_webhooks = Column(JSON, nullable=True)  # Array of webhook URLs (Slack, etc.)
-    
+    notify_pagerduty_routing_keys = Column(JSON, nullable=True)
+
     # Status
     status = Column(String, nullable=False, default=AlertStatus.ACTIVE.value)
     

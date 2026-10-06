@@ -5500,6 +5500,7 @@ class ApiClient {
   async createAlert(data: {
     name: string
     description?: string | null
+    data_source?: string
     metric_type: string
     aggregation: string
     operator: string
@@ -5509,6 +5510,7 @@ class ApiClient {
     notify_frequency: string
     notify_emails?: string[]
     notify_webhooks?: string[]
+    notify_pagerduty_routing_keys?: string[]
   }): Promise<any> {
     const response = await this.client.post('/api/v1/alerts', data)
     return response.data
@@ -5517,6 +5519,7 @@ class ApiClient {
   async updateAlert(alertId: string, data: {
     name?: string
     description?: string | null
+    data_source?: string
     metric_type?: string
     aggregation?: string
     operator?: string
@@ -5526,6 +5529,7 @@ class ApiClient {
     notify_frequency?: string
     notify_emails?: string[]
     notify_webhooks?: string[]
+    notify_pagerduty_routing_keys?: string[]
     status?: string
   }): Promise<any> {
     const response = await this.client.put(`/api/v1/alerts/${alertId}`, data)
@@ -5588,6 +5592,7 @@ class ApiClient {
   async testAlertNotification(alertId: string, data: {
     webhook_url?: string
     email?: string
+    pagerduty_routing_key?: string
   }): Promise<any> {
     const response = await this.client.post(`/api/v1/alerts/${alertId}/test-notification`, data)
     return response.data
@@ -5609,6 +5614,7 @@ class ApiClient {
     cron_expression: string
     timezone: string
     max_runs: number
+    interval_days?: number | null
     evaluator_ids: string[]
   }): Promise<any> {
     const response = await this.client.post('/api/v1/cron-jobs', data)
@@ -5620,6 +5626,7 @@ class ApiClient {
     cron_expression?: string
     timezone?: string
     max_runs?: number
+    interval_days?: number | null
     evaluator_ids?: string[]
     status?: string
   }): Promise<any> {
@@ -5633,6 +5640,11 @@ class ApiClient {
 
   async toggleCronJobStatus(cronJobId: string): Promise<any> {
     const response = await this.client.post(`/api/v1/cron-jobs/${cronJobId}/toggle`)
+    return response.data
+  }
+
+  async runCronJobNow(cronJobId: string): Promise<any> {
+    const response = await this.client.post(`/api/v1/cron-jobs/${cronJobId}/run`)
     return response.data
   }
 

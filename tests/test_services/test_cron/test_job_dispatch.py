@@ -12,6 +12,22 @@ from app.models.enums import CronJobStatus
 from app.services.cron.job_dispatch import advance_cron_job, enqueue_cron_job
 
 
+def test_advance_cron_job_unlimited_max_runs_schedules_next():
+    job = MagicMock()
+    job.current_runs = 100
+    job.max_runs = 0
+    job.status = CronJobStatus.ACTIVE.value
+    job.cron_expression = "0 * * * *"
+    job.timezone = "UTC"
+    job.config = {}
+
+    advance_cron_job(MagicMock(), job, now=datetime.now(timezone.utc))
+
+    assert job.current_runs == 101
+    assert job.status == CronJobStatus.ACTIVE.value
+    assert job.next_run_at is not None
+
+
 def test_advance_cron_job_marks_completed_when_max_runs_reached():
     job = MagicMock()
     job.current_runs = 9
@@ -19,6 +35,7 @@ def test_advance_cron_job_marks_completed_when_max_runs_reached():
     job.status = CronJobStatus.ACTIVE.value
     job.cron_expression = "0 * * * *"
     job.timezone = "UTC"
+    job.config = {}
 
     advance_cron_job(MagicMock(), job, now=datetime.now(timezone.utc))
 

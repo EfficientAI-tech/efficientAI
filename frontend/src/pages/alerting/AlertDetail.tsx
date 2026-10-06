@@ -25,6 +25,11 @@ import {
   X,
   Plus,
 } from 'lucide-react'
+import {
+  ALL_METRIC_TYPES,
+  DATA_SOURCES,
+  metricTypesForDataSource,
+} from './alertFormConstants'
 
 // Types
 interface Alert {
@@ -32,6 +37,7 @@ interface Alert {
   organization_id: string
   name: string
   description?: string
+  data_source?: string
   metric_type: string
   aggregation: string
   operator: string
@@ -41,6 +47,7 @@ interface Alert {
   notify_frequency: string
   notify_emails?: string[]
   notify_webhooks?: string[]
+  notify_pagerduty_routing_keys?: string[]
   status: string
   created_at: string
   updated_at: string
@@ -69,15 +76,6 @@ interface AlertHistoryItem {
   context_data?: Record<string, any>
 }
 
-const METRIC_TYPES = [
-  { value: 'number_of_calls', label: 'Number of Calls' },
-  { value: 'call_duration', label: 'Call Duration' },
-  { value: 'error_rate', label: 'Error Rate' },
-  { value: 'success_rate', label: 'Success Rate' },
-  { value: 'latency', label: 'Latency' },
-  { value: 'custom', label: 'Custom' },
-]
-
 const AGGREGATIONS = [
   { value: 'sum', label: 'Sum' },
   { value: 'avg', label: 'Average' },
@@ -102,7 +100,8 @@ const NOTIFY_FREQUENCIES = [
   { value: 'weekly', label: 'Weekly' },
 ]
 
-const METRIC_LABELS: Record<string, string> = Object.fromEntries(METRIC_TYPES.map(m => [m.value, m.label]))
+const METRIC_LABELS: Record<string, string> = Object.fromEntries(ALL_METRIC_TYPES.map(m => [m.value, m.label]))
+const DATA_SOURCE_LABELS: Record<string, string> = Object.fromEntries(DATA_SOURCES.map(s => [s.value, s.label]))
 const AGGREGATION_LABELS: Record<string, string> = Object.fromEntries(AGGREGATIONS.map(a => [a.value, a.label]))
 const FREQUENCY_LABELS: Record<string, string> = Object.fromEntries(NOTIFY_FREQUENCIES.map(f => [f.value, f.label]))
 
@@ -119,6 +118,7 @@ export default function AlertDetail() {
   const [formData, setFormData] = useState({
     name: '',
     description: '',
+    data_source: 'evaluations',
     metric_type: 'number_of_calls',
     aggregation: 'sum',
     operator: '>',
@@ -128,7 +128,10 @@ export default function AlertDetail() {
     notify_frequency: 'immediate',
     notify_emails: [''],
     notify_webhooks: [''],
+    notify_pagerduty_routing_keys: [''],
   })
+
+  const metricTypeOptions = metricTypesForDataSource(formData.data_source)
 
   // Fetch alert details
   const { data: alert, isLoading } = useQuery<Alert>({
@@ -156,6 +159,7 @@ export default function AlertDetail() {
       setFormData({
         name: alert.name,
         description: alert.description || '',
+        data_source: alert.data_source || 'evaluations',
         metric_type: alert.metric_type,
         aggregation: alert.aggregation,
         operator: alert.operator,
@@ -165,6 +169,9 @@ export default function AlertDetail() {
         notify_frequency: alert.notify_frequency,
         notify_emails: alert.notify_emails?.length ? alert.notify_emails : [''],
         notify_webhooks: alert.notify_webhooks?.length ? alert.notify_webhooks : [''],
+        notify_pagerduty_routing_keys: alert.notify_pagerduty_routing_keys?.length
+          ? alert.notify_pagerduty_routing_keys
+          : [''],
       })
     }
   }, [alert])
@@ -271,6 +278,7 @@ export default function AlertDetail() {
     const payload = {
       name: formData.name,
       description: formData.description || null,
+      data_source: formData.data_source,
       metric_type: formData.metric_type,
       aggregation: formData.aggregation,
       operator: formData.operator,
@@ -280,6 +288,7 @@ export default function AlertDetail() {
       notify_frequency: formData.notify_frequency,
       notify_emails: formData.notify_emails.filter(e => e.trim()),
       notify_webhooks: formData.notify_webhooks.filter(w => w.trim()),
+      notify_pagerduty_routing_keys: formData.notify_pagerduty_routing_keys.filter(k => k.trim()),
     }
     updateMutation.mutate(payload)
   }
@@ -298,6 +307,9 @@ export default function AlertDetail() {
         notify_frequency: alert.notify_frequency,
         notify_emails: alert.notify_emails?.length ? alert.notify_emails : [''],
         notify_webhooks: alert.notify_webhooks?.length ? alert.notify_webhooks : [''],
+        notify_pagerduty_routing_keys: alert.notify_pagerduty_routing_keys?.length
+          ? alert.notify_pagerduty_routing_keys
+          : [''],
       })
     }
     setIsEditMode(false)
@@ -325,6 +337,24 @@ export default function AlertDetail() {
     const webhooks = [...formData.notify_webhooks]
     webhooks[index] = value
     setFormData({ ...formData, notify_webhooks: webhooks })
+  }
+
+  const addPagerDutyKey = () =>
+    setFormData({
+      ...formData,
+      notify_pagerduty_routing_keys: [...formData.notify_pagerduty_routing_keys, ''],
+    })
+  const removePagerDutyKey = (index: number) => {
+    const keys = formData.notify_pagerduty_routing_keys.filter((_, i) => i !== index)
+    setFormData({
+      ...formData,
+      notify_pagerduty_routing_keys: keys.length ? keys : [''],
+    })
+  }
+  const updatePagerDutyKey = (index: number, value: string) => {
+    const keys = [...formData.notify_pagerduty_routing_keys]
+    keys[index] = value
+    setFormData({ ...formData, notify_pagerduty_routing_keys: keys })
   }
 
   // --- Formatting helpers ---
@@ -570,6 +600,25 @@ export default function AlertDetail() {
               <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider border-b border-gray-200 pb-2">
                 Metric Condition
               </h3>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Data source</label>
+                <select
+                  value={formData.data_source}
+                  onChange={(e) => {
+                    const nextSource = e.target.value
+                    const allowed = metricTypesForDataSource(nextSource)
+                    const nextMetric = allowed.some(m => m.value === formData.metric_type)
+                      ? formData.metric_type
+                      : allowed[0]?.value || 'number_of_calls'
+                    setFormData({ ...formData, data_source: nextSource, metric_type: nextMetric })
+                  }}
+                  className={`${inputClass} md:w-96`}
+                >
+                  {DATA_SOURCES.map(s => (
+                    <option key={s.value} value={s.value}>{s.label}</option>
+                  ))}
+                </select>
+              </div>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Metric</label>
@@ -578,7 +627,7 @@ export default function AlertDetail() {
                     onChange={(e) => setFormData({ ...formData, metric_type: e.target.value })}
                     className={inputClass}
                   >
-                    {METRIC_TYPES.map(m => (
+                    {metricTypeOptions.map(m => (
                       <option key={m.value} value={m.value}>{m.label}</option>
                     ))}
                   </select>
@@ -729,7 +778,7 @@ export default function AlertDetail() {
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   <Globe className="w-4 h-4 inline mr-2" />
-                  Webhook Notifications (Slack, etc.)
+                  Slack webhooks
                 </label>
                 <div className="space-y-2">
                   {formData.notify_webhooks.map((webhook, index) => (
@@ -756,6 +805,37 @@ export default function AlertDetail() {
                     className="inline-flex items-center gap-1 text-sm text-gray-600 hover:text-gray-900 font-medium"
                   >
                     <Plus className="w-4 h-4" /> Add another webhook
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">PagerDuty routing keys</label>
+                <div className="space-y-2">
+                  {formData.notify_pagerduty_routing_keys.map((key, index) => (
+                    <div key={index} className="flex gap-2">
+                      <input
+                        type="password"
+                        value={key}
+                        onChange={(e) => updatePagerDutyKey(index, e.target.value)}
+                        placeholder="Events API v2 integration key"
+                        className={`flex-1 ${inputClass}`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removePagerDutyKey(index)}
+                        className="p-3 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                      >
+                        <X className="w-5 h-5" />
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={addPagerDutyKey}
+                    className="inline-flex items-center gap-1 text-sm text-gray-600 hover:text-gray-900 font-medium"
+                  >
+                    <Plus className="w-4 h-4" /> Add PagerDuty key
                   </button>
                 </div>
               </div>
@@ -959,6 +1039,13 @@ export default function AlertDetail() {
                 </div>
 
                 <div>
+                  <dt className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">Data source</dt>
+                  <dd className="text-sm font-medium text-gray-900 mb-3">
+                    {DATA_SOURCE_LABELS[alert.data_source || 'evaluations'] || alert.data_source}
+                  </dd>
+                </div>
+
+                <div>
                   <dt className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-1">
                     <Globe className="w-3.5 h-3.5" /> Webhooks
                   </dt>
@@ -972,6 +1059,17 @@ export default function AlertDetail() {
                     </div>
                   ) : (
                     <p className="text-sm text-gray-400 italic">No webhooks configured</p>
+                  )}
+                </div>
+
+                <div>
+                  <dt className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">PagerDuty</dt>
+                  {alert.notify_pagerduty_routing_keys && alert.notify_pagerduty_routing_keys.length > 0 ? (
+                    <p className="text-sm text-gray-700">
+                      {alert.notify_pagerduty_routing_keys.length} routing key(s) configured
+                    </p>
+                  ) : (
+                    <p className="text-sm text-gray-400 italic">No PagerDuty keys configured</p>
                   )}
                 </div>
               </div>

@@ -83,7 +83,17 @@ Choose which agents this alert applies to:
 | **Email Recipients** | No | One or more email addresses to receive alert emails |
 | **Webhooks** | No | One or more webhook URLs (e.g., Slack incoming webhooks) |
 
-You must configure at least one email or webhook for notifications to work.
+You must configure at least one notification channel (email, Slack webhook, or PagerDuty routing key).
+
+#### Data source
+
+Choose where metrics are computed:
+
+| Source | Description |
+|---|---|
+| **Synthetic evaluations** | `EvaluatorResult` rows from playground / cron evaluator runs (default) |
+| **Production calls** | Webhook `call_recordings` (telephony production feed) |
+| **Production traces** | ClickHouse `call_traces` excluding synthetic eval traces (`evaluator_result_id` is null) |
 
 ### Step 3: Save
 
@@ -155,7 +165,21 @@ Email alerts are sent as rich HTML emails containing:
 - Agent scope information
 - Timestamp
 
-**Requirements:** Email notifications require SMTP to be configured in your EfficientAI deployment. See the [Configuration Reference](/docs/reference/configuration/) for SMTP settings.
+**Requirements:** Email notifications require SMTP to be configured in your EfficientAI deployment. See `smtp:` in `config.yml.example` (local E2E: Mailpit on port 1025 with `use_tls: false`).
+
+### PagerDuty (Events API v2)
+
+Add one or more **PagerDuty routing keys** (integration keys) on the alert. EfficientAI sends `event_action=trigger` events with a stable `dedup_key` per alert to reduce duplicate incidents during cooldown.
+
+Use **Test Notification** on the alert detail page to verify delivery without creating history.
+
+---
+
+## Scheduled synthetic tests (Cron Jobs)
+
+Use **Configurations → Cron Jobs** to schedule evaluator runs (synthetic tests). Presets include daily/weekly schedules, **twice monthly (1st & 15th)**, and **every 14 days** (rolling interval stored in job config). Set **max runs** to `0` for unlimited recurrence. Use **Run now** (⚡) to enqueue a run immediately for E2E validation.
+
+Workers involved: Beat `dispatch_cron_jobs` (usage queue) → `run_cron_evaluator_job` (celery queue) → evaluations workers.
 
 ---
 
@@ -303,7 +327,7 @@ All alert endpoints are under `/api/v1/alerts` and require authentication via AP
 | `GET` | `/alerts/history/all` | List all alert history |
 | `GET` | `/alerts/{alert_id}/history` | List history for a specific alert |
 | `GET` | `/alerts/history/{history_id}` | Get a specific history entry |
-| `PATCH` | `/alerts/history/{history_id}` | Update history (acknowledge/resolve) |
+| `PUT` | `/alerts/history/{history_id}` | Update history (acknowledge/resolve) |
 
 ### Create Alert — Request Body
 
@@ -398,6 +422,21 @@ celery -A app.workers.celery_app beat --loglevel=info
 ```
 
 A default-queue worker does **not** process `evaluate_alerts`.
+
+For cron-based synthetic tests you also need a **usage** worker (`dispatch_cron_jobs`), a default **celery** worker (`run_cron_evaluator_job`), and **evaluations** workers for the actual runs.
+
+---
+
+## E2E verification checklist
+
+1. **Slack** — Test Notification + triggered alert delivers Block Kit message.
+2. **Email** — SMTP configured; test message in inbox/Mailpit.
+3. **PagerDuty** — Test Notification opens/updates incident via Events API v2.
+4. **Cron** — Run now + short schedule produces evaluator results; eval-source alert can fire.
+5. **Production calls** — Webhook `call_recordings` drive `production_calls` alerts.
+6. **Production traces** — ClickHouse traces (non-eval) drive `production_traces` alerts.
+7. **History** — `/alerts/history` lists events; acknowledge/resolve works.
+8. **Cooldown** — Second trigger within hourly window creates history without re-notifying.
 
 ---
 

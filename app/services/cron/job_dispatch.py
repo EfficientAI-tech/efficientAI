@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.models.database import CronJob, Evaluator
 from app.models.enums import CronJobStatus
-from app.services.cron.scheduling import calculate_next_run
+from app.services.cron.scheduling import calculate_next_run_for_job
 
 
 def list_due_cron_jobs(db: Session, *, now: datetime | None = None) -> List[CronJob]:
@@ -34,11 +34,12 @@ def advance_cron_job(db: Session, job: CronJob, *, now: datetime | None = None) 
     moment = now or datetime.now(timezone.utc)
     job.last_run_at = moment
     job.current_runs = int(job.current_runs or 0) + 1
-    if job.current_runs >= int(job.max_runs or 0):
+    max_runs = int(job.max_runs or 0)
+    if max_runs > 0 and job.current_runs >= max_runs:
         job.status = CronJobStatus.COMPLETED.value
         job.next_run_at = None
     else:
-        job.next_run_at = calculate_next_run(job.cron_expression, job.timezone)
+        job.next_run_at = calculate_next_run_for_job(job)
     db.add(job)
 
 

@@ -316,6 +316,21 @@ judge_alignment:
 #   FLEXPRICE_AUTO_SUBSCRIBE, FLEXPRICE_DEFAULT_PLAN_ID
 # Debug: FLEXPRICE_VERBOSE=1 logs every skipped event (when inactive or verbose)
 
+# SMTP (alert email notifications). Local E2E: run Mailpit on port 1025, use_tls: false.
+# smtp:
+#   host: "localhost"
+#   port: 1025
+#   username: ""
+#   password: ""
+#   from_email: "alerts@localhost"
+#   from_name: "EfficientAI Alerts"
+#   use_tls: false
+# Env overrides: SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_EMAIL, SMTP_USE_TLS
+#
+# Alert evaluation requires Celery Beat + a worker on the ``platform`` queue.
+# Scheduled synthetic tests (Cron Jobs) require Beat ``dispatch_cron_jobs`` (usage queue),
+# ``run_cron_evaluator_job`` (celery queue), and evaluations workers.
+
 # Call-import worker concurrency (Redis fair-share for evaluations).
 # Scale eval_global_inflight_limit with worker-imports replica count × threads.
 # Enterprise K8s profiles: see deploy/k8s/configmap-workers-*.yaml and ONE-PAGER.md
