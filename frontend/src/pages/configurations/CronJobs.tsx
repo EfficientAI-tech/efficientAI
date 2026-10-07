@@ -20,6 +20,9 @@ interface CronJob {
   status: CronJobStatus
   next_run_at?: string | null
   last_run_at?: string | null
+  last_dispatch_celery_task_id?: string | null
+  last_dispatch_status?: string | null
+  last_dispatch_error?: string | null
   created_at: string
   updated_at: string
 }
@@ -335,13 +338,8 @@ export default function CronJobs() {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">Cron Jobs</h1>
-          <p className="mt-1 text-sm text-gray-600">
-            Schedule automated evaluator runs on a recurring schedule
-          </p>
-        </div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h1 className="text-2xl font-bold text-gray-900">Cron jobs</h1>
         <Button onClick={() => setShowCreateModal(true)} className="flex items-center gap-2">
           <Plus className="w-4 h-4" />
           Create Cron Job
@@ -410,6 +408,30 @@ export default function CronJobs() {
                           <span>Last run: {formatDate(cronJob.last_run_at)}</span>
                           <span>Next run: {formatDate(cronJob.next_run_at)}</span>
                         </div>
+                        {cronJob.last_dispatch_status && (
+                          <div className="mt-1 text-xs text-gray-500">
+                            Last dispatch:{' '}
+                            <span
+                              className={
+                                cronJob.last_dispatch_status === 'enqueued'
+                                  ? 'text-green-700'
+                                  : 'text-red-600'
+                              }
+                            >
+                              {cronJob.last_dispatch_status}
+                            </span>
+                            {cronJob.last_dispatch_celery_task_id && (
+                              <span className="text-gray-400 ml-1">
+                                ({cronJob.last_dispatch_celery_task_id.slice(0, 8)}…)
+                              </span>
+                            )}
+                            {cronJob.last_dispatch_error && (
+                              <span className="block text-red-600 mt-0.5">
+                                {cronJob.last_dispatch_error}
+                              </span>
+                            )}
+                          </div>
+                        )}
                         <div className="mt-2 text-xs text-gray-500">
                           {cronJob.evaluator_ids?.length || 0} evaluator(s) attached
                         </div>
@@ -464,26 +486,31 @@ export default function CronJobs() {
 
       {/* Create/Edit Modal */}
       {showCreateModal && (
-        <div className="fixed inset-0 z-50 overflow-y-auto">
-          <div className="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:block sm:p-0">
-            <div
-              className="fixed inset-0 transition-opacity bg-black/50 backdrop-blur-md"
-              onClick={closeModal}
-            />
-            <div className="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-2xl sm:w-full">
-              <div className="bg-white px-6 py-5">
-                <div className="flex items-center justify-between mb-6">
-                  <h3 className="text-lg font-semibold text-gray-900">
-                    {editingCronJob ? 'Edit Cron Job' : 'Create Cron Job'}
-                  </h3>
-                  <button
-                    onClick={closeModal}
-                    className="text-gray-400 hover:text-gray-600"
-                  >
-                    <X className="h-5 w-5" />
-                  </button>
-                </div>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
+          <div
+            className="fixed inset-0 bg-black/50 backdrop-blur-md"
+            onClick={closeModal}
+            aria-hidden
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="relative z-10 flex flex-col w-full max-w-2xl max-h-[min(90vh,880px)] bg-white rounded-xl shadow-xl overflow-hidden"
+          >
+            <div className="shrink-0 flex items-center justify-between px-6 py-4 border-b border-gray-200">
+              <h3 className="text-lg font-semibold text-gray-900">
+                {editingCronJob ? 'Edit Cron Job' : 'Create Cron Job'}
+              </h3>
+              <button
+                type="button"
+                onClick={closeModal}
+                className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
 
+            <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5">
                 <div className="space-y-5">
                   {/* Name */}
                   <div>
@@ -578,7 +605,7 @@ export default function CronJobs() {
                     <label className="block text-sm font-medium text-gray-700 mb-1">
                       Evaluators to Trigger <span className="text-red-500">*</span>
                     </label>
-                    <div className="border border-gray-300 rounded-md max-h-48 overflow-y-auto">
+                    <div className="border border-gray-300 rounded-md max-h-36 sm:max-h-44 overflow-y-auto">
                       {evaluators.length === 0 ? (
                         <div className="px-3 py-4 text-sm text-gray-500 text-center">
                           No evaluators available. Create evaluators first.
@@ -615,19 +642,18 @@ export default function CronJobs() {
                     </p>
                   </div>
                 </div>
+            </div>
 
-                <div className="mt-6 flex justify-end gap-3">
-                  <Button variant="outline" onClick={closeModal}>
-                    Cancel
-                  </Button>
-                  <Button
-                    onClick={handleSubmit}
-                    isLoading={createMutation.isPending || updateMutation.isPending}
-                  >
-                    {editingCronJob ? 'Update' : 'Create'}
-                  </Button>
-                </div>
-              </div>
+            <div className="shrink-0 flex justify-end gap-3 px-6 py-4 border-t border-gray-200 bg-gray-50">
+              <Button variant="outline" onClick={closeModal}>
+                Cancel
+              </Button>
+              <Button
+                onClick={handleSubmit}
+                isLoading={createMutation.isPending || updateMutation.isPending}
+              >
+                {editingCronJob ? 'Update' : 'Create'}
+              </Button>
             </div>
           </div>
         </div>

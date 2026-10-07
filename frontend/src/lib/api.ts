@@ -311,6 +311,22 @@ export interface LLMGatewaySettingsUpdate {
   clear_master_key?: boolean
 }
 
+export interface AlertingSyncSettings {
+  sync_notification_lifecycle: boolean
+  pagerduty_webhook_url: string | null
+  has_pagerduty_webhook_signing_secret: boolean
+  pagerduty_inbound_ready: boolean
+  confirmation_phrase_required: string
+}
+
+export interface AlertingSyncSettingsUpdate {
+  sync_notification_lifecycle: boolean
+  confirm_enable?: boolean
+  confirmation_phrase?: string
+  pagerduty_webhook_signing_secret?: string
+  clear_pagerduty_webhook_signing_secret?: boolean
+}
+
 export interface TelephonyIntegrationResponse {
   id: string
   organization_id: string
@@ -1879,6 +1895,16 @@ class ApiClient {
 
   async updateLLMGatewaySettings(data: LLMGatewaySettingsUpdate): Promise<LLMGatewaySettings> {
     const response = await this.client.put('/api/v1/organizations/llm-gateway', data)
+    return response.data
+  }
+
+  async getAlertingSyncSettings(): Promise<AlertingSyncSettings> {
+    const response = await this.client.get('/api/v1/organizations/alerting-sync')
+    return response.data
+  }
+
+  async updateAlertingSyncSettings(data: AlertingSyncSettingsUpdate): Promise<AlertingSyncSettings> {
+    const response = await this.client.put('/api/v1/organizations/alerting-sync', data)
     return response.data
   }
 

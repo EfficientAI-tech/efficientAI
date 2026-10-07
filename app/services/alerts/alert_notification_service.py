@@ -4,7 +4,7 @@ import smtplib
 import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from loguru import logger
 import httpx
@@ -177,6 +177,7 @@ class AlertNotificationService:
         agent_names: Optional[List[str]] = None,
         alert_id: Optional[str] = None,
         history_id: Optional[str] = None,
+        subject_prefix: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Send an email notification for a triggered alert.
@@ -206,9 +207,8 @@ class AlertNotificationService:
 
             # Build email
             msg = MIMEMultipart("alternative")
-            msg["Subject"] = (
-                f"[{severity_label}] EfficientAI Alert: {alert_name}"
-            )
+            prefix = (subject_prefix or severity_label).strip()
+            msg["Subject"] = f"[{prefix}] EfficientAI Alert: {alert_name}"
             msg["From"] = (
                 f"{settings.SMTP_FROM_NAME} <{settings.SMTP_FROM_EMAIL or settings.SMTP_USERNAME}>"
             )
@@ -297,6 +297,13 @@ class AlertNotificationService:
     # PAGERDUTY NOTIFICATIONS
     # ============================================
 
+    def _pagerduty_dedup_key(
+        self, history_id: Optional[str], alert_id: Optional[str]
+    ) -> str:
+        if history_id:
+            return f"efficientai-incident-{history_id}"
+        return f"efficientai-alert-{alert_id or 'unknown'}"
+
     def send_pagerduty_notification(
         self,
         routing_key: str,
@@ -325,10 +332,11 @@ class AlertNotificationService:
                 "ALERT": "error",
             }.get(severity_label, "error")
 
+            dedup_key = self._pagerduty_dedup_key(history_id, alert_id)
             payload = {
                 "routing_key": routing_key.strip(),
                 "event_action": "trigger",
-                "dedup_key": f"efficientai-alert-{alert_id or 'unknown'}",
+                "dedup_key": dedup_key,
                 "payload": {
                     "summary": f"EfficientAI Alert: {alert_name} ({metric_display} {triggered_value})",
                     "severity": pd_severity,
@@ -384,6 +392,215 @@ class AlertNotificationService:
                 "error": str(e),
             }
 
+    def send_pagerduty_resolve(
+        self,
+        routing_key: str,
+        alert_name: str,
+        *,
+        history_id: Optional[str] = None,
+        alert_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        try:
+            dedup_key = self._pagerduty_dedup_key(history_id, alert_id)
+            payload = {
+                "routing_key": routing_key.strip(),
+                "event_action": "resolve",
+                "dedup_key": dedup_key,
+                "payload": {
+                    "summary": f"Resolved: {alert_name}",
+                    "source": "EfficientAI",
+                    "component": "alerting",
+                },
+            }
+            with httpx.Client(timeout=30.0) as client:
+                response = client.post(
+                    "https://events.pagerduty.com/v2/enqueue",
+                    json=payload,
+                )
+            if response.status_code in (200, 202):
+                return {"success": True, "channel": "pagerduty_resolve"}
+            return {
+                "success": False,
+                "channel": "pagerduty_resolve",
+                "error": f"HTTP {response.status_code}: {response.text}",
+            }
+        except Exception as e:
+            return {"success": False, "channel": "pagerduty_resolve", "error": str(e)}
+
+    def send_pagerduty_acknowledge(
+        self,
+        routing_key: str,
+        alert_name: str,
+        *,
+        history_id: Optional[str] = None,
+        alert_id: Optional[str] = None,
+        acknowledged_by: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        try:
+            dedup_key = self._pagerduty_dedup_key(history_id, alert_id)
+            summary = f"Acknowledged: {alert_name}"
+            if acknowledged_by:
+                summary += f" (by {acknowledged_by})"
+            payload = {
+                "routing_key": routing_key.strip(),
+                "event_action": "acknowledge",
+                "dedup_key": dedup_key,
+                "payload": {
+                    "summary": summary,
+                    "source": "EfficientAI",
+                    "component": "alerting",
+                },
+            }
+            with httpx.Client(timeout=30.0) as client:
+                response = client.post(
+                    "https://events.pagerduty.com/v2/enqueue",
+                    json=payload,
+                )
+            if response.status_code in (200, 202):
+                logger.info(
+                    f"[AlertNotification] PagerDuty acknowledge sent for alert '{alert_name}'"
+                )
+                return {"success": True, "channel": "pagerduty_acknowledge"}
+            logger.error(
+                f"[AlertNotification] PagerDuty acknowledge returned "
+                f"{response.status_code}: {response.text}"
+            )
+            return {
+                "success": False,
+                "channel": "pagerduty_acknowledge",
+                "error": f"HTTP {response.status_code}: {response.text}",
+            }
+        except Exception as e:
+            logger.error(
+                f"[AlertNotification] Failed to send PagerDuty acknowledge: {e}",
+                exc_info=True,
+            )
+            return {
+                "success": False,
+                "channel": "pagerduty_acknowledge",
+                "error": str(e),
+            }
+
+    def _post_slack_text(self, webhook_url: str, text: str, channel: str) -> Dict[str, Any]:
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                response = client.post(webhook_url.strip(), json={"text": text})
+            return {
+                "success": response.status_code == 200,
+                "channel": channel,
+            }
+        except Exception as e:
+            return {"success": False, "channel": channel, "error": str(e)}
+
+    def send_acknowledge_notifications(
+        self,
+        alert,
+        *,
+        history_id: Optional[str] = None,
+        acknowledged_by: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        results: List[Dict[str, Any]] = []
+        summary = f"👀 Acknowledged: {alert.name}"
+        if acknowledged_by:
+            summary += f" (by {acknowledged_by})"
+
+        if getattr(alert, "notify_webhooks", None):
+            for webhook_url in alert.notify_webhooks:
+                if webhook_url and webhook_url.strip():
+                    results.append(
+                        self._post_slack_text(webhook_url, summary, "slack_acknowledge")
+                    )
+
+        if alert.notify_emails:
+            triggered_at = datetime.now(timezone.utc)
+            for email_addr in alert.notify_emails:
+                if email_addr and email_addr.strip():
+                    results.append(
+                        self.send_email_notification(
+                            to_email=email_addr.strip(),
+                            alert_name=alert.name,
+                            alert_description=f"Acknowledged by {acknowledged_by or 'a team member'}.",
+                            metric_type=alert.metric_type,
+                            aggregation=alert.aggregation,
+                            operator=alert.operator,
+                            threshold_value=alert.threshold_value,
+                            triggered_value=alert.threshold_value,
+                            time_window_minutes=alert.time_window_minutes,
+                            triggered_at=triggered_at,
+                            history_id=history_id,
+                            alert_id=str(alert.id),
+                            subject_prefix="Acknowledged",
+                        )
+                    )
+
+        routing_keys = getattr(alert, "notify_pagerduty_routing_keys", None) or []
+        for routing_key in routing_keys:
+            if routing_key and str(routing_key).strip():
+                results.append(
+                    self.send_pagerduty_acknowledge(
+                        str(routing_key).strip(),
+                        alert.name,
+                        history_id=history_id,
+                        alert_id=str(alert.id),
+                        acknowledged_by=acknowledged_by,
+                    )
+                )
+        return results
+
+    def send_recovery_notifications(
+        self,
+        alert,
+        *,
+        history_id: Optional[str] = None,
+        metric_value: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
+        results: List[Dict[str, Any]] = []
+        summary = f"✅ Recovered: {alert.name}"
+        if metric_value is not None:
+            summary += f" (metric now {metric_value})"
+
+        if getattr(alert, "notify_webhooks", None):
+            for webhook_url in alert.notify_webhooks:
+                if webhook_url and webhook_url.strip():
+                    results.append(
+                        self._post_slack_text(webhook_url, summary, "slack_recovery")
+                    )
+
+        if alert.notify_emails:
+            triggered_at = datetime.now(timezone.utc)
+            for email_addr in alert.notify_emails:
+                if email_addr and email_addr.strip():
+                    results.append(
+                        self.send_email_notification(
+                            to_email=email_addr.strip(),
+                            alert_name=alert.name,
+                            alert_description=summary,
+                            metric_type=alert.metric_type,
+                            aggregation=alert.aggregation,
+                            operator=alert.operator,
+                            threshold_value=alert.threshold_value,
+                            triggered_value=metric_value if metric_value is not None else alert.threshold_value,
+                            time_window_minutes=alert.time_window_minutes,
+                            triggered_at=triggered_at,
+                            history_id=history_id,
+                            alert_id=str(alert.id),
+                            subject_prefix="Recovered",
+                        )
+                    )
+
+        routing_keys = getattr(alert, "notify_pagerduty_routing_keys", None) or []
+        for routing_key in routing_keys:
+            if routing_key and str(routing_key).strip():
+                results.append(
+                    self.send_pagerduty_resolve(
+                        str(routing_key).strip(),
+                        alert.name,
+                        history_id=history_id,
+                        alert_id=str(alert.id),
+                    )
+                )
+        return results
+
     # ============================================
     # BATCH NOTIFICATION DISPATCHER
     # ============================================
@@ -417,7 +634,7 @@ class AlertNotificationService:
         )
 
         # Send to all configured Slack webhooks
-        if alert.notify_webhooks:
+        if getattr(alert, "notify_webhooks", None):
             for webhook_url in alert.notify_webhooks:
                 if webhook_url and webhook_url.strip():
                     result = self.send_slack_notification(

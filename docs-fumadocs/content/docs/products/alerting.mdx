@@ -33,7 +33,7 @@ An **Alert** is a monitoring rule. It defines:
 
 ### Alert History
 
-Every time an alert's condition is met and fires, an **Alert History** record is created. This gives you a full audit trail of when alerts were triggered, what the value was, and whether notifications were sent.
+Each **incident** (one breach cycle) gets an **Alert History** record when the metric crosses from OK → ALARM. While the condition stays true, the same incident is updated (latest value) — you do not get a new row every five minutes. When the metric returns to OK, the incident is **auto-resolved** after **two consecutive** OK evaluations (~10 minutes with the default 5-minute schedule), so a single borderline reading does not close and immediately re-open the incident (which would send duplicate Slack/PagerDuty messages). A new breach after recovery opens a new incident.
 
 ---
 
@@ -189,12 +189,22 @@ The notification frequency controls how often you are re-notified when an alert 
 
 | Frequency | Cooldown | Description |
 |---|---|---|
-| **Immediate** | None | Notify every time the alert evaluates as triggered |
-| **Hourly** | 1 hour | At most one notification per hour |
-| **Daily** | 24 hours | At most one notification per day |
-| **Weekly** | 7 days | At most one notification per week |
+| **Immediate** | N/A (notify once per incident) | Notify when the incident **opens** (OK → ALARM), not on every evaluation tick |
+| **Hourly** | 1 hour | Re-notify at most once per hour **while the same incident stays open** |
+| **Daily** | 24 hours | Re-notify at most once per day while open |
+| **Weekly** | 7 days | Re-notify at most once per week while open |
 
-If an alert fires and you were already notified within the cooldown period, the alert will still be evaluated (and recorded in history) but no new notification will be sent.
+Evaluations still run on schedule; an open incident keeps its latest metric value. Notifications respect cooldown on that incident. Manual **Acknowledge** / **Resolve** does not change the metric — only **Resolve** (or auto-resolve when OK) closes the incident so a new breach can open a new one.
+
+**Manual resolve while still breaching:** resolving an incident sets **suppress until OK** — no new pages until the metric clears, then a fresh breach can open a new incident.
+
+**Missing data:** if no metric can be computed for a window, the alert does **not** fire and does **not** auto-resolve open incidents (treated as insufficient data).
+
+**PagerDuty lifecycle (opt-in):** org admins enable **notification sync** under **IAM → Organization** (default off). Flow: (1) enable sync and copy the webhook URL, (2) create a PagerDuty v3 webhook subscription pointing at that URL, (3) paste the **signing secret** (shown once in PagerDuty) into EfficientAI — inbound webhooks are rejected until the secret is saved. Outbound ack/resolve works as soon as sync is on and routing keys are on the rule.
+
+**Recovery:** when an incident auto-resolves (or you resolve manually), Slack receives a short recovery message and PagerDuty receives `resolve` (same dedup key).
+
+**Workers:** Beat runs `evaluate_alerts` every **5 minutes** (single Beat replica). The coordinator fans out **one task per organization** on the `platform` queue. Outbound notifications are sent on the `notifications` queue (defaults to `platform` unless `NOTIFICATIONS_WORKER_QUEUE` is set).
 
 ---
 
@@ -212,14 +222,14 @@ You can **Pause** and **Resume** alerts at any time from the alert detail page.
 
 ### Alert History Statuses
 
-Each alert history entry progresses through:
+Each incident progresses through:
 
 | Status | Description |
 |---|---|
-| **Triggered** | The alert condition was met |
+| **Triggered** | Incident opened (condition breached) |
 | **Notified** | Notifications were sent successfully |
-| **Acknowledged** | A team member has acknowledged the alert |
-| **Resolved** | The issue has been resolved |
+| **Acknowledged** | A team member has acknowledged the incident |
+| **Resolved** | Closed manually or **auto-resolved** when the metric returns to OK |
 
 ---
 

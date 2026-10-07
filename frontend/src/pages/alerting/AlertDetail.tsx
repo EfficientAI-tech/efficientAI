@@ -30,6 +30,8 @@ import {
   DATA_SOURCES,
   metricTypesForDataSource,
 } from './alertFormConstants'
+import IncidentDetailPanel from './IncidentDetailPanel'
+import { DeliverySummaryBadge } from './IncidentTableCells'
 
 // Types
 interface Alert {
@@ -112,6 +114,7 @@ export default function AlertDetail() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
+  const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null)
   const [triggerLoading, setTriggerLoading] = useState(false)
   const [testLoading, setTestLoading] = useState(false)
   const [isEditMode, setIsEditMode] = useState(false)
@@ -227,13 +230,22 @@ export default function AlertDetail() {
       const result = await apiClient.triggerAlert(id)
       queryClient.invalidateQueries({ queryKey: ['alertHistory', id] })
       if (result.triggered) {
-        showToast(
-          `Alert triggered! Value: ${result.metric_value} (${result.notifications_successful || 0} notification${result.notifications_successful !== 1 ? 's' : ''} sent)`,
-          'success'
-        )
+        if (result.ongoing_incident) {
+          showToast(
+            `Still over the limit (value: ${result.metric_value}). You’re already notified for this issue.`,
+            'success'
+          )
+        } else {
+          showToast(
+            `Alert triggered! Value: ${result.metric_value} (${result.notifications_successful || 0} notification${result.notifications_successful !== 1 ? 's' : ''} sent)`,
+            'success'
+          )
+        }
+      } else if (result.recovered) {
+        showToast(`Back to normal (value: ${result.metric_value}). This issue was closed automatically.`, 'success')
       } else {
         showToast(
-          result.reason || 'Not triggered — current value does not breach threshold',
+          result.reason || 'Within threshold — no alert right now.',
           'success'
         )
       }
@@ -249,14 +261,26 @@ export default function AlertDetail() {
     setTestLoading(true)
     try {
       const result = await apiClient.testAlertNotification(id, {})
-      if (result.successful > 0) {
+      const failed = (result.details || []).filter((d: { success?: boolean }) => !d.success)
+      if (result.successful > 0 && failed.length === 0) {
         showToast(
-          `Test sent: ${result.successful}/${result.total} notification${result.total !== 1 ? 's' : ''} succeeded`,
+          `Test sent: ${result.successful}/${result.total} channel${result.total !== 1 ? 's' : ''} succeeded`,
           'success'
         )
-      } else {
+      } else if (result.successful > 0 && failed.length > 0) {
+        const errSummary = failed
+          .map((d: { channel?: string; error?: string }) => `${d.channel}: ${d.error || 'failed'}`)
+          .join('; ')
         showToast(
-          result.detail || 'No notifications sent — configure emails or webhooks first',
+          `${result.successful}/${result.total} succeeded. Failed: ${errSummary}`,
+          'error'
+        )
+      } else {
+        const errSummary = failed
+          .map((d: { channel?: string; error?: string }) => `${d.channel}: ${d.error || 'failed'}`)
+          .join('; ')
+        showToast(
+          errSummary || result.detail || 'No notifications sent — configure channels on the alert',
           'error'
         )
       }
@@ -957,48 +981,62 @@ export default function AlertDetail() {
               </div>
             </div>
 
-            {/* Recent Alert History */}
             <div className="bg-white shadow-sm rounded-xl border border-gray-200 overflow-hidden">
-              <div className="px-6 py-4 border-b border-gray-200 bg-gradient-to-r from-gray-50 to-white flex items-center justify-between">
+              <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
                 <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
                   <History className="w-5 h-5 text-gray-500" />
-                  Recent Alert History
+                  Recent incidents
                 </h2>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => navigate('/alerts/history')}
-                >
-                  View All
+                <Button variant="ghost" size="sm" onClick={() => navigate('/alerts/history')}>
+                  View all
                 </Button>
               </div>
               {historyItems.length === 0 ? (
                 <div className="p-8 text-center">
                   <History className="w-10 h-10 text-gray-300 mx-auto mb-3" />
-                  <p className="text-sm text-gray-500">No alert history yet</p>
-                  <p className="text-xs text-gray-400 mt-1">
-                    Triggered alerts will appear here
-                  </p>
+                  <p className="text-sm text-gray-500">No incidents yet</p>
                 </div>
               ) : (
                 <div className="divide-y divide-gray-100">
-                  {historyItems.slice(0, 10).map((item) => (
-                    <div key={item.id} className="px-6 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors">
-                      <div className="flex items-center gap-3">
-                        {getHistoryStatusBadge(item.status)}
-                        <div>
-                          <p className="text-sm text-gray-700">
-                            Value: <span className="font-mono font-medium text-red-600">{item.triggered_value}</span>
-                            <span className="text-gray-400 mx-1">/</span>
-                            <span className="font-mono text-gray-500">{item.threshold_value}</span>
-                          </p>
-                        </div>
+                  {historyItems.slice(0, 10).map(item => {
+                    const isOpen = item.status !== 'resolved'
+                    const expanded = expandedHistoryId === item.id
+                    return (
+                      <div key={item.id} className="px-6 py-3">
+                        <button
+                          type="button"
+                          className="w-full text-left flex items-center justify-between gap-3 hover:bg-gray-50 -mx-2 px-2 py-1 rounded-lg"
+                          onClick={() =>
+                            setExpandedHistoryId(expanded ? null : item.id)
+                          }
+                        >
+                          <div className="flex flex-wrap items-center gap-2 min-w-0">
+                            {getHistoryStatusBadge(item.status)}
+                            {isOpen && (
+                              <span className="text-xs font-medium text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full">
+                                Open
+                              </span>
+                            )}
+                            <span className="text-sm text-gray-700 font-mono">
+                              {item.triggered_value}/{item.threshold_value}
+                            </span>
+                            <DeliverySummaryBadge notificationDetails={item.notification_details} />
+                          </div>
+                          <span className="text-xs text-gray-500 shrink-0">
+                            {formatRelativeTime(item.triggered_at)}
+                          </span>
+                        </button>
+                        {expanded && (
+                          <div className="mt-4 pl-1 border-t border-gray-100 pt-4">
+                            <IncidentDetailPanel
+                              item={{ ...item, alert: { name: alert?.name } }}
+                              statusBadge={getHistoryStatusBadge(item.status)}
+                            />
+                          </div>
+                        )}
                       </div>
-                      <span className="text-xs text-gray-500" title={formatDate(item.triggered_at)}>
-                        {formatRelativeTime(item.triggered_at)}
-                      </span>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               )}
             </div>

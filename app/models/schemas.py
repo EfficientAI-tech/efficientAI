@@ -2984,6 +2984,9 @@ class CronJobResponse(BaseModel):
     status: CronJobStatus
     next_run_at: Optional[datetime]
     last_run_at: Optional[datetime]
+    last_dispatch_celery_task_id: Optional[str] = None
+    last_dispatch_status: Optional[str] = None
+    last_dispatch_error: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     created_by: Optional[str]

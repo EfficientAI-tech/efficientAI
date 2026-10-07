@@ -61,6 +61,17 @@ FREQUENCY_COOLDOWN = {
     "weekly": 604800,
 }
 
+OPEN_INCIDENT_STATUSES = (
+    AlertHistoryStatus.TRIGGERED.value,
+    AlertHistoryStatus.NOTIFIED.value,
+    AlertHistoryStatus.ACKNOWLEDGED.value,
+)
+
+# Require this many consecutive OK evaluations (Beat runs every 5 min → ~10 min) before
+# auto-resolve, so a single borderline metric reading does not close and re-open incidents.
+AUTO_RESOLVE_OK_EVALUATIONS = 2
+NOTIFICATION_DELIVERY_MAX_ATTEMPTS = 20
+
 
 class AlertEvaluationService:
     """Service for evaluating alert conditions against real-time metrics."""
@@ -90,6 +101,9 @@ class AlertEvaluationService:
             "not_triggered": 0,
             "errors": 0,
             "skipped_cooldown": 0,
+            "new_incidents": 0,
+            "ongoing_incidents": 0,
+            "auto_resolved": 0,
             "details": [],
         }
 
@@ -100,10 +114,16 @@ class AlertEvaluationService:
 
                 if result.get("triggered"):
                     results["triggered"] += 1
+                    if result.get("new_incident"):
+                        results["new_incidents"] += 1
+                    if result.get("ongoing_incident"):
+                        results["ongoing_incidents"] += 1
                     if result.get("skipped_cooldown"):
                         results["skipped_cooldown"] += 1
                 else:
                     results["not_triggered"] += 1
+                    if result.get("recovered"):
+                        results["auto_resolved"] += 1
 
             except Exception as e:
                 logger.error(
@@ -130,8 +150,68 @@ class AlertEvaluationService:
 
         return results
 
+    def evaluate_organization_alerts(
+        self, db: Session, organization_id: UUID, *, sync_notifications: bool = False
+    ) -> Dict[str, Any]:
+        from app.core.license import is_feature_enabled
+
+        if not is_feature_enabled("alerts", organization_id):
+            return {"organization_id": str(organization_id), "total_alerts": 0, "skipped": "no_entitlement"}
+
+        active_alerts = (
+            db.query(Alert)
+            .filter(
+                Alert.organization_id == organization_id,
+                Alert.status == AlertStatus.ACTIVE.value,
+            )
+            .all()
+        )
+
+        results = {
+            "organization_id": str(organization_id),
+            "total_alerts": len(active_alerts),
+            "triggered": 0,
+            "not_triggered": 0,
+            "errors": 0,
+            "skipped_cooldown": 0,
+            "new_incidents": 0,
+            "ongoing_incidents": 0,
+            "auto_resolved": 0,
+            "details": [],
+        }
+
+        for alert in active_alerts:
+            try:
+                result = self.evaluate_single_alert(
+                    alert, db, sync_notifications=sync_notifications
+                )
+                results["details"].append(result)
+                if result.get("triggered"):
+                    results["triggered"] += 1
+                    if result.get("new_incident"):
+                        results["new_incidents"] += 1
+                    if result.get("ongoing_incident"):
+                        results["ongoing_incidents"] += 1
+                    if result.get("skipped_cooldown"):
+                        results["skipped_cooldown"] += 1
+                else:
+                    results["not_triggered"] += 1
+                    if result.get("recovered"):
+                        results["auto_resolved"] += 1
+            except Exception as e:
+                logger.error(
+                    f"[AlertEvaluation] Error evaluating alert '{alert.name}' "
+                    f"(id={alert.id}): {e}",
+                    exc_info=True,
+                )
+                results["errors"] += 1
+                results["details"].append(
+                    {"alert_id": str(alert.id), "alert_name": alert.name, "error": str(e)}
+                )
+        return results
+
     def evaluate_single_alert(
-        self, alert: Alert, db: Session
+        self, alert: Alert, db: Session, *, sync_notifications: bool = False
     ) -> Dict[str, Any]:
         """
         Evaluate a single alert's condition.
@@ -139,7 +219,7 @@ class AlertEvaluationService:
         alert_name = alert.name
         logger.debug(f"[AlertEvaluation] Evaluating alert '{alert_name}'")
 
-        send_notifications = self._should_notify(alert, db)
+        db.query(Alert).filter(Alert.id == alert.id).with_for_update().first()
 
         metric_value = self._compute_metric(alert, db)
 
@@ -153,6 +233,7 @@ class AlertEvaluationService:
                 "triggered": False,
                 "metric_value": None,
                 "reason": "No data available for metric computation",
+                "missing_data": True,
             }
 
         # Step 3: Compare against threshold
@@ -179,12 +260,52 @@ class AlertEvaluationService:
             f"{metric_value} {operator_str} {threshold} = {is_triggered}"
         )
 
+        if not is_triggered and getattr(alert, "suppress_reopen_until_ok", False):
+            alert.suppress_reopen_until_ok = False
+            db.commit()
+
         if is_triggered:
-            return self._trigger_alert(
+            if getattr(alert, "suppress_reopen_until_ok", False):
+                logger.info(
+                    f"[AlertEvaluation] Alert '{alert_name}': breach suppressed until metric clears"
+                )
+                return {
+                    "alert_id": str(alert.id),
+                    "alert_name": alert_name,
+                    "triggered": False,
+                    "suppressed": True,
+                    "metric_value": metric_value,
+                    "threshold": threshold,
+                    "operator": operator_str,
+                    "reason": "Manual resolve: suppressing pages until condition clears",
+                }
+
+            open_incidents = self._get_open_incidents(alert.id, db)
+            if open_incidents:
+                return self._handle_ongoing_incident(
+                    alert=alert,
+                    incidents=open_incidents,
+                    triggered_value=metric_value,
+                    db=db,
+                    sync_notifications=sync_notifications,
+                )
+            return self._open_incident(
                 alert=alert,
                 triggered_value=metric_value,
                 db=db,
-                send_notifications=send_notifications,
+                send_notifications=True,
+                sync_notifications=sync_notifications,
+            )
+
+        open_incidents = self._get_open_incidents(alert.id, db)
+        if open_incidents:
+            return self._handle_condition_cleared(
+                alert=alert,
+                incidents=open_incidents,
+                metric_value=metric_value,
+                db=db,
+                threshold=threshold,
+                operator_str=operator_str,
             )
 
         return {
@@ -482,58 +603,245 @@ class AlertEvaluationService:
     # NOTIFICATION COOLDOWN
     # ============================================
 
-    def _should_notify(self, alert: Alert, db: Session) -> bool:
+    def _get_open_incidents(self, alert_id: UUID, db: Session) -> List[AlertHistory]:
+        return (
+            db.query(AlertHistory)
+            .filter(
+                and_(
+                    AlertHistory.alert_id == alert_id,
+                    AlertHistory.status.in_(OPEN_INCIDENT_STATUSES),
+                )
+            )
+            .order_by(AlertHistory.triggered_at.desc())
+            .with_for_update()
+            .all()
+        )
+
+    def _should_notify_for_incident(self, alert: Alert, incident: AlertHistory) -> bool:
         """
-        Check if the alert should send a notification based on frequency cooldown.
+        Whether to send (or re-send) notifications for an open incident.
+        Immediate = notify only when the incident opens (not on every eval).
         """
         frequency = alert.notify_frequency
         cooldown_seconds = FREQUENCY_COOLDOWN.get(frequency, 0)
 
         if cooldown_seconds == 0:
+            if incident.status in (
+                AlertHistoryStatus.NOTIFIED.value,
+                AlertHistoryStatus.ACKNOWLEDGED.value,
+            ):
+                return False
+            if incident.notified_at is not None:
+                return False
+            return incident.status == AlertHistoryStatus.TRIGGERED.value
+
+        if incident.notified_at is None:
             return True
 
-        # Check the last notification time for this alert
-        last_notified = (
-            db.query(AlertHistory)
-            .filter(
-                and_(
-                    AlertHistory.alert_id == alert.id,
-                    AlertHistory.notified_at.isnot(None),
-                )
+        notified_at = incident.notified_at
+        if notified_at.tzinfo is None:
+            notified_at = notified_at.replace(tzinfo=timezone.utc)
+        elapsed = (datetime.now(timezone.utc) - notified_at).total_seconds()
+        if elapsed < cooldown_seconds:
+            logger.debug(
+                f"[AlertEvaluation] Alert '{alert.name}' cooldown: "
+                f"{elapsed:.0f}s elapsed, need {cooldown_seconds}s"
             )
-            .order_by(AlertHistory.notified_at.desc())
-            .first()
-        )
-
-        if last_notified and last_notified.notified_at:
-            notified_at = last_notified.notified_at
-            if notified_at.tzinfo is None:
-                notified_at = notified_at.replace(tzinfo=timezone.utc)
-            elapsed = (datetime.now(timezone.utc) - notified_at).total_seconds()
-            if elapsed < cooldown_seconds:
-                logger.debug(
-                    f"[AlertEvaluation] Alert '{alert.name}' cooldown: "
-                    f"{elapsed:.0f}s elapsed, need {cooldown_seconds}s"
-                )
-                return False
-
+            return False
         return True
+
+    def _merge_context(self, history: AlertHistory, **extra: Any) -> None:
+        ctx = dict(history.context_data or {})
+        ctx.update(extra)
+        history.context_data = ctx
+
+    def _handle_ongoing_incident(
+        self,
+        alert: Alert,
+        incidents: List[AlertHistory],
+        triggered_value: float,
+        db: Session,
+        *,
+        sync_notifications: bool = False,
+    ) -> Dict[str, Any]:
+        primary = incidents[0]
+        for stale in incidents[1:]:
+            self._auto_resolve_incident(
+                stale,
+                alert,
+                triggered_value,
+                db,
+                note="Auto-resolved: superseded by a newer open incident for this alert.",
+            )
+
+        primary.triggered_value = triggered_value
+        self._merge_context(
+            primary,
+            last_evaluated_at=datetime.now(timezone.utc).isoformat(),
+            in_alarm=True,
+            ok_evaluation_streak=0,
+        )
+        db.commit()
+
+        send_notifications = self._should_notify_for_incident(alert, primary)
+        notification_results: List[Dict[str, Any]] = []
+        if send_notifications:
+            notification_results = self._send_notifications(
+                alert,
+                primary,
+                triggered_value,
+                db,
+                sync=sync_notifications,
+            )
+        else:
+            logger.info(
+                f"[AlertEvaluation] Alert '{alert.name}' ongoing incident "
+                f"(history_id={primary.id}): skipping notification "
+                f"(frequency={alert.notify_frequency})"
+            )
+
+        return {
+            "alert_id": str(alert.id),
+            "alert_name": alert.name,
+            "triggered": True,
+            "ongoing_incident": True,
+            "new_incident": False,
+            "metric_value": triggered_value,
+            "threshold": alert.threshold_value,
+            "operator": alert.operator,
+            "history_id": str(primary.id),
+            "skipped_cooldown": not send_notifications,
+            "notifications_sent": len(notification_results),
+            "notifications_successful": sum(
+                1 for r in notification_results if r.get("success")
+            ),
+        }
+
+    def _handle_condition_cleared(
+        self,
+        alert: Alert,
+        incidents: List[AlertHistory],
+        metric_value: float,
+        db: Session,
+        *,
+        threshold: float,
+        operator_str: str,
+    ) -> Dict[str, Any]:
+        resolved_ids: List[str] = []
+        max_streak = 0
+        for incident in incidents:
+            ctx = dict(incident.context_data or {})
+            streak = int(ctx.get("ok_evaluation_streak", 0)) + 1
+            max_streak = max(max_streak, streak)
+            ctx["ok_evaluation_streak"] = streak
+            ctx["last_ok_metric_value"] = metric_value
+            incident.context_data = ctx
+
+            if streak >= AUTO_RESOLVE_OK_EVALUATIONS:
+                self._auto_resolve_incident(
+                    incident, alert, metric_value, db, send_recovery=True
+                )
+                resolved_ids.append(str(incident.id))
+            else:
+                db.commit()
+                logger.info(
+                    f"[AlertEvaluation] Alert '{alert.name}' condition cleared "
+                    f"({metric_value} {operator_str} {threshold}): "
+                    f"OK streak {streak}/{AUTO_RESOLVE_OK_EVALUATIONS}, incident stays open"
+                )
+
+        if resolved_ids:
+            logger.info(
+                f"[AlertEvaluation] Alert '{alert.name}' recovered: "
+                f"auto-resolved {len(resolved_ids)} incident(s)"
+            )
+            return {
+                "alert_id": str(alert.id),
+                "alert_name": alert.name,
+                "triggered": False,
+                "recovered": True,
+                "metric_value": metric_value,
+                "threshold": threshold,
+                "operator": operator_str,
+                "history_ids": resolved_ids,
+            }
+
+        return {
+            "alert_id": str(alert.id),
+            "alert_name": alert.name,
+            "triggered": False,
+            "recovering": True,
+            "metric_value": metric_value,
+            "threshold": threshold,
+            "operator": operator_str,
+            "ok_evaluation_streak": max_streak,
+            "ok_evaluations_needed": AUTO_RESOLVE_OK_EVALUATIONS,
+        }
+
+    def _auto_resolve_incident(
+        self,
+        history: AlertHistory,
+        alert: Alert,
+        metric_value: float,
+        db: Session,
+        *,
+        note: Optional[str] = None,
+        send_recovery: bool = False,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        history.status = AlertHistoryStatus.RESOLVED.value
+        history.resolved_at = now
+        history.resolved_by = "system"
+        if note:
+            history.resolution_notes = note
+        elif not history.resolution_notes:
+            history.resolution_notes = (
+                f"Auto-resolved: condition cleared ({metric_value} vs "
+                f"{alert.operator} {alert.threshold_value})."
+            )
+        self._merge_context(
+            history,
+            last_metric_value=metric_value,
+            auto_resolved=True,
+            recovered_at=now.isoformat(),
+        )
+        db.commit()
+        if send_recovery:
+            from app.services.alerts.alerting_settings import is_lifecycle_sync_enabled
+
+            if is_lifecycle_sync_enabled(alert.organization_id, db):
+                alert_notification_service.send_recovery_notifications(
+                    alert,
+                    history_id=str(history.id),
+                    metric_value=metric_value,
+                )
 
     # ============================================
     # ALERT TRIGGERING
     # ============================================
 
-    def _trigger_alert(
+    def _open_incident(
         self,
         alert: Alert,
         triggered_value: float,
         db: Session,
         *,
         send_notifications: bool = True,
+        sync_notifications: bool = False,
     ) -> Dict[str, Any]:
         """
-        Trigger an alert: create history record and optionally send notifications.
+        Open a new incident: one history row per breach cycle (OK → ALARM).
         """
+        existing = self._get_open_incidents(alert.id, db)
+        if existing:
+            return self._handle_ongoing_incident(
+                alert=alert,
+                incidents=existing,
+                triggered_value=triggered_value,
+                db=db,
+                sync_notifications=sync_notifications,
+            )
+
         triggered_at = datetime.now(timezone.utc)
 
         # Resolve agent names for notification context
@@ -571,50 +879,41 @@ class AlertEvaluationService:
                 "agent_names": agent_names,
             },
         )
+        self._merge_context(history, in_alarm=True)
         db.add(history)
         db.commit()
         db.refresh(history)
 
         logger.info(
-            f"[AlertEvaluation] Alert '{alert.name}' TRIGGERED: "
+            f"[AlertEvaluation] Alert '{alert.name}' OPENED incident: "
             f"value={triggered_value}, threshold={alert.operator} {alert.threshold_value}"
         )
 
         notification_results: List[Dict[str, Any]] = []
         if send_notifications:
-            notification_results = alert_notification_service.send_all_notifications(
-                alert=alert,
-                triggered_value=triggered_value,
-                triggered_at=triggered_at,
-                agent_names=agent_names,
-                history_id=str(history.id),
+            notification_results = self._send_notifications(
+                alert,
+                history,
+                triggered_value,
+                db,
+                sync=sync_notifications,
             )
-
-            any_success = any(r.get("success") for r in notification_results)
-            history.notified_at = datetime.now(timezone.utc) if any_success else None
-            history.notification_details = {
-                "results": notification_results,
-                "total_sent": len(notification_results),
-                "successful": sum(1 for r in notification_results if r.get("success")),
-                "failed": sum(1 for r in notification_results if not r.get("success")),
-            }
-            if any_success:
-                history.status = AlertHistoryStatus.NOTIFIED.value
         else:
             history.notification_details = {
                 "results": [],
                 "total_sent": 0,
                 "successful": 0,
                 "failed": 0,
-                "skipped_reason": "notification_cooldown",
+                "skipped_reason": "notifications_disabled",
             }
-
-        db.commit()
+            db.commit()
 
         return {
             "alert_id": str(alert.id),
             "alert_name": alert.name,
             "triggered": True,
+            "new_incident": True,
+            "ongoing_incident": False,
             "metric_value": triggered_value,
             "threshold": alert.threshold_value,
             "operator": alert.operator,
@@ -625,6 +924,81 @@ class AlertEvaluationService:
                 1 for r in notification_results if r.get("success")
             ),
         }
+
+    def deliver_notifications_for_history(
+        self,
+        alert: Alert,
+        history: AlertHistory,
+        triggered_value: float,
+        db: Session,
+    ) -> List[Dict[str, Any]]:
+        return self._deliver_notifications(alert, history, triggered_value, db)
+
+    def _send_notifications(
+        self,
+        alert: Alert,
+        history: AlertHistory,
+        triggered_value: float,
+        db: Session,
+        *,
+        sync: bool,
+    ) -> List[Dict[str, Any]]:
+        if sync:
+            return self._deliver_notifications(alert, history, triggered_value, db)
+
+        ctx = dict(history.context_data or {})
+        attempts = int(ctx.get("notification_delivery_attempts", 0))
+        if attempts >= NOTIFICATION_DELIVERY_MAX_ATTEMPTS:
+            logger.warning(
+                f"[AlertEvaluation] Max notification attempts for history {history.id}"
+            )
+            return []
+        self._merge_context(history, notification_delivery_attempts=attempts + 1)
+        db.commit()
+
+        from app.workers.tasks.send_alert_notifications import send_alert_notifications_task
+
+        send_alert_notifications_task.delay(
+            str(alert.id),
+            str(history.id),
+            triggered_value,
+        )
+        return []
+
+    def _deliver_notifications(
+        self,
+        alert: Alert,
+        history: AlertHistory,
+        triggered_value: float,
+        db: Session,
+    ) -> List[Dict[str, Any]]:
+        agent_names = (history.context_data or {}).get("agent_names")
+        triggered_at = history.triggered_at
+        if triggered_at and triggered_at.tzinfo is None:
+            triggered_at = triggered_at.replace(tzinfo=timezone.utc)
+        elif triggered_at is None:
+            triggered_at = datetime.now(timezone.utc)
+
+        notification_results = alert_notification_service.send_all_notifications(
+            alert=alert,
+            triggered_value=triggered_value,
+            triggered_at=triggered_at,
+            agent_names=agent_names,
+            history_id=str(history.id),
+        )
+
+        any_success = any(r.get("success") for r in notification_results)
+        history.notified_at = datetime.now(timezone.utc) if any_success else None
+        history.notification_details = {
+            "results": notification_results,
+            "total_sent": len(notification_results),
+            "successful": sum(1 for r in notification_results if r.get("success")),
+            "failed": sum(1 for r in notification_results if not r.get("success")),
+        }
+        if any_success and history.status == AlertHistoryStatus.TRIGGERED.value:
+            history.status = AlertHistoryStatus.NOTIFIED.value
+        db.commit()
+        return notification_results
 
 
 # Singleton instance

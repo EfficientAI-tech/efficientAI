@@ -58,6 +58,8 @@ class Organization(Base):
     judge_alignment_settings = Column(JSON, nullable=True)
     # Per-org LLM gateway overrides (enabled, gateway_type, base_url, keys).
     llm_gateway_settings = Column(JSON, nullable=True)
+    # Alerting: sync_notification_lifecycle, pagerduty_inbound_token, signing secret
+    alerting_settings = Column(JSON, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False, server_default=text("true"), index=True)
     disabled_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -1470,7 +1472,10 @@ class Alert(Base):
 
     # Status
     status = Column(String, nullable=False, default=AlertStatus.ACTIVE.value)
-    
+    suppress_reopen_until_ok = Column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+
     # Metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -1546,7 +1551,10 @@ class CronJob(Base):
     # Run tracking
     next_run_at = Column(DateTime(timezone=True), nullable=True)
     last_run_at = Column(DateTime(timezone=True), nullable=True)
-    
+    last_dispatch_celery_task_id = Column(String(255), nullable=True)
+    last_dispatch_status = Column(String(32), nullable=True)
+    last_dispatch_error = Column(String, nullable=True)
+
     # Metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

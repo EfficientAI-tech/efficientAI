@@ -1,11 +1,18 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
 import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
-import { Plus, Trash2, X, Bell, Mail, Globe, Zap, CheckCircle, AlertTriangle } from 'lucide-react'
-import { ALL_METRIC_TYPES, DATA_SOURCES, metricTypesForDataSource } from './alertFormConstants'
+import { Plus, Trash2, X, Bell, Zap, CheckCircle, AlertTriangle, Search, Mail, Globe } from 'lucide-react'
+import { DATA_SOURCES, metricTypesForDataSource } from './alertFormConstants'
+import AlertingPageShell from './AlertingPageShell'
+import StatCard from './StatCard'
+import {
+  countNotificationChannels,
+  formatAlertCondition,
+  isOpenIncident,
+} from './alertUiUtils'
 
 // Types
 interface Alert {
@@ -118,6 +125,45 @@ export default function Alerts() {
   })
 
   const navigate = useNavigate()
+  const [searchQuery, setSearchQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
+
+  const { data: historySummary = [] } = useQuery({
+    queryKey: ['alertHistory', 'summary'],
+    queryFn: () => apiClient.listAlertHistory(undefined, undefined, 0, 200),
+  })
+
+  const openIncidentCount = useMemo(
+    () => historySummary.filter((h: { status: string }) => isOpenIncident(h.status)).length,
+    [historySummary]
+  )
+
+  const openByAlertId = useMemo(() => {
+    const map: Record<string, number> = {}
+    for (const h of historySummary as { alert_id: string; status: string }[]) {
+      if (isOpenIncident(h.status)) {
+        map[h.alert_id] = (map[h.alert_id] || 0) + 1
+      }
+    }
+    return map
+  }, [historySummary])
+
+  const filteredAlerts = useMemo(() => {
+    let list = alerts as Alert[]
+    if (statusFilter) {
+      list = list.filter(a => a.status === statusFilter)
+    }
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase()
+      list = list.filter(
+        a =>
+          a.name.toLowerCase().includes(q) ||
+          (a.description || '').toLowerCase().includes(q) ||
+          formatAlertCondition(a).toLowerCase().includes(q)
+      )
+    }
+    return list
+  }, [alerts, statusFilter, searchQuery])
 
   const [evaluatingAll, setEvaluatingAll] = useState(false)
   const [evaluateAllResult, setEvaluateAllResult] = useState<any | null>(null)
@@ -272,42 +318,47 @@ export default function Alerts() {
     }
   }
 
-  const formatCondition = (alertItem: Alert) => {
-    const metric = ALL_METRIC_TYPES.find(m => m.value === alertItem.metric_type)?.label || alertItem.metric_type
-    const agg = AGGREGATIONS.find(a => a.value === alertItem.aggregation)?.label || alertItem.aggregation
-    return `${agg} of ${metric} ${alertItem.operator} ${alertItem.threshold_value}`
-  }
+  const activeCount = (alerts as Alert[]).filter(a => a.status === 'active').length
+  const pausedCount = (alerts as Alert[]).filter(a => a.status === 'paused').length
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">Alerts</h1>
-          <p className="mt-2 text-sm text-gray-600">
-            Configure monitoring alerts for your voice AI agents
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <Button
-            variant="secondary"
-            onClick={handleEvaluateAll}
-            isLoading={evaluatingAll}
-            leftIcon={<Zap className="w-4 h-4" />}
-          >
-            Evaluate All
-          </Button>
-          <Button
-            variant="primary"
-            onClick={() => {
-              resetForm()
-              setEditingAlert(null)
-              setShowCreateModal(true)
-            }}
-            leftIcon={<Plus className="w-4 h-4" />}
-          >
-            Create Alert
-          </Button>
-        </div>
+      <AlertingPageShell
+        title="Alerts"
+        actions={
+          <>
+            <Button
+              variant="secondary"
+              onClick={handleEvaluateAll}
+              isLoading={evaluatingAll}
+              leftIcon={<Zap className="w-4 h-4" />}
+            >
+              Evaluate all
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => {
+                resetForm()
+                setEditingAlert(null)
+                setShowCreateModal(true)
+              }}
+              leftIcon={<Plus className="w-4 h-4" />}
+            >
+              New rule
+            </Button>
+          </>
+        }
+      />
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <StatCard label="Active" value={activeCount} tone="success" />
+        <StatCard label="Paused" value={pausedCount} />
+        <StatCard
+          label="Open"
+          value={openIncidentCount}
+          tone={openIncidentCount > 0 ? 'warning' : 'default'}
+        />
+        <StatCard label="Total" value={(alerts as Alert[]).length} />
       </div>
 
       {/* Evaluate All Result Banner */}
@@ -354,23 +405,41 @@ export default function Alerts() {
         </div>
       )}
 
-      {/* Alerts Table */}
-      <div className="bg-white shadow-sm rounded-xl border border-gray-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-200 bg-gradient-to-r from-gray-50 to-white">
-          <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-            <Bell className="w-5 h-5 text-gray-500" />
-            Alert Configurations
-          </h2>
+      <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
+        <div className="relative flex-1 max-w-md">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <input
+            type="search"
+            placeholder="Search rules…"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            className="w-full pl-9 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-900 focus:border-transparent"
+          />
         </div>
+        <select
+          value={statusFilter}
+          onChange={e => setStatusFilter(e.target.value)}
+          className="px-3 py-2 text-sm border border-gray-300 rounded-lg"
+        >
+          <option value="">All statuses</option>
+          <option value="active">Active</option>
+          <option value="paused">Paused</option>
+          <option value="disabled">Disabled</option>
+        </select>
+      </div>
+
+      <div className="bg-white shadow-sm rounded-xl border border-gray-200 overflow-hidden">
         {isLoading ? (
           <div className="p-12 text-center text-gray-500">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900 mx-auto mb-4"></div>
             Loading alerts...
           </div>
-        ) : alerts.length === 0 ? (
+        ) : filteredAlerts.length === 0 ? (
           <div className="p-12 text-center">
             <Bell className="w-12 h-12 text-gray-300 mx-auto mb-4" />
-            <p className="text-gray-500 mb-4">No alerts configured yet</p>
+            <p className="text-gray-500 mb-4">
+              {alerts.length === 0 ? 'No alerts configured yet' : 'No rules match your filters'}
+            </p>
             <Button
               variant="primary"
               onClick={() => setShowCreateModal(true)}
@@ -397,6 +466,9 @@ export default function Alerts() {
                     Notifications
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Incident
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Status
                   </th>
                   <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -405,7 +477,10 @@ export default function Alerts() {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {alerts.map((alertItem: Alert) => (
+                {filteredAlerts.map((alertItem: Alert) => {
+                  const channels = countNotificationChannels(alertItem)
+                  const open = openByAlertId[alertItem.id] || 0
+                  return (
                   <tr
                     key={alertItem.id}
                     className="hover:bg-gray-50 transition-colors cursor-pointer"
@@ -418,28 +493,42 @@ export default function Alerts() {
                       )}
                     </td>
                     <td className="px-6 py-4">
-                      <div className="text-sm text-gray-700 font-mono bg-gray-100 px-2 py-1 rounded">
-                        {formatCondition(alertItem)}
+                      <div className="text-sm text-gray-700 font-mono bg-gray-100 px-2 py-1 rounded inline-block">
+                        {formatAlertCondition(alertItem)}
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm text-gray-700">{alertItem.time_window_minutes} min</div>
                     </td>
                     <td className="px-6 py-4">
-                      <div className="flex items-center gap-2">
-                        {alertItem.notify_emails && alertItem.notify_emails.length > 0 && (
-                          <span className="flex items-center gap-1 text-xs text-gray-600">
-                            <Mail className="w-3 h-3" />
-                            {alertItem.notify_emails.length}
-                          </span>
-                        )}
-                        {alertItem.notify_webhooks && alertItem.notify_webhooks.length > 0 && (
-                          <span className="flex items-center gap-1 text-xs text-gray-600">
-                            <Globe className="w-3 h-3" />
-                            {alertItem.notify_webhooks.length}
-                          </span>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {channels.total === 0 ? (
+                          <span className="text-xs text-amber-700 bg-amber-50 px-2 py-0.5 rounded">No channels</span>
+                        ) : (
+                          <>
+                            {channels.slack > 0 && (
+                              <span className="text-xs bg-gray-100 px-2 py-0.5 rounded" title="Slack webhooks">
+                                Slack ×{channels.slack}
+                              </span>
+                            )}
+                            {channels.email > 0 && (
+                              <span className="text-xs bg-gray-100 px-2 py-0.5 rounded">Email ×{channels.email}</span>
+                            )}
+                            {channels.pagerduty > 0 && (
+                              <span className="text-xs bg-gray-100 px-2 py-0.5 rounded">PD ×{channels.pagerduty}</span>
+                            )}
+                          </>
                         )}
                       </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      {open > 0 ? (
+                        <span className="text-xs font-medium text-amber-800 bg-amber-100 px-2 py-1 rounded-full">
+                          {open} open
+                        </span>
+                      ) : (
+                        <span className="text-xs text-gray-400">—</span>
+                      )}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       {getStatusBadge(alertItem.status)}
@@ -457,7 +546,8 @@ export default function Alerts() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>

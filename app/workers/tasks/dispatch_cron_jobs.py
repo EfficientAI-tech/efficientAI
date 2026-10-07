@@ -29,12 +29,48 @@ def dispatch_cron_jobs_task() -> dict:
         for job in list_due_cron_jobs(db):
             try:
                 meta = enqueue_cron_job(job)
+                task_name = meta.get("task")
+                celery_id = meta.get("celery_task_id")
+                if task_name == "unknown" or not celery_id:
+                    job.last_dispatch_status = "failed"
+                    job.last_dispatch_error = (
+                        meta.get("error")
+                        or f"enqueue failed for job_type={job.job_type}"
+                    )
+                    job.last_dispatch_celery_task_id = None
+                    db.commit()
+                    dispatched.append(
+                        {
+                            "job_id": str(job.id),
+                            "job_type": job.job_type,
+                            "dispatch_status": "failed",
+                            **meta,
+                        }
+                    )
+                    continue
+
+                job.last_dispatch_status = "enqueued"
+                job.last_dispatch_celery_task_id = celery_id
+                job.last_dispatch_error = None
                 advance_cron_job(db, job)
                 db.commit()
-                dispatched.append({"job_id": str(job.id), "job_type": job.job_type, **meta})
+                dispatched.append(
+                    {
+                        "job_id": str(job.id),
+                        "job_type": job.job_type,
+                        "dispatch_status": "enqueued",
+                        **meta,
+                    }
+                )
             except Exception as exc:
                 db.rollback()
                 logger.warning("cron dispatch failed for job {}: {}", job.id, exc)
+                try:
+                    job.last_dispatch_status = "failed"
+                    job.last_dispatch_error = str(exc)
+                    db.commit()
+                except Exception:
+                    db.rollback()
     finally:
         db.close()
         release_dispatcher_run_lock()

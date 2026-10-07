@@ -69,9 +69,9 @@ def acquire_dispatcher_run_lock() -> bool:
                 ex=_lock_ttl_seconds(),
             )
         )
-    except redis.RedisError as exc:
-        logger.warning("cron dispatcher run lock skipped: {}", exc)
-        return True
+    except (redis.RedisError, ConnectionError, OSError) as exc:
+        logger.warning("cron dispatcher run lock unavailable (skipping tick): {}", exc)
+        return False
 
 
 def release_dispatcher_run_lock() -> None:

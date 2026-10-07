@@ -36,6 +36,7 @@ from app.api.v1.routes import (
     settings,
     observability,
     alerts,
+    alert_settings,
     cron_jobs,
     voice_playground,
     public_blind_test,
@@ -98,6 +99,8 @@ api_router.include_router(playground.router)
 api_router.include_router(settings.router)
 api_router.include_router(observability.router)
 api_router.include_router(alerts.router)
+api_router.include_router(alert_settings.settings_router)
+api_router.include_router(alert_settings.webhook_router)
 api_router.include_router(cron_jobs.router)
 api_router.include_router(voice_playground.router)
 api_router.include_router(public_blind_test.router)
