@@ -260,6 +260,10 @@ function buildFeedFromCommittedPages() {
 }
 
 function exitWithCommittedFallback(reason) {
+  if (process.env.CI && process.env.GITHUB_TOKEN) {
+    console.error(`Changelog generation failed: ${reason}`);
+    process.exit(1);
+  }
   if (!hasCommittedReleasePages()) {
     throw new Error(reason);
   }
@@ -299,7 +303,13 @@ async function fetchReleases() {
     page += 1;
   }
 
-  return releases;
+  return releases
+    .filter((release) => !release.draft)
+    .sort((a, b) => {
+      const newer = Date.parse(b.published_at ?? '') || 0;
+      const older = Date.parse(a.published_at ?? '') || 0;
+      return newer - older;
+    });
 }
 
 function cleanupGeneratedReleasePages() {
