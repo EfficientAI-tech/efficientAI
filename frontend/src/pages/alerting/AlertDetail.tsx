@@ -298,6 +298,7 @@ export default function AlertDetail() {
       setFormData({
         name: alert.name,
         description: alert.description || '',
+        data_source: alert.data_source || 'evaluations',
         metric_type: alert.metric_type,
         aggregation: alert.aggregation,
         operator: alert.operator,

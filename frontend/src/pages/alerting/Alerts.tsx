@@ -5,7 +5,7 @@ import { apiClient } from '../../lib/api'
 import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
 import { Plus, Trash2, X, Bell, Mail, Globe, Zap, CheckCircle, AlertTriangle } from 'lucide-react'
-import { DATA_SOURCES, metricTypesForDataSource } from './alertFormConstants'
+import { ALL_METRIC_TYPES, DATA_SOURCES, metricTypesForDataSource } from './alertFormConstants'
 
 // Types
 interface Alert {
@@ -273,7 +273,7 @@ export default function Alerts() {
   }
 
   const formatCondition = (alertItem: Alert) => {
-    const metric = METRIC_TYPES.find(m => m.value === alertItem.metric_type)?.label || alertItem.metric_type
+    const metric = ALL_METRIC_TYPES.find(m => m.value === alertItem.metric_type)?.label || alertItem.metric_type
     const agg = AGGREGATIONS.find(a => a.value === alertItem.aggregation)?.label || alertItem.aggregation
     return `${agg} of ${metric} ${alertItem.operator} ${alertItem.threshold_value}`
   }
