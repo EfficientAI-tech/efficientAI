@@ -2663,7 +2663,11 @@ class AlertCreate(BaseModel):
     operator: AlertOperator = AlertOperator.GREATER_THAN
     threshold_value: float = Field(..., description="Threshold value for the alert")
     time_window_minutes: int = Field(default=60, ge=1, description="Time window in minutes for aggregation")
-    
+    alert_on_missing_data: bool = Field(
+        default=False,
+        description="Treat no volume data as zero (silence / no-traffic alerts)",
+    )
+
     # Agent selection (null means all agents)
     agent_ids: Optional[List[UUID]] = None
     
@@ -2704,7 +2708,8 @@ class AlertUpdate(BaseModel):
     operator: Optional[AlertOperator] = None
     threshold_value: Optional[float] = None
     time_window_minutes: Optional[int] = Field(default=None, ge=1)
-    
+    alert_on_missing_data: Optional[bool] = None
+
     # Agent selection
     agent_ids: Optional[List[UUID]] = None
     
@@ -2732,7 +2737,8 @@ class AlertResponse(BaseModel):
     operator: AlertOperator
     threshold_value: float
     time_window_minutes: int
-    
+    alert_on_missing_data: bool = False
+
     # Agent selection
     agent_ids: Optional[List[UUID]]
     

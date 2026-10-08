@@ -109,8 +109,10 @@ Click **Create Alert**. Your alert is now **Active** and will be evaluated autom
 | **Call Duration** | `call_duration` | Duration of calls (in seconds) |
 | **Error Rate** | `error_rate` | Percentage of calls that resulted in errors |
 | **Success Rate** | `success_rate` | Percentage of calls that completed successfully |
-| **Latency** | `latency` | Response latency of the voice AI agent |
-| **Custom** | `custom` | Custom metric (for advanced use cases) |
+| **Latency** | `latency` | **Traces:** response latency from ClickHouse. **Evaluations:** same as call duration (seconds), not turn latency. |
+| **Custom** | `custom` | **Evaluations:** count of results in the window. **Production calls:** same as call count. |
+
+Not every metric is available for every [data source](#data-source). See [Alerting & cron coverage](/docs/products/alerting-and-cron-coverage) for gaps (silence, cron failures, platform jobs).
 
 ## Aggregations
 

@@ -102,3 +102,28 @@ def test_evaluate_single_alert_triggers_when_condition_matches(monkeypatch):
     result = service.evaluate_single_alert(alert=alert, db=_fake_db_for_alert(alert))
     assert result["triggered"] is True
     assert result["metric_value"] == 12.0
+
+
+def test_evaluate_single_alert_missing_data_as_zero(monkeypatch):
+    service = AlertEvaluationService()
+    alert = _sample_alert()
+    alert.metric_type = "number_of_calls"
+    alert.operator = "<"
+    alert.threshold_value = 1.0
+    alert.alert_on_missing_data = True
+    monkeypatch.setattr(service, "_compute_metric", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(service, "_get_open_incidents", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        service,
+        "_open_incident",
+        lambda alert, triggered_value, db, send_notifications=True, sync_notifications=False: {
+            "alert_id": str(alert.id),
+            "triggered": True,
+            "new_incident": True,
+            "metric_value": triggered_value,
+        },
+    )
+
+    result = service.evaluate_single_alert(alert=alert, db=_fake_db_for_alert(alert))
+    assert result["triggered"] is True
+    assert result["metric_value"] == 0.0

@@ -249,6 +249,7 @@ class AlertDataSource(str, enum.Enum):
     EVALUATIONS = "evaluations"
     PRODUCTION_CALLS = "production_calls"
     PRODUCTION_TRACES = "production_traces"
+    CRON_JOBS = "cron_jobs"
 
 
 class AlertMetricType(str, enum.Enum):
@@ -259,6 +260,7 @@ class AlertMetricType(str, enum.Enum):
     SUCCESS_RATE = "success_rate"
     LATENCY = "latency"
     CUSTOM = "custom"
+    FAILURE_COUNT = "failure_count"
 
 
 class AlertAggregation(str, enum.Enum):

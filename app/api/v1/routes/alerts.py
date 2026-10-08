@@ -95,6 +95,7 @@ def create_alert(
         operator=alert_data.operator.value,
         threshold_value=alert_data.threshold_value,
         time_window_minutes=alert_data.time_window_minutes,
+        alert_on_missing_data=alert_data.alert_on_missing_data,
         agent_ids=[str(aid) for aid in alert_data.agent_ids] if alert_data.agent_ids else None,
         notify_frequency=alert_data.notify_frequency.value,
         notify_emails=alert_data.notify_emails,
@@ -200,6 +201,9 @@ def update_alert(
 
     if alert_data.time_window_minutes is not None:
         alert.time_window_minutes = alert_data.time_window_minutes
+
+    if alert_data.alert_on_missing_data is not None:
+        alert.alert_on_missing_data = alert_data.alert_on_missing_data
 
     if alert_data.agent_ids is not None:
         alert.agent_ids = [str(aid) for aid in alert_data.agent_ids] if alert_data.agent_ids else None

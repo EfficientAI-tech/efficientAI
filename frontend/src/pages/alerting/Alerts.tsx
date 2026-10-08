@@ -25,6 +25,8 @@ interface Alert {
   operator: string
   threshold_value: number
   time_window_minutes: number
+  alert_on_missing_data?: boolean
+  data_source?: string
   agent_ids?: string[]
   notify_frequency: string
   notify_emails?: string[]
@@ -79,6 +81,7 @@ export default function Alerts() {
     operator: '>',
     threshold_value: 100,
     time_window_minutes: 60,
+    alert_on_missing_data: false,
     agent_ids: [] as string[],
     notify_frequency: 'immediate',
     notify_emails: [''],
@@ -193,6 +196,7 @@ export default function Alerts() {
       operator: '>',
       threshold_value: 100,
       time_window_minutes: 60,
+      alert_on_missing_data: false,
       agent_ids: [],
       notify_frequency: 'immediate',
       notify_emails: [''],
@@ -222,6 +226,7 @@ export default function Alerts() {
       operator: formData.operator,
       threshold_value: formData.threshold_value,
       time_window_minutes: formData.time_window_minutes,
+      alert_on_missing_data: formData.alert_on_missing_data,
       agent_ids: formData.agent_ids.length > 0 ? formData.agent_ids : null,
       notify_frequency: formData.notify_frequency,
       notify_emails: formData.notify_emails.filter(e => e.trim()),
@@ -620,7 +625,13 @@ export default function Alerts() {
                         const nextMetric = allowed.some(m => m.value === formData.metric_type)
                           ? formData.metric_type
                           : allowed[0]?.value || 'number_of_calls'
-                        setFormData({ ...formData, data_source: nextSource, metric_type: nextMetric })
+                        setFormData({
+                          ...formData,
+                          data_source: nextSource,
+                          metric_type: nextMetric,
+                          alert_on_missing_data:
+                            nextSource === 'cron_jobs' ? false : formData.alert_on_missing_data,
+                        })
                       }}
                       className="w-full md:w-96 px-4 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
                     >
@@ -696,9 +707,23 @@ export default function Alerts() {
                       className="w-full md:w-48 px-4 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
                     />
                   </div>
+                  {formData.data_source !== 'cron_jobs' && (
+                    <label className="flex items-center gap-2 text-sm text-gray-700">
+                      <input
+                        type="checkbox"
+                        checked={formData.alert_on_missing_data}
+                        onChange={e =>
+                          setFormData({ ...formData, alert_on_missing_data: e.target.checked })
+                        }
+                        className="rounded border-gray-300"
+                      />
+                      Treat no call data as zero (silence / no traffic)
+                    </label>
+                  )}
                 </div>
 
                 {/* Agent Selection */}
+                {formData.data_source !== 'cron_jobs' && (
                 <div className="space-y-4">
                   <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">Agent Selection</h3>
                   <div>
@@ -742,6 +767,7 @@ export default function Alerts() {
                     </div>
                   </div>
                 </div>
+                )}
 
                 {/* Notification Settings */}
                 <div className="space-y-4">

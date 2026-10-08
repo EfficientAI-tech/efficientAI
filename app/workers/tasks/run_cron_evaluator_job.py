@@ -18,6 +18,19 @@ def run_cron_evaluator_job_task(job_id: str) -> dict:
         job = db.query(CronJob).filter(CronJob.id == UUID(job_id)).first()
         if job is None:
             return {"error": "job not found", "job_id": job_id}
-        return run_evaluator_cron_job(db, job)
+        result = run_evaluator_cron_job(db, job)
+        err = result.get("error")
+        tasks = int(result.get("evaluator_tasks") or 0)
+        if err:
+            job.last_run_status = "failed"
+            job.last_run_error = str(err)[:2000]
+        elif tasks == 0 and not err:
+            job.last_run_status = "failed"
+            job.last_run_error = "no evaluator tasks enqueued"
+        else:
+            job.last_run_status = "success"
+            job.last_run_error = None
+        db.commit()
+        return result
     finally:
         db.close()

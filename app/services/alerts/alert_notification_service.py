@@ -408,6 +408,7 @@ class AlertNotificationService:
                 "dedup_key": dedup_key,
                 "payload": {
                     "summary": f"Resolved: {alert_name}",
+                    "severity": "info",
                     "source": "EfficientAI",
                     "component": "alerting",
                 },
@@ -447,6 +448,7 @@ class AlertNotificationService:
                 "dedup_key": dedup_key,
                 "payload": {
                     "summary": summary,
+                    "severity": "info",
                     "source": "EfficientAI",
                     "component": "alerting",
                 },

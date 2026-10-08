@@ -133,6 +133,7 @@ def test_pagerduty_acknowledge_success(monkeypatch):
     assert result["success"] is True
     assert captured["json"]["event_action"] == "acknowledge"
     assert captured["json"]["dedup_key"] == "efficientai-incident-hist-uuid"
+    assert captured["json"]["payload"]["severity"] == "info"
     assert "oncall@example.com" in captured["json"]["payload"]["summary"]
 
 

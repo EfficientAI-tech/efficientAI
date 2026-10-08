@@ -1460,7 +1460,10 @@ class Alert(Base):
     operator = Column(String, nullable=False, default=AlertOperator.GREATER_THAN.value)
     threshold_value = Column(Float, nullable=False)
     time_window_minutes = Column(Integer, nullable=False, default=60)  # Time window for aggregation
-    
+    alert_on_missing_data = Column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+
     # Agent selection (JSON array of agent UUIDs, null means all agents)
     agent_ids = Column(JSON, nullable=True)
     
@@ -1554,6 +1557,8 @@ class CronJob(Base):
     last_dispatch_celery_task_id = Column(String(255), nullable=True)
     last_dispatch_status = Column(String(32), nullable=True)
     last_dispatch_error = Column(String, nullable=True)
+    last_run_status = Column(String(32), nullable=True)
+    last_run_error = Column(String, nullable=True)
 
     # Metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())

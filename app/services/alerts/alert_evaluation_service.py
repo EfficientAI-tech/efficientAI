@@ -224,17 +224,24 @@ class AlertEvaluationService:
         metric_value = self._compute_metric(alert, db)
 
         if metric_value is None:
-            logger.debug(
-                f"[AlertEvaluation] Alert '{alert_name}': no data available for metric"
-            )
-            return {
-                "alert_id": str(alert.id),
-                "alert_name": alert_name,
-                "triggered": False,
-                "metric_value": None,
-                "reason": "No data available for metric computation",
-                "missing_data": True,
-            }
+            substituted = self._metric_value_for_missing_data(alert)
+            if substituted is not None:
+                metric_value = substituted
+                logger.debug(
+                    f"[AlertEvaluation] Alert '{alert_name}': no data, using {metric_value} (alert_on_missing_data)"
+                )
+            else:
+                logger.debug(
+                    f"[AlertEvaluation] Alert '{alert_name}': no data available for metric"
+                )
+                return {
+                    "alert_id": str(alert.id),
+                    "alert_name": alert_name,
+                    "triggered": False,
+                    "metric_value": None,
+                    "reason": "No data available for metric computation",
+                    "missing_data": True,
+                }
 
         # Step 3: Compare against threshold
         operator_str = alert.operator
@@ -343,6 +350,23 @@ class AlertEvaluationService:
     # METRIC COMPUTATION
     # ============================================
 
+    def _metric_value_for_missing_data(self, alert: Alert) -> Optional[float]:
+        if not getattr(alert, "alert_on_missing_data", False):
+            return None
+        data_source = getattr(alert, "data_source", None) or AlertDataSource.EVALUATIONS.value
+        if data_source == AlertDataSource.CRON_JOBS.value:
+            return None
+        mtype = (alert.metric_type or "").lower()
+        volume_metrics = {
+            AlertMetricType.NUMBER_OF_CALLS.value,
+            "number_of_calls",
+            AlertMetricType.CUSTOM.value,
+            "custom",
+        }
+        if mtype in volume_metrics:
+            return 0.0
+        return None
+
     def _compute_metric(
         self, alert: Alert, db: Session
     ) -> Optional[float]:
@@ -375,6 +399,12 @@ class AlertEvaluationService:
                 window_start,
                 metric_type,
                 aggregation,
+            )
+        if data_source == AlertDataSource.CRON_JOBS.value:
+            from app.services.alerts.cron_metrics import compute_cron_jobs_metric
+
+            return compute_cron_jobs_metric(
+                db, organization_id, metric_type, window_start
             )
 
         # Route to the appropriate metric calculator (evaluations)
