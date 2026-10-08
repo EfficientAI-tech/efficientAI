@@ -12,9 +12,7 @@ from app.services.alerts.alerting_settings import CONFIRM_PHRASE, set_org_alerti
 
 
 @pytest.fixture
-def alert_incident(db_session, seed_org):
-    org_id = uuid.uuid4()
-    seed_org(org_id)
+def alert_incident(db_session, seed_org, org_id):
     alert = Alert(
         id=uuid.uuid4(),
         organization_id=org_id,

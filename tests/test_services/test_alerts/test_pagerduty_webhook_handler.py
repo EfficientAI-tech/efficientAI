@@ -16,9 +16,7 @@ def test_history_id_from_dedup_key():
     assert _history_id_from_dedup_key(f"efficientai-incident-{hid}") == hid
 
 
-def test_apply_acknowledge_updates_history(db_session, seed_org):
-    org_id = uuid.uuid4()
-    seed_org(org_id)
+def test_apply_acknowledge_updates_history(db_session, seed_org, org_id):
     org = db_session.query(Organization).filter_by(id=org_id).first()
     org.alerting_settings = {
         "sync_notification_lifecycle": True,

@@ -513,7 +513,7 @@ class AlertNotificationService:
                         self._post_slack_text(webhook_url, summary, "slack_acknowledge")
                     )
 
-        if alert.notify_emails:
+        if getattr(alert, "notify_emails", None):
             triggered_at = datetime.now(timezone.utc)
             for email_addr in alert.notify_emails:
                 if email_addr and email_addr.strip():
@@ -568,7 +568,7 @@ class AlertNotificationService:
                         self._post_slack_text(webhook_url, summary, "slack_recovery")
                     )
 
-        if alert.notify_emails:
+        if getattr(alert, "notify_emails", None):
             triggered_at = datetime.now(timezone.utc)
             for email_addr in alert.notify_emails:
                 if email_addr and email_addr.strip():
@@ -646,7 +646,7 @@ class AlertNotificationService:
                     results.append(result)
 
         # Send to all configured email addresses
-        if alert.notify_emails:
+        if getattr(alert, "notify_emails", None):
             for email_addr in alert.notify_emails:
                 if email_addr and email_addr.strip():
                     result = self.send_email_notification(

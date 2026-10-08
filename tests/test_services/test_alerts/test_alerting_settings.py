@@ -1,11 +1,8 @@
 """Alerting org sync settings."""
 
-import uuid
-
 import pytest
 from fastapi import HTTPException
 
-from app.models.database import Organization
 from app.services.alerts.alerting_settings import (
     CONFIRM_PHRASE,
     get_org_alerting_settings,
@@ -13,16 +10,12 @@ from app.services.alerts.alerting_settings import (
 )
 
 
-def test_default_sync_off(db_session, seed_org):
-    org_id = uuid.uuid4()
-    seed_org(org_id)
+def test_default_sync_off(db_session, seed_org, org_id):
     settings = get_org_alerting_settings(org_id, db_session)
     assert settings["sync_notification_lifecycle"] is False
 
 
-def test_enable_requires_confirmation(db_session, seed_org):
-    org_id = uuid.uuid4()
-    seed_org(org_id)
+def test_enable_requires_confirmation(db_session, seed_org, org_id):
     with pytest.raises(HTTPException) as exc:
         set_org_alerting_settings(
             org_id,

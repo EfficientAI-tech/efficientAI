@@ -109,6 +109,10 @@ def test_condition_ok_requires_two_evaluations_before_auto_resolve(monkeypatch):
             pass
 
     monkeypatch.setattr(service, "_compute_metric", lambda *_a, **_k: 1.0)
+    monkeypatch.setattr(
+        "app.services.alerts.alerting_settings.is_lifecycle_sync_enabled",
+        lambda *_a, **_k: False,
+    )
 
     first = service.evaluate_single_alert(alert=alert, db=FakeDb())
     assert first["triggered"] is False
