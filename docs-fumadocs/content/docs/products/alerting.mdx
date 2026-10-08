@@ -167,7 +167,7 @@ Email alerts are sent as rich HTML emails containing:
 - Agent scope information
 - Timestamp
 
-**Requirements:** Email notifications require SMTP to be configured in your EfficientAI deployment. See `smtp:` in `config.yml.example` (local E2E: Mailpit on port 1025 with `use_tls: false`).
+**Requirements:** SMTP in `config.yml` (see [Local email testing with Mailpit](#local-email-testing-with-mailpit)).
 
 ### PagerDuty (Events API v2)
 
@@ -385,6 +385,28 @@ All alert endpoints are under `/api/v1/alerts` and require authentication via AP
 ---
 
 ## Configuration
+
+### Local email testing with Mailpit
+
+1. Start Mailpit: `docker compose up mailpit -d`
+2. Add to `config.yml` (API on the host):
+
+```yaml
+smtp:
+  host: "localhost"
+  port: 1025
+  from_email: "alerts@localhost"
+  from_name: "EfficientAI Alerts"
+  use_tls: false
+```
+
+Docker Compose API uses `config.docker.yml` with `host: mailpit` (service name).
+
+3. Restart the API so it reloads config.
+4. Create or edit an alert — add a real recipient (not `test@example.com`; placeholders are rejected).
+5. Open the alert → **Test Notification**. Messages appear in **http://localhost:8025**.
+
+Triggered alerts use the same SMTP path from the API process (no separate notifications worker required for email).
 
 ### SMTP Settings (for Email Notifications)
 

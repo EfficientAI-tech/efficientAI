@@ -37,6 +37,14 @@ services:
       timeout: 5s
       retries: 5
 
+  # Local alert email capture (SMTP 1025, UI http://localhost:8025)
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: efficientai_mailpit
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
   clickhouse:
     image: clickhouse/clickhouse-server:24
     container_name: efficientai_clickhouse

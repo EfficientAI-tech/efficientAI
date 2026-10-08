@@ -192,7 +192,7 @@ class AlertNotificationService:
             return {
                 "success": False,
                 "channel": "email",
-                "error": "SMTP not configured. Set SMTP_HOST, SMTP_USERNAME, SMTP_PASSWORD in config.",
+                "error": "SMTP not configured. Set smtp.host in config.yml (or SMTP_HOST env) and restart the API. Mailpit: host localhost, port 1025, use_tls false — no username/password.",
                 "to_email": to_email,
             }
 

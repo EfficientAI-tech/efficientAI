@@ -181,3 +181,21 @@ flexprice:
   enabled: true
   api_host: "https://api.cloud.flexprice.io/v1"
   # api_key: use FLEXPRICE_API_KEY in .env / container env
+
+# DEV ONLY — alert email via Mailpit (docker compose service `mailpit`).
+# Mail is captured locally, not delivered to real inboxes. UI: http://localhost:8025
+# Production: remove Mailpit; use SES/SendGrid/etc. (verified domain, secrets in env/vault).
+# smtp:
+#   host: "smtp.example.com"
+#   port: 587
+#   username: "..."
+#   password: "..."   # SMTP_PASSWORD env, never commit
+#   from_email: "alerts@yourcompany.com"
+#   from_name: "EfficientAI Alerts"
+#   use_tls: true
+smtp:
+  host: "mailpit"
+  port: 1025
+  from_email: "alerts@localhost"
+  from_name: "EfficientAI Alerts"
+  use_tls: false
