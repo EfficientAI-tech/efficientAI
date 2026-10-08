@@ -70,8 +70,17 @@ export default function AlertHistory() {
     queryKey: ['alertHistory', statusFilter],
     queryFn: () =>
       apiClient.listAlertHistory(
-        statusFilter && statusFilter !== '__open__' ? statusFilter : undefined
+        statusFilter && statusFilter !== '__open__' ? statusFilter : undefined,
+        undefined,
+        0,
+        100,
+        statusFilter === '__open__'
       ),
+  })
+
+  const { data: openItemsForCount = [] } = useQuery({
+    queryKey: ['alertHistory', 'open_only_count'],
+    queryFn: () => apiClient.listAlertHistory(undefined, undefined, 0, 500, true),
   })
 
   const applyIncidentUpdate = (id: string, updated: AlertHistoryItem) => {
@@ -94,7 +103,7 @@ export default function AlertHistory() {
       const fresh = await apiClient.getAlertHistoryItem(id)
       if (fresh) {
         setSelectedItem(prev =>
-          prev?.id === id && prev ? mergeAlertHistoryItem(prev, fresh) : fresh
+          prev?.id === id ? mergeAlertHistoryItem(prev, fresh) : prev
         )
         queryClient.setQueriesData<AlertHistoryItem[]>(
           { queryKey: ['alertHistory'] },
@@ -145,9 +154,6 @@ export default function AlertHistory() {
 
   const displayedItems = useMemo(() => {
     let list = historyItems as AlertHistoryItem[]
-    if (statusFilter === '__open__') {
-      list = list.filter(i => isOpenIncident(i.status))
-    }
     if (searchQuery.trim()) {
       const q = searchQuery.trim().toLowerCase()
       list = list.filter(
@@ -159,10 +165,7 @@ export default function AlertHistory() {
     return list
   }, [historyItems, statusFilter, searchQuery])
 
-  const openCount = useMemo(
-    () => (historyItems as AlertHistoryItem[]).filter(i => isOpenIncident(i.status)).length,
-    [historyItems]
-  )
+  const openCount = openItemsForCount.length
   const resolvedCount = useMemo(
     () => (historyItems as AlertHistoryItem[]).filter(i => i.status === 'resolved').length,
     [historyItems]

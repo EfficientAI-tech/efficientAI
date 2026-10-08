@@ -19,6 +19,8 @@ _FAILED_CALL_EVENTS = frozenset(
 )
 _SUCCESS_CALL_EVENTS = frozenset({"call_ended", "completed"})
 
+_TRACES_TABLE = "call_traces FINAL"
+
 
 def _agent_uuid_list(agent_ids: Optional[list]) -> Optional[List[UUID]]:
     if not agent_ids:
@@ -112,6 +114,19 @@ def compute_production_calls_metric(
     return None
 
 
+def _trace_latency_agg_sql(aggregation: str) -> tuple[str, str]:
+    agg = (aggregation or "avg").lower()
+    if agg in (AlertAggregation.MIN.value, "min"):
+        return "min(response_latency_p50_ms)", "response_latency_p50_ms"
+    if agg in (AlertAggregation.MAX.value, "max"):
+        return "max(response_latency_p95_ms)", "response_latency_p95_ms"
+    if agg in (AlertAggregation.SUM.value, "sum"):
+        return "sum(response_latency_p90_ms)", "response_latency_p90_ms"
+    if agg in (AlertAggregation.COUNT.value, "count"):
+        return "count()", "response_latency_p90_ms"
+    return "avg(response_latency_p90_ms)", "response_latency_p90_ms"
+
+
 def compute_production_traces_metric(
     organization_id: UUID,
     agent_ids: Optional[list],
@@ -145,7 +160,7 @@ def compute_production_traces_metric(
 
     if mtype in (AlertMetricType.NUMBER_OF_CALLS.value, "number_of_calls", "custom"):
         row = client.query(
-            f"SELECT count() FROM call_traces WHERE {where}",
+            f"SELECT count() FROM {_TRACES_TABLE} WHERE {where}",
             parameters=params,
         ).first_row
         return float(row[0]) if row else 0.0
@@ -157,7 +172,7 @@ def compute_production_traces_metric(
         row = client.query(
             f"""
             SELECT {col}(dateDiff('second', started_at, ended_at))
-            FROM call_traces
+            FROM {_TRACES_TABLE}
             WHERE {where} AND ended_at IS NOT NULL
             """,
             parameters=params,
@@ -167,17 +182,11 @@ def compute_production_traces_metric(
         return None
 
     if mtype in (AlertMetricType.LATENCY.value, "latency"):
-        latency_col = "response_latency_p95_ms"
-        if agg in (AlertAggregation.MIN.value, "min"):
-            latency_col = "response_latency_p50_ms"
-        elif agg in (AlertAggregation.MAX.value, "max"):
-            latency_col = "response_latency_p95_ms"
-        elif agg in (AlertAggregation.AVG.value, "avg"):
-            latency_col = "response_latency_p90_ms"
+        agg_expr, latency_col = _trace_latency_agg_sql(aggregation)
         row = client.query(
             f"""
-            SELECT avg({latency_col})
-            FROM call_traces
+            SELECT {agg_expr}
+            FROM {_TRACES_TABLE}
             WHERE {where} AND {latency_col} IS NOT NULL
             """,
             parameters=params,
@@ -195,7 +204,7 @@ def compute_production_traces_metric(
                     status NOT IN ('closed', 'finalized', 'closing')
                     OR (failure_flags IS NOT NULL AND failure_flags != '' AND failure_flags != '[]')
                 ) AS failed
-            FROM call_traces
+            FROM {_TRACES_TABLE}
             WHERE {where}
             """,
             parameters=params,
@@ -211,7 +220,7 @@ def compute_production_traces_metric(
             SELECT
                 count() AS total,
                 countIf(status IN ('closed', 'finalized', 'closing')) AS ok
-            FROM call_traces
+            FROM {_TRACES_TABLE}
             WHERE {where}
             """,
             parameters=params,

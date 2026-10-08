@@ -462,9 +462,17 @@ def test_alert_notification(
 # ============================================
 
 @router.get("/history/all", response_model=List[AlertHistoryResponse])
+_OPEN_HISTORY_STATUSES = (
+    AlertHistoryStatus.TRIGGERED.value,
+    AlertHistoryStatus.NOTIFIED.value,
+    AlertHistoryStatus.ACKNOWLEDGED.value,
+)
+
+
 def list_all_alert_history(
     alert_id: Optional[UUID] = None,
     status_filter: Optional[AlertHistoryStatus] = None,
+    open_only: bool = False,
     skip: int = 0,
     limit: int = 100,
     organization_id: UUID = Depends(get_organization_id),
@@ -476,7 +484,9 @@ def list_all_alert_history(
     if alert_id:
         query = query.filter(AlertHistory.alert_id == alert_id)
     
-    if status_filter:
+    if open_only:
+        query = query.filter(AlertHistory.status.in_(_OPEN_HISTORY_STATUSES))
+    elif status_filter:
         query = query.filter(AlertHistory.status == status_filter.value)
     
     history = query.order_by(AlertHistory.triggered_at.desc()).offset(skip).limit(limit).all()

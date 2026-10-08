@@ -1002,6 +1002,14 @@ class AlertEvaluationService:
         triggered_value: float,
         db: Session,
     ) -> List[Dict[str, Any]]:
+        if history.status == AlertHistoryStatus.RESOLVED.value:
+            return []
+        if history.status not in (
+            AlertHistoryStatus.TRIGGERED.value,
+            AlertHistoryStatus.NOTIFIED.value,
+        ):
+            return []
+
         agent_names = (history.context_data or {}).get("agent_names")
         triggered_at = history.triggered_at
         if triggered_at and triggered_at.tzinfo is None:

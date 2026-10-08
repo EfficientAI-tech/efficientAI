@@ -11,7 +11,6 @@ import StatCard from './StatCard'
 import {
   countNotificationChannels,
   formatAlertCondition,
-  isOpenIncident,
 } from './alertUiUtils'
 
 // Types
@@ -131,25 +130,20 @@ export default function Alerts() {
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
 
-  const { data: historySummary = [] } = useQuery({
-    queryKey: ['alertHistory', 'summary'],
-    queryFn: () => apiClient.listAlertHistory(undefined, undefined, 0, 200),
+  const { data: openHistorySummary = [] } = useQuery({
+    queryKey: ['alertHistory', 'open_summary'],
+    queryFn: () => apiClient.listAlertHistory(undefined, undefined, 0, 500, true),
   })
 
-  const openIncidentCount = useMemo(
-    () => historySummary.filter((h: { status: string }) => isOpenIncident(h.status)).length,
-    [historySummary]
-  )
+  const openIncidentCount = openHistorySummary.length
 
   const openByAlertId = useMemo(() => {
     const map: Record<string, number> = {}
-    for (const h of historySummary as { alert_id: string; status: string }[]) {
-      if (isOpenIncident(h.status)) {
-        map[h.alert_id] = (map[h.alert_id] || 0) + 1
-      }
+    for (const h of openHistorySummary as { alert_id: string }[]) {
+      map[h.alert_id] = (map[h.alert_id] || 0) + 1
     }
     return map
-  }, [historySummary])
+  }, [openHistorySummary])
 
   const filteredAlerts = useMemo(() => {
     let list = alerts as Alert[]

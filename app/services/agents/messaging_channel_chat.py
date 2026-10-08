@@ -258,7 +258,19 @@ def _send_meta_whatsapp_text(
 
 
 def is_meta_whatsapp_live_cfg(cfg: dict[str, Any]) -> bool:
-    return (_cfg_str(cfg, "messaging_channel").lower() or "sms") == "whatsapp"
+    channel = (_cfg_str(cfg, "messaging_channel").lower() or "sms")
+    if channel != "whatsapp":
+        return False
+    provider = _cfg_str(cfg, "messaging_provider", "messaging_telephony_provider").lower()
+    if provider in ("twilio", "telnyx", "plivo"):
+        return False
+    if provider in ("meta_whatsapp", "meta"):
+        return True
+    if _cfg_str(cfg, "meta_whatsapp_phone_number_id", "whatsapp_phone_number_id"):
+        return True
+    if _cfg_str(cfg, "meta_whatsapp_access_token", "whatsapp_access_token"):
+        return True
+    return False
 
 
 def meta_whatsapp_prod_mode(cfg: dict[str, Any]) -> str:
@@ -325,7 +337,6 @@ def run_meta_whatsapp_live_production_turn(
             twilio_from=meta_phone_id,
             messaging_recipient=recipient,
             ttl_secs=120,
-            replace_stale_lock=True,
         )
         if not turn_id:
             return None, "messaging_whatsapp_concurrent_turn"
@@ -945,7 +956,6 @@ def try_messaging_worker_send(
                 twilio_from=meta_phone_id,
                 messaging_recipient=recipient,
                 ttl_secs=120,
-                replace_stale_lock=True,
             )
             if not turn_id:
                 return None, "messaging_whatsapp_concurrent_turn"

@@ -12,7 +12,13 @@ def test_phone_lookup_variants_india():
     assert "7051228092" in _phone_lookup_variants("+917051228092")
 
 
-def test_register_replaces_stale_lock(monkeypatch):
+def test_phone_lookup_variants_no_generic_tail():
+    variants = _phone_lookup_variants("+447123456789")
+    assert variants == ["447123456789"]
+    assert "7123456789" not in variants
+
+
+def test_register_blocks_concurrent_turn(monkeypatch):
     import app.services.agents.chat_messaging_turn_wait as mod
 
     store: dict[str, str] = {}
@@ -41,10 +47,8 @@ def test_register_replaces_stale_lock(monkeypatch):
         agent_id="a1",
         twilio_from="1395406326980468",
         messaging_recipient="917051228092",
-        replace_stale_lock=True,
     )
-    assert second
-    assert second != first
+    assert second == ""
 
 
 def test_complete_turn_matches_national_from_format(monkeypatch):

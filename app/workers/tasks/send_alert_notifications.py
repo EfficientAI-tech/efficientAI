@@ -16,6 +16,7 @@ def send_alert_notifications_task(
     triggered_value: float,
 ) -> dict:
     from app.models.database import Alert, AlertHistory
+    from app.models.enums import AlertHistoryStatus
     from app.services.alerts.alert_evaluation_service import alert_evaluation_service
 
     db = SessionLocal()
@@ -24,6 +25,15 @@ def send_alert_notifications_task(
         history = db.query(AlertHistory).filter(AlertHistory.id == UUID(history_id)).first()
         if not alert or not history:
             return {"error": "alert or history not found"}
+
+        db.refresh(history)
+        if history.status == AlertHistoryStatus.RESOLVED.value:
+            return {"skipped": "incident already resolved"}
+        if history.status not in (
+            AlertHistoryStatus.TRIGGERED.value,
+            AlertHistoryStatus.NOTIFIED.value,
+        ):
+            return {"skipped": f"incident status is {history.status}"}
 
         results = alert_evaluation_service.deliver_notifications_for_history(
             alert, history, triggered_value, db

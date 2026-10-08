@@ -5572,9 +5572,17 @@ class ApiClient {
   }
 
   // Alert History endpoints
-  async listAlertHistory(status?: string, alertId?: string, skip = 0, limit = 100): Promise<any[]> {
+  async listAlertHistory(
+    status?: string,
+    alertId?: string,
+    skip = 0,
+    limit = 100,
+    openOnly = false
+  ): Promise<any[]> {
     const params: any = { skip, limit }
-    if (status) {
+    if (openOnly) {
+      params.open_only = true
+    } else if (status) {
       params.status_filter = status
     }
     if (alertId) {

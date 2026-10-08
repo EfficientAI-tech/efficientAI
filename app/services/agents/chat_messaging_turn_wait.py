@@ -33,16 +33,16 @@ def _normalize_phone(value: str) -> str:
 
 
 def _phone_lookup_variants(value: str) -> list[str]:
-    """E.164 vs national formats (e.g. Meta WhatsApp from=91705… vs 705…)."""
+    """E.164 vs national formats — India 91 prefix only (no generic 10-digit tail)."""
     digits = _normalize_phone(value)
     if not digits:
         return []
     variants: list[str] = [digits]
-    if len(digits) > 10:
-        tail = digits[-10:]
-        if tail not in variants:
-            variants.append(tail)
-    if len(digits) == 10:
+    if digits.startswith("91") and len(digits) > 10:
+        national = digits[2:]
+        if national not in variants:
+            variants.append(national)
+    elif len(digits) == 10:
         intl = f"91{digits}"
         if intl not in variants:
             variants.append(intl)
@@ -102,7 +102,6 @@ def register_twilio_sms_turn(
     twilio_from: str,
     messaging_recipient: str,
     ttl_secs: int = _DEFAULT_TTL_SECS,
-    replace_stale_lock: bool = False,
 ) -> str:
     """Register expectation: inbound SMS From recipient To twilio_from for this agent."""
     turn_id = str(uuid.uuid4())
@@ -110,33 +109,14 @@ def register_twilio_sms_turn(
     try:
         client = _redis()
         if not client.set(key, turn_id, ex=ttl_secs, nx=True):
-            if replace_stale_lock:
-                stale = client.get(key)
-                logger.warning(
-                    "[MessagingTurnWait] replacing stale pending turn {} ({} -> {})",
-                    stale,
-                    _normalize_phone(twilio_from),
-                    _normalize_phone(messaging_recipient),
-                )
-                abandon_messaging_sms_turn(
-                    agent_id=agent_id,
-                    twilio_from=twilio_from,
-                    messaging_recipient=messaging_recipient,
-                )
-                if not client.set(key, turn_id, ex=ttl_secs, nx=True):
-                    logger.warning(
-                        "[MessagingTurnWait] concurrent SMS eval for same From/To pair ({} -> {})",
-                        _normalize_phone(twilio_from),
-                        _normalize_phone(messaging_recipient),
-                    )
-                    return ""
-            else:
-                logger.warning(
-                    "[MessagingTurnWait] concurrent SMS eval for same From/To pair ({} -> {})",
-                    _normalize_phone(twilio_from),
-                    _normalize_phone(messaging_recipient),
-                )
-                return ""
+            stale = client.get(key)
+            logger.warning(
+                "[MessagingTurnWait] concurrent turn blocked (existing={}, {} -> {})",
+                stale,
+                _normalize_phone(twilio_from),
+                _normalize_phone(messaging_recipient),
+            )
+            return ""
         from_variants = _phone_lookup_variants(messaging_recipient) or [
             _normalize_phone(messaging_recipient)
         ]

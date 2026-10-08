@@ -406,7 +406,7 @@ Docker Compose API uses `config.docker.yml` with `host: mailpit` (service name).
 4. Create or edit an alert — add a real recipient (not `test@example.com`; placeholders are rejected).
 5. Open the alert → **Test Notification**. Messages appear in **http://localhost:8025**.
 
-Triggered alerts use the same SMTP path from the API process (no separate notifications worker required for email).
+**Test Notification** sends from the API process. **Scheduled evaluations** queue `send_alert_notifications` on the `platform` queue (or `NOTIFICATIONS_WORKER_QUEUE`) — run a worker that consumes that queue or alerts may not page/email after a real breach.
 
 ### SMTP Settings (for Email Notifications)
 

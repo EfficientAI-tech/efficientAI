@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from uuid import UUID
 
@@ -20,6 +21,7 @@ from app.services.agents.meta_whatsapp_inbound import (
     summarize_meta_whatsapp_webhook,
 )
 from app.services.telephony.meta_whatsapp_webhook_urls import meta_whatsapp_inbound_webhook_url
+from app.services.telephony.meta_whatsapp_webhook_verify import verify_meta_whatsapp_signature
 from app.services.telephony.phone_routing import resolve_meta_whatsapp_agent_for_inbound
 
 router = APIRouter(prefix="/chat/messaging/meta", tags=["Meta WhatsApp Webhooks"])
@@ -113,8 +115,24 @@ async def meta_whatsapp_webhook_inbound(
     request: Request,
     db: Session = Depends(get_db),
 ) -> dict[str, str | int]:
+    raw_body = await request.body()
+    app_secret = (settings.META_WHATSAPP_APP_SECRET or "").strip()
+    if not app_secret:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Meta WhatsApp app secret is not configured (meta_whatsapp.app_secret)",
+        )
+    if not verify_meta_whatsapp_signature(
+        raw_body,
+        request.headers.get("X-Hub-Signature-256"),
+        app_secret,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid Meta webhook signature",
+        )
     try:
-        payload: dict[str, Any] = await request.json()
+        payload: dict[str, Any] = json.loads(raw_body) if raw_body else {}
     except Exception:
         payload = {}
 
