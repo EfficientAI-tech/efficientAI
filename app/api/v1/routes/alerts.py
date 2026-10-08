@@ -461,7 +461,6 @@ def test_alert_notification(
 # ALERT HISTORY ENDPOINTS
 # ============================================
 
-@router.get("/history/all", response_model=List[AlertHistoryResponse])
 _OPEN_HISTORY_STATUSES = (
     AlertHistoryStatus.TRIGGERED.value,
     AlertHistoryStatus.NOTIFIED.value,
@@ -469,6 +468,7 @@ _OPEN_HISTORY_STATUSES = (
 )
 
 
+@router.get("/history/all", response_model=List[AlertHistoryResponse])
 def list_all_alert_history(
     alert_id: Optional[UUID] = None,
     status_filter: Optional[AlertHistoryStatus] = None,

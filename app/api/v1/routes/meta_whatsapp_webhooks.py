@@ -117,19 +117,24 @@ async def meta_whatsapp_webhook_inbound(
 ) -> dict[str, str | int]:
     raw_body = await request.body()
     app_secret = (settings.META_WHATSAPP_APP_SECRET or "").strip()
-    if not app_secret:
+    if app_secret:
+        if not verify_meta_whatsapp_signature(
+            raw_body,
+            request.headers.get("X-Hub-Signature-256"),
+            app_secret,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Invalid Meta webhook signature",
+            )
+    elif not settings.DEBUG:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Meta WhatsApp app secret is not configured (meta_whatsapp.app_secret)",
         )
-    if not verify_meta_whatsapp_signature(
-        raw_body,
-        request.headers.get("X-Hub-Signature-256"),
-        app_secret,
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid Meta webhook signature",
+    else:
+        logger.warning(
+            "[MetaWhatsAppWebhook] POST accepted without signature check (DEBUG; set app_secret)"
         )
     try:
         payload: dict[str, Any] = json.loads(raw_body) if raw_body else {}

@@ -337,6 +337,7 @@ def run_meta_whatsapp_live_production_turn(
             twilio_from=meta_phone_id,
             messaging_recipient=recipient,
             ttl_secs=120,
+            replace_stale_lock=True,
         )
         if not turn_id:
             return None, "messaging_whatsapp_concurrent_turn"
@@ -956,6 +957,7 @@ def try_messaging_worker_send(
                 twilio_from=meta_phone_id,
                 messaging_recipient=recipient,
                 ttl_secs=120,
+                replace_stale_lock=True,
             )
             if not turn_id:
                 return None, "messaging_whatsapp_concurrent_turn"

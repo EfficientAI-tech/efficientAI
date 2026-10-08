@@ -102,6 +102,7 @@ def register_twilio_sms_turn(
     twilio_from: str,
     messaging_recipient: str,
     ttl_secs: int = _DEFAULT_TTL_SECS,
+    replace_stale_lock: bool = False,
 ) -> str:
     """Register expectation: inbound SMS From recipient To twilio_from for this agent."""
     turn_id = str(uuid.uuid4())
@@ -109,14 +110,33 @@ def register_twilio_sms_turn(
     try:
         client = _redis()
         if not client.set(key, turn_id, ex=ttl_secs, nx=True):
-            stale = client.get(key)
-            logger.warning(
-                "[MessagingTurnWait] concurrent turn blocked (existing={}, {} -> {})",
-                stale,
-                _normalize_phone(twilio_from),
-                _normalize_phone(messaging_recipient),
-            )
-            return ""
+            if replace_stale_lock:
+                stale = client.get(key)
+                logger.warning(
+                    "[MessagingTurnWait] replacing stale pending turn {} ({} -> {})",
+                    stale,
+                    _normalize_phone(twilio_from),
+                    _normalize_phone(messaging_recipient),
+                )
+                abandon_messaging_sms_turn(
+                    agent_id=agent_id,
+                    twilio_from=twilio_from,
+                    messaging_recipient=messaging_recipient,
+                )
+                if not client.set(key, turn_id, ex=ttl_secs, nx=True):
+                    logger.warning(
+                        "[MessagingTurnWait] concurrent SMS eval for same From/To pair ({} -> {})",
+                        _normalize_phone(twilio_from),
+                        _normalize_phone(messaging_recipient),
+                    )
+                    return ""
+            else:
+                logger.warning(
+                    "[MessagingTurnWait] concurrent SMS eval for same From/To pair ({} -> {})",
+                    _normalize_phone(twilio_from),
+                    _normalize_phone(messaging_recipient),
+                )
+                return ""
         from_variants = _phone_lookup_variants(messaging_recipient) or [
             _normalize_phone(messaging_recipient)
         ]
