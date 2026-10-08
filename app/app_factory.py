@@ -52,42 +52,6 @@ def _includes_media_routes() -> bool:
     return False
 
 
-def _sync_pricing_rates() -> None:
-    """Bring model_pricing_rates in line with models.json (new models + price changes)."""
-    from app.database import SessionLocal
-    from app.services.usage.pricing_ops import (
-        pricing_sync_on_startup_enabled,
-        sync_rates_from_models_json,
-    )
-
-    if not pricing_sync_on_startup_enabled():
-        logger.info("Pricing sync skipped (USAGE_PRICING_SYNC_ON_STARTUP=false)")
-        return
-    db = SessionLocal()
-    try:
-        result = sync_rates_from_models_json(db)
-        if result["added"] or result["updated"]:
-            logger.info(
-                "Pricing synced from models.json: added=%s updated=%s",
-                result["added"],
-                result["updated"],
-            )
-        else:
-            logger.info("Pricing rates already match models.json")
-        if result["shadowed"]:
-            logger.warning(
-                "Synced baseline rates are overridden by later-dated rates from the "
-                "listed dates (update via `eai usage seed-rates --effective-from`): %s",
-                result["shadowed"],
-            )
-    except Exception as e:
-        # Stale pricing should not block startup; `eai usage seed-rates` fixes it manually.
-        db.rollback()
-        logger.warning("Pricing sync from models.json failed: %s", e)
-    finally:
-        db.close()
-
-
 @asynccontextmanager
 async def _api_lifespan(app: FastAPI):
     logger.info("=" * 60)
@@ -124,8 +88,6 @@ async def _api_lifespan(app: FastAPI):
             logger.error("CRITICAL: %d migration/schema issue(s) remain: %s", len(pending), detail)
             raise RuntimeError(f"Database migrations incomplete: {detail}")
         logger.info("All migrations are up to date")
-
-        _sync_pricing_rates()
 
         from app.services.billing.flexprice_service import log_startup_status
 

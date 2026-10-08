@@ -18,7 +18,6 @@ from app.services.usage.pricing import (
     _rates_table,
     seed_pricing_rates,
 )
-from app.services.usage.pricing_cache import invalidate_all_pricing_cache
 
 _MODELS_JSON_PATH = (
     Path(__file__).resolve().parent.parent.parent / "config" / "models.json"
