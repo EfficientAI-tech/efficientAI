@@ -35,7 +35,7 @@ export function getEvaluatorRunStrategy(
   const callMedium = agent.call_medium || 'phone_call'
   const callType = agent.call_type || 'outbound'
 
-  if (callMedium === 'web_call') {
+  if (callMedium === 'chat' || callMedium === 'web_call') {
     return 'web_bridge'
   }
 
@@ -111,7 +111,7 @@ export function getSuiteRunStrategy(suite: {
 }): RunStrategy {
   const callMedium = suite.agent_call_medium || 'phone_call'
   const callType = suite.agent_call_type || 'outbound'
-  if (callMedium === 'web_call') return 'web_bridge'
+  if (callMedium === 'chat' || callMedium === 'web_call') return 'web_bridge'
   if (callMedium === 'phone_call') {
     if (callType === 'inbound') return 'phone_inbound_manual'
     return 'phone_outbound'

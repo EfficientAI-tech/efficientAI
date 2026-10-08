@@ -21,7 +21,7 @@ from app.models.schemas import (
     PromptImprovementSuggestion,
 )
 from app.services.agent_flowchart import _extract_json_object
-from app.services.ai.llm_resolver import get_llm_provider_and_model
+from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
 from app.services.ai.llm_service import llm_service
 from app.services.imported_agent_constants import IMPORTED_AGENT_TAG
 
@@ -332,7 +332,7 @@ def generate_prompt_improvements(
     if not cluster_context:
         raise ValueError("No cluster context available for prompt improvements")
 
-    provider_enum, model_str = get_llm_provider_and_model(
+    provider_enum, model_str = get_llm_provider_and_model_for_request(
         organization_id,
         db,
         provider,

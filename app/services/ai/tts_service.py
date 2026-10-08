@@ -6,7 +6,7 @@ import time
 from typing import Optional, Dict, Any, Tuple
 from uuid import UUID
 
-from app.models.database import ModelProvider, AIProvider, Integration
+from app.models.database import ModelProvider
 from app.services.storage.s3_service import s3_service
 from efficientai.services.cartesia.http_tts import synthesize_cartesia_bytes
 from efficientai.services.deepgram.http_tts import synthesize_deepgram_bytes
@@ -59,49 +59,53 @@ class TTSService:
     def __init__(self):
         self._provider_handlers: Dict[str, Any] = {}
 
-    def _get_ai_provider(self, provider: ModelProvider, db: Session, organization_id: UUID) -> Optional[AIProvider]:
-        """Get AI provider configuration from database."""
-        from sqlalchemy import func
+    def _resolve_synthesis_credentials(
+        self,
+        provider: ModelProvider,
+        db: Session,
+        organization_id: UUID,
+        credential_id: Optional[UUID] = None,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Resolve API key and optional ElevenLabs regional URL from the same credential."""
+        from app.services.credentials.elevenlabs_inference import (
+            resolve_elevenlabs_api_base_url_for_pinned_credentials,
+        )
+        from app.services.credentials.resolver import (
+            resolve_decrypted_api_key_for_model_provider,
+        )
 
-        provider_value = provider.value if hasattr(provider, "value") else provider
+        api_key = resolve_decrypted_api_key_for_model_provider(
+            provider,
+            db,
+            organization_id,
+            credential_id=credential_id,
+        )
+        if not api_key:
+            provider_value = provider.value if hasattr(provider, "value") else provider
+            raise RuntimeError(f"No API key configured for provider {provider_value}")
 
-        ai_provider = db.query(AIProvider).filter(
-            AIProvider.provider == provider_value,
-            AIProvider.organization_id == organization_id,
-            AIProvider.is_active == True,
-        ).first()
-
-        if not ai_provider:
-            ai_provider = db.query(AIProvider).filter(
-                func.lower(AIProvider.provider) == provider_value.lower(),
-                AIProvider.organization_id == organization_id,
-                AIProvider.is_active == True,
-            ).first()
-
-        return ai_provider
+        handler_kwargs: Dict[str, Any] = {}
+        base_url = resolve_elevenlabs_api_base_url_for_pinned_credentials(
+            db,
+            organization_id,
+            provider,
+            credential_id=credential_id,
+        )
+        if base_url:
+            handler_kwargs["base_url"] = base_url
+        return api_key, handler_kwargs
 
     def _get_api_key_for_provider(
-        self, provider: ModelProvider, db: Session, organization_id: UUID
+        self,
+        provider: ModelProvider,
+        db: Session,
+        organization_id: UUID,
+        credential_id: Optional[UUID] = None,
     ) -> str:
-        """Resolve and decrypt API key from AIProvider or Integration tables."""
-        from app.core.encryption import decrypt_api_key
-        from sqlalchemy import func
-
-        ai_provider = self._get_ai_provider(provider, db, organization_id)
-        if ai_provider:
-            return decrypt_api_key(ai_provider.api_key)
-
-        # Fallback: check Integration table for cartesia/elevenlabs/deepgram
-        provider_value = provider.value if hasattr(provider, "value") else provider
-        integration = db.query(Integration).filter(
-            func.lower(Integration.platform) == provider_value.lower(),
-            Integration.organization_id == organization_id,
-            Integration.is_active == True,
-        ).first()
-        if integration:
-            return decrypt_api_key(integration.api_key)
-
-        raise RuntimeError(f"No API key configured for provider {provider_value}")
+        api_key, _handler_kwargs = self._resolve_synthesis_credentials(
+            provider, db, organization_id, credential_id=credential_id
+        )
+        return api_key
 
     # ------------------------------------------------------------------
     # OpenAI
@@ -129,9 +133,17 @@ class TTSService:
 
     def _synthesize_with_elevenlabs(
         self, text: str, model: str, api_key: str,
-        voice: Optional[str] = None, config: Optional[Dict[str, Any]] = None
+        voice: Optional[str] = None, config: Optional[Dict[str, Any]] = None,
+        base_url: Optional[str] = None,
     ) -> Tuple[bytes, float]:
-        return synthesize_elevenlabs_bytes(text=text, model=model, api_key=api_key, voice=voice, config=config)
+        return synthesize_elevenlabs_bytes(
+            text=text,
+            model=model,
+            api_key=api_key,
+            voice=voice,
+            config=config,
+            base_url=base_url,
+        )
 
     # ------------------------------------------------------------------
     # Cartesia
@@ -259,9 +271,11 @@ class TTSService:
         Returns:
             Audio bytes (MP3 format)
         """
-        api_key = self._get_api_key_for_provider(tts_provider, db, organization_id)
+        api_key, handler_kwargs = self._resolve_synthesis_credentials(
+            tts_provider, db, organization_id
+        )
         handler = self._get_tts_handler(tts_provider)
-        audio_bytes, _ttfb_ms = handler(text, tts_model, api_key, voice, config)
+        audio_bytes, _ttfb_ms = handler(text, tts_model, api_key, voice, config, **handler_kwargs)
         self._record_tts_usage(
             text=text,
             tts_model=tts_model,
@@ -280,10 +294,12 @@ class TTSService:
         config: Optional[Dict[str, Any]] = None,
     ) -> Tuple[bytes, float, float]:
         """Synthesize and return (audio_bytes, total_latency_ms, ttfb_ms)."""
-        api_key = self._get_api_key_for_provider(tts_provider, db, organization_id)
+        api_key, handler_kwargs = self._resolve_synthesis_credentials(
+            tts_provider, db, organization_id
+        )
         handler = self._get_tts_handler(tts_provider)
         start = time.time()
-        audio_bytes, ttfb_ms = handler(text, tts_model, api_key, voice, config)
+        audio_bytes, ttfb_ms = handler(text, tts_model, api_key, voice, config, **handler_kwargs)
         total_latency_ms = (time.time() - start) * 1000
         self._record_tts_usage(
             text=text,

@@ -38,6 +38,13 @@ def _cache_key(api_key: str) -> str:
     return f"auth:api_key:{digest}"
 
 
+def invalidate_api_key_cache(api_key: str) -> None:
+    try:
+        _get_redis().delete(_cache_key(api_key))
+    except redis.RedisError:
+        return
+
+
 def _read_api_key_cache(api_key: str) -> Optional[Principal]:
     try:
         raw = _get_redis().get(_cache_key(api_key))
@@ -65,7 +72,7 @@ def _write_api_key_cache(api_key: str, principal: Principal) -> None:
         "api_key_id": str(principal.api_key_id) if principal.api_key_id else None,
     }
     try:
-        _get_redis().setex(_cache_key(api_key), ttl, json.dumps(payload))
+        _get_redis().set(_cache_key(api_key), json.dumps(payload), ex=ttl)
     except redis.RedisError:
         return
 
@@ -84,7 +91,19 @@ class ApiKeyProvider(AuthProvider):
 
         cached = _read_api_key_cache(cred.api_key)
         if cached is not None:
-            return cached
+            db_key = (
+                db.query(APIKey)
+                .filter(
+                    APIKey.key == cred.api_key,
+                    APIKey.is_active == True,  # noqa: E712
+                )
+                .first()
+            )
+            if not db_key:
+                invalidate_api_key_cache(cred.api_key)
+            else:
+                ensure_organization_active(db, db_key.organization_id)
+                return cached
 
         db_key = (
             db.query(APIKey)

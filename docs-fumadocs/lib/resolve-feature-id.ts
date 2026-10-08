@@ -35,7 +35,7 @@ const FEATURE_ALIASES: Record<string, string> = {
   'api-reference/evaluator-results': 'products/evaluators',
   'api-reference/metrics': 'products/metrics',
   'api-reference/authentication': 'getting-started/authentication',
-  'api-reference/observability': 'monitoring/calls',
+  'api-reference/observability': 'platform/traces-and-logs',
   'api-reference/call-imports': 'enterprise/call-imports',
   'api-reference/workspaces': 'getting-started/workspaces',
   'api-reference/integrations': 'getting-started/integrations',

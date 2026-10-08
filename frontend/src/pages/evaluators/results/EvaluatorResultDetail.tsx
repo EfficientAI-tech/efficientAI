@@ -3,32 +3,21 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams, useNavigate } from 'react-router-dom'
 import { getEvaluatorResultPlaceholder } from '../../../lib/evaluatorResultQuery'
 import { apiClient } from '../../../lib/api'
-import { ArrowLeft, Clock, CheckCircle, XCircle, Loader, BarChart3, Brain, HelpCircle, Sparkles, AudioWaveform, RotateCcw, Activity, Phone } from 'lucide-react'
+import { ArrowLeft, Clock, CheckCircle, XCircle, Loader, BarChart3, Brain, HelpCircle, Sparkles, AudioWaveform, RotateCcw, Activity } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Button from '../../../components/Button'
 import { useToast } from '../../../hooks/useToast'
 import { displayEvaluatorResultStatus } from './evaluatorResultStatus'
+import { getStatusConfig } from './resultsFormatting'
 import ResultsHierarchyNav from './ResultsHierarchyNav'
 import { resolveTraceDrawerTargets } from '../../../lib/callDetailRouting'
 import TraceDetailDrawer from '../../../components/call-recordings/TraceDetailDrawer'
-
-const LEGACY_CATEGORY_LABEL_METRIC_NAMES = new Set([
-  'yes',
-  'no',
-  'true',
-  'false',
-  'same',
-  'different',
-])
-
-function isLegacyCategoryLabelMetric(metric: {
-  type?: string | null
-  metric_name?: string | null
-}): boolean {
-  if ((metric.type || '').toLowerCase() !== 'boolean') return false
-  const name = (metric.metric_name || '').trim().toLowerCase()
-  return LEGACY_CATEGORY_LABEL_METRIC_NAMES.has(name)
-}
+import { isChatEvalResult } from '../../../lib/agentMedium'
+import { EvalRunKindBadge } from '../components/evaluatorUi'
+import {
+  buildChildMetricIds,
+  shouldHideMetricScore as hideMetricScore,
+} from '../../metrics/utils/metricScoreFilters'
 
 // Comprehensive metric information with descriptions and ideal values
 const METRIC_INFO: Record<string, { 
@@ -240,7 +229,15 @@ interface EvaluatorResultDetail {
   }
 }
 
-function EvaluationStepper({ status }: { status: string }) {
+function EvaluationStepper({
+  status,
+  isChat = false,
+  chatLlmToLlm = true,
+}: {
+  status: string
+  isChat?: boolean
+  chatLlmToLlm?: boolean
+}) {
   const [dots, setDots] = useState('')
 
   useEffect(() => {
@@ -248,19 +245,38 @@ function EvaluationStepper({ status }: { status: string }) {
     return () => clearInterval(id)
   }, [])
 
-  const steps = [
-    { key: 'queued', label: 'Queued', sublabel: 'Preparing worker' },
-    { key: 'transcribing', label: 'Analyzing Audio', sublabel: 'Acoustic & voice quality' },
-    { key: 'evaluating', label: 'Evaluating', sublabel: 'LLM conversation metrics' },
-  ]
+  const steps = isChat
+    ? [
+        { key: 'queued', label: 'Queued', sublabel: 'Preparing simulation' },
+        {
+          key: 'transcribing',
+          label: 'Simulating chat',
+          sublabel: chatLlmToLlm ? 'LLM-to-LLM turns' : 'Test LLM vs production',
+        },
+        { key: 'evaluating', label: 'Evaluating', sublabel: 'Conversation metrics' },
+      ]
+    : [
+        { key: 'queued', label: 'Queued', sublabel: 'Preparing worker' },
+        { key: 'transcribing', label: 'Analyzing Audio', sublabel: 'Acoustic & voice quality' },
+        { key: 'evaluating', label: 'Evaluating', sublabel: 'LLM conversation metrics' },
+      ]
 
   const activeIdx = Math.max(0, steps.findIndex(s => s.key === status))
 
-  const statusMessages: Record<string, string> = {
-    queued: 'Downloading audio & preparing evaluation',
-    transcribing: 'Running acoustic analysis & voice quality metrics',
-    evaluating: 'Evaluating conversation quality with LLM',
-  }
+  const statusMessages: Record<string, string> = isChat
+    ? {
+        queued: 'Preparing LLM chat simulation',
+        call_initiating: 'Running simulated chat turns',
+        call_connecting: 'Running simulated chat turns',
+        call_in_progress: 'Chat simulation in progress',
+        transcribing: 'Running simulated chat turns',
+        evaluating: 'Scoring conversation with evaluators',
+      }
+    : {
+        queued: 'Downloading audio & preparing evaluation',
+        transcribing: 'Running acoustic analysis & voice quality metrics',
+        evaluating: 'Evaluating conversation quality with LLM',
+      }
 
   return (
     <div className="py-8 px-4">
@@ -363,20 +379,13 @@ export default function EvaluatorResultDetailPage({
     queryFn: () => apiClient.listMetrics(),
   })
 
-  const childMetricIds = useMemo(() => {
-    const ids = new Set<string>()
-    const visit = (metric: { id?: string; parent_metric_id?: string | null; children?: any[] }) => {
-      if (metric.parent_metric_id && metric.id) ids.add(metric.id)
-      for (const child of metric.children || []) {
-        if (child?.id) ids.add(child.id)
-        visit(child)
-      }
-    }
-    for (const metric of metrics as Array<{ id?: string; parent_metric_id?: string | null; children?: any[] }>) {
-      visit(metric)
-    }
-    return ids
-  }, [metrics])
+  const childMetricIds = useMemo(
+    () =>
+      buildChildMetricIds(
+        metrics as Array<{ id?: string; parent_metric_id?: string | null; children?: any[] }>,
+      ),
+    [metrics],
+  )
 
   const hierarchyCrumbs = useMemo(() => {
     if (embedded || isFromPlayground || !result) return null
@@ -414,14 +423,12 @@ export default function EvaluatorResultDetailPage({
 
   const shouldHideMetricScore = (
     metricId: string,
-    metric: { parent_metric_id?: string | null; type?: string | null; metric_name?: string | null },
-  ) => {
-    return Boolean(
-      metric.parent_metric_id ||
-        childMetricIds.has(metricId) ||
-        isLegacyCategoryLabelMetric(metric),
-    )
-  }
+    metric: {
+      parent_metric_id?: string | null
+      type?: string | null
+      metric_name?: string | null
+    },
+  ) => hideMetricScore(metricId, metric, childMetricIds)
 
   const reEvaluateMutation = useMutation({
     mutationFn: (resultId: string) => apiClient.reEvaluateResult(resultId),
@@ -476,33 +483,6 @@ export default function EvaluatorResultDetailPage({
       }
     }
     return result?.duration_seconds ?? null
-  }
-
-  const getStatusConfig = (status: string) => {
-    switch (status) {
-      case 'completed':
-        return { dot: 'bg-emerald-500', bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200', label: 'Completed', icon: <CheckCircle className="w-4 h-4 text-emerald-500" /> }
-      case 'failed':
-        return { dot: 'bg-rose-500', bg: 'bg-rose-50', text: 'text-rose-700', border: 'border-rose-200', label: 'Failed', icon: <XCircle className="w-4 h-4 text-rose-500" /> }
-      case 'queued':
-        return { dot: 'bg-slate-400', bg: 'bg-slate-50', text: 'text-slate-600', border: 'border-slate-200', label: 'Queued', icon: <Clock className="w-4 h-4 text-slate-400" /> }
-      case 'call_initiating':
-        return { dot: 'bg-amber-500', bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200', label: 'Initiating Call', icon: <Loader className="w-4 h-4 text-amber-500 animate-spin" /> }
-      case 'call_connecting':
-        return { dot: 'bg-orange-500', bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200', label: 'Connecting', icon: <Loader className="w-4 h-4 text-orange-500 animate-spin" /> }
-      case 'call_in_progress':
-        return { dot: 'bg-blue-500', bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200', label: 'In Call', icon: <Loader className="w-4 h-4 text-blue-500 animate-spin" /> }
-      case 'call_ended':
-        return { dot: 'bg-indigo-500', bg: 'bg-indigo-50', text: 'text-indigo-700', border: 'border-indigo-200', label: 'Call Ended', icon: <Phone className="w-4 h-4 text-indigo-500" /> }
-      case 'transcribing':
-        return { dot: 'bg-cyan-500', bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200', label: 'Transcribing', icon: <Loader className="w-4 h-4 text-cyan-500 animate-spin" /> }
-      case 'evaluating':
-        return { dot: 'bg-purple-500', bg: 'bg-purple-50', text: 'text-purple-700', border: 'border-purple-200', label: 'Evaluating', icon: <Loader className="w-4 h-4 text-purple-500 animate-spin" /> }
-      case 'fetching_details':
-        return { dot: 'bg-indigo-500', bg: 'bg-indigo-50', text: 'text-indigo-700', border: 'border-indigo-200', label: 'Fetching Details', icon: <Loader className="w-4 h-4 text-indigo-500 animate-spin" /> }
-      default:
-        return { dot: 'bg-gray-400', bg: 'bg-gray-50', text: 'text-gray-600', border: 'border-gray-200', label: status, icon: null }
-    }
   }
 
   const formatMetricValue = (value: any, type: string, metricName?: string): React.ReactNode => {
@@ -660,8 +640,14 @@ export default function EvaluatorResultDetailPage({
   }
 
   const resultData = result as EvaluatorResultDetail
+  const isChatRun = isChatEvalResult(resultData)
+  const chatConnType =
+    typeof resultData.call_data?.chat_connection_type === 'string'
+      ? resultData.call_data.chat_connection_type
+      : null
+  const chatLlmToLlm = !chatConnType || chatConnType === 'internal_llm'
   const displayStatus = displayEvaluatorResultStatus(resultData)
-  const statusConfig = getStatusConfig(displayStatus)
+  const statusConfig = getStatusConfig(displayStatus, { chatSimulation: isChatRun })
   const callShortId =
     typeof resultData.call_data?.call_short_id === 'string' ? resultData.call_data.call_short_id : null
   const drawerTargets = resolveTraceDrawerTargets({
@@ -732,6 +718,9 @@ export default function EvaluatorResultDetailPage({
               <p className="text-sm text-gray-500 mt-1">
                 Result ID: <span className="font-mono font-semibold text-primary-600">{resultData.result_id}</span>
               </p>
+              <div className="mt-2">
+                <EvalRunKindBadge result={resultData} />
+              </div>
             </div>
             <div className="flex items-center gap-3">
               {callDetailsInDrawer ? (
@@ -741,7 +730,7 @@ export default function EvaluatorResultDetailPage({
                   onClick={() => setDetailDrawerOpen(true)}
                   leftIcon={<Activity className="w-4 h-4" />}
                 >
-                  Call details
+                  {isChatEvalResult(resultData) ? 'Chat transcript' : 'Call details'}
                 </Button>
               ) : null}
               {!reEvalInProgress && (resultData.status === 'completed' || resultData.status === 'failed') && resultData.evaluator_id && (
@@ -784,7 +773,7 @@ export default function EvaluatorResultDetailPage({
                     : 'N/A'}
                 </p>
               </div>
-              {resultData.persona ? (
+              {resultData.persona && !isChatRun ? (
                 <div>
                   <p className="text-xs text-gray-500 font-medium mb-1">Persona</p>
                   <p className="text-sm text-gray-900">{resultData.persona.name}</p>
@@ -797,13 +786,23 @@ export default function EvaluatorResultDetailPage({
                   )}
                 </div>
               ) : null}
-              {resultData.provider_platform ? (
+              {resultData.provider_platform || isChatRun ? (
                 <div>
-                  <p className="text-xs text-gray-500 font-medium mb-1">Platform</p>
-                  <p className="text-sm text-gray-900 capitalize">{resultData.provider_platform}</p>
+                  <p className="text-xs text-gray-500 font-medium mb-1">
+                    {isChatEvalResult(resultData) ? 'Simulation' : 'Platform'}
+                  </p>
+                  <p className="text-sm text-gray-900 capitalize">
+                    {isChatEvalResult(resultData)
+                      ? resultData.call_data?.chat_connection_type === 'internal_llm'
+                        ? 'LLM-to-LLM'
+                        : resultData.call_data?.chat_connection_type
+                          ? `Live chat (${String(resultData.call_data.chat_connection_type).replace(/_/g, ' ')})`
+                          : 'Chat simulation'
+                      : resultData.provider_platform}
+                  </p>
                 </div>
               ) : null}
-              {resultData.provider_call_id ? (
+              {resultData.provider_call_id && !isChatRun ? (
                 <div className="lg:col-span-2">
                   <p className="text-xs text-gray-500 font-medium mb-1">Provider Call ID</p>
                   <p className="text-sm font-mono text-gray-900 text-xs break-all">
@@ -849,11 +848,15 @@ export default function EvaluatorResultDetailPage({
           {/* Stepper progress (re-evaluate or initial evaluation) */}
           {!reEvalInProgress && displayStatus === 'completed' && resultData.metric_scores && Object.keys(resultData.metric_scores).length > 0 ? null
            : reEvalInProgress || ['evaluating', 'transcribing', 'queued'].includes(displayStatus) ? (
-            <EvaluationStepper status={
+            <EvaluationStepper
+              isChat={isChatRun}
+              chatLlmToLlm={chatLlmToLlm}
+              status={
               reEvalInProgress && !['queued', 'transcribing', 'evaluating'].includes(resultData.status)
                 ? 'queued'
                 : displayStatus
-            } />
+            }
+            />
           ) : null}
 
           {/* Error state */}
@@ -901,11 +904,62 @@ export default function EvaluatorResultDetailPage({
                   return !info || info.category === 'llm'
                 }
               )
+
+              const totalVisible =
+                llmMetrics.length + aiVoiceMetrics.length + acousticMetrics.length
+              const fallbackMetrics =
+                totalVisible === 0
+                  ? Object.entries(resultData.metric_scores).filter(
+                      ([metricId, metric]) =>
+                        hasValidValue(metric) &&
+                        !hideMetricScore(metricId, metric, childMetricIds, {
+                          skipParentMetricIdOnScore: true,
+                        }),
+                    )
+                  : []
+
+              const renderMetricCards = (
+                entries: [string, (typeof resultData.metric_scores)[string]][],
+                borderClass: string,
+                titleClass: string,
+              ) => (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                  {entries.map(([metricId, metric]) => (
+                    <div key={metricId} className={`min-w-0 border rounded-lg p-4 ${borderClass}`}>
+                      <div
+                        className={`text-xs font-bold uppercase mb-2 flex min-w-0 items-start gap-1.5 ${titleClass}`}
+                      >
+                        <span className="min-w-0 flex-1 whitespace-normal break-words leading-snug">
+                          {metric.metric_name || metricId}
+                        </span>
+                        <MetricTooltip metricName={metric.metric_name || metricId} />
+                      </div>
+                      <div>{formatMetricValue(metric.value, metric.type, metric.metric_name)}</div>
+                      {renderMetricRationale(metric)}
+                    </div>
+                  ))}
+                </div>
+              )
               
               return (
                 <div className="space-y-8">
+                  {fallbackMetrics.length > 0 ? (
+                    <div>
+                      <div className="flex items-center gap-2 mb-3">
+                        <Brain className="w-4 h-4 text-emerald-600" />
+                        <h3 className="text-sm font-semibold text-emerald-800 uppercase tracking-wide">
+                          Evaluation scores
+                        </h3>
+                      </div>
+                      {renderMetricCards(
+                        fallbackMetrics,
+                        'border-gray-200',
+                        'text-gray-700',
+                      )}
+                    </div>
+                  ) : null}
                   {/* AI Voice Quality Metrics */}
-                  {aiVoiceMetrics.length > 0 && (
+                  {!isChatRun && fallbackMetrics.length === 0 && aiVoiceMetrics.length > 0 && (
                     <div>
                       <div className="flex items-center gap-2 mb-3">
                         <Sparkles className="w-4 h-4 text-purple-600" />
@@ -928,7 +982,7 @@ export default function EvaluatorResultDetailPage({
                   )}
                   
                   {/* Acoustic Metrics */}
-                  {acousticMetrics.length > 0 && (
+                  {!isChatRun && fallbackMetrics.length === 0 && acousticMetrics.length > 0 && (
                     <div>
                       <div className="flex items-center gap-2 mb-3">
                         <AudioWaveform className="w-4 h-4 text-violet-600" />
@@ -951,7 +1005,7 @@ export default function EvaluatorResultDetailPage({
                   )}
                   
                   {/* LLM Conversation Metrics */}
-                  {llmMetrics.length > 0 && (
+                  {fallbackMetrics.length === 0 && llmMetrics.length > 0 && (
                     <div>
                       <div className="flex items-center gap-2 mb-3">
                         <Brain className="w-4 h-4 text-emerald-600" />
@@ -988,7 +1042,9 @@ export default function EvaluatorResultDetailPage({
       {callDetailsInDrawer &&
         (callAnalysisSummary || userSentiment || callSuccessful !== null) && (
           <div className="mb-6 bg-white rounded-lg shadow p-6">
-            <h2 className="text-sm font-semibold text-gray-900 mb-3">Call summary</h2>
+            <h2 className="text-sm font-semibold text-gray-900 mb-3">
+              {isChatRun ? 'Conversation summary' : 'Call summary'}
+            </h2>
             {callAnalysisSummary ? (
               <p className="text-sm text-gray-700 leading-relaxed mb-4">{callAnalysisSummary}</p>
             ) : null}
@@ -1009,13 +1065,15 @@ export default function EvaluatorResultDetailPage({
               ) : null}
             </div>
             <p className="text-xs text-gray-500 mt-4">
-              Recording, full transcript, and provider details are in{' '}
+              {isChatRun
+                ? 'Full message transcript is in '
+                : 'Recording, full transcript, and provider details are in '}
               <button
                 type="button"
                 className="font-medium text-primary-600 hover:text-primary-800"
                 onClick={() => setDetailDrawerOpen(true)}
               >
-                Call details
+                {isChatRun ? 'Chat transcript' : 'Call details'}
               </button>
               .
             </p>

@@ -47,10 +47,12 @@ def synthesize_elevenlabs_bytes(
     api_key: str,
     voice: Optional[str] = None,
     config: Optional[Dict[str, Any]] = None,
+    base_url: Optional[str] = None,
 ) -> Tuple[bytes, float]:
     """Synthesize speech via ElevenLabs and return (audio_bytes, ttfb_ms)."""
     voice_id = voice or "21m00Tcm4TlvDq8ikWAM"  # Rachel default
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
+    origin = (base_url or "").strip() or "https://api.elevenlabs.io"
+    url = f"{origin.rstrip('/')}/v1/text-to-speech/{voice_id}/stream"
 
     query_params: Dict[str, str] = {}
     effective_config = dict(config) if config else {}

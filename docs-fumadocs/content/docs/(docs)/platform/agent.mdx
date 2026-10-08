@@ -11,48 +11,39 @@ Agents in EAI are test agents you use to evaluate your production agent.
 Each one holds your production prompt and how EfficientAI reaches that bot when you run a test—not
 the live bot your customers use on its own.
 
-## Telephony vs WebRTC
+## How you connect to production
 
-Every agent is also tested over one of two call mediums, set by the `phone_call` / `web_call`
-medium field.
+In **Create Agent**, pick the path that matches how production runs today:
 
-| | Telephony (`phone_call`) | WebRTC (`web_call`) |
-|---|---|---|
-| Transport | PSTN through a telephony provider and carrier webhooks | Browser-style real-time streaming over WebSockets |
-| Requires | Phone numbers, carrier routing, telephony credentials | No phone network dependency |
-| Use when | Production depends on real phone behavior, DTMF, carrier latency and codecs | Your experience is browser-native |
+| Path | Best when | What you set up |
+| --- | --- | --- |
+| **Telephony** | Customers reach you on a phone number | A telephony provider (Plivo, Twilio, Telnyx, Vobiz, …) and an imported number |
+| **Platform integration** | You use a voice AI platform | Retell, Vapi, ElevenLabs, Smallest, or similar — connect in the wizard |
+| **Messaging** | Production is SMS or chat-style | A messaging-capable number and the channel shown in the wizard |
 
-Both mediums are evaluated with the same personas, scenarios, and metrics. They differ only in
-call transport and the integration setup they require, so scores stay comparable across the two
-as long as you don't mix mediums inside one comparison.
+Every path uses the same **personas**, **scenarios**, and **metrics** — only the connection step changes.
+
+Set up [Integrations](/docs/integrations/) first if your path needs credentials or phone numbers.
 
 ## Configure an agent
 
 ### What you configure
 
 - Agent identity (name, language)
-- Call type and medium (`inbound` / `outbound`, `phone_call` / `web_call`)
+- Inbound or outbound behavior and how EfficientAI reaches your bot
 - Internal voice bundle mapping
 - External voice-platform mapping (integration + provider agent ID)
 - Test prompt and provider prompt surfaces
 
 ### Creating a test agent
 
-Use **Create Test Agent** to add a new evaluation configuration. You can create either:
+Use **Create Agent** and follow the wizard for your connection type. You add your production prompt
+(or sync it from the provider) and a test prompt EfficientAI uses during evaluations.
 
-- **Telephony** agents for PSTN call flows.
-- **Existing Platform Integration** agents for Retell, Vapi, ElevenLabs, and other external providers.
+### Prompts
 
-For both paths, you configure the production-side prompt and a complementary test prompt that
-EfficientAI uses during evaluations.
-
-### Prompt surfaces
-
-- `provider_prompt`: production prompt used by your production agent on the external platform.
-- `description`: test prompt generated or authored for evaluator-driven simulations.
-
-Use **Generate test prompt** to bootstrap the test prompt from your production prompt, then
-refine it for coverage and repeatability.
+Add your production prompt (or sync from the provider) and the test prompt EfficientAI uses during
+evaluations. Use **Generate test prompt** to draft the test prompt from production, then edit as needed.
 
 ### Recommended flow
 

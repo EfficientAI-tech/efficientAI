@@ -3,20 +3,42 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import Any, Optional
 from uuid import UUID
 
 from loguru import logger
 from sqlalchemy.orm import Session
 
-from app.models.database import Agent, Evaluator, EvaluatorResult, Persona, Scenario, VoiceBundle
+from app.models.database import Agent, Evaluator, EvaluatorResult, Persona, Scenario
+from app.services.agents.chat_connection import normalized_chat_connection_type
+from app.services.agents.chat_llm_config import resolve_simulation_llm
+from app.services.agents.chat_production_leg import (
+    generate_production_chat_reply,
+    uses_live_production_leg,
+)
+from app.services.agents.provider_platform_chat import (
+    ProviderChatState,
+    close_provider_chat_session,
+)
+from app.services.testing.evaluator_simulation_errors import (
+    ProductionChatLegError,
+    TestAgentLlmLegError,
+)
 from app.models.enums import ModelProvider
 from app.services.ai.llm_service import llm_service
 from app.services.testing.test_agent_simulation_prompt import (
     build_persona_description_for_bridge,
     build_test_agent_system_prompt,
-    get_agent_base_prompt,
+    is_chat_agent,
     resolve_persona_max_turns,
+)
+from app.services.testing.test_agent_template import (
+    TestAgentFirstMessage,
+    ensure_opening_includes_persona_name,
+    resolve_caller_opening_text,
+    resolve_first_message_from_agent,
+    should_caller_speak_first,
 )
 from app.services.usage.context import (
     LLMUsageContext,
@@ -26,26 +48,67 @@ from app.services.usage.context import (
 )
 
 _GOODBYE_RE = re.compile(
-    r"\b(goodbye|bye|thanks?\s+you|talk\s+to\s+you\s+later|have\s+a\s+(?:good|great)\s+(?:day|one))\b",
+    r"\b(goodbye|bye|talk\s+to\s+you\s+later|have\s+a\s+(?:good|great)\s+(?:day|one))\b",
+    re.IGNORECASE,
+)
+_THANKS_CLOSING_RE = re.compile(
+    r"\b(?:thank\s+you|thanks)\b\s*[.!]?\s*$",
     re.IGNORECASE,
 )
 
+_SIMULATION_LLM_RETRIES = 3
+_SIMULATION_TASK_DEFAULTS = {"temperature": 0.7, "max_tokens": 2048}
 
-def _build_agent_system_prompt(agent: Agent) -> str:
-    agent_name = (agent.name or "Voice AI Agent").strip()
-    base = get_agent_base_prompt(agent)
-    return (
-        f"You are {agent_name}, a voice AI agent on a live phone call.\n\n"
-        f"Your instructions:\n{base}\n\n"
-        "Respond naturally in 1-3 sentences as on a phone call. "
-        "Respond ONLY with what you would say — no stage directions."
-    )
+
+def _production_turn_needs_user_seed(transcript: list[dict[str, str]]) -> bool:
+    if not transcript:
+        return True
+    last = transcript[-1]
+    speaker = (last.get("speaker") or "").strip()
+    text = (last.get("text") or "").strip()
+    return speaker != "Speaker 1" or not text
+
+
+def _build_eval_user_opener(
+    *,
+    agent: Agent,
+    persona: Persona,
+    first_message_config: TestAgentFirstMessage,
+    scenario_first_message: Optional[str],
+) -> str:
+    persona_name = (persona.name or "Test Caller").strip()
+    opening: Optional[str] = None
+    if should_caller_speak_first(first_message_config):
+        opening = resolve_caller_opening_text(
+            first_message=first_message_config,
+            persona_name=persona_name,
+            scenario_first_message=scenario_first_message,
+        )
+        phone_default = f"Hello, this is {persona_name} calling."
+        if is_chat_agent(agent) and opening == phone_default:
+            opening = f"Hi, I'm {persona_name}. I need some help."
+    else:
+        if scenario_first_message and str(scenario_first_message).strip():
+            opening = ensure_opening_includes_persona_name(
+                str(scenario_first_message).strip(),
+                persona_name,
+            )
+        else:
+            opening = f"Hi, I'm {persona_name}. I need some help."
+    if not (opening or "").strip():
+        opening = f"Hi, I'm {persona_name}. I need some help."
+    return opening.strip()
 
 
 def _should_end_conversation(text: str, *, turn_index: int, min_turns: int = 2) -> bool:
     if turn_index < min_turns:
         return False
-    return bool(_GOODBYE_RE.search(text or ""))
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    if _GOODBYE_RE.search(stripped):
+        return True
+    return bool(_THANKS_CLOSING_RE.search(stripped))
 
 
 def _caller_messages(system_prompt: str, transcript: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -83,28 +146,6 @@ def _agent_messages(system_prompt: str, transcript: list[dict[str, str]]) -> lis
     return messages
 
 
-def _resolve_voice_bundle_llm(
-    db: Session,
-    *,
-    voice_bundle: VoiceBundle,
-    organization_id: UUID,
-) -> tuple[ModelProvider, str, Optional[dict], Optional[UUID]]:
-    raw_provider = voice_bundle.llm_provider
-    if raw_provider is None:
-        raise ValueError("Voice bundle is missing llm_provider")
-    provider = (
-        raw_provider
-        if isinstance(raw_provider, ModelProvider)
-        else ModelProvider(str(raw_provider).lower())
-    )
-    model = (voice_bundle.llm_model or "").strip()
-    if not model:
-        raise ValueError("Voice bundle is missing llm_model")
-    llm_config = voice_bundle.llm_config if isinstance(voice_bundle.llm_config, dict) else None
-    credential_id = getattr(voice_bundle, "llm_credential_id", None)
-    return provider, model, llm_config, credential_id
-
-
 def _generate_turn(
     *,
     messages: list[dict[str, str]],
@@ -114,21 +155,69 @@ def _generate_turn(
     db: Session,
     llm_config: Optional[dict],
     credential_id: Optional[UUID],
+    leg_label: str = "simulation",
 ) -> str:
-    result = llm_service.generate_response(
-        messages=messages,
-        llm_provider=llm_provider,
-        llm_model=llm_model,
-        organization_id=organization_id,
-        db=db,
-        llm_config=llm_config,
-        task_defaults={"temperature": 0.7, "max_tokens": 300},
-        credential_id=credential_id,
+    last_result: Optional[dict[str, Any]] = None
+    for attempt in range(_SIMULATION_LLM_RETRIES):
+        override_llm_config: Optional[dict[str, Any]] = None
+        if attempt > 0:
+            override_llm_config = {
+                "temperature": min(1.0, 0.7 + 0.15 * attempt),
+            }
+            time.sleep(0.35 * attempt)
+        try:
+            result = llm_service.generate_response(
+                messages=messages,
+                llm_provider=llm_provider,
+                llm_model=llm_model,
+                organization_id=organization_id,
+                db=db,
+                llm_config=llm_config,
+                task_defaults=_SIMULATION_TASK_DEFAULTS,
+                override_llm_config=override_llm_config,
+                credential_id=credential_id,
+            )
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"{leg_label} failed ({llm_provider.value}/{llm_model}): {exc}"
+            ) from exc
+        last_result = result
+        text = (result.get("text") or "").strip()
+        if text:
+            return text
+        logger.warning(
+            "[LLM simulation] Empty {} response (attempt {}/{}, provider={}, model={}, finish_reason={})",
+            leg_label,
+            attempt + 1,
+            _SIMULATION_LLM_RETRIES,
+            llm_provider.value,
+            llm_model,
+            result.get("finish_reason"),
+        )
+
+    result = last_result or {}
+    refusal = (result.get("refusal") or "").strip()
+    if refusal:
+        raise ValueError(
+            f"LLM refused the simulation request ({leg_label}; "
+            f"provider={llm_provider.value}, model={llm_model}): {refusal}"
+        )
+    finish_reason = result.get("finish_reason")
+    hint = ""
+    if finish_reason == "length" or result.get("truncated"):
+        hint = (
+            " The model hit the output token limit before producing visible text "
+            "(common with reasoning models like gpt-oss-120b or gpt-5-mini); "
+            "raise max_tokens or set reasoning_effort=minimal in test agent LLM config."
+        )
+    elif finish_reason:
+        hint = f" finish_reason={finish_reason}."
+    raise ValueError(
+        f"LLM returned an empty simulation response ({leg_label}; "
+        f"provider={llm_provider.value}, model={llm_model}).{hint} "
+        f"Tried {_SIMULATION_LLM_RETRIES} times. "
+        "Check provider rate limits and worker logs for [LLMService] empty assistant text."
     )
-    text = (result.get("text") or "").strip()
-    if not text:
-        raise ValueError("LLM returned an empty simulation response")
-    return text
 
 
 def run_llm_to_llm_evaluator_simulation(
@@ -142,25 +231,13 @@ def run_llm_to_llm_evaluator_simulation(
     db: Session,
 ) -> dict[str, Any]:
     """Run a text simulation and populate the evaluator result transcript."""
-    if not agent.voice_bundle_id:
-        raise ValueError("Agent does not have a voice bundle configured")
+    conn_type = normalized_chat_connection_type(agent)
 
-    voice_bundle = (
-        db.query(VoiceBundle)
-        .filter(
-            VoiceBundle.id == agent.voice_bundle_id,
-            VoiceBundle.organization_id == organization_id,
-        )
-        .first()
+    test_llm = resolve_simulation_llm(
+        db, agent=agent, organization_id=organization_id, leg="test"
     )
-    if not voice_bundle:
-        raise ValueError(f"Voice bundle {agent.voice_bundle_id} not found")
-
-    llm_provider, llm_model, llm_config, credential_id = _resolve_voice_bundle_llm(
-        db,
-        voice_bundle=voice_bundle,
-        organization_id=organization_id,
-    )
+    provider_chat_state = ProviderChatState()
+    production_leg_meta: dict[str, Any] = {}
 
     max_turns = resolve_persona_max_turns(persona)
     persona_description = build_persona_description_for_bridge(persona)
@@ -171,8 +248,6 @@ def run_llm_to_llm_evaluator_simulation(
         persona_description=persona_description,
         max_turns=max_turns,
     )
-    agent_system = _build_agent_system_prompt(agent)
-
     caller_ctx = usage_context_for_test_agent_simulation(
         organization_id=organization_id,
         workspace_id=evaluator.workspace_id,
@@ -202,64 +277,134 @@ def run_llm_to_llm_evaluator_simulation(
     )
 
     transcript: list[dict[str, str]] = []
-    first_message = f"Hello, this is {persona.name} calling."
-    transcript.append({"speaker": "Speaker 1", "text": first_message})
-
+    chat_mode = is_chat_agent(agent)
+    first_message_config = resolve_first_message_from_agent(agent)
+    scenario_first_message = None
+    if isinstance(scenario.required_info, dict):
+        scenario_first_message = scenario.required_info.get("first_message")
     exchanges = 0
-    while exchanges < max_turns:
-        with llm_usage_context(agent_ctx):
-            agent_text = _generate_turn(
-                messages=_agent_messages(agent_system, transcript),
-                llm_provider=llm_provider,
-                llm_model=llm_model,
-                organization_id=organization_id,
-                db=db,
-                llm_config=llm_config,
-                credential_id=credential_id,
-            )
-        transcript.append({"speaker": "Speaker 2", "text": agent_text})
-        exchanges += 1
-        if _should_end_conversation(agent_text, turn_index=exchanges):
-            break
 
-        with llm_usage_context(caller_ctx):
-            caller_text = _generate_turn(
-                messages=_caller_messages(caller_system, transcript),
-                llm_provider=llm_provider,
-                llm_model=llm_model,
-                organization_id=organization_id,
-                db=db,
-                llm_config=llm_config,
-                credential_id=credential_id,
-            )
-        transcript.append({"speaker": "Speaker 1", "text": caller_text})
-        exchanges += 1
-        if _should_end_conversation(caller_text, turn_index=exchanges):
-            break
-
-    transcription = "\n".join(
-        f"{entry['speaker']}: {entry['text']}" for entry in transcript if entry.get("text")
-    )
-    speaker_segments = [
-        {
-            "speaker": entry["speaker"],
-            "text": entry["text"],
-            "start": float(idx),
-            "end": float(idx) + 1.0,
+    def _write_transcript_to_result() -> None:
+        result.transcription = "\n".join(
+            f"{entry['speaker']}: {entry['text']}"
+            for entry in transcript
+            if entry.get("text")
+        )
+        result.speaker_segments = [
+            {
+                "speaker": entry["speaker"],
+                "text": entry["text"],
+                "start": float(idx),
+                "end": float(idx) + 1.0,
+            }
+            for idx, entry in enumerate(transcript)
+        ]
+        result.provider_platform = "internal"
+        result.call_data = {
+            "source": "llm_to_llm_simulation",
+            "simulation": "llm_to_llm",
+            "modality": "chat" if chat_mode else "voice",
+            "chat_connection_type": conn_type,
+            **production_leg_meta,
+            "test_llm_source": test_llm.source,
+            "exchanges": exchanges,
+            "messages": transcript,
+            "partial": exchanges < max_turns,
         }
-        for idx, entry in enumerate(transcript)
-    ]
+        result.duration_seconds = float(max(1, len(transcript)))
 
-    result.transcription = transcription
-    result.speaker_segments = speaker_segments
-    result.provider_platform = "internal"
-    result.call_data = {
-        "source": "llm_to_llm_simulation",
-        "simulation": "llm_to_llm",
-        "exchanges": exchanges,
-        "messages": transcript,
-    }
-    result.duration_seconds = float(max(1, len(transcript)))
+    try:
+        while exchanges < max_turns:
+            if uses_live_production_leg(agent) and _production_turn_needs_user_seed(transcript):
+                transcript.append(
+                    {
+                        "speaker": "Speaker 1",
+                        "text": _build_eval_user_opener(
+                            agent=agent,
+                            persona=persona,
+                            first_message_config=first_message_config,
+                            scenario_first_message=scenario_first_message,
+                        ),
+                    }
+                )
+            elif (
+                not uses_live_production_leg(agent)
+                and not transcript
+                and should_caller_speak_first(first_message_config)
+            ):
+                opener = _build_eval_user_opener(
+                    agent=agent,
+                    persona=persona,
+                    first_message_config=first_message_config,
+                    scenario_first_message=scenario_first_message,
+                )
+                transcript.append({"speaker": "Speaker 1", "text": opener})
+
+            try:
+                with llm_usage_context(agent_ctx):
+                    agent_text, leg_meta = generate_production_chat_reply(
+                        db,
+                        agent=agent,
+                        organization_id=organization_id,
+                        transcript=transcript,
+                        provider_state=provider_chat_state,
+                        evaluator_result=result,
+                    )
+            except Exception as exc:
+                leg = (
+                    provider_chat_state.extra.get("production_leg")
+                    or provider_chat_state.platform
+                    or conn_type
+                )
+                raise ProductionChatLegError(
+                    str(leg),
+                    f"Production chat leg failed ({leg}): {exc}",
+                ) from exc
+            production_leg_meta.update(leg_meta)
+            transcript.append({"speaker": "Speaker 2", "text": agent_text})
+            exchanges += 1
+            if _should_end_conversation(agent_text, turn_index=exchanges):
+                break
+
+            try:
+                with llm_usage_context(caller_ctx):
+                    caller_text = _generate_turn(
+                        messages=_caller_messages(caller_system, transcript),
+                        llm_provider=test_llm.provider,
+                        llm_model=test_llm.model,
+                        organization_id=organization_id,
+                        db=db,
+                        llm_config=test_llm.llm_config,
+                        credential_id=test_llm.credential_id,
+                        leg_label="Simulated customer (test agent LLM)",
+                    )
+            except Exception as exc:
+                raise TestAgentLlmLegError(f"Test agent LLM failed: {exc}") from exc
+            transcript.append({"speaker": "Speaker 1", "text": caller_text})
+            exchanges += 1
+            if _should_end_conversation(caller_text, turn_index=exchanges):
+                break
+    except Exception:
+        if transcript:
+            _write_transcript_to_result()
+        raise
+    finally:
+        try:
+            close_provider_chat_session(
+                db,
+                agent=agent,
+                organization_id=organization_id,
+                state=provider_chat_state,
+            )
+        except Exception:
+            logger.warning(
+                "[LLM simulation] Provider chat session teardown failed for evaluator {}",
+                evaluator.evaluator_id,
+            )
+
+    _write_transcript_to_result()
+    if isinstance(result.call_data, dict):
+        result.call_data["partial"] = False
 
     logger.info(
         "[LLM simulation] Completed evaluator {} result {} with {} transcript lines",

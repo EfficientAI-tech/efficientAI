@@ -145,7 +145,8 @@ export interface EvaluatorResultRow {
   status: EvaluatorResultStatus
   metric_scores: Record<string, EvaluatorResultMetricScore> | null
   error_message: string | null
-  agent?: { id: string; name: string } | null
+  call_data?: Record<string, unknown> | null
+  agent?: { id: string; name: string; call_medium?: string | null } | null
   persona?: { id: string; name: string } | null
   scenario?: { id: string; name: string } | null
 }
@@ -346,10 +347,14 @@ export enum TelephonyProvider {
   PLIVO = 'plivo',
   EXOTEL = 'exotel',
   VOBIZ = 'vobiz',
+  TWILIO = 'twilio',
+  TELNYX = 'telnyx',
 }
 
 export type CredentialRoutingMode = 'inherit' | 'gateway' | 'direct'
 export type GatewayInterfaceMode = 'inherit' | 'litellm_shim' | 'native_openai'
+/** Per-credential gateway backend override. */
+export type CredentialGatewayType = 'inherit' | 'bifrost' | 'litellm_proxy'
 
 export type EffectiveCredentialRouting =
   | 'inherit'
@@ -364,6 +369,7 @@ export interface Integration {
   platform: IntegrationPlatform
   name?: string | null
   public_key?: string | null
+  api_base_url?: string | null
   is_active: boolean
   /** True if this row is the default credential for (org, platform). */
   is_default?: boolean
@@ -378,6 +384,7 @@ export interface IntegrationCreate {
   platform: IntegrationPlatform
   api_key: string
   public_key?: string
+  api_base_url?: string | null
   name?: string | null
   routing_mode?: CredentialRoutingMode
   /** Mark the new credential as the default for (org, platform). */
@@ -401,6 +408,7 @@ export interface ListIntegrationVoiceAgentsResponse {
 // VoiceBundle Types
 export enum ModelProvider {
   OPENAI = 'openai',
+  OPENROUTER = 'openrouter',
   ANTHROPIC = 'anthropic',
   GOOGLE = 'google',
   XAI = 'xai',
@@ -409,6 +417,7 @@ export enum ModelProvider {
   MISTRAL = 'mistral',
   META = 'meta',
   TOGETHER = 'together',
+  TYPESAFE = 'typesafe',
   PERPLEXITY = 'perplexity',
   AZURE = 'azure',
   AWS = 'aws',
@@ -434,6 +443,7 @@ export interface AIProvider {
   is_default?: boolean
   routing_mode?: CredentialRoutingMode
   gateway_model?: string | null
+  gateway_type?: CredentialGatewayType
   gateway_interface?: GatewayInterfaceMode
   gateway_base_url?: string | null
   gateway_auth_header?: string | null
@@ -445,6 +455,7 @@ export interface AIProvider {
   gateway_managed?: boolean
   effective_routing?: EffectiveCredentialRouting
   effective_gateway_interface?: 'litellm_shim' | 'native_openai'
+  effective_gateway_type?: 'bifrost' | 'litellm_proxy'
   created_at: string
   updated_at: string
   last_tested_at?: string | null
@@ -457,6 +468,7 @@ export interface AIProviderCreate {
   endpoint_url?: string | null
   routing_mode?: CredentialRoutingMode
   gateway_model?: string | null
+  gateway_type?: CredentialGatewayType
   gateway_interface?: GatewayInterfaceMode
   gateway_base_url?: string | null
   gateway_auth_header?: string | null
@@ -475,6 +487,7 @@ export interface AIProviderUpdate {
   is_active?: boolean
   routing_mode?: CredentialRoutingMode
   gateway_model?: string | null
+  gateway_type?: CredentialGatewayType
   gateway_interface?: GatewayInterfaceMode
   gateway_base_url?: string | null
   gateway_auth_header?: string | null
@@ -592,6 +605,15 @@ export interface TestAgent {
   voice_ai_agent_id?: string | null
   provider_prompt?: string | null
   provider_prompt_synced_at?: string | null
+  chat_connection_type?: string | null
+  main_llm_provider?: string | null
+  main_llm_model?: string | null
+  main_llm_credential_id?: string | null
+  test_llm_provider?: string | null
+  test_llm_model?: string | null
+  test_llm_credential_id?: string | null
+  chat_connection_config?: Record<string, unknown> | null
+  chat_eval_mode?: string | null
   created_at: string
   updated_at: string
 }
@@ -1179,6 +1201,8 @@ export interface CallImport {
   sheet_name: string | null
   /** Optional free-text dataset label (high-level segregation filter). */
   dataset: string | null
+  /** `chat` for transcript-only post-prod chat batches; null or voice otherwise. */
+  content_modality?: string | null
   /** Tags currently attached to this import. Empty array if untagged. */
   tags: CallImportTag[]
   /**
@@ -1836,6 +1860,10 @@ export interface CallImportEvaluationRow {
   /** Mandatory identifier from the source batch (renamed from ``external_call_id``). */
   conversation_id: string | null
   transcript: string | null
+  /** CSV-supplied production transcript from the source row. */
+  production_transcript?: string | null
+  /** Worker-produced diarised transcript from the source row. */
+  diarised_transcript?: string | null
   raw_columns: Record<string, any> | null
   recording_url: string | null
   recording_date: string | null
@@ -2045,6 +2073,12 @@ export interface CallImportMetricAggregate {
    * the co-occurrence heatmap chart type.
    */
   co_occurrence?: CallImportMetricLabelPair[]
+  /** Per-dimension tallies for Jev classification metrics. */
+  classification_facets?: {
+    yes_no: CallImportMetricValueCount[]
+    choice: CallImportMetricValueCount[]
+    level: CallImportMetricValueCount[]
+  }
 }
 
 export interface CallImportEvaluationAggregateResponse {

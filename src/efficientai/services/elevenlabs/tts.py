@@ -66,6 +66,8 @@ ELEVENLABS_MULTILINGUAL_MODELS = {
 # Sending these parameters to unsupported models causes a 400 error.
 ELEVENLABS_NO_CONTEXT_MODELS = {
     "eleven_v3",
+    "eleven_v4",
+    "eleven_v4_turbo",
 }
 
 

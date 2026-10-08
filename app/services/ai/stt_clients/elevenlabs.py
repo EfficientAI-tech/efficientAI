@@ -10,7 +10,9 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-ELEVENLABS_STT_URL = "https://api.elevenlabs.io/v1/speech-to-text"
+from app.services.voice_providers.elevenlabs_api_url import elevenlabs_speech_to_text_url
+
+ELEVENLABS_STT_URL = elevenlabs_speech_to_text_url(None)
 
 
 def transcribe_elevenlabs(
@@ -18,6 +20,7 @@ def transcribe_elevenlabs(
     model: str,
     api_key: str,
     language: Optional[str] = None,
+    base_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Transcribe an audio file via the ElevenLabs STT REST API.
 
@@ -42,8 +45,9 @@ def transcribe_elevenlabs(
             ),
         }
         with httpx.Client(timeout=180.0) as client:
+            stt_url = elevenlabs_speech_to_text_url(base_url)
             resp = client.post(
-                ELEVENLABS_STT_URL,
+                stt_url,
                 headers=headers,
                 data=data,
                 files=files,

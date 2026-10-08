@@ -3,11 +3,13 @@
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
+import httpx
 import pytest
 
 from app.models.database import TelephonyIntegration, TelephonyPhoneNumber
 from app.models.enums import TelephonyProvider
 from app.services.telephony.number_import_service import (
+    _credential_configuration_error,
     _extract_application_id,
     _normalize_country_iso2,
     _remote_metadata,
@@ -210,3 +212,53 @@ def test_list_available_exotel_numbers(mock_get_integration, mock_get_client, db
     assert len(results) == 1
     assert results[0]["e164"] == "+918047114738"
     assert results[0]["provider_number_id"] == "exotel-num-1"
+
+
+@patch("app.services.telephony.number_import_service.telephony_service.get_provider_client")
+@patch("app.services.telephony.number_import_service.telephony_service.get_org_integration")
+def test_list_available_twilio_unauthorized(
+    mock_get_integration,
+    mock_get_client,
+    db_session,
+    org_id,
+    seed_org,
+):
+    integration = TelephonyIntegration(
+        id=uuid4(),
+        organization_id=org_id,
+        provider=TelephonyProvider.TWILIO.value,
+        auth_id="ACbad",
+        auth_token="bad-token",
+        is_active=True,
+        is_default=True,
+    )
+    db_session.add(integration)
+    db_session.commit()
+    mock_get_integration.return_value = integration
+
+    request = httpx.Request(
+        "GET",
+        "https://api.twilio.com/2010-04-01/Accounts/ACbad/IncomingPhoneNumbers.json",
+    )
+    response = httpx.Response(401, request=request, text='{"code":20003,"message":"Authenticate"}')
+    mock_client = MagicMock()
+    mock_client.list_incoming_phone_numbers.side_effect = httpx.HTTPStatusError(
+        "401 Unauthorized",
+        request=request,
+        response=response,
+    )
+    mock_get_client.return_value = mock_client
+
+    with pytest.raises(ValueError, match="Could not connect to Twilio"):
+        list_available_numbers(db_session, org_id, TelephonyProvider.TWILIO.value)
+
+
+def test_credential_configuration_error_strips_vobiz_json():
+    exc = ValueError(
+        'Vobiz list numbers failed (HTTP 401): {"error":{"code":401,"message":"Invalid authentication credentials"}}'
+    )
+    msg = str(_credential_configuration_error(TelephonyProvider.VOBIZ.value, exc))
+    assert "Could not connect to Vobiz" in msg
+    assert "{" not in msg
+    assert "HTTP 401" not in msg
+    assert "Integrations" in msg

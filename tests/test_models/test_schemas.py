@@ -1,14 +1,17 @@
 """Unit tests for Pydantic schema validation logic."""
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
 
+from app.models.enums import CallImportStatus
 from app.models.schemas import (
     AgentCreate,
     AgentResponse,
+    CallImportResponse,
     EvaluationCreate,
     MetricCreate,
     MetricUpdate,
@@ -67,6 +70,41 @@ def test_agent_create_requires_voice_bundle():
             description="This description has enough words to satisfy minimum word count requirement.",
             call_type="outbound",
             call_medium="web_call",
+        )
+
+
+def test_agent_create_chat_provider_without_test_llm():
+    prompt = (
+        "You are a helpful support agent that answers billing questions clearly "
+        "and professionally for customers."
+    )
+    agent = AgentCreate(
+        name="Platform Chat",
+        description=prompt,
+        provider_prompt=prompt,
+        call_type="outbound",
+        call_medium="chat",
+        chat_connection_type="provider_chat",
+        voice_ai_integration_id=uuid4(),
+        voice_ai_agent_id="retell-chat-agent-1",
+    )
+    assert agent.chat_connection_type.value == "provider_chat"
+    assert agent.test_llm_provider is None
+
+
+def test_agent_create_chat_internal_llm_requires_main_llm():
+    prompt = (
+        "You are a helpful support agent that answers billing questions clearly "
+        "and professionally for customers."
+    )
+    with pytest.raises(ValidationError, match="main_llm"):
+        AgentCreate(
+            name="LLM Chat",
+            description=prompt,
+            provider_prompt=prompt,
+            call_type="outbound",
+            call_medium="chat",
+            chat_connection_type="internal_llm",
         )
 
 
@@ -204,3 +242,40 @@ def test_metric_update_allows_compare_transcripts_alone():
     payload = MetricUpdate(compare_transcripts=True)
     assert payload.compare_transcripts is True
     assert payload.selection_mode is None
+
+
+def test_call_import_response_includes_content_modality():
+    now = datetime.now(UTC)
+    row = SimpleNamespace(
+        id=uuid4(),
+        organization_id=uuid4(),
+        workspace_id=uuid4(),
+        provider=None,
+        telephony_integration_id=None,
+        original_filename="chat.csv",
+        sheet_name=None,
+        dataset="support",
+        content_modality="chat",
+        schema_id=None,
+        parameter_mapping={},
+        column_mapping={},
+        extra_columns=[],
+        custom_column_mapping={},
+        skipped_columns=[],
+        source_row_skips=[],
+        source_s3_key=None,
+        source_format=None,
+        source_size_bytes=None,
+        source_content_type=None,
+        available_sheets=None,
+        total_rows=0,
+        completed_rows=0,
+        failed_rows=0,
+        status=CallImportStatus.UPLOADED,
+        error_message=None,
+        created_at=now,
+        updated_at=now,
+        tags=[],
+    )
+    payload = CallImportResponse.model_validate(row, from_attributes=True)
+    assert payload.content_modality == "chat"

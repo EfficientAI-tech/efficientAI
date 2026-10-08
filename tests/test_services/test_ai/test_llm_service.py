@@ -54,6 +54,33 @@ def test_litellm_model_name_maps_known_provider_prefixes():
         == "fireworks_ai/accounts/fireworks/models/deepseek-v4-pro"
     )
     assert (
+        LLMService._litellm_model_name(ModelProvider.FIREWORKS, "kimi-k2p6")
+        == "fireworks_ai/accounts/fireworks/models/kimi-k3"
+    )
+    assert (
+        LLMService._litellm_model_name(
+            ModelProvider.FIREWORKS,
+            "accounts/fireworks/models/kimi-k2p6-fast",
+        )
+        == "fireworks_ai/accounts/fireworks/models/kimi-k3-fast"
+    )
+    assert (
+        LLMService._litellm_model_name(
+            ModelProvider.TOGETHER, "together/Tev1-4B-experimental"
+        )
+        == "together_ai/together/Tev1-4B-experimental"
+    )
+    assert (
+        LLMService._litellm_model_name(
+            ModelProvider.TOGETHER, "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"
+        )
+        == "together_ai/meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"
+    )
+    assert (
+        LLMService._litellm_model_name(ModelProvider.TYPESAFE, "jev-1.13.0")
+        == "typesafe/jev-1.13.0"
+    )
+    assert (
         LLMService._litellm_model_name(ModelProvider.SARVAM, "sarvam-30b")
         == "sarvam/sarvam-30b"
     )
@@ -64,6 +91,18 @@ def test_litellm_model_name_maps_known_provider_prefixes():
     assert (
         LLMService._litellm_model_name(ModelProvider.AZURE, "azure-openai-gpt4")
         == "azure/gpt-4"
+    )
+    assert (
+        LLMService._litellm_model_name(
+            ModelProvider.OPENROUTER, "anthropic/claude-sonnet-4"
+        )
+        == "openrouter/anthropic/claude-sonnet-4"
+    )
+    assert (
+        LLMService._litellm_model_name(
+            ModelProvider.OPENROUTER, "openrouter/openai/gpt-4o"
+        )
+        == "openrouter/openai/gpt-4o"
     )
 
 
@@ -170,6 +209,163 @@ def test_generate_response_applies_llm_gateway(monkeypatch):
     assert result["text"] == "via bifrost"
     assert captured["api_base"] == "http://localhost:8080/litellm"
     assert captured["extra_headers"]["x-bf-vk"] == "test-vk"
+
+
+def test_generate_response_together_tev_skips_gateway_and_uses_provider_key(monkeypatch):
+    """Together Tev must call Together directly with the org API key when routing is direct."""
+    from app.config import settings
+
+    settings.LLM_GATEWAY_ENABLED = True
+    settings.LLM_GATEWAY_BASE_URL = "http://localhost:8080/litellm"
+    settings.LLM_GATEWAY_VIRTUAL_KEY = "test-vk"
+    settings.LLM_GATEWAY_PASSTHROUGH_PROVIDER_KEYS = False
+
+    service = LLMService()
+    monkeypatch.setattr(
+        service,
+        "_get_ai_provider",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            api_key="encrypted-together",
+            provider="together",
+            routing_mode="direct",
+        ),
+    )
+    encryption_module = importlib.import_module("app.core.encryption")
+    monkeypatch.setattr(
+        encryption_module,
+        "decrypt_api_key",
+        lambda value: "together-real-key" if value == "encrypted-together" else value,
+    )
+
+    captured = {}
+    completion_called = {"value": False}
+
+    def _fake_completion(**kwargs):
+        completion_called["value"] = True
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(message=SimpleNamespace(content="A"), finish_reason="stop")
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+
+    monkeypatch.setattr(llm_module.litellm, "completion", _fake_completion)
+
+    service.generate_response(
+        messages=[
+            {"role": "system", "content": "pick one"},
+            {"role": "user", "content": '{"state":"hi","question":"q?","options":[]}'},
+        ],
+        llm_provider=ModelProvider.TOGETHER,
+        llm_model="together/Tev1-4B-experimental",
+        organization_id=uuid4(),
+        db=_mock_org_db({"enabled": True}),
+    )
+
+    assert completion_called["value"] is True
+    assert captured["api_key"] == "together-real-key"
+    assert captured["model"] == "together_ai/together/Tev1-4B-experimental"
+    assert "api_base" not in captured
+
+
+def test_generate_response_together_tev_fails_when_gateway_required(monkeypatch):
+    """Together Tev must not bypass gateway routing when the credential requires the gateway."""
+    from app.config import settings
+
+    settings.LLM_GATEWAY_ENABLED = True
+    settings.LLM_GATEWAY_BASE_URL = "http://localhost:8080/litellm"
+    settings.LLM_GATEWAY_VIRTUAL_KEY = "test-vk"
+    settings.LLM_GATEWAY_PASSTHROUGH_PROVIDER_KEYS = False
+
+    license_module = importlib.import_module("app.core.license")
+    monkeypatch.setattr(license_module, "has_valid_license", lambda *_a, **_k: True)
+
+    service = LLMService()
+    monkeypatch.setattr(
+        service,
+        "_get_ai_provider",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            api_key="encrypted-together",
+            provider="together",
+            routing_mode="gateway",
+        ),
+    )
+    encryption_module = importlib.import_module("app.core.encryption")
+    monkeypatch.setattr(
+        encryption_module,
+        "decrypt_api_key",
+        lambda value: "together-real-key" if value == "encrypted-together" else value,
+    )
+
+    completion_called = {"value": False}
+    monkeypatch.setattr(
+        llm_module.litellm,
+        "completion",
+        lambda **_kwargs: completion_called.update(value=True),
+    )
+
+    with pytest.raises(RuntimeError, match="direct provider routing"):
+        service.generate_response(
+            messages=[{"role": "user", "content": "hello"}],
+            llm_provider=ModelProvider.TOGETHER,
+            llm_model="together/Tev1-4B-experimental",
+            organization_id=uuid4(),
+            db=_mock_org_db({"enabled": True}),
+        )
+
+    assert completion_called["value"] is False
+
+
+def test_generate_response_together_tev_ignores_gateway_model_alias(monkeypatch):
+    """Direct Tev calls must use the workload model, not a gateway-only alias."""
+    from app.config import settings
+
+    settings.LLM_GATEWAY_ENABLED = True
+    settings.LLM_GATEWAY_BASE_URL = "http://localhost:8080/litellm"
+    settings.LLM_GATEWAY_VIRTUAL_KEY = "test-vk"
+
+    service = LLMService()
+    monkeypatch.setattr(
+        service,
+        "_get_ai_provider",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            api_key="encrypted-together",
+            provider="together",
+            routing_mode="direct",
+            gateway_model="org-gateway-only/tev-alias",
+        ),
+    )
+    encryption_module = importlib.import_module("app.core.encryption")
+    monkeypatch.setattr(
+        encryption_module,
+        "decrypt_api_key",
+        lambda value: "together-real-key" if value == "encrypted-together" else value,
+    )
+
+    captured = {}
+
+    def _fake_completion(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(message=SimpleNamespace(content="A"), finish_reason="stop")
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+
+    monkeypatch.setattr(llm_module.litellm, "completion", _fake_completion)
+
+    service.generate_response(
+        messages=[{"role": "user", "content": "hello"}],
+        llm_provider=ModelProvider.TOGETHER,
+        llm_model="together/Tev1-4B-experimental",
+        organization_id=uuid4(),
+        db=_mock_org_db({"enabled": True}),
+    )
+
+    assert captured["model"] == "together_ai/together/Tev1-4B-experimental"
+    assert "gateway-only" not in captured["model"]
 
 
 def test_generate_response_sarvam_integration_direct_skips_gateway(monkeypatch):
@@ -343,3 +539,26 @@ def test_generate_response_azure_foundry_uses_openai_v1_routing(monkeypatch):
     assert captured["model"] == "openai/gpt-5-mini"
     assert captured["api_base"] == "https://eaitest-resource.openai.azure.com/openai/v1"
     assert "azure_endpoint" not in captured
+
+
+def test_normalize_openai_compatible_api_base_strips_chat_completions():
+    assert (
+        llm_module._normalize_openai_compatible_api_base(
+            "https://api.ai.kodekloud.com/v1/chat/completions"
+        )
+        == "https://api.ai.kodekloud.com/v1"
+    )
+
+
+def test_apply_direct_custom_provider_kwargs_sets_api_base_and_model():
+    provider = SimpleNamespace(
+        endpoint_url="https://api.ai.kodekloud.com/v1",
+        gateway_base_url=None,
+    )
+    out = llm_module._apply_direct_custom_provider_kwargs(
+        {"model": "custom/typesafe/jev-1.13.0", "api_key": "sekret"},
+        ai_provider=provider,
+    )
+    assert out["api_base"] == "https://api.ai.kodekloud.com/v1"
+    assert out["model"] == "openai/typesafe/jev-1.13.0"
+    assert out["custom_llm_provider"] == "openai"

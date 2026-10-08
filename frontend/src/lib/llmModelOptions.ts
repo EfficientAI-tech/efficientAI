@@ -1,4 +1,5 @@
 import type { AIProvider } from '../types/api'
+import type { LLMGenerationConfig } from '../config/llmGenerationParams'
 import { resolveActiveAIProvider, routesViaGateway, usesGatewayDirectModel } from './gatewayRouting'
 
 /** Substring fingerprints for chat models that accept audio input. */
@@ -17,6 +18,88 @@ export function isAudioCapableModel(provider: string, model: string): boolean {
   const matchers = AUDIO_CAPABLE_MODEL_MATCHERS[provider.toLowerCase()]
   if (!matchers) return false
   return matchers.some((re) => re.test(model))
+}
+
+/**
+ * System 1 (Jev) models score classification metrics. Mirrors backend
+ * ``_is_jev_model`` minus Tev, which rejects classification questions.
+ */
+export function isClassificationCapableModel(model: string): boolean {
+  return /jev/i.test(model) && !/tev/i.test(model)
+}
+
+/**
+ * Models allowed for standard rubric metrics (boolean, enum, rating, categories).
+ * Jev models are excluded — use the System 1 picker for classification metrics.
+ * Together Tev models are included; the backend scores them via the Tev1 path.
+ */
+export function isStandardJudgeModel(model: string): boolean {
+  if (/tev/i.test(model)) return true
+  return !/jev/i.test(model)
+}
+
+export function isClassificationMetric(metric: { custom_data_type?: string | null }): boolean {
+  return metric.custom_data_type === 'classification'
+}
+
+type LLMOverrideEntry = {
+  provider?: string | null
+  model?: string | null
+  credential_id?: string | null
+  llm_config?: LLMGenerationConfig | null
+}
+
+/**
+ * Initial System 1 selection for a run: reuse an existing Jev override on one
+ * of its classification metrics, else the run-level model when it is Jev.
+ */
+export function seedClassificationLLM(
+  classificationMetricIds: string[],
+  existingOverrides: Record<string, LLMOverrideEntry> | null | undefined,
+  runLevel: LLMOverrideEntry,
+): { provider: string | null; model: string | null; credential_id: string | null; llm_config: LLMGenerationConfig | null } {
+  const fromOverride = classificationMetricIds
+    .map((id) => existingOverrides?.[id])
+    .find((o) => o?.provider && o.model && isClassificationCapableModel(o.model))
+  const source =
+    fromOverride ??
+    (runLevel.provider && runLevel.model && isClassificationCapableModel(runLevel.model)
+      ? runLevel
+      : null)
+  return {
+    provider: source?.provider ?? null,
+    model: source?.model ?? null,
+    credential_id: source?.credential_id ?? null,
+    llm_config: source?.llm_config ?? null,
+  }
+}
+
+/**
+ * Merge a System 1 selection into a run's per-metric overrides for the given
+ * classification metrics. Keys outside ``allowedMetricIds`` (the run's leaf
+ * metrics) are dropped because the retry endpoint rejects them.
+ */
+export function mergeClassificationOverrides(
+  existingOverrides: Record<string, LLMOverrideEntry> | null | undefined,
+  classificationMetricIds: string[],
+  allowedMetricIds: string[],
+  selection: LLMOverrideEntry,
+): Record<string, LLMOverrideEntry> {
+  const allowed = new Set(allowedMetricIds)
+  const merged: Record<string, LLMOverrideEntry> = {}
+  for (const [id, override] of Object.entries(existingOverrides ?? {})) {
+    if (allowed.has(id)) merged[id] = override
+  }
+  for (const id of classificationMetricIds) {
+    if (!allowed.has(id)) continue
+    merged[id] = {
+      provider: selection.provider ?? null,
+      model: selection.model ?? null,
+      credential_id: selection.credential_id ?? null,
+      llm_config: selection.llm_config ?? null,
+    }
+  }
+  return merged
 }
 
 /** True when an active credential pins a gateway-routed Bifrost model. */
@@ -193,14 +276,6 @@ export interface LLMSelectionValue {
   credential_id?: string | null
 }
 
-const DEFAULT_LLM_MODELS: Record<string, string> = {
-  openai: 'gpt-5-mini',
-  anthropic: 'claude-sonnet-4.6',
-  google: 'gemini-2.5-flash',
-  sarvam: 'sarvam-30b',
-  fireworks: 'gpt-oss-20b',
-}
-
 function resolveCredentialForSelection(
   selection: LLMSelectionValue,
   aiProviders: AIProvider[],
@@ -268,10 +343,6 @@ export function resolveLLMModelForSubmit(
   if (routesViaGateway(credential)) {
     const gatewayModel = credential.gateway_model?.trim()
     if (gatewayModel) return gatewayModel
-    const providerKey = (credential.provider || selection.provider || '')
-      .toLowerCase()
-      .trim()
-    return DEFAULT_LLM_MODELS[providerKey] ?? null
   }
 
   return null

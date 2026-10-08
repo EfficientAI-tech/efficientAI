@@ -15,30 +15,45 @@ from app.models.database import Agent, Integration
 from app.services.voice_providers import get_voice_provider
 
 
-def _build_voice_provider(integration: Integration):
-    decrypted_key = decrypt_api_key(integration.api_key)
-    provider_class = get_voice_provider(
-        integration.platform.value
-        if hasattr(integration.platform, "value")
-        else integration.platform
-    )
+def build_voice_provider_from_integration(
+    integration: Integration,
+    *,
+    decrypted_key: Optional[str] = None,
+):
+    """Instantiate a voice provider for an org integration row."""
+    if decrypted_key is None:
+        decrypted_key = decrypt_api_key(integration.api_key)
     platform_val = (
         integration.platform.value
         if hasattr(integration.platform, "value")
         else integration.platform
     )
-    if platform_val.lower() == "vapi":
-        return provider_class(api_key=decrypted_key, public_key=integration.public_key)
-    return provider_class(api_key=decrypted_key)
+    platform_key = str(platform_val).lower()
+    provider_class = get_voice_provider(platform_val)
+    kwargs: dict = {"api_key": decrypted_key}
+    if platform_key == "vapi":
+        kwargs["public_key"] = integration.public_key
+    elif platform_key == "elevenlabs" and getattr(integration, "api_base_url", None):
+        kwargs["base_url"] = integration.api_base_url
+    return provider_class(**kwargs)
+
+
+def _build_voice_provider(integration: Integration):
+    return build_voice_provider_from_integration(integration)
 
 
 def fetch_provider_prompt(
     integration: Integration,
     voice_ai_agent_id: str,
+    *,
+    agent_channel: Optional[str] = None,
 ) -> Optional[str]:
     """Fetch a provider agent prompt without persisting it."""
     provider = _build_voice_provider(integration)
-    return provider.extract_agent_prompt(voice_ai_agent_id)
+    return provider.extract_agent_prompt(
+        voice_ai_agent_id,
+        agent_channel=agent_channel,
+    )
 
 
 def sync_provider_prompt(
@@ -58,7 +73,13 @@ def sync_provider_prompt(
         if hasattr(integration.platform, "value")
         else integration.platform
     )
-    prompt = fetch_provider_prompt(integration, agent.voice_ai_agent_id)
+    medium = getattr(agent, "call_medium", None)
+    agent_channel = "chat" if str(medium or "").lower() == "chat" else None
+    prompt = fetch_provider_prompt(
+        integration,
+        agent.voice_ai_agent_id,
+        agent_channel=agent_channel,
+    )
 
     if prompt is not None:
         agent.provider_prompt = prompt

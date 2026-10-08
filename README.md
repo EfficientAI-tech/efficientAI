@@ -403,10 +403,17 @@ eai usage sync-litellm --local --write-models
 **Adding or repricing models:** edit `app/config/models.json` only — no migration needed. On API startup, rates that are new or differ from `models.json` are upserted into `model_pricing_rates` automatically (rows removed from `models.json` are kept for usage history). Disable with `USAGE_PRICING_SYNC_ON_STARTUP=false`.
 
 **After migrations or catalog changes:**
+
+On API startup and `eai migrate`, the catalog database automatically syncs
+`model_pricing_rates` from `app/config/models.json` when new models are added or
+rates change. Disable with `USAGE_AUTO_SEED_PRICING=false`.
+
+Manual ops (optional verify/backfill):
 ```bash
 eai migrate
-eai usage seed-rates --config config.yml   # manual equivalent of the startup sync
-eai usage recompute --config config.yml --sync   # re-price usage recorded before the change
+eai usage diff-rates --config config.yml
+eai usage seed-rates --config config.yml   # force upsert without waiting for diff
+eai usage recompute --config config.yml --sync
 ```
 
 **Flush / Usage UI tuning** — set in `.env` (see `env.example`):

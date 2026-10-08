@@ -53,7 +53,7 @@ The viewer-request function must **not** treat every `.` in the path as a static
 https://docs.efficientai.cloud/docs/intro/
 https://docs.efficientai.cloud/docs/getting-started/integrations/
 https://docs.efficientai.cloud/docs/products/agents/
-https://docs.efficientai.cloud/docs/monitoring/calls/
+https://docs.efficientai.cloud/docs/platform/traces-and-logs/
 https://docs.efficientai.cloud/docs/reference/configuration/
 ```
 

@@ -1,9 +1,15 @@
+import httpx
 import pytest
+from fastapi import HTTPException
 from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import httpx
 
 from app.services.storage.audio_delivery import (
     collect_evaluator_result_audio_keys,
     stream_audio_from_keys,
+    stream_audio_from_provider_url,
 )
 
 
@@ -64,3 +70,84 @@ def test_stream_audio_from_keys_returns_none_when_all_missing(monkeypatch):
     )
 
     assert stream_audio_from_keys(["a.wav"], filename="call_1") is None
+
+
+def test_stream_audio_from_provider_url_forwards_range(monkeypatch):
+    import app.services.telephony.recording_download as recording_download
+
+    monkeypatch.setattr(
+        recording_download.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(None, None, None, None, ("52.0.0.1", 0))],
+    )
+    captured = {}
+
+    class FakeResponse:
+        status_code = 206
+        headers = httpx.Headers(
+            {
+                "content-type": "audio/wav",
+                "content-range": "bytes 0-1023/2048",
+                "accept-ranges": "bytes",
+            }
+        )
+
+        def iter_bytes(self, chunk_size=8192):
+            yield b"partial"
+
+    fake_resp = FakeResponse()
+    stream_cm = MagicMock()
+    stream_cm.__enter__.return_value = fake_resp
+    stream_cm.__exit__.return_value = False
+
+    mock_client = MagicMock()
+
+    def fake_stream(method, url, headers=None):
+        captured["headers"] = headers
+        return stream_cm
+
+    mock_client.stream = fake_stream
+    mock_client.close = MagicMock()
+    monkeypatch.setattr(recording_download.httpx, "Client", lambda **kwargs: mock_client)
+
+    response = stream_audio_from_provider_url(
+        "https://bucket.s3.amazonaws.com/recording.wav",
+        filename="call_1",
+        range_header="bytes=0-1023",
+    )
+
+    assert response.status_code == 206
+    assert captured["headers"]["Range"] == "bytes=0-1023"
+    assert response.headers["content-range"] == "bytes 0-1023/2048"
+
+
+def test_stream_audio_from_provider_url_preserves_upstream_401(monkeypatch):
+    import app.services.telephony.recording_download as recording_download
+
+    monkeypatch.setattr(
+        recording_download.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(None, None, None, None, ("52.0.0.1", 0))],
+    )
+
+    class FakeResponse:
+        status_code = 401
+        headers = httpx.Headers({"content-type": "audio/wav"})
+
+        def iter_bytes(self, chunk_size=8192):
+            yield b""
+
+    stream_cm = MagicMock()
+    stream_cm.__enter__.return_value = FakeResponse()
+    stream_cm.__exit__.return_value = False
+    mock_client = MagicMock()
+    mock_client.stream = MagicMock(return_value=stream_cm)
+    mock_client.close = MagicMock()
+    monkeypatch.setattr(recording_download.httpx, "Client", lambda **kwargs: mock_client)
+
+    with pytest.raises(HTTPException) as exc_info:
+        stream_audio_from_provider_url(
+            "https://bucket.s3.amazonaws.com/recording.wav",
+            filename="call_1",
+        )
+    assert exc_info.value.status_code == 401

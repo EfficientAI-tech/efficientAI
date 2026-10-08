@@ -115,6 +115,24 @@ class TranscriptionService:
 
         return None
 
+    def _resolve_elevenlabs_stt_base_url(
+        self,
+        provider: ModelProvider,
+        db: Session,
+        organization_id: UUID,
+        credential_id: Optional[UUID] = None,
+    ) -> Optional[str]:
+        from app.services.credentials.elevenlabs_inference import (
+            resolve_elevenlabs_api_base_url_for_provider,
+        )
+
+        return resolve_elevenlabs_api_base_url_for_provider(
+            db,
+            organization_id,
+            provider,
+            credential_id=credential_id,
+        )
+
     def _get_credential_context_for_provider(
         self,
         provider: ModelProvider,
@@ -563,7 +581,12 @@ class TranscriptionService:
             elif stt_provider == ModelProvider.DEEPGRAM:
                 result = transcribe_deepgram(audio_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.ELEVENLABS:
-                result = transcribe_elevenlabs(audio_file_path, stt_model, api_key, language)
+                el_base = self._resolve_elevenlabs_stt_base_url(
+                    stt_provider, db, organization_id, credential_id=credential_id
+                )
+                result = transcribe_elevenlabs(
+                    audio_file_path, stt_model, api_key, language, base_url=el_base
+                )
             elif stt_provider == ModelProvider.GOOGLE:
                 result = transcribe_google(
                     audio_file_path, stt_model, api_key, language,
@@ -656,7 +679,12 @@ class TranscriptionService:
             elif stt_provider == ModelProvider.DEEPGRAM:
                 result = transcribe_deepgram(temp_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.ELEVENLABS:
-                result = transcribe_elevenlabs(temp_file_path, stt_model, api_key, language)
+                el_base = self._resolve_elevenlabs_stt_base_url(
+                    stt_provider, db, organization_id, credential_id=credential_id
+                )
+                result = transcribe_elevenlabs(
+                    temp_file_path, stt_model, api_key, language, base_url=el_base
+                )
             elif stt_provider == ModelProvider.SARVAM:
                 result = transcribe_sarvam(temp_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.SMALLEST:

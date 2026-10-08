@@ -79,7 +79,12 @@ class BaseVoiceProvider(ABC):
         pass
 
     @abstractmethod
-    def extract_agent_prompt(self, agent_id: str) -> Optional[str]:
+    def extract_agent_prompt(
+        self,
+        agent_id: str,
+        *,
+        agent_channel: Optional[str] = None,
+    ) -> Optional[str]:
         """
         Fetch the current system prompt / instructions from the provider
         for the given agent.

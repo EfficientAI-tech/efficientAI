@@ -1304,6 +1304,36 @@ class ApiClient {
   }
 
   // Agents endpoints
+  async getMessagingPublicBaseUrl(): Promise<{
+    public_base_url: string
+    twilio_public_base_url?: string
+    telnyx_public_base_url?: string
+  }> {
+    const response = await this.client.get('/api/v1/chat/messaging/public-base-url')
+    return response.data
+  }
+
+  async testAgentTwilioSms(
+    agentId: string,
+    overrides?: {
+      messaging_recipient?: string
+      twilio_from?: string
+      twilio_sms_trial_body_template?: string
+    },
+  ): Promise<{
+    ok: boolean
+    message_sid: string
+    to: string
+    from: string
+    body_sent: string
+  }> {
+    const response = await this.client.post(
+      `/api/v1/agents/${agentId}/chat-messaging/test-twilio-sms`,
+      overrides ?? {},
+    )
+    return response.data
+  }
+
   async createAgent(data: {
     name: string
     phone_number?: string
@@ -1911,17 +1941,21 @@ class ApiClient {
   async previewIntegrationAgentPrompt(
     integrationId: string,
     voiceAiAgentId: string,
+    options?: { agentChannel?: 'voice' | 'chat' },
   ): Promise<{ provider_prompt: string }> {
     const response = await this.client.post(
       `/api/v1/integrations/${integrationId}/preview-agent-prompt`,
-      { voice_ai_agent_id: voiceAiAgentId },
+      {
+        voice_ai_agent_id: voiceAiAgentId,
+        ...(options?.agentChannel ? { agent_channel: options.agentChannel } : {}),
+      },
     )
     return response.data
   }
 
   async listIntegrationVoiceAgents(
     integrationId: string,
-    options?: { refresh?: boolean; search?: string },
+    options?: { refresh?: boolean; search?: string; agentKind?: 'voice' | 'chat' },
   ): Promise<ListIntegrationVoiceAgentsResponse> {
     const response = await this.client.get(
       `/api/v1/integrations/${integrationId}/voice-agents`,
@@ -1929,6 +1963,7 @@ class ApiClient {
         params: {
           ...(options?.refresh ? { refresh: true } : {}),
           ...(options?.search ? { search: options.search } : {}),
+          ...(options?.agentKind ? { agent_kind: options.agentKind } : {}),
         },
       },
     )
@@ -2250,6 +2285,8 @@ class ApiClient {
        * select the schema dropdown.
        */
       schemaId?: string | null
+      /** Set to `chat` for post-prod transcript-only imports. */
+      contentModality?: 'chat' | 'voice'
     },
   ): Promise<CallImport> {
     const formData = new FormData()
@@ -2262,6 +2299,9 @@ class ApiClient {
     }
     if (options.schemaId) {
       formData.append('schema_id', options.schemaId)
+    }
+    if (options.contentModality) {
+      formData.append('content_modality', options.contentModality)
     }
     const response = await this.client.post('/api/v1/call-imports', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
@@ -3296,6 +3336,12 @@ class ApiClient {
        * Required-and-implied when ``metricIds`` is set.
        */
       includeCompleted?: boolean
+      /**
+       * Per-metric LLM overrides, keyed by leaf metric id. Replaces the
+       * run's stored overrides, so callers should merge with the existing
+       * map. Used to route classification metrics to a System 1 model.
+       */
+      metricLlmOverrides?: Record<string, CallImportEvaluationLLMOverride>
     },
   ): Promise<CallImportEvaluationRetryResponse> {
     const body: Record<string, unknown> = {}
@@ -3309,6 +3355,9 @@ class ApiClient {
     }
     if (options?.llmConfig !== undefined) {
       body.llm_config = options.llmConfig
+    }
+    if (options?.metricLlmOverrides !== undefined) {
+      body.metric_llm_overrides = options.metricLlmOverrides
     }
     if (options?.sttProvider) body.stt_provider = options.sttProvider
     if (options?.sttModel) body.stt_model = options.sttModel
@@ -3452,6 +3501,9 @@ class ApiClient {
       q?: string
       metric_id?: string
       metric_value?: string
+      classification_yes_no?: string
+      classification_choice?: string
+      classification_level?: string
       status?: string
       // Flow-chart drilldown: filter to rows whose sequence under the
       // given parent contains ``flow_node`` (and optionally is
@@ -4237,14 +4289,22 @@ class ApiClient {
     return response.data
   }
 
-  async getCallRecordingAudioUrl(callShortId: string, options?: { stereo?: boolean }): Promise<string> {
+  async getCallRecordingAudioBlob(
+    callShortId: string,
+    options?: { stereo?: boolean },
+  ): Promise<Blob> {
     const params = new URLSearchParams({ proxy: 'true' })
     if (options?.stereo) params.set('stereo', 'true')
     const response = await this.client.get(
       `/api/v1/playground/call-recordings/${callShortId}/audio?${params.toString()}`,
-      { responseType: 'blob' }
+      { responseType: 'blob' },
     )
-    return URL.createObjectURL(response.data)
+    return response.data as Blob
+  }
+
+  async getCallRecordingAudioUrl(callShortId: string, options?: { stereo?: boolean }): Promise<string> {
+    const blob = await this.getCallRecordingAudioBlob(callShortId, options)
+    return URL.createObjectURL(blob)
   }
 
   async getCallRecordingAudioBuffer(
@@ -4448,12 +4508,17 @@ class ApiClient {
     return response.data as ArrayBuffer
   }
 
-  async getObservabilityCallAudioUrl(callShortId: string): Promise<string> {
+  async getObservabilityCallAudioBlob(callShortId: string): Promise<Blob> {
     const response = await this.client.get(
       `/api/v1/observability/calls/${callShortId}/audio`,
       { responseType: 'blob' },
     )
-    return URL.createObjectURL(response.data)
+    return response.data as Blob
+  }
+
+  async getObservabilityCallAudioUrl(callShortId: string): Promise<string> {
+    const blob = await this.getObservabilityCallAudioBlob(callShortId)
+    return URL.createObjectURL(blob)
   }
 
   async deleteObservabilityCall(callShortId: string): Promise<{ message: string }> {
@@ -5231,12 +5296,17 @@ class ApiClient {
     return response.data as ArrayBuffer
   }
 
-  async getEvaluatorResultAudioUrl(resultId: string): Promise<string> {
+  async getEvaluatorResultAudioBlob(resultId: string): Promise<Blob> {
     const response = await this.client.get(
       `/api/v1/evaluator-results/${resultId}/audio`,
       { responseType: 'blob' },
     )
-    return URL.createObjectURL(response.data)
+    return response.data as Blob
+  }
+
+  async getEvaluatorResultAudioUrl(resultId: string): Promise<string> {
+    const blob = await this.getEvaluatorResultAudioBlob(resultId)
+    return URL.createObjectURL(blob)
   }
 
   async createEvaluatorResultManual(data: {
@@ -5307,7 +5377,7 @@ class ApiClient {
 
   async generateMetric(data: {
     mode: 'description' | 'examples'
-    surface: 'agent' | 'voice_playground' | 'blind_test'
+    surface: 'agent' | 'chat_agent' | 'voice_playground'
     description?: string
     examples?: Array<{ transcript: string; rating: any; notes?: string }>
     provider?: string
@@ -5332,7 +5402,7 @@ class ApiClient {
 
   async parseBulkMetric(data: {
     prompt: string
-    surface: 'agent' | 'voice_playground' | 'blind_test'
+    surface: 'agent' | 'chat_agent' | 'voice_playground'
     /** When set, the response includes a ``parent`` block + all labels are children. */
     parent_name?: string
     parent_description?: string

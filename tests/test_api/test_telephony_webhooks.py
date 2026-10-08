@@ -191,7 +191,7 @@ def test_answer_webhook_streams_to_voice_agent_when_number_linked(
         lambda *_args, **_kwargs: True,
     )
     monkeypatch.setattr(
-        "app.services.telephony.inbound_stream_answer.build_carrier_ws_url",
+        "app.services.telephony.inbound_media_session.build_carrier_ws_url",
         lambda **_kwargs: "wss://example.test/api/v1/telephony/carrier/ws?agent_id=a&session=s",
     )
 

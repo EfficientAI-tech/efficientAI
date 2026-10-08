@@ -5,9 +5,28 @@ introduced for custom-data-type aware metric evaluation. They exercise pure-func
 behavior - no DB session and no LLM calls required.
 """
 
+import importlib
+import json
+import sys
 from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
 
 from app.workers.tasks.helpers import llm_evaluation
+
+
+@pytest.fixture(autouse=True)
+def _load_real_llm_service_module():
+    """Use the real ``llm_service.py`` (conftest stubs a lightweight fake for API tests)."""
+    qual = "app.services.ai.llm_service"
+    sys.modules.pop(qual, None)
+    importlib.import_module(qual)
+
+
+def _patch_llm_generate_response(monkeypatch, replacement):
+    mod = importlib.import_module("app.services.ai.llm_service")
+    monkeypatch.setattr(mod.llm_service, "generate_response", replacement, raising=False)
 
 
 def _make_metric(
@@ -879,3 +898,472 @@ def test_metric_groups_falls_back_to_bare_child_keys_when_namespaced_missing():
         metric_groups=groups,
     )
     assert scores["c1"]["value"] is True
+
+
+# ---------------------------------------------------------------------------
+# Jev / Tev structured evaluation path
+# ---------------------------------------------------------------------------
+
+
+def test_is_jev_model_detects_tev_and_jev_ids():
+    assert llm_evaluation._is_jev_model("together/Tev1-4B-experimental")
+    assert llm_evaluation._is_jev_model("together_ai/together/Tev1-4B-experimental")
+    assert llm_evaluation._is_jev_model("jev-latest")
+    assert not llm_evaluation._is_jev_model("gpt-4o")
+    assert not llm_evaluation._is_jev_model(None)
+
+
+def test_build_jev_questions_maps_flat_boolean_enum_and_rating():
+    boolean_metric = _make_metric(
+        name="Is Urgent", metric_type="boolean", description="Urgent?"
+    )
+    enum_metric = _make_metric(
+        name="Tone Category",
+        custom_data_type="enum",
+        custom_config={"options": ["Good", "Bad"]},
+    )
+    rating_metric = _make_metric(
+        name="Quality", metric_type="rating", description="Rate quality"
+    )
+    groups = [
+        llm_evaluation.MetricPromptGroup(
+            None, [boolean_metric, enum_metric, rating_metric], None
+        )
+    ]
+    questions, bindings, unsupported = llm_evaluation._build_jev_questions_and_bindings(
+        groups
+    )
+    assert questions["is_urgent"]["type"] == "noul"
+    assert questions["tone_category"]["type"] == "choice"
+    assert questions["quality"]["type"] == "score"
+    assert len(bindings) == 3
+    assert unsupported == []
+
+
+def test_build_jev_questions_maps_single_choice_parent_to_choice():
+    parent = _make_metric(name="Call Outcome", metric_type="boolean", metric_id="p1")
+    parent.selection_mode = "single_choice"
+    happy = _make_metric(name="happy_completion", metric_type="boolean", metric_id="c1")
+    angry = _make_metric(name="angry_hangup", metric_type="boolean", metric_id="c2")
+    groups = [llm_evaluation.MetricPromptGroup(parent, [happy, angry], None)]
+    questions, bindings, unsupported = llm_evaluation._build_jev_questions_and_bindings(
+        groups
+    )
+    assert questions["call_outcome"]["type"] == "choice"
+    assert "happy_completion" in questions["call_outcome"]["criteria"]
+    assert "angry_hangup" in questions["call_outcome"]["criteria"]
+    assert unsupported == []
+
+
+def test_map_jev_answers_maps_boolean_enum_and_single_choice():
+    boolean_metric = _make_metric(name="Is Urgent", metric_type="boolean", metric_id="b1")
+    enum_metric = _make_metric(
+        name="Department",
+        metric_id="e1",
+        custom_data_type="enum",
+        custom_config={"options": ["billing", "technical", "sales"]},
+    )
+    parent = _make_metric(name="Call Outcome", metric_type="boolean", metric_id="p1")
+    parent.selection_mode = "single_choice"
+    angry = _make_metric(name="angry_hangup", metric_type="boolean", metric_id="c2")
+    groups = [
+        llm_evaluation.MetricPromptGroup(None, [boolean_metric, enum_metric], None),
+        llm_evaluation.MetricPromptGroup(parent, [angry], None),
+    ]
+    _, bindings, _ = llm_evaluation._build_jev_questions_and_bindings(groups)
+    answers = {
+        "is_urgent": {"type": "noul", "noul": 0.94},
+        "department": {
+            "type": "choice",
+            "choice": "technical",
+            "confidence": 0.78,
+            "probabilities": {"technical": 0.85, "sales": 0.0, "billing": 0.15},
+        },
+        "call_outcome": {"type": "choice", "choice": "angry_hangup"},
+    }
+    scores = llm_evaluation._map_jev_answers_to_metrics(answers, bindings, [])
+    assert scores["b1"]["value"] is True
+    assert scores["b1"]["noul_probability"] == 0.94
+    assert scores["e1"]["value"] == "technical"
+    assert scores["e1"]["confidence"] == 0.78
+    assert scores["p1"]["value"] == "angry_hangup"
+    assert scores["c2"]["value"] is True
+
+
+def test_map_jev_answers_rating_normalizes_score_to_zero_one():
+    metric = _make_metric(name="Quality", metric_type="rating", metric_id="r1")
+    groups = [llm_evaluation.MetricPromptGroup(None, [metric], None)]
+    _, bindings, _ = llm_evaluation._build_jev_questions_and_bindings(groups)
+    answers = {"quality": {"type": "score", "score": 3.0, "confidence": 1.0}}
+    scores = llm_evaluation._map_jev_answers_to_metrics(answers, bindings, [])
+    assert scores["r1"]["value"] == 0.75
+    assert scores["r1"]["confidence"] == 1.0
+
+
+def test_build_jev_questions_marks_text_metrics_unsupported():
+    text_metric = _make_metric(name="Call Summary", metric_type="text", metric_id="t1")
+    groups = [llm_evaluation.MetricPromptGroup(None, [text_metric], None)]
+    questions, bindings, unsupported = llm_evaluation._build_jev_questions_and_bindings(
+        groups
+    )
+    assert questions == {}
+    assert bindings == []
+    assert unsupported == [text_metric]
+
+
+def test_build_classification_jev_questions_from_custom_config():
+    metric = _make_metric(
+        name="Outcome",
+        metric_type="text",
+        custom_data_type="classification",
+        metric_id="cl1",
+        custom_config={
+            "noul": {
+                "enabled": True,
+                "instructions": "Resolved?",
+                "criteria": {"true": "Yes", "false": "No"},
+            },
+            "choice": {
+                "enabled": True,
+                "instructions": "Issue type?",
+                "criteria": {"billing": "Billing", "tech": "Technical"},
+            },
+            "score": {"enabled": False},
+        },
+    )
+    questions = llm_evaluation._build_classification_jev_questions(metric)
+    assert questions["noul"]["type"] == "noul"
+    assert questions["choice"]["criteria"]["billing"] == "Billing"
+    assert "score" not in questions
+
+
+def test_map_classification_jev_answers_builds_display_and_probabilities():
+    metric = _make_metric(name="Outcome", metric_type="text", metric_id="cl1")
+    answers = {
+        "noul": {"type": "noul", "noul": 0.92},
+        "choice": {
+            "type": "choice",
+            "choice": "billing",
+            "confidence": 0.8,
+            "probabilities": {"billing": 0.9, "tech": 0.1},
+        },
+    }
+    entry = llm_evaluation._map_classification_jev_answers(metric, answers)
+    assert entry["type"] == "classification"
+    assert "92%" in entry["value"]
+    assert entry["answers"]["choice"]["probabilities"]["billing"] == 0.9
+    assert entry["noul_probability"] == 0.92
+
+
+def test_evaluate_with_llm_classification_requires_jev_model(monkeypatch):
+    metric = _make_metric(
+        name="Outcome",
+        metric_type="text",
+        custom_data_type="classification",
+        metric_id="cl1",
+        custom_config={
+            "noul": {
+                "enabled": True,
+                "instructions": "Resolved?",
+                "criteria": {"true": "Yes", "false": "No"},
+            },
+            "choice": {"enabled": False},
+            "score": {"enabled": False},
+        },
+    )
+
+    def fail_generate(**kwargs):
+        raise AssertionError("LLM should not be called for classification on non-Jev model")
+
+    _patch_llm_generate_response(monkeypatch, fail_generate)
+
+    scores, _ = llm_evaluation.evaluate_with_llm(
+        transcription="hello",
+        llm_metrics=[metric],
+        ai_providers=[],
+        organization_id=uuid4(),
+        result_id="test",
+        db=None,
+        evaluator=SimpleNamespace(
+            llm_provider="openai",
+            llm_model="gpt-4o",
+            llm_config=None,
+            llm_credential_id=None,
+        ),
+    )
+    assert scores["cl1"]["error"] == "classification_requires_jev_model"
+
+
+def test_evaluate_classification_kodekloud_uses_response_format(monkeypatch):
+    captured: dict = {}
+
+    def fake_generate_response(**kwargs):
+        captured.update(kwargs)
+        return {
+            "text": json.dumps(
+                {
+                    "noul": {"type": "noul", "noul": 0.88},
+                }
+            )
+        }
+
+    _patch_llm_generate_response(monkeypatch, fake_generate_response)
+
+    metric = _make_metric(
+        name="Outcome",
+        metric_type="text",
+        custom_data_type="classification",
+        metric_id="cl1",
+        custom_config={
+            "noul": {
+                "enabled": True,
+                "instructions": "Resolved?",
+                "criteria": {"true": "Yes", "false": "No"},
+            },
+            "choice": {"enabled": False},
+            "score": {"enabled": False},
+        },
+    )
+
+    scores, _ = llm_evaluation.evaluate_with_llm(
+        transcription="Customer transcript",
+        llm_metrics=[metric],
+        ai_providers=[],
+        organization_id=uuid4(),
+        result_id="test",
+        db=None,
+        evaluator=SimpleNamespace(
+            llm_provider="openai",
+            llm_model="typesafe/jev-1.13.0",
+            llm_config=None,
+            llm_credential_id=None,
+        ),
+    )
+    assert captured["messages"] == [{"role": "user", "content": "Customer transcript"}]
+    rf = captured["completion_extra"]["response_format"]
+    assert rf["type"] == "questions"
+    assert rf["questions"]["noul"]["type"] == "noul"
+    assert scores["cl1"]["type"] == "classification"
+    assert scores["cl1"]["noul_probability"] == 0.88
+
+
+def test_evaluate_with_llm_uses_jev_payload_for_tev_model(monkeypatch):
+    captured: dict = {}
+
+    def fake_generate_response(**kwargs):
+        captured["messages"] = kwargs["messages"]
+        # Tev1 models answer with a single option letter, not Jev JSON.
+        return {"text": "A"}
+
+    _patch_llm_generate_response(monkeypatch, fake_generate_response)
+
+    metric = _make_metric(name="Is Urgent", metric_type="boolean", metric_id="b1")
+    scores, _ = llm_evaluation.evaluate_with_llm(
+        transcription="Customer needs help ASAP",
+        llm_metrics=[metric],
+        ai_providers=[],
+        organization_id=uuid4(),
+        result_id="test",
+        db=None,
+        evaluator=SimpleNamespace(
+            llm_provider="together",
+            llm_model="together/Tev1-4B-experimental",
+            llm_config=None,
+            llm_credential_id=None,
+        ),
+    )
+    user_content = json.loads(captured["messages"][1]["content"])
+    assert "Customer needs help ASAP" in user_content["state"]
+    assert user_content["question"]
+    assert len(user_content["options"]) == 2
+    assert scores["b1"]["value"] is True
+
+
+def test_build_tev1_payload_puts_full_rubric_in_question():
+    metric = _make_metric(
+        name="Abrupt call closure",
+        metric_type="boolean",
+        description="Bot terminated the call unprofessionally.",
+        metric_id="b1",
+    )
+    groups = [llm_evaluation.MetricPromptGroup(None, [metric], None)]
+    _, bindings, _ = llm_evaluation._build_jev_questions_and_bindings(groups)
+    payload, label_to_key = llm_evaluation._build_tev1_payload("transcript text", bindings[0])
+    assert payload["state"] == "transcript text"
+    assert payload["question"] == "Bot terminated the call unprofessionally."
+    assert len(payload["options"]) == 2
+    assert label_to_key["A"] == "yes"
+    assert label_to_key["B"] == "no"
+
+
+def test_parse_tev1_response_accepts_single_letter():
+    metric = _make_metric(name="Abrupt call closure", metric_type="boolean", metric_id="b1")
+    groups = [llm_evaluation.MetricPromptGroup(None, [metric], None)]
+    _, bindings, _ = llm_evaluation._build_jev_questions_and_bindings(groups)
+    _, label_to_key = llm_evaluation._build_tev1_payload("t", bindings[0])
+    parsed = llm_evaluation._parse_tev1_response("A", bindings[0], label_to_key, "test")
+    assert parsed == {"type": "noul", "noul": 1.0}
+
+
+def test_parse_tev1_response_accepts_json_label_and_key():
+    parent = _make_metric(name="Bot gibberish", metric_type="boolean", metric_id="p1")
+    parent.selection_mode = "single_choice"
+    yes = _make_metric(name="Yes", metric_type="boolean", metric_id="c-yes")
+    no = _make_metric(name="No", metric_type="boolean", metric_id="c-no")
+    groups = [llm_evaluation.MetricPromptGroup(parent, [yes, no], None)]
+    _, bindings, _ = llm_evaluation._build_jev_questions_and_bindings(groups)
+    parent_binding = next(b for b in bindings if b.kind == "single_choice_parent")
+    _, label_to_key = llm_evaluation._build_tev1_payload("t", parent_binding)
+    parsed = llm_evaluation._parse_tev1_response(
+        '{"label":"B","key":"no"}',
+        parent_binding,
+        label_to_key,
+        "test",
+    )
+    assert parsed == {"type": "choice", "choice": "no"}
+
+
+def test_jev_call_specs_emit_one_call_per_flat_metric():
+    metrics = [
+        _make_metric(name="Metric A", metric_type="boolean", metric_id="a"),
+        _make_metric(name="Metric B", metric_type="boolean", metric_id="b"),
+    ]
+    groups = [llm_evaluation.MetricPromptGroup(None, metrics, None)]
+    questions, bindings, _ = llm_evaluation._build_jev_questions_and_bindings(groups)
+    specs = llm_evaluation._jev_call_specs(questions, bindings)
+    assert len(specs) == 2
+    assert {spec[0] for spec in specs} == {"metric_a", "metric_b"}
+
+
+def test_parse_jev_call_answer_accepts_flat_boolean_json():
+    metric = _make_metric(name="Is Urgent", metric_type="boolean", metric_id="b1")
+    groups = [llm_evaluation.MetricPromptGroup(None, [metric], None)]
+    _, bindings, _ = llm_evaluation._build_jev_questions_and_bindings(groups)
+    binding = bindings[0]
+    parsed = llm_evaluation._parse_jev_call_answer(
+        '{"is_urgent": true}',
+        "is_urgent",
+        binding,
+        "test",
+    )
+    assert parsed is not None
+    assert parsed["type"] == "noul"
+    assert parsed["noul"] == 1.0
+
+
+def test_parse_jev_call_answer_accepts_judge_style_boolean_payload():
+    metric = _make_metric(name="Abrupt call closure", metric_type="boolean", metric_id="b1")
+    groups = [llm_evaluation.MetricPromptGroup(None, [metric], None)]
+    _, bindings, _ = llm_evaluation._build_jev_questions_and_bindings(groups)
+    binding = bindings[0]
+    parsed = llm_evaluation._parse_jev_call_answer(
+        json.dumps(
+            {
+                "value": True,
+                "type": "boolean",
+                "metric_name": "Abrupt call closure",
+                "rationale": "Bot ended without closing.",
+            }
+        ),
+        "abrupt_call_closure",
+        binding,
+        "test",
+    )
+    assert parsed is not None
+    assert parsed["noul"] == 1.0
+
+
+def test_match_single_choice_key_maps_false_to_no_child():
+    parent = _make_metric(name="Bot gibberish", metric_type="boolean", metric_id="p1")
+    parent.selection_mode = "single_choice"
+    yes = _make_metric(name="Yes", metric_type="boolean", metric_id="c-yes")
+    no = _make_metric(name="No", metric_type="boolean", metric_id="c-no")
+    groups = [llm_evaluation.MetricPromptGroup(parent, [yes, no], None)]
+    _, bindings, _ = llm_evaluation._build_jev_questions_and_bindings(groups)
+    parent_binding = next(b for b in bindings if b.kind == "single_choice_parent")
+    assert llm_evaluation._match_single_choice_key("false", parent_binding) == "no"
+    assert llm_evaluation._match_single_choice_key("No", parent_binding) == "no"
+
+
+def test_map_jev_single_choice_accepts_false_string_choice():
+    parent = _make_metric(name="Bot gibberish", metric_type="boolean", metric_id="p1")
+    parent.selection_mode = "single_choice"
+    yes = _make_metric(name="Yes", metric_type="boolean", metric_id="c-yes")
+    no = _make_metric(name="No", metric_type="boolean", metric_id="c-no")
+    groups = [llm_evaluation.MetricPromptGroup(parent, [yes, no], None)]
+    _, bindings, _ = llm_evaluation._build_jev_questions_and_bindings(groups)
+    parent_binding = next(b for b in bindings if b.kind == "single_choice_parent")
+    scores = llm_evaluation._map_jev_single_choice_parent(
+        {"bot_gibberish": {"type": "choice", "choice": "false"}},
+        parent_binding,
+    )
+    assert scores["p1"]["value"] == "No"
+    assert scores["c-no"]["value"] is True
+    assert "error" not in scores["p1"]
+
+
+def test_expand_number_range_rejects_huge_span_before_allocating_levels():
+    metric = _make_metric(
+        name="Huge Range",
+        custom_data_type="number_range",
+        custom_config={"min": 0, "max": 1_000_000, "step": 1},
+    )
+    assert llm_evaluation._expand_number_range_criteria(metric) is None
+
+
+def test_map_jev_multi_label_missing_child_answer_is_none_not_false():
+    parent = _make_metric(name="Topics", metric_type="boolean", metric_id="p1")
+    parent.selection_mode = "multi_label"
+    child = _make_metric(name="Billing", metric_type="boolean", metric_id="c1")
+    groups = [llm_evaluation.MetricPromptGroup(parent, [child], None)]
+    _, bindings, _ = llm_evaluation._build_jev_questions_and_bindings(groups)
+    scores = llm_evaluation._map_jev_multi_label_group({}, bindings)
+    assert scores["c1"]["value"] is None
+
+
+def test_jev_call_errors_merge_overwrites_unanswered_multi_label_child():
+    parent = _make_metric(name="Topics", metric_type="boolean", metric_id="p1")
+    parent.selection_mode = "multi_label"
+    child = _make_metric(name="Billing", metric_type="boolean", metric_id="c1")
+    groups = [llm_evaluation.MetricPromptGroup(parent, [child], None)]
+    _, bindings, _ = llm_evaluation._build_jev_questions_and_bindings(groups)
+    metric_scores = llm_evaluation._map_jev_multi_label_group({}, bindings)
+    call_errors = {
+        "c1": llm_evaluation._unsupported_jev_entry(child, error="jev_answer_parse_failed"),
+    }
+    for metric_id, entry in call_errors.items():
+        existing = metric_scores.get(metric_id)
+        if existing is None or existing.get("value") is None or existing.get("error"):
+            metric_scores[metric_id] = entry
+        elif entry.get("error") and existing.get("value") is False:
+            metric_scores[metric_id] = entry
+    assert metric_scores["c1"]["error"] == "jev_answer_parse_failed"
+
+
+def test_evaluate_with_llm_non_jev_model_uses_standard_prompt(monkeypatch):
+    captured: dict = {}
+
+    def fake_generate_response(**kwargs):
+        captured["messages"] = kwargs["messages"]
+        return {"text": '{"is_urgent": true}'}
+
+    _patch_llm_generate_response(monkeypatch, fake_generate_response)
+
+    metric = _make_metric(name="Is Urgent", metric_type="boolean", metric_id="b1")
+    llm_evaluation.evaluate_with_llm(
+        transcription="hello",
+        llm_metrics=[metric],
+        ai_providers=[],
+        organization_id=uuid4(),
+        result_id="test",
+        db=None,
+        evaluator=SimpleNamespace(
+            llm_provider="openai",
+            llm_model="gpt-4o",
+            llm_config=None,
+            llm_credential_id=None,
+        ),
+    )
+    user_content = captured["messages"][1]["content"]
+    assert "Metrics to Evaluate" in user_content
+    assert '"is_urgent"' in user_content

@@ -192,6 +192,7 @@ def transcribe_elevenlabs(
     model: str,
     api_key: str,
     language: Optional[str] = None,
+    base_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Transcribe an audio file via the ElevenLabs Speech-to-Text REST API.
 
@@ -201,7 +202,9 @@ def transcribe_elevenlabs(
     """
     import httpx
 
-    url = "https://api.elevenlabs.io/v1/speech-to-text"
+    from app.services.voice_providers.elevenlabs_api_url import elevenlabs_speech_to_text_url
+
+    url = elevenlabs_speech_to_text_url(base_url)
     headers = {"xi-api-key": api_key}
 
     with open(audio_file_path, "rb") as f:

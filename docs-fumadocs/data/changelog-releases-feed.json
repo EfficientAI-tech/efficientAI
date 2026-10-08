@@ -1,0 +1,236 @@
+[
+  {
+    "tagName": "v1.6.0",
+    "name": "v1.6.0",
+    "publishedAt": "2026-09-27T18:30:00.000Z",
+    "htmlUrl": "https://github.com/EfficientAI-tech/efficientAI/releases/tag/v1.6.0",
+    "docsSlug": "v1.6.0",
+    "changes": [
+      "New `/api/v1/observability/traces` API (session create, OTLP ingest, list/detail, close)",
+      "DB tables for trace storage (`078_synthetic_call_traces`)",
+      "Pipecat integration SDK (`efficientai.integrations.efficientai_traces`) for external bots",
+      "In-process OTLP export for playground voice agents",
+      "**Call Traces** UI with waterfall, charts, and turn breakdown",
+      "Trace panels on evaluator results, playground calls, and observability views",
+      "Pipecat example bots + local test scripts"
+    ],
+    "contributors": [
+      "MSami625"
+    ]
+  },
+  {
+    "tagName": "v1.5.37",
+    "name": "v1.5.37",
+    "publishedAt": "2026-09-25T18:30:00.000Z",
+    "htmlUrl": "https://github.com/EfficientAI-tech/efficientAI/releases/tag/v1.5.37",
+    "docsSlug": "v1.5.37",
+    "changes": [
+      "Tightened CSP: `style-src` without `'unsafe-inline'`; added `style-src-elem` and `style-src-attr` for React/HeroUI.",
+      "Production startup requires non-empty `TRUSTED_HOSTS` when `DEBUG=false`.",
+      "Omit `Server: uvicorn` (middleware, CLI, Docker `--no-server-header`).",
+      "Added `docs/operations/*` pentest runbooks; tests and config examples."
+    ],
+    "contributors": [
+      "MSami625"
+    ]
+  },
+  {
+    "tagName": "v1.5.36",
+    "name": "v1.5.36",
+    "publishedAt": "2026-09-22T18:30:00.000Z",
+    "htmlUrl": "https://github.com/EfficientAI-tech/efficientAI/releases/tag/v1.5.36",
+    "docsSlug": "v1.5.36",
+    "changes": [],
+    "contributors": [
+      "aadhar-EAI"
+    ]
+  },
+  {
+    "tagName": "v1.5.35",
+    "name": "v1.5.35",
+    "publishedAt": "2026-09-22T18:30:00.000Z",
+    "htmlUrl": "https://github.com/EfficientAI-tech/efficientAI/releases/tag/v1.5.35",
+    "docsSlug": "v1.5.35",
+    "changes": [
+      "fix: ent gating by @TEJASNARAYANS in https://github.com/EfficientAI-tech/efficientAI/pull/128"
+    ],
+    "contributors": [
+      "TEJASNARAYANS"
+    ]
+  },
+  {
+    "tagName": "v1.5.34",
+    "name": "v1.5.34",
+    "publishedAt": "2026-09-21T18:30:00.000Z",
+    "htmlUrl": "https://github.com/EfficientAI-tech/efficientAI/releases/tag/v1.5.34",
+    "docsSlug": "v1.5.34",
+    "changes": [
+      "**Quickstart** — end-to-end onboarding guide",
+      "**Platform** — product guides for agents, personas, scenarios, evaluators, evaluation suites, metrics, prompts, playground, observability, and setup (with screenshots)",
+      "**Integrations** — provider-specific pages (ElevenLabs, Plivo, Retell, Smallest, Vapi, Vobiz)",
+      "**Advanced** — new section (expanded by default) with:",
+      "**[IAM](/docs/advanced/iam/)** — org/workspace roles, membership, custom roles, Enterprise IAM",
+      "**[Alerting](/docs/advanced/alerting/)** — threshold rules, Slack/email notifications, alert history (Enterprise feature)",
+      "**API reference** — generated from OpenAPI spec (`efficientai.json`) covering agents, auth, call imports, evaluators, integrations, metrics, observability, personas, scenarios, voice bundles, and workspaces",
+      "**Changelog** — versioned release pages (v1.5.4–v1.5.33) with enriched PR context",
+      "**Enterprise** — BSL licensing overview and open-source vs Enterprise comparison table",
+      "Added ✅ to every Enterprise column cell in the comparison table for quick visual scanning",
+      "Authentication guide links now point to `https://docs.efficientai.cloud/docs/getting-started/authentication/` (not localhost)",
+      "Licensing contact updated to `contact@efficientai.cloud`",
+      "Removed redundant sections: \"Open-source limits (EFF-70)\" and \"Enterprise-only capabilities (any Enterprise tier)\"",
+      "**Community & contact footer** on docs pages (GitHub issues, Discord)",
+      "**Top nav** — GitHub link and light/dark theme toggle moved to the right",
+      "**Sidebar** — Advanced section uses `defaultOpen: true`; trimmed Advanced nav to IAM + Alerting only (removed Reference, Monitoring, Engineering stubs from nav)",
+      "**README** — Discord added to hero quick links and Support section",
+      "New screenshots for Agents, Evaluators, Metrics, Personas, Playground, Prompts, IAM, and Alerts",
+      "`What changed`",
+      "`Why`",
+      "`How to test`",
+      "**`next.config.mjs`** — `output: 'export'` only when `NODE_ENV === 'production'` (fixes dev `generateStaticParams` errors)",
+      "**`ensure-collections.mjs`** — regenerate `.source/` when content is newer than cache",
+      "**`page.tsx`** — guard when `generateParams()` returns empty",
+      "**`docs-shell.tsx`** — `sidebar={{ defaultOpenLevel: 1 }}`",
+      "Fixed MDX hydration errors and removed broken screenshot refs (`create_workspace.png`, `iam_workspaces.png`); replaced with `/screenshots/IAM/iam.png` and `/screenshots/Alerts/alerts.png`"
+    ],
+    "contributors": [
+      "aadhar-EAI"
+    ]
+  },
+  {
+    "tagName": "v1.5.33",
+    "name": "v1.5.33",
+    "publishedAt": "2026-09-16T18:30:00.000Z",
+    "htmlUrl": "https://github.com/EfficientAI-tech/efficientAI/releases/tag/v1.5.33",
+    "docsSlug": "v1.5.33",
+    "changes": [
+      "**Auth:** httpOnly cookie sessions (`eai_access` / `eai_refresh` / `eai_csrf`), CSRF middleware, session epoch invalidation on password change, strong `SECRET_KEY` enforcement when `debug: false`",
+      "**API hardening:** SSRF checks on recording/audio URLs, reader RBAC query-token bypass fix, abuse-only rate limits on auth/resource creates, LLM config sanitization",
+      "**Headers:** TrustedHost + HSTS support",
+      "**Frontend:** Cookie-session bootstrap, silent refresh, CSRF on axios + Pipecat voice-agent connect, profile/password UX fixes",
+      "**Fixes:** Duplicate invite → 409, wrong password → 400, expanded recording URL allowlist (incl. R2), App.tsx route cleanup"
+    ],
+    "contributors": [
+      "MSami625"
+    ]
+  },
+  {
+    "tagName": "v1.5.32",
+    "name": "v1.5.32",
+    "publishedAt": "2026-09-14T18:30:00.000Z",
+    "htmlUrl": "https://github.com/EfficientAI-tech/efficientAI/releases/tag/v1.5.32",
+    "docsSlug": "v1.5.32",
+    "changes": [],
+    "contributors": [
+      "TEJASNARAYANS"
+    ]
+  },
+  {
+    "tagName": "v1.5.31",
+    "name": "v1.5.31",
+    "publishedAt": "2026-09-06T18:30:00.000Z",
+    "htmlUrl": "https://github.com/EfficientAI-tech/efficientAI/releases/tag/v1.5.31",
+    "docsSlug": "v1.5.31",
+    "changes": [],
+    "contributors": [
+      "TEJASNARAYANS"
+    ]
+  },
+  {
+    "tagName": "v1.5.30",
+    "name": "v1.5.30",
+    "publishedAt": "2026-09-03T18:30:00.000Z",
+    "htmlUrl": "https://github.com/EfficientAI-tech/efficientAI/releases/tag/v1.5.30",
+    "docsSlug": "v1.5.30",
+    "changes": [],
+    "contributors": [
+      "TEJASNARAYANS"
+    ]
+  },
+  {
+    "tagName": "v1.5.29",
+    "name": "v1.5.29",
+    "publishedAt": "2026-08-30T18:30:00.000Z",
+    "htmlUrl": "https://github.com/EfficientAI-tech/efficientAI/releases/tag/v1.5.29",
+    "docsSlug": "v1.5.29",
+    "changes": [
+      "Expanded LLM/STT/TTS usage tracking across pre-prod flows: evaluator results, Metrics Studio runs, persona generation, playground voice calls, and test-agent LLM-to-LLM simulation",
+      "Added `external_agent_usage.py` to extract and record provider usage from Vapi, Retell, ElevenLabs, and Smallest call payloads",
+      "Wired usage recording into playground polling, evaluator result processing, and test-agent bridge/simulation paths (with dedup via `external_usage_recorded`)",
+      "Added LLM-to-LLM evaluator simulation for voice-bundle-only agents (no external voice provider)",
+      "Fixed Celery `run_evaluator` asyncio event loop handling for voice-bridge runs",
+      "Improved playground polling (skip duplicate processing, Vapi polls on refresh only)",
+      "Relaxed CSP `connect-src` / `worker-src` for voice provider WebRTC connections",
+      "Added tests for pre-prod usage, simulation usage, LLM-to-LLM simulation, and CSP voice provider rules"
+    ],
+    "contributors": [
+      "MSami625"
+    ]
+  },
+  {
+    "tagName": "v1.5.28",
+    "name": "v1.5.28",
+    "publishedAt": "2026-08-27T18:30:00.000Z",
+    "htmlUrl": "https://github.com/EfficientAI-tech/efficientAI/releases/tag/v1.5.28",
+    "docsSlug": "v1.5.28",
+    "changes": [],
+    "contributors": [
+      "TEJASNARAYANS"
+    ]
+  },
+  {
+    "tagName": "v1.5.27",
+    "name": "v1.5.27",
+    "publishedAt": "2026-08-21T18:30:00.000Z",
+    "htmlUrl": "https://github.com/EfficientAI-tech/efficientAI/releases/tag/v1.5.27",
+    "docsSlug": "v1.5.27",
+    "changes": [],
+    "contributors": [
+      "TEJASNARAYANS"
+    ]
+  },
+  {
+    "tagName": "v1.5.26",
+    "name": "v1.5.26",
+    "publishedAt": "2026-08-18T18:30:00.000Z",
+    "htmlUrl": "https://github.com/EfficientAI-tech/efficientAI/releases/tag/v1.5.26",
+    "docsSlug": "v1.5.26",
+    "changes": [
+      "Track LLM input/output, cache, reasoning tokens, and call count.",
+      "Track STT and TTS usage from voice agent calls.",
+      "Added Redis-based usage counters with batched Postgres rollups.",
+      "Added usage context for organization, workspace, product, and resource.",
+      "Added Usage API for summary and breakdown.",
+      "Added a single `/usage` page with filters and grouping.",
+      "Added scheduled flushing of usage data from Redis to Postgres."
+    ],
+    "contributors": [
+      "MSami625"
+    ]
+  },
+  {
+    "tagName": "v1.5.25",
+    "name": "v1.5.25",
+    "publishedAt": "2026-08-13T18:30:00.000Z",
+    "htmlUrl": "https://github.com/EfficientAI-tech/efficientAI/releases/tag/v1.5.25",
+    "docsSlug": "v1.5.25",
+    "changes": [
+      "fix: updating metric library by @TEJASNARAYANS in https://github.com/EfficientAI-tech/efficientAI/pull/111"
+    ],
+    "contributors": [
+      "TEJASNARAYANS"
+    ]
+  },
+  {
+    "tagName": "v1.5.24",
+    "name": "v1.5.24",
+    "publishedAt": "2026-08-11T18:30:00.000Z",
+    "htmlUrl": "https://github.com/EfficientAI-tech/efficientAI/releases/tag/v1.5.24",
+    "docsSlug": "v1.5.24",
+    "changes": [
+      "Import metadata by @MSami625 in https://github.com/EfficientAI-tech/efficientAI/pull/113"
+    ],
+    "contributors": [
+      "MSami625"
+    ]
+  }
+]

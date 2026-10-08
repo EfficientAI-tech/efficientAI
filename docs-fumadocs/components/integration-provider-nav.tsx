@@ -13,7 +13,10 @@ const providers: Provider[] = [
   { id: 'elevenlabs', label: 'ElevenLabs', href: '/docs/integrations/elevenlabs/', logo: '/elevenlabs.jpg' },
   { id: 'vapi', label: 'Vapi', href: '/docs/integrations/vapi/', logo: '/vapiai.jpg' },
   { id: 'smallest', label: 'Smallest', href: '/docs/integrations/smallest/', logo: '/smallest.jpeg' },
+  { id: 'pipecat', label: 'Pipecat', href: '/docs/integrations/pipecat/' },
   { id: 'plivo', label: 'Plivo', href: '/docs/integrations/plivo/', logo: '/plivo.png' },
+  { id: 'twilio', label: 'Twilio', href: '/docs/integrations/twilio/' },
+  { id: 'telnyx', label: 'Telnyx', href: '/docs/integrations/telnyx/' },
   { id: 'vobiz', label: 'Vobiz', href: '/docs/integrations/vobiz/', logo: '/vobiz.png' },
 ];
 

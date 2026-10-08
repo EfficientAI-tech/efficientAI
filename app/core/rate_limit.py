@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import uuid
 from typing import Optional
 from uuid import UUID
 
@@ -43,7 +44,7 @@ def check_trace_rate_limit(principal: Principal, route_group: str = "ingest") ->
     try:
         pipe = _get_redis().pipeline()
         pipe.zremrangebyscore(key, 0, now - window)
-        pipe.zadd(key, {str(now): now})
+        pipe.zadd(key, {f"{now}:{uuid.uuid4().hex}": now})
         pipe.zcard(key)
         pipe.expire(key, window + 5)
         _, _, count, _ = pipe.execute()

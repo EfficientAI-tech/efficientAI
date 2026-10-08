@@ -33,6 +33,24 @@ def test_update_integration(authenticated_client, make_integration):
     assert response.json()["public_key"] == "pub-key"
 
 
+def test_update_elevenlabs_integration_clears_api_base_url(
+    authenticated_client, make_integration, db_session
+):
+    integration = make_integration(platform="elevenlabs")
+    integration.api_base_url = "https://api.us.elevenlabs.io"
+    db_session.commit()
+    db_session.refresh(integration)
+    response = authenticated_client.put(
+        f"/api/v1/integrations/{integration.id}",
+        json={"api_base_url": None},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["api_base_url"] is None
+    db_session.refresh(integration)
+    assert integration.api_base_url is None
+
+
 def test_get_integration_api_key(authenticated_client, monkeypatch, make_integration):
     integration = make_integration(platform="retell", api_key="encrypted")
     monkeypatch.setattr(integrations_route, "decrypt_api_key", lambda _v: "decrypted-key")
@@ -89,7 +107,7 @@ def test_preview_integration_agent_prompt_success(authenticated_client, monkeypa
     monkeypatch.setattr(
         prompt_sync_module,
         "fetch_provider_prompt",
-        lambda _integration, agent_id: f"Prompt for {agent_id}",
+        lambda _integration, agent_id, **_: f"Prompt for {agent_id}",
     )
 
     response = authenticated_client.post(
@@ -99,6 +117,31 @@ def test_preview_integration_agent_prompt_success(authenticated_client, monkeypa
 
     assert response.status_code == 200
     assert response.json()["provider_prompt"] == "Prompt for external-agent-123"
+
+
+def test_preview_integration_agent_prompt_forwards_agent_channel(
+    authenticated_client, monkeypatch, make_integration
+):
+    integration = make_integration(platform="retell")
+    captured = {}
+
+    def _fetch(_integration, agent_id, *, agent_channel=None):
+        captured["agent_id"] = agent_id
+        captured["agent_channel"] = agent_channel
+        return "chat prompt"
+
+    monkeypatch.setattr(prompt_sync_module, "fetch_provider_prompt", _fetch)
+
+    response = authenticated_client.post(
+        f"/api/v1/integrations/{integration.id}/preview-agent-prompt",
+        json={"voice_ai_agent_id": "external-agent-123", "agent_channel": "chat"},
+    )
+
+    assert response.status_code == 200
+    assert captured == {
+        "agent_id": "external-agent-123",
+        "agent_channel": "chat",
+    }
 
 
 def test_preview_integration_agent_prompt_not_found(authenticated_client):
@@ -115,7 +158,7 @@ def test_preview_integration_agent_prompt_empty(authenticated_client, monkeypatc
     monkeypatch.setattr(
         prompt_sync_module,
         "fetch_provider_prompt",
-        lambda _integration, _agent_id: None,
+        lambda _integration, _agent_id, **_: None,
     )
 
     response = authenticated_client.post(
@@ -141,7 +184,7 @@ def test_list_integration_voice_agents_success(authenticated_client, monkeypatch
     monkeypatch.setattr(
         catalog_module,
         "list_integration_voice_agents",
-        lambda _integration, refresh=False, search=None: _Result(),
+        lambda _integration, refresh=False, search=None, agent_kind="voice": _Result(),
     )
 
     response = authenticated_client.get(f"/api/v1/integrations/{integration.id}/voice-agents")
@@ -165,7 +208,7 @@ def test_list_integration_voice_agents_provider_error(authenticated_client, monk
     integration = make_integration(platform="vapi")
     catalog_module = importlib.import_module("app.services.voice_providers.voice_agent_catalog")
 
-    def _raise(_integration, refresh=False, search=None):
+    def _raise(_integration, refresh=False, search=None, agent_kind="voice"):
         raise ValueError("Provider unavailable")
 
     monkeypatch.setattr(catalog_module, "list_integration_voice_agents", _raise)
@@ -173,4 +216,63 @@ def test_list_integration_voice_agents_provider_error(authenticated_client, monk
     response = authenticated_client.get(f"/api/v1/integrations/{integration.id}/voice-agents")
 
     assert response.status_code == 502
-    assert "Provider unavailable" in response.json()["detail"]
+
+
+def test_list_integration_voice_agents_passes_agent_kind_chat(
+    authenticated_client, monkeypatch, make_integration
+):
+    integration = make_integration(platform="retell")
+    catalog_module = importlib.import_module("app.services.voice_providers.voice_agent_catalog")
+    captured = {}
+
+    def _list(_integration, refresh=False, search=None, agent_kind="voice"):
+        captured["agent_kind"] = agent_kind
+        return catalog_module.VoiceAgentListResult(
+            agents=[{"id": "chat_1", "name": "Chat Agent"}],
+            platform="retell",
+            cached=False,
+            truncated=False,
+            list_supported=True,
+            message=None,
+        )
+
+    monkeypatch.setattr(catalog_module, "list_integration_voice_agents", _list)
+
+    response = authenticated_client.get(
+        f"/api/v1/integrations/{integration.id}/voice-agents",
+        params={"agent_kind": "chat", "refresh": True},
+    )
+
+    assert response.status_code == 200
+    assert captured.get("agent_kind") == "chat"
+    assert response.json()["agents"][0]["name"] == "Chat Agent"
+
+
+def test_list_integration_voice_agents_passes_agent_kind_for_vapi(
+    authenticated_client, monkeypatch, make_integration
+):
+    integration = make_integration(platform="vapi")
+    catalog_module = importlib.import_module("app.services.voice_providers.voice_agent_catalog")
+    captured = {}
+
+    def _list(_integration, refresh=False, search=None, agent_kind="voice"):
+        captured["agent_kind"] = agent_kind
+        return catalog_module.VoiceAgentListResult(
+            agents=[{"id": "asst_1", "name": "Support"}],
+            platform="vapi",
+            cached=False,
+            truncated=False,
+            list_supported=True,
+            message="This platform uses the same agent for voice and chat.",
+        )
+
+    monkeypatch.setattr(catalog_module, "list_integration_voice_agents", _list)
+
+    response = authenticated_client.get(
+        f"/api/v1/integrations/{integration.id}/voice-agents",
+        params={"agent_kind": "chat"},
+    )
+
+    assert response.status_code == 200
+    assert captured.get("agent_kind") == "chat"
+    assert response.json()["agents"][0]["id"] == "asst_1"

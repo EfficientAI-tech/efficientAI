@@ -32,6 +32,7 @@ import { copyTextToClipboard, readTextFromClipboard } from '../../lib/clipboard'
 import {
   categoryFormFromMetricClipboard,
   parseMetricClipboardPayload,
+  pastedMetricName,
   serializeMetricToClipboard,
   singleFormFromMetricClipboard,
 } from './metricClipboardUtils'
@@ -39,6 +40,14 @@ import {
   buildSingleMetricValuePayload,
   formatMetricValuePayloadJson,
 } from './metricValuePayloadUtils'
+import ClassificationMetricFields from './components/ClassificationMetricFields'
+import {
+  buildClassificationPayload,
+  classificationFormFromMetric,
+  defaultClassificationForm,
+  validateClassificationForm,
+  type ClassificationFormState,
+} from './classificationMetricUtils'
 import {
   categoryChildrenFromPartial,
   createCategoryChildrenFromPartial,
@@ -48,6 +57,12 @@ import {
   serializeMetricPartialContent,
   type MetricPartialContent,
 } from '../promptPartials/metricPartialUtils'
+import {
+  ALL_SURFACES,
+  metricSurfaceLabel,
+  type MetricSurface,
+} from '../../lib/metricSurfaces'
+import MetricSurfacesField from './MetricSurfacesField'
 
 interface Metric {
   id: string
@@ -68,9 +83,9 @@ interface Metric {
   example?: string | null
   metric_type: 'number' | 'boolean' | 'rating' | 'text'
   metric_origin: 'default' | 'custom'
-  supported_surfaces: Array<'agent' | 'voice_playground' | 'blind_test'>
-  enabled_surfaces: Array<'agent' | 'voice_playground' | 'blind_test'>
-  custom_data_type?: 'boolean' | 'enum' | 'number_range' | null
+  supported_surfaces: MetricSurface[]
+  enabled_surfaces: MetricSurface[]
+  custom_data_type?: 'boolean' | 'enum' | 'number_range' | 'classification' | null
   custom_config?: Record<string, any> | null
   tags?: string[] | null
   capture_rationale?: boolean
@@ -94,8 +109,8 @@ interface Metric {
   children?: Metric[]
 }
 
-type MetricSurface = 'agent' | 'voice_playground' | 'blind_test'
-type CustomDataType = 'boolean' | 'enum' | 'number_range'
+
+type CustomDataType = 'boolean' | 'enum' | 'number_range' | 'classification'
 
 // Quantitative: Raw acoustic measurements (Parselmouth - signal processing)
 // These are pure physical/mathematical measurements of the audio signal
@@ -126,14 +141,6 @@ const isAIVoiceMetric = (metricName: string): boolean => AI_VOICE_METRICS.has(me
 // Quantitative = raw physical measurements (acoustic signal analysis)
 // Qualitative = quality assessments (human perception, emotion, LLM evaluation)
 const isQuantitativeMetric = (metricName: string): boolean => ACOUSTIC_METRICS.has(metricName)
-
-const ALL_SURFACES: MetricSurface[] = ['agent', 'voice_playground', 'blind_test']
-
-const SURFACE_LABELS: Record<MetricSurface, string> = {
-  agent: 'Agent',
-  voice_playground: 'Voice Playground',
-  blind_test: 'Blind Test',
-}
 
 // Shared "modernized" form-control styling used across the Create /
 // Edit Metric modal. Lighter border, larger padding, smooth focus
@@ -216,8 +223,10 @@ export default function MetricsManagement({
   // active one with these tabs. Default is 'single' (the legacy
   // single-metric experience); 'category' opens the parent + sub-labels
   // builder.
-  type CreateMode = 'single' | 'category'
+  type CreateMode = 'single' | 'category' | 'classification'
   const [createMode, setCreateMode] = useState<CreateMode>('single')
+  const [classificationForm, setClassificationForm] =
+    useState<ClassificationFormState>(defaultClassificationForm)
   // Categorization Labels create form. Mirrors the "Manage Categorization
   // Labels" screen: name + description (acts as the LLM Prompt) + N
   // labels with name/definition/example, plus an "Enable LLM Rationale"
@@ -386,12 +395,29 @@ export default function MetricsManagement({
   })
 
   const singleMetricValuePayloadJson = useMemo(() => {
+    if (formData.custom_data_type === 'classification') {
+      return formatMetricValuePayloadJson({
+        type: 'classification',
+        metric_name: formData.name.trim() || '(unnamed metric)',
+        value: 'noul 0.92; billing (0.81); score 1.04',
+        answers: {
+          noul: { type: 'noul', noul: 0.92 },
+          choice: {
+            type: 'choice',
+            choice: 'billing',
+            confidence: 0.81,
+            probabilities: { billing: 0.87, other: 0.13 },
+          },
+        },
+      })
+    }
+    const customDataType = formData.custom_data_type
     return formatMetricValuePayloadJson(
       buildSingleMetricValuePayload({
         name: formData.name,
         description: formData.description,
         metric_type: formData.metric_type,
-        custom_data_type: formData.custom_data_type,
+        custom_data_type: customDataType,
         enum_options_csv: formData.enum_options_csv,
         number_min: formData.number_min,
         number_max: formData.number_max,
@@ -703,9 +729,14 @@ export default function MetricsManagement({
     }
   }, [createModalOnly, createModalOpen])
 
+  type MetricCreateBody = Parameters<typeof apiClient.createMetric>[0]
+  type MetricUpdateBody = Parameters<typeof apiClient.updateMetric>[1]
+
   const createMutation = useMutation({
-    mutationFn: (data: typeof formData) =>
-      draftMode ? apiClient.createMetricDraft(data as any) : apiClient.createMetric(data),
+    mutationFn: (data: MetricCreateBody) =>
+      draftMode
+        ? apiClient.createMetricDraft(data as any)
+        : apiClient.createMetric(data),
     onSuccess: (metric) => {
       queryClient.invalidateQueries({ queryKey: ['metrics'] })
       void refreshOssQuotaUsage()
@@ -722,7 +753,7 @@ export default function MetricsManagement({
   })
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Partial<typeof formData> }) =>
+    mutationFn: ({ id, data }: { id: string; data: MetricUpdateBody }) =>
       apiClient.updateMetric(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['metrics'] })
@@ -769,8 +800,15 @@ export default function MetricsManagement({
   })
 
   const toggleSurfaceMutation = useMutation({
-    mutationFn: ({ id, enabled_surfaces }: { id: string; enabled_surfaces: MetricSurface[] }) =>
-      apiClient.updateMetric(id, { enabled_surfaces }),
+    mutationFn: ({
+      id,
+      supported_surfaces,
+      enabled_surfaces,
+    }: {
+      id: string
+      supported_surfaces: MetricSurface[]
+      enabled_surfaces: MetricSurface[]
+    }) => apiClient.updateMetric(id, { supported_surfaces, enabled_surfaces }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['metrics'] })
     },
@@ -1000,17 +1038,26 @@ export default function MetricsManagement({
     })
   }
 
+  const resetClassificationForm = () => {
+    setClassificationForm(defaultClassificationForm())
+  }
+
   const handleToggleSurface = (metric: Metric, surface: MetricSurface) => {
-    const current = new Set<MetricSurface>(metric.enabled_surfaces || [])
-    if (current.has(surface)) {
-      current.delete(surface)
-    } else {
-      current.add(surface)
-    }
-    const next = Array.from(current).filter((s) =>
-      (metric.supported_surfaces || []).includes(s),
+    const supported = new Set<MetricSurface>(
+      (metric.supported_surfaces?.length ? metric.supported_surfaces : ['agent']) as MetricSurface[],
     )
-    toggleSurfaceMutation.mutate({ id: metric.id, enabled_surfaces: next })
+    const enabled = new Set<MetricSurface>((metric.enabled_surfaces || []) as MetricSurface[])
+    if (enabled.has(surface)) {
+      enabled.delete(surface)
+    } else {
+      enabled.add(surface)
+      supported.add(surface)
+    }
+    toggleSurfaceMutation.mutate({
+      id: metric.id,
+      supported_surfaces: [...supported],
+      enabled_surfaces: [...enabled],
+    })
   }
 
   const resetAIForm = () => {
@@ -1199,10 +1246,26 @@ export default function MetricsManagement({
         setCreateMode('category')
         setCategoryForm(categoryFormFromMetricClipboard(payload, targetScope))
         resetForm()
+        resetClassificationForm()
+      } else if (payload.custom_data_type === 'classification') {
+        setCreateMode('classification')
+        setClassificationForm(
+          classificationFormFromMetric({
+            name: pastedMetricName(payload.name),
+            description: payload.description,
+            supported_surfaces: payload.supported_surfaces,
+            enabled: true,
+            scope: targetScope,
+            custom_config: payload.custom_config ?? null,
+          }),
+        )
+        resetForm()
+        resetCategoryForm()
       } else {
         setCreateMode('single')
         setFormData(singleFormFromMetricClipboard(payload, targetScope))
         resetCategoryForm()
+        resetClassificationForm()
       }
       if (isAtLimit('user_metrics')) {
         showToast(limitMessage('user_metrics'), 'error')
@@ -1227,6 +1290,14 @@ export default function MetricsManagement({
       !!metric.selection_mode && !metric.parent_metric_id
     if (isParent) {
       handleEditCategory(metric)
+      return
+    }
+    if (metric.custom_data_type === 'classification') {
+      setEditingMetric(metric)
+      setIsEditingCategory(false)
+      setCreateMode('classification')
+      setClassificationForm(classificationFormFromMetric(metric))
+      setShowCreateModal(true)
       return
     }
     setEditingMetric(metric)
@@ -1414,9 +1485,34 @@ export default function MetricsManagement({
     resetForm()
     resetAIForm()
     resetCategoryForm()
+    resetClassificationForm()
     if (createModalOnly) {
       onCreateModalClose?.()
     }
+  }
+
+  const handleCreateClassification = () => {
+    const err = validateClassificationForm(classificationForm)
+    if (err) {
+      showToast(err, 'error')
+      return
+    }
+    createMutation.mutate(
+      buildClassificationPayload(classificationForm, false) as any,
+    )
+  }
+
+  const handleUpdateClassification = () => {
+    if (!editingMetric) return
+    const err = validateClassificationForm(classificationForm)
+    if (err) {
+      showToast(err, 'error')
+      return
+    }
+    updateMutation.mutate({
+      id: editingMetric.id,
+      data: buildClassificationPayload(classificationForm, true) as any,
+    })
   }
 
   const handleSort = (field: 'type' | 'method') => {
@@ -1575,9 +1671,11 @@ export default function MetricsManagement({
                 className="text-sm border border-gray-300 rounded-md px-2 py-1"
               >
                 <option value="all">All</option>
-                <option value="agent">Agent</option>
-                <option value="voice_playground">Voice Playground</option>
-                <option value="blind_test">Blind Test</option>
+                {ALL_SURFACES.map((surface) => (
+                  <option key={surface} value={surface}>
+                    {metricSurfaceLabel(surface)}
+                  </option>
+                ))}
               </select>
             </div>
           </div>
@@ -1732,6 +1830,14 @@ export default function MetricsManagement({
                                 </span>
                               </span>
                             )}
+                            {metric.custom_data_type === 'classification' && (
+                              <span
+                                className="px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide bg-teal-100 text-teal-800 rounded"
+                                title="Jev classification metric (Noul / Choice / Score)"
+                              >
+                                Classification
+                              </span>
+                            )}
                           </div>
                         </td>
                         <td className="px-6 py-4">
@@ -1761,33 +1867,34 @@ export default function MetricsManagement({
                           className="px-6 py-4 whitespace-nowrap"
                           onClick={(e) => e.stopPropagation()}
                         >
-                          <div className="flex flex-wrap gap-1.5">
-                            {(metric.supported_surfaces || []).map(
-                              (surface) => {
-                                const isEnabled = (
-                                  metric.enabled_surfaces || []
-                                ).includes(surface)
-                                return (
-                                  <button
-                                    key={surface}
-                                    type="button"
-                                    onClick={() =>
-                                      handleToggleSurface(metric, surface)
-                                    }
-                                    disabled={toggleSurfaceMutation.isPending}
-                                    title={`${isEnabled ? 'Disable' : 'Enable'} on ${SURFACE_LABELS[surface]}`}
-                                    className={`px-2 py-0.5 text-[11px] rounded-full border transition-colors ${
-                                      isEnabled
-                                        ? 'bg-emerald-100 text-emerald-800 border-emerald-200 hover:bg-emerald-200'
-                                        : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200'
-                                    }`}
-                                  >
-                                    {SURFACE_LABELS[surface]}
-                                    {isEnabled ? ' ✓' : ''}
-                                  </button>
-                                )
-                              },
-                            )}
+                          <div className="flex flex-wrap gap-1.5 max-w-xs">
+                            {ALL_SURFACES.map((surface) => {
+                              const isSupported = (
+                                metric.supported_surfaces || ['agent']
+                              ).includes(surface)
+                              const isEnabled = (
+                                metric.enabled_surfaces || []
+                              ).includes(surface)
+                              return (
+                                <button
+                                  key={surface}
+                                  type="button"
+                                  onClick={() => handleToggleSurface(metric, surface)}
+                                  disabled={toggleSurfaceMutation.isPending}
+                                  title={`${isEnabled ? 'Disable' : 'Enable'} ${metricSurfaceLabel(surface)}`}
+                                  className={`px-2 py-0.5 text-[11px] rounded-full border transition-colors ${
+                                    isEnabled
+                                      ? 'bg-emerald-100 text-emerald-800 border-emerald-200 hover:bg-emerald-200'
+                                      : isSupported
+                                        ? 'bg-gray-100 text-gray-600 border-gray-200 hover:bg-gray-200'
+                                        : 'bg-white text-gray-400 border-dashed border-gray-300 hover:border-gray-400'
+                                  }`}
+                                >
+                                  {metricSurfaceLabel(surface)}
+                                  {isEnabled ? ' ✓' : ''}
+                                </button>
+                              )
+                            })}
                           </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
@@ -1952,7 +2059,7 @@ export default function MetricsManagement({
                   ? isEditingCategory
                     ? 'max-w-5xl'
                     : 'max-w-4xl'
-                  : createMode === 'category'
+                  : createMode === 'category' || createMode === 'classification'
                     ? 'max-w-5xl'
                     : 'max-w-4xl'
               } w-full p-6 max-h-[90vh] overflow-y-auto`}
@@ -1962,9 +2069,13 @@ export default function MetricsManagement({
                   {editingMetric
                     ? isEditingCategory
                       ? `Manage Categorization Labels for: ${editingMetric.name}`
-                      : 'Edit Metric'
+                      : editingMetric.custom_data_type === 'classification'
+                        ? 'Edit classification metric'
+                        : 'Edit Metric'
                     : createMode === 'category'
                       ? `Manage Categorization Labels${categoryForm.name.trim() ? ` for: ${categoryForm.name.trim()}` : ''}`
+                      : createMode === 'classification'
+                        ? 'Create classification metric'
                       : draftMode
                         ? isCustomMetricMode
                           ? 'Create draft custom metric'
@@ -2011,6 +2122,7 @@ export default function MetricsManagement({
                       [
                         { id: 'single', label: 'Single metric' },
                         { id: 'category', label: 'Categorization Labels' },
+                        { id: 'classification', label: 'Classification' },
                       ] as Array<{ id: CreateMode; label: string }>
                     ).map((tab) => (
                       <button
@@ -2030,13 +2142,17 @@ export default function MetricsManagement({
                   <p className="mt-2 text-[11px] text-gray-500">
                     {createMode === 'single'
                       ? 'Configure one custom metric end-to-end.'
-                      : 'Create a metric with N labels. On a CSV-import evaluation the metric becomes one column whose row value is the LLM-chosen label name.'}
+                      : createMode === 'category'
+                        ? 'Create a metric with N labels. On a CSV-import evaluation the metric becomes one column whose row value is the LLM-chosen label name.'
+                        : 'Configure Jev Noul, Choice, and/or Score questions with probabilities on call-import evaluations.'}
                   </p>
                 </div>
               )}
 
               {((createMode === 'single' && !editingMetric) ||
-                (editingMetric && !isEditingCategory)) && (
+                (editingMetric &&
+                  !isEditingCategory &&
+                  editingMetric.custom_data_type !== 'classification')) && (
               <div className="space-y-5">
                 {isCustomMetricMode && !editingMetric && (
                   <div className="border border-purple-200 rounded-xl bg-purple-50/40">
@@ -2491,43 +2607,17 @@ export default function MetricsManagement({
                     )}
 
                   <div className="lg:col-span-2">
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Supported Surfaces
-                    </label>
-                    <div className="flex flex-wrap gap-3">
-                      {ALL_SURFACES.map((surface) => {
-                        const checked = formData.supported_surfaces.includes(surface)
-                        return (
-                          <label
-                            key={surface}
-                            className={`inline-flex items-center gap-2 text-sm cursor-pointer rounded-lg border px-3 py-2 transition ${
-                              checked
-                                ? 'border-primary-300 bg-primary-50 text-primary-800'
-                                : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
-                            }`}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={(e) => {
-                                const supported = e.target.checked
-                                  ? [...new Set([...formData.supported_surfaces, surface])]
-                                  : formData.supported_surfaces.filter((s) => s !== surface)
-                                const enabledSurfaces = e.target.checked
-                                  ? [...new Set([...formData.enabled_surfaces, surface])]
-                                  : formData.enabled_surfaces.filter((s) => supported.includes(s))
-                                setFormData({ ...formData, supported_surfaces: supported, enabled_surfaces: enabledSurfaces })
-                              }}
-                              className="h-4 w-4 text-primary-600 border-gray-300 rounded"
-                            />
-                            {SURFACE_LABELS[surface]}
-                          </label>
-                        )
-                      })}
-                    </div>
-                    <p className="mt-1.5 text-xs text-gray-500">
-                      Custom metrics on Agent / Voice Playground are evaluated by an LLM judge using the conversation transcript.
-                    </p>
+                    <MetricSurfacesField
+                      supported={formData.supported_surfaces}
+                      enabled={formData.enabled_surfaces}
+                      onChange={({ supported, enabled }) =>
+                        setFormData({
+                          ...formData,
+                          supported_surfaces: supported,
+                          enabled_surfaces: enabled,
+                        })
+                      }
+                    />
                   </div>
 
                   <div>
@@ -2642,6 +2732,52 @@ export default function MetricsManagement({
               </div>
               )}
 
+              {!editingMetric && createMode === 'classification' && (
+                <div className="space-y-5">
+                  <ClassificationMetricFields
+                    form={classificationForm}
+                    onChange={setClassificationForm}
+                    showScope
+                  />
+                  <div className="flex justify-end space-x-3 pt-2 border-t border-gray-100">
+                    <Button variant="ghost" onClick={closeModal}>
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="primary"
+                      onClick={handleCreateClassification}
+                      isLoading={createMutation.isPending}
+                    >
+                      Create
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {editingMetric &&
+                editingMetric.custom_data_type === 'classification' &&
+                !isEditingCategory && (
+                  <div className="space-y-5">
+                    <ClassificationMetricFields
+                      form={classificationForm}
+                      onChange={setClassificationForm}
+                      showScope={false}
+                    />
+                    <div className="flex justify-end space-x-3 pt-2 border-t border-gray-100">
+                      <Button variant="ghost" onClick={closeModal}>
+                        Cancel
+                      </Button>
+                      <Button
+                        variant="primary"
+                        onClick={handleUpdateClassification}
+                        isLoading={updateMutation.isPending}
+                      >
+                        Update
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
               {!editingMetric && createMode === 'category' && (
                 <div className="space-y-5">
                   {/* Metric-level fields: Name + Description (the LLM
@@ -2716,6 +2852,17 @@ export default function MetricsManagement({
                           </span>
                         </span>
                       </label>
+                    </div>
+
+                    <div className="md:col-span-2">
+                      <MetricSurfacesField
+                        compact
+                        supported={categoryForm.surfaces}
+                        enabled={categoryForm.surfaces}
+                        onChange={({ supported }) =>
+                          setCategoryForm((s) => ({ ...s, surfaces: supported }))
+                        }
+                      />
                     </div>
 
                     {/* Visibility scope picker. Same shape + semantics
@@ -3052,6 +3199,17 @@ export default function MetricsManagement({
                           </span>
                         </span>
                       </label>
+                    </div>
+
+                    <div className="md:col-span-2">
+                      <MetricSurfacesField
+                        compact
+                        supported={editCategoryForm.surfaces}
+                        enabled={editCategoryForm.surfaces}
+                        onChange={({ supported }) =>
+                          setEditCategoryForm((s) => ({ ...s, surfaces: supported }))
+                        }
+                      />
                     </div>
                   </div>
 

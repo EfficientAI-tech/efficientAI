@@ -476,6 +476,9 @@ def delete_api_key(
         )
     
     # Deactivate instead of deleting (soft delete)
+    from app.core.auth.api_key import invalidate_api_key_cache
+
+    invalidate_api_key_cache(api_key.key)
     api_key.is_active = False
     db.commit()
     
@@ -520,6 +523,9 @@ def regenerate_api_key(
     new_api_key = secrets.token_urlsafe(32)
     
     # Deactivate old key
+    from app.core.auth.api_key import invalidate_api_key_cache
+
+    invalidate_api_key_cache(old_key.key)
     old_key.is_active = False
     
     # Create new API key with same organization and user

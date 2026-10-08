@@ -18,6 +18,7 @@ export interface GenerateScenariosFromPromptParams {
   scenario_count?: number
   language?: string
   call_type?: string
+  call_medium?: string
   provider?: string
   model?: string
   credential_id?: string

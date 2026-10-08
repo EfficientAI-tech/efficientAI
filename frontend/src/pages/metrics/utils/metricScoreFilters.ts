@@ -9,8 +9,8 @@ const LEGACY_CATEGORY_LABEL_METRIC_NAMES = new Set([
 
 export type MetricScoreEntry = {
   value?: unknown
-  type?: string
-  metric_name?: string
+  type?: string | null
+  metric_name?: string | null
   parent_metric_id?: string | null
   rationale?: string | null
   skipped?: unknown
@@ -45,9 +45,10 @@ export function shouldHideMetricScore(
   metricId: string,
   metric: MetricScoreEntry,
   childMetricIds: Set<string>,
+  options?: { skipParentMetricIdOnScore?: boolean },
 ): boolean {
   return Boolean(
-    metric.parent_metric_id ||
+    (!options?.skipParentMetricIdOnScore && metric.parent_metric_id) ||
       childMetricIds.has(metricId) ||
       isLegacyCategoryLabelMetric(metric),
   )

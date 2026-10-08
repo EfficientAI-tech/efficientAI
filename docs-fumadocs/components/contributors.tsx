@@ -1,7 +1,7 @@
 import data from '@/content/feature-contributors.json';
 import profiles from '@/content/contributor-profiles.json';
 import { resolveFeatureId } from '@/lib/resolve-feature-id';
-import { fetchGitHubReleases } from '@/lib/github-releases';
+import { getChangelogFeedReleases } from '@/lib/changelog-feed';
 import { DocsActionLink } from './docs-action-link';
 
 type ContributorEntry = {
@@ -87,9 +87,9 @@ export function getFeatureContributors(slugPath: string): ContributorItem[] {
   return (resolved.length > 0 ? resolved : defaultContributors()).slice(0, 6);
 }
 
-async function getChangelogContributors(): Promise<ContributorItem[]> {
+function getChangelogContributors(): ContributorItem[] {
   try {
-    const releases = await fetchGitHubReleases();
+    const releases = getChangelogFeedReleases();
     const handles = new Set<string>();
     for (const release of releases) {
       for (const handle of release.contributors) {
@@ -108,7 +108,7 @@ async function getChangelogContributors(): Promise<ContributorItem[]> {
   }
 }
 
-async function resolveContributors(slugPath: string): Promise<ContributorItem[]> {
+function resolveContributors(slugPath: string): ContributorItem[] {
   if (slugPath === 'changelog' || slugPath.startsWith('changelog/')) {
     return getChangelogContributors();
   }
@@ -207,7 +207,7 @@ export function DocsBottomMeta({
 }
 
 export async function ContributorsTocFooter({ featureId }: { featureId: string }) {
-  const contributors = await resolveContributors(featureId);
+  const contributors = resolveContributors(featureId);
 
   return (
     <div className="mt-auto border-t border-fd-border/70 pt-4">

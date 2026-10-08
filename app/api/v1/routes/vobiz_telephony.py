@@ -703,10 +703,10 @@ async def carrier_media_websocket(websocket: WebSocket):
         mark_call_in_progress(db, call_ref=session_token)
         try:
             transport_type, call_data = await parse_telephony_websocket(websocket)
-            if transport_type not in {"plivo", "unknown"}:
-                logger.warning("Unexpected telephony transport type for Vobiz: {}", transport_type)
+            if transport_type not in {"plivo", "telnyx", "twilio", "unknown"}:
+                logger.warning("Unexpected telephony transport type: {}", transport_type)
             stream_id = call_data.get("stream_id") or ""
-            call_id = call_data.get("call_id")
+            call_id = call_data.get("call_id") or call_data.get("call_control_id")
             if call_id:
                 link_provider_call_id(db, call_ref=session_token, provider_call_id=str(call_id))
             if not stream_id:
@@ -728,13 +728,19 @@ async def carrier_media_websocket(websocket: WebSocket):
                 scenario_id=scenario_id,
                 evaluator_id=session.evaluator_id,
             )
+            platform = (getattr(call_row, "provider_platform", None) or transport_type or "").lower()
+            if platform == "unknown":
+                platform = transport_type if transport_type != "unknown" else None
             serializer = build_carrier_frame_serializer(
-                provider_platform=getattr(call_row, "provider_platform", None),
+                provider_platform=platform,
                 stream_id=stream_id,
                 call_id=call_id,
                 organization_id=UUID(session.organization_id),
                 db=db,
                 telephony_integration_id=telephony_integration_id_from_call_row(call_row),
+                call_control_id=call_data.get("call_control_id"),
+                outbound_encoding=call_data.get("outbound_encoding"),
+                inbound_encoding=call_data.get("outbound_encoding"),
             )
 
             if context.use_voice_bundle_pipeline:
@@ -753,6 +759,8 @@ async def carrier_media_websocket(websocket: WebSocket):
                     persona=context.persona,
                     stt_api_key=context.stt_api_key,
                     tts_api_key=context.tts_api_key,
+                    stt_elevenlabs_api_base_url=context.stt_elevenlabs_api_base_url,
+                    tts_elevenlabs_api_base_url=context.tts_elevenlabs_api_base_url,
                     llm_api_key=context.llm_api_key,
                     llm_endpoint_url=context.llm_endpoint_url,
                     llm_base_url=context.llm_base_url,

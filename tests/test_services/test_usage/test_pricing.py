@@ -144,6 +144,16 @@ def test_compute_cost_reasoning_tokens():
     assert costs.total_cost_micro_usd == 3_000_000
 
 
+def test_rate_card_from_models_json_tev1():
+    from app.services.usage.pricing import _rate_card_from_models_json
+
+    card = _rate_card_from_models_json("together/Tev1-4B-experimental", "llm")
+    assert card is not None
+    assert card.input_micro_usd_per_million == 40_000
+    assert card.output_micro_usd_per_million == 0
+    assert card.cache_read_micro_usd_per_million == 40_000
+
+
 def test_cost_fields_from_deltas_voice_agent_call_audio():
     from app.services.usage.pricing import (
         RateCard,

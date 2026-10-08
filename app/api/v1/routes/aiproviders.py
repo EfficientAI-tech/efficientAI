@@ -27,10 +27,12 @@ from app.services.credentials.resolver import clear_other_defaults
 from app.services.ai.llm_gateway import (
     GATEWAY_MANAGED_KEY_SENTINEL,
     get_credential_effective_gateway_interface,
+    get_credential_effective_gateway_type,
     get_credential_effective_routing_label,
     is_gateway_managed_stored_key,
     normalize_bifrost_native_url,
     normalize_bifrost_url,
+    normalize_litellm_proxy_url,
 )
 
 router = APIRouter(prefix="/aiproviders", tags=["aiproviders"])
@@ -39,12 +41,15 @@ router = APIRouter(prefix="/aiproviders", tags=["aiproviders"])
 def _sanitize_gateway_base_url(
     base_url: Optional[str],
     gateway_interface: str,
+    gateway_type: str = "inherit",
 ) -> Optional[str]:
     trimmed = (base_url or "").strip()
     if not trimmed:
         return None
     interface = (gateway_interface or "inherit").strip().lower()
     try:
+        if (gateway_type or "inherit").strip().lower() == "litellm_proxy":
+            return normalize_litellm_proxy_url(trimmed) or None
         if interface == "native_openai":
             return normalize_bifrost_native_url(trimmed) or None
         if interface == "litellm_shim":
@@ -74,6 +79,11 @@ def _scrub_for_response(
         db,
         instance,
     )
+    effective_gateway_type = get_credential_effective_gateway_type(
+        organization_id,
+        db,
+        instance,
+    )
     has_gateway_auth_secret = bool(getattr(instance, "gateway_auth_secret", None))
     db.expunge(instance)
     instance.api_key = None
@@ -84,6 +94,7 @@ def _scrub_for_response(
             "gateway_managed": gateway_managed,
             "effective_routing": effective_routing,
             "effective_gateway_interface": effective_gateway_interface,
+            "effective_gateway_type": effective_gateway_type,
             "has_gateway_auth_secret": has_gateway_auth_secret,
         }
     )
@@ -93,6 +104,7 @@ def _assert_gateway_fields_allowed(
     organization_id: UUID,
     *,
     gateway_model: Optional[str] = None,
+    gateway_type: Optional[str] = None,
     gateway_interface: Optional[str] = None,
     gateway_base_url: Optional[str] = None,
     gateway_auth_header: Optional[str] = None,
@@ -109,6 +121,7 @@ def _assert_gateway_fields_allowed(
     has_gateway_fields = any(
         [
             (gateway_model or "").strip(),
+            gateway_type not in (None, "", "inherit"),
             gateway_interface not in (None, "", "inherit"),
             (gateway_base_url or "").strip(),
             (gateway_auth_header or "").strip(),
@@ -140,7 +153,7 @@ def _assert_gateway_update_allowed(
         return
 
     def _enabling(field: str, value: Any) -> bool:
-        if field == "gateway_interface":
+        if field in ("gateway_type", "gateway_interface"):
             normalized = (_normalize_gateway_interface(value) or "").strip().lower()
             return normalized not in ("", "inherit")
         if field == "gateway_extra_headers":
@@ -149,6 +162,7 @@ def _assert_gateway_update_allowed(
 
     checks: list[tuple[str, Any]] = [
         ("gateway_model", db_aiprovider.gateway_model),
+        ("gateway_type", db_aiprovider.gateway_type),
         ("gateway_interface", db_aiprovider.gateway_interface),
         ("gateway_base_url", db_aiprovider.gateway_base_url),
         ("gateway_auth_header", db_aiprovider.gateway_auth_header),
@@ -163,7 +177,7 @@ def _assert_gateway_update_allowed(
         if not _enabling(field, new_value):
             continue
         stored_cmp = stored
-        if field == "gateway_interface":
+        if field in ("gateway_type", "gateway_interface"):
             new_value = _normalize_gateway_interface(new_value)
             stored_cmp = _normalize_gateway_interface(stored)
         if new_value != stored_cmp:
@@ -267,6 +281,7 @@ async def create_aiprovider(
     _assert_gateway_fields_allowed(
         organization_id,
         gateway_model=aiprovider.gateway_model,
+        gateway_type=aiprovider.gateway_type.value,
         gateway_interface=aiprovider.gateway_interface.value
         if hasattr(aiprovider.gateway_interface, "value")
         else aiprovider.gateway_interface,
@@ -294,7 +309,11 @@ async def create_aiprovider(
         aiprovider.api_key,
         routing_mode=aiprovider.routing_mode,
     )
-    gateway_interface_value = aiprovider.gateway_interface.value
+    gateway_type_value = aiprovider.gateway_type.value
+    # The Bifrost API surface does not apply to LiteLLM Proxy.
+    gateway_interface_value = (
+        "inherit" if gateway_type_value == "litellm_proxy" else aiprovider.gateway_interface.value
+    )
     db_aiprovider = AIProvider(
         organization_id=organization_id,
         provider=provider_value,
@@ -304,10 +323,12 @@ async def create_aiprovider(
         is_default=insert_as_default,
         routing_mode=aiprovider.routing_mode.value,
         gateway_model=aiprovider.gateway_model,
+        gateway_type=gateway_type_value,
         gateway_interface=gateway_interface_value,
         gateway_base_url=_sanitize_gateway_base_url(
             aiprovider.gateway_base_url,
             gateway_interface_value,
+            gateway_type_value,
         ),
         gateway_auth_header=aiprovider.gateway_auth_header,
         gateway_auth_secret_env=aiprovider.gateway_auth_secret_env,
@@ -430,10 +451,17 @@ async def update_aiprovider(
     skip_fields = {
         "api_key",
         "routing_mode",
+        "gateway_type",
         "gateway_interface",
         "gateway_auth_secret",
         "clear_gateway_auth_secret",
     }
+
+    next_gateway_type = (
+        update_data["gateway_type"].value
+        if update_data.get("gateway_type") is not None
+        else db_aiprovider.gateway_type
+    )
 
     for field, value in update_data.items():
         if field in skip_fields:
@@ -444,7 +472,7 @@ async def update_aiprovider(
                 if update_data.get("gateway_interface") is not None
                 else db_aiprovider.gateway_interface
             )
-            value = _sanitize_gateway_base_url(value, interface)
+            value = _sanitize_gateway_base_url(value, interface, next_gateway_type)
         setattr(db_aiprovider, field, value)
 
     if "api_key" in update_data and update_data["api_key"]:
@@ -453,6 +481,9 @@ async def update_aiprovider(
         db_aiprovider.routing_mode = update_data["routing_mode"].value
     if "gateway_interface" in update_data and update_data["gateway_interface"] is not None:
         db_aiprovider.gateway_interface = update_data["gateway_interface"].value
+    db_aiprovider.gateway_type = next_gateway_type
+    if next_gateway_type == "litellm_proxy":
+        db_aiprovider.gateway_interface = "inherit"
     if update_data.get("clear_gateway_auth_secret"):
         db_aiprovider.gateway_auth_secret = None
     elif update_data.get("gateway_auth_secret"):

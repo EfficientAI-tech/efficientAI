@@ -10,7 +10,8 @@ Completions) automatically.
 
 import re
 import time
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
+from urllib.parse import urlparse, urlunparse
 from uuid import UUID
 
 import litellm
@@ -20,6 +21,15 @@ from sqlalchemy.orm import Session
 from app.models.database import ModelProvider, AIProvider
 from app.services.credentials import resolve_ai_provider, resolve_integration
 from app.services.ai.llm_generation_config import build_litellm_kwargs
+from app.services.ai.openrouter_jev import (
+    call_openrouter_systemone,
+    call_systemone,
+    extract_jev_payload,
+    gateway_systemone_url,
+    is_openrouter_jev_model,
+    normalize_typesafe_model_id,
+    systemone_response_to_text,
+)
 from app.services.ai.llm_gateway import (
     apply_llm_gateway,
     resolve_effective_routing,
@@ -34,6 +44,33 @@ from app.services.ai.llm_gateway import (
 # rather than raising an error.
 litellm.drop_params = True
 
+_TOGETHER_TEV_DIRECT_CTX = CredentialRoutingContext(routing_mode="direct")
+
+
+def _requires_direct_together_tev(provider_value: str, llm_model: str | None) -> bool:
+    """Together Tev must hit Together's API with the org's Together key."""
+    if (provider_value or "").lower() != "together":
+        return False
+    return "tev" in (llm_model or "").lower()
+
+
+def canonical_litellm_model_id(model_str: str) -> str:
+    """Normalize provider prefixes on the final model string passed to LiteLLM."""
+    from app.services.ai.together_models import normalize_together_model_name
+
+    text = (model_str or "").strip()
+    if not text:
+        return text
+    lower = text.lower()
+    if lower.startswith("together/") or lower.startswith("together_ai/"):
+        prefix = "together_ai"
+        body = text.split("/", 1)[1]
+        return f"{prefix}/{normalize_together_model_name(body)}"
+    if lower.startswith("meta-llama/"):
+        return normalize_together_model_name(text)
+    return text
+
+
 # Map our internal ModelProvider enum to the prefix LiteLLM expects.
 _LITELLM_PROVIDER_PREFIX: Dict[str, str] = {
     "openai": "openai",
@@ -45,7 +82,10 @@ _LITELLM_PROVIDER_PREFIX: Dict[str, str] = {
     "groq": "groq",
     "xai": "xai",
     "fireworks": "fireworks_ai",
+    "together": "together_ai",
+    "typesafe": "typesafe",
     "sarvam": "sarvam",
+    "openrouter": "openrouter",
 }
 
 # Matches the model-name half of the Gemini 2.5 family: ``gemini-2.5-pro``,
@@ -259,6 +299,64 @@ def _build_azure_litellm_kwargs(
     )
 
 
+def _normalize_openai_compatible_api_base(raw: str) -> str:
+    """Normalize a user-supplied OpenAI-compatible base URL for LiteLLM."""
+    url = (raw or "").strip().rstrip("/")
+    if not url:
+        return url
+    for suffix in (
+        "/v1/chat/completions",
+        "/chat/completions",
+        "/v1/completions",
+        "/completions",
+    ):
+        if url.endswith(suffix):
+            url = url[: -len(suffix)].rstrip("/")
+            break
+    parsed = urlparse(url)
+    path = (parsed.path or "").rstrip("/")
+    if not path.endswith("/v1"):
+        if path in ("", "/"):
+            path = "/v1"
+        elif not path.endswith("/v1"):
+            path = f"{path}/v1"
+    return urlunparse(parsed._replace(path=path))
+
+
+def _openai_compatible_model_from_custom(model: str) -> str:
+    """Map ``custom/typesafe/jev-1.13.0`` to ``openai/typesafe/jev-1.13.0``."""
+    normalized = (model or "").strip()
+    if normalized.startswith("custom/"):
+        normalized = normalized[len("custom/") :]
+    if normalized.startswith("openai/"):
+        return normalized
+    return f"openai/{normalized}"
+
+
+def _apply_direct_custom_provider_kwargs(
+    call_kwargs: Dict[str, Any],
+    *,
+    ai_provider: AIProvider,
+) -> Dict[str, Any]:
+    """Apply ``endpoint_url`` for org Custom integrations (OpenAI-compatible)."""
+    if call_kwargs.get("api_base"):
+        return call_kwargs
+
+    endpoint = (getattr(ai_provider, "endpoint_url", None) or "").strip()
+    if not endpoint:
+        endpoint = (getattr(ai_provider, "gateway_base_url", None) or "").strip()
+    if not endpoint:
+        return call_kwargs
+
+    result = dict(call_kwargs)
+    result["api_base"] = _normalize_openai_compatible_api_base(endpoint)
+    model = str(result.get("model") or "")
+    if model.startswith("custom/") or "/" in model:
+        result["model"] = _openai_compatible_model_from_custom(model)
+        result["custom_llm_provider"] = "openai"
+    return result
+
+
 def _azure_deployment_name(catalog_model: str) -> str:
     """Map Azure catalog keys to LiteLLM deployment names.
 
@@ -271,6 +369,47 @@ def _azure_deployment_name(catalog_model: str) -> str:
     if catalog_model.startswith("azure-"):
         return catalog_model[len("azure-") :]
     return catalog_model
+
+
+def _record_generate_response_usage(
+    result: Dict[str, Any],
+    *,
+    llm_model: str,
+    organization_id: UUID,
+    raw_response: Any = None,
+    usage: Any = None,
+) -> None:
+    """Persist token usage for billing rollups (best-effort)."""
+    try:
+        from app.services.usage.context import (
+            LLMUsageProductSection,
+            ensure_usage_context,
+            reset_usage_context,
+        )
+        from app.services.usage.normalize import (
+            normalize_llm_usage,
+            usage_snapshot_is_billable,
+        )
+        from app.services.usage.llm_usage import record_llm_usage
+
+        usage_token = ensure_usage_context(
+            organization_id,
+            product_section=LLMUsageProductSection.OTHER,
+        )
+        try:
+            snapshot = normalize_llm_usage(raw_response=raw_response, usage=usage)
+            result["usage"]["cache_read_tokens"] = snapshot.cache_read_tokens
+            result["usage"]["cache_creation_tokens"] = snapshot.cache_creation_tokens
+            result["usage"]["reasoning_tokens"] = snapshot.reasoning_tokens
+            if usage_snapshot_is_billable(snapshot):
+                record_llm_usage(
+                    llm_model, snapshot, organization_id=organization_id
+                )
+        finally:
+            if usage_token is not None:
+                reset_usage_context(usage_token)
+    except Exception as exc:
+        logger.debug("llm usage record skipped: {}", exc)
 
 
 class LLMService:
@@ -362,8 +501,19 @@ class LLMService:
         prefix = _LITELLM_PROVIDER_PREFIX.get(provider_value.lower(), provider_value.lower())
         if provider_value.lower() == "azure":
             model = _azure_deployment_name(model)
-        if provider_value.lower() == "fireworks" and not model.startswith("accounts/"):
-            model = f"accounts/fireworks/models/{model}"
+        if provider_value.lower() == "fireworks":
+            from app.services.ai.fireworks_model_aliases import (
+                resolve_fireworks_catalog_model,
+            )
+
+            model = resolve_fireworks_catalog_model(model)
+            if not model.startswith("accounts/"):
+                model = f"accounts/fireworks/models/{model}"
+        if provider_value.lower() == "openrouter":
+            normalized = model.strip()
+            if normalized.lower().startswith("openrouter/"):
+                return normalized
+            return f"openrouter/{normalized}"
         return f"{prefix}/{model}"
 
     def generate_response(
@@ -380,8 +530,15 @@ class LLMService:
         override_llm_config: Optional[Dict[str, Any]] = None,
         task_defaults: Optional[Dict[str, Any]] = None,
         credential_id: Optional[UUID] = None,
+        completion_extra: Optional[Dict[str, Any]] = None,
+        on_text_delta: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
         """Generate a text response using the specified LLM via LiteLLM.
+
+        When ``on_text_delta`` is given, the completion is streamed and the
+        callback receives each visible text delta as it arrives (reasoning
+        deltas are not forwarded). The return value is the same as the
+        non-streaming call.
 
         ``credential_id`` lets callers pin a specific AIProvider row when an
         organization has multiple keys for the same provider; when omitted
@@ -421,15 +578,30 @@ class LLMService:
             )
 
         # --- call LiteLLM --------------------------------------------------
+        provider_value = (
+            llm_provider.value if hasattr(llm_provider, "value") else str(llm_provider)
+        ).lower()
         workload_model_str = self._litellm_model_name(llm_provider, llm_model)
         _, effective_routing = resolve_effective_routing(
             organization_id, db, credential_ctx
         )
-        model_str = resolve_litellm_model(
-            workload_model_str=workload_model_str,
-            gateway_active=effective_routing != "direct",
-            credential=credential_ctx,
-        )
+        tev_direct = _requires_direct_together_tev(provider_value, llm_model)
+        if tev_direct:
+            if effective_routing != "direct":
+                raise RuntimeError(
+                    "Together Tev models require direct provider routing and cannot be "
+                    "used when the LLM gateway is active for this credential. "
+                    "Switch the credential to direct routing or choose a non-Tev judge model."
+                )
+            model_str = canonical_litellm_model_id(workload_model_str)
+        else:
+            model_str = canonical_litellm_model_id(
+                resolve_litellm_model(
+                    workload_model_str=workload_model_str,
+                    gateway_active=effective_routing != "direct",
+                    credential=credential_ctx,
+                )
+            )
 
         call_kwargs: Dict[str, Any] = {
             "model": model_str,
@@ -467,9 +639,6 @@ class LLMService:
                 effective_max_tokens = 4096
             call_kwargs["max_tokens"] = effective_max_tokens
 
-        provider_value = (
-            llm_provider.value if hasattr(llm_provider, "value") else str(llm_provider)
-        ).lower()
         remaining_config = config
         if provider_value == "azure":
             azure_kwargs, remaining_config, azure_v1_routing = _build_azure_litellm_kwargs(
@@ -482,16 +651,104 @@ class LLMService:
         if remaining_config:
             call_kwargs.update(remaining_config)
 
-        call_kwargs = apply_llm_gateway(
-            call_kwargs,
-            organization_id=organization_id,
-            db=db,
-            model=model_str,
-            credential=credential_ctx,
-        )
+        if tev_direct:
+            # Tev uses Together's native chat API (see tev1 examples). LLM gateway
+            # proxy settings strip provider keys or substitute placeholders, which
+            # Together rejects with 401 invalid_api_key.
+            if ai_provider and not call_kwargs.get("api_key"):
+                tev_key = resolve_litellm_api_key(
+                    organization_id,
+                    db,
+                    ai_provider,
+                    credential=_TOGETHER_TEV_DIRECT_CTX,
+                )
+                if not tev_key:
+                    raise RuntimeError(
+                        "Together Tev requires a direct Together API key on this "
+                        "credential. Gateway-managed keys are not supported for Tev."
+                    )
+                call_kwargs["api_key"] = tev_key
+        else:
+            call_kwargs = apply_llm_gateway(
+                call_kwargs,
+                organization_id=organization_id,
+                db=db,
+                model=model_str,
+                credential=credential_ctx,
+            )
+
+        if provider_value == "custom" and ai_provider is not None:
+            call_kwargs = _apply_direct_custom_provider_kwargs(
+                call_kwargs,
+                ai_provider=ai_provider,
+            )
+            model_str = str(call_kwargs.get("model") or model_str)
+
+        if is_openrouter_jev_model(provider_value, llm_model):
+            jev_payload = extract_jev_payload(messages, completion_extra)
+            if jev_payload is None:
+                raise RuntimeError(
+                    f"OpenRouter Jev model {llm_model} requires structured "
+                    "state/questions; chat/completions is not supported."
+                )
+            state, questions = jev_payload
+            if effective_routing != "direct":
+                # Honour the org's gateway: use its TypeSafe pass-through with the
+                # gateway-routed auth (virtual/master key) and headers, never a
+                # direct OpenRouter call that would bypass it.
+                body = call_systemone(
+                    url=gateway_systemone_url(str(call_kwargs.get("api_base") or "")),
+                    api_key=str(call_kwargs.get("api_key") or ""),
+                    model_id=normalize_typesafe_model_id(llm_model),
+                    state=state,
+                    questions=questions,
+                    extra_headers=call_kwargs.get("extra_headers") or None,
+                )
+            else:
+                if not api_key:
+                    raise RuntimeError(
+                        "OpenRouter Jev requires a direct API key on this credential."
+                    )
+                body = call_openrouter_systemone(
+                    api_key=api_key,
+                    model=llm_model,
+                    state=state,
+                    questions=questions,
+                )
+            from app.services.usage.normalize import normalize_llm_usage
+
+            snapshot = normalize_llm_usage(raw_response=body)
+            result = {
+                "text": systemone_response_to_text(body),
+                "model": llm_model,
+                "finish_reason": "stop",
+                "truncated": False,
+                "usage": {
+                    "prompt_tokens": snapshot.prompt_tokens,
+                    "completion_tokens": snapshot.completion_tokens,
+                    "total_tokens": snapshot.total_tokens,
+                },
+                "raw_response": body,
+                "processing_time": time.time() - start_time,
+            }
+            _record_generate_response_usage(
+                result,
+                llm_model=llm_model,
+                organization_id=organization_id,
+                raw_response=body,
+            )
+            return result
+
+        if completion_extra:
+            for key, value in completion_extra.items():
+                if value is not None:
+                    call_kwargs[key] = value
 
         try:
-            response = litellm.completion(**call_kwargs)
+            if on_text_delta is not None:
+                response = _stream_completion(call_kwargs, messages, on_text_delta)
+            else:
+                response = litellm.completion(**call_kwargs)
         except Exception as e:
             logger.exception("[LLMService] LiteLLM call failed (%s)", model_str)
             raise RuntimeError(f"LLM generation failed for {model_str}: {e}") from e
@@ -528,37 +785,36 @@ class LLMService:
             "raw_response": response,
             "processing_time": time.time() - start_time,
         }
-        try:
-            from app.services.usage.context import (
-                LLMUsageProductSection,
-                ensure_usage_context,
-                reset_usage_context,
-            )
-            from app.services.usage.normalize import (
-                normalize_llm_usage,
-                usage_snapshot_is_billable,
-            )
-            from app.services.usage.llm_usage import record_llm_usage
-
-            usage_token = ensure_usage_context(
-                organization_id,
-                product_section=LLMUsageProductSection.OTHER,
-            )
-            try:
-                snapshot = normalize_llm_usage(raw_response=response)
-                result["usage"]["cache_read_tokens"] = snapshot.cache_read_tokens
-                result["usage"]["cache_creation_tokens"] = snapshot.cache_creation_tokens
-                result["usage"]["reasoning_tokens"] = snapshot.reasoning_tokens
-                if usage_snapshot_is_billable(snapshot):
-                    record_llm_usage(
-                        llm_model, snapshot, organization_id=organization_id
-                    )
-            finally:
-                if usage_token is not None:
-                    reset_usage_context(usage_token)
-        except Exception as exc:
-            logger.debug("llm usage record skipped: {}", exc)
+        _record_generate_response_usage(
+            result,
+            llm_model=llm_model,
+            organization_id=organization_id,
+            raw_response=response,
+        )
         return result
+
+
+def _stream_completion(
+    call_kwargs: Dict[str, Any],
+    messages: List[Dict[str, str]],
+    on_text_delta: Callable[[str], None],
+) -> Any:
+    """Run a streaming completion, forwarding text deltas, and rebuild the
+    full response so callers and usage accounting see the usual shape."""
+    stream = litellm.completion(
+        **call_kwargs,
+        stream=True,
+        stream_options={"include_usage": True},
+    )
+    chunks = []
+    for chunk in stream:
+        chunks.append(chunk)
+        choices = getattr(chunk, "choices", None) or []
+        delta = getattr(choices[0], "delta", None) if choices else None
+        content = getattr(delta, "content", None) if delta is not None else None
+        if content:
+            on_text_delta(content)
+    return litellm.stream_chunk_builder(chunks, messages=messages)
 
 
 # Singleton instance

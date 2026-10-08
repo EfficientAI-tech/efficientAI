@@ -107,6 +107,7 @@ const NO_TOP_K = new Set([
   'mistral',
   'meta',
   'together',
+  'typesafe',
   'perplexity',
   'aws',
 ])

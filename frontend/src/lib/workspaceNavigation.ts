@@ -5,6 +5,7 @@
 const WORKSPACE_DETAIL_REDIRECTS: Array<{ pattern: RegExp; parent: string }> = [
   { pattern: /^\/call-imports\/[^/]+\/evaluations\/[^/]+$/, parent: '/call-imports' },
   { pattern: /^\/call-imports\/[^/]+$/, parent: '/call-imports' },
+  { pattern: /^\/chat-imports$/, parent: '/chat-imports' },
   { pattern: /^\/evaluations\/[^/]+$/, parent: '/evaluations' },
   {
     pattern: /^\/results\/agents\/[^/]+\/suites\/[^/]+\/scenarios\/[^/]+$/,

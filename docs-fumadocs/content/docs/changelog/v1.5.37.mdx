@@ -1,0 +1,37 @@
+---
+title: v1.5.37
+description: Release notes for v1.5.37.
+---
+
+# v1.5.37
+
+Released Sep 26, 2026. [View on GitHub](https://github.com/EfficientAI-tech/efficientAI/releases/tag/v1.5.37).
+
+Primary pull request: [#135](https://github.com/EfficientAI-tech/efficientAI/pull/135) by [@MSami625](https://github.com/MSami625).
+
+## What changed
+
+- Tightened CSP: `style-src` without `'unsafe-inline'`; added `style-src-elem` and `style-src-attr` for React/HeroUI.
+- Production startup requires non-empty `TRUSTED_HOSTS` when `DEBUG=false`.
+- Omit `Server: uvicorn` (middleware, CLI, Docker `--no-server-header`).
+- Added `docs/operations/*` pentest runbooks; tests and config examples.
+
+## Why
+
+Addresses app-side pentest findings (CSP, host allowlist misconfig, server banner). ALB/WAF/TLS fixes remain in infra. HS256 session JWTs unchanged.
+
+## How to test
+
+```bash
+.venv/bin/pytest tests/test_core/test_security_headers_middleware.py \
+  tests/test_core/test_jwt_keys.py tests/test_core/test_public_url.py -q
+```
+
+1. `curl -si http://localhost:8000/health` — no `Server: uvicorn`.
+2. `curl -si http://localhost:8000/login | grep -i content-security-policy` — strict `style-src`; `style-src-elem` / `style-src-attr` present.
+3. Login, metrics, Agent Playground — no CSP errors in the console.
+
+## Contributors
+
+- [@MSami625](https://github.com/MSami625)
+

@@ -101,7 +101,7 @@ export default function PersonaTile({ persona, onClick, onDelete }: PersonaTileP
             {truncate(promptPreview, 140)}
           </p>
         ) : (
-          <p className="mt-3 text-sm text-gray-400 italic">No persona prompt configured</p>
+          <p className="mt-3 text-sm text-gray-400 italic">No prompt configured</p>
         )}
 
         {behavior ? (

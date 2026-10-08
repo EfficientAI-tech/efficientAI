@@ -37,7 +37,7 @@ def generate_evaluator_result_metric_clusters_task(
     max_llm_calls: int | None = None,
     evaluation_row_ids: list[str] | None = None,
 ):
-    from app.services.ai.llm_resolver import get_llm_provider_and_model
+    from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
 
     db = SessionLocal()
     job: EvaluatorResultClusterJob | None = None
@@ -58,7 +58,7 @@ def generate_evaluator_result_metric_clusters_task(
             )
             return
 
-        provider_enum, model_str = get_llm_provider_and_model(
+        provider_enum, model_str = get_llm_provider_and_model_for_request(
             job.organization_id,
             db,
             provider,

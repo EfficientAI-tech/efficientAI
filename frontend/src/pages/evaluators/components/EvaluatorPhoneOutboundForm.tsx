@@ -1,10 +1,9 @@
-import { useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { apiClient } from '../../../lib/api'
 import Button from '../../../components/Button'
 import { Phone } from 'lucide-react'
-import { MODERN_INPUT_CLASS, MODERN_SELECT_CLASS } from './evaluatorUi'
+import EvaluatorDialTargetFields from './EvaluatorDialTargetFields'
 
 interface Props {
   agentId: string
@@ -13,6 +12,8 @@ interface Props {
   scenarioId: string
   personaName?: string
   scenarioName?: string
+  toNumber: string
+  onToNumberChange: (value: string) => void
   disabled?: boolean
   showToast: (message: string, type: 'success' | 'error') => void
 }
@@ -24,18 +25,13 @@ export default function EvaluatorPhoneOutboundForm({
   scenarioId,
   personaName,
   scenarioName,
+  toNumber,
+  onToNumberChange,
   disabled = false,
   showToast,
 }: Props) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const [toNumber, setToNumber] = useState('')
-  const [fromNumber, setFromNumber] = useState('')
-
-  const { data: dialTargets = [] } = useQuery({
-    queryKey: ['telephony-dial-targets'],
-    queryFn: () => apiClient.listTelephonyDialTargets(),
-  })
 
   const callMutation = useMutation({
     mutationFn: () =>
@@ -45,7 +41,6 @@ export default function EvaluatorPhoneOutboundForm({
         persona_id: personaId,
         scenario_id: scenarioId,
         to_number: toNumber,
-        from_number: fromNumber || undefined,
       }),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })
@@ -79,37 +74,12 @@ export default function EvaluatorPhoneOutboundForm({
           )}
         </div>
       )}
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1.5">To number *</label>
-        <input
-          type="tel"
-          value={toNumber}
-          onChange={(e) => setToNumber(e.target.value)}
-          placeholder="+1234567890"
-          className={MODERN_INPUT_CLASS}
-        />
-        {dialTargets.length > 0 && (
-          <select
-            className={`${MODERN_SELECT_CLASS} mt-2`}
-            value=""
-            onChange={(e) => e.target.value && setToNumber(e.target.value)}
-          >
-            <option value="">Contacts…</option>
-            {dialTargets.map((t: any) => (
-              <option key={t.id} value={t.phone_number}>{t.label || t.phone_number}</option>
-            ))}
-          </select>
-        )}
-      </div>
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1.5">From number (optional)</label>
-        <input
-          type="tel"
-          value={fromNumber}
-          onChange={(e) => setFromNumber(e.target.value)}
-          className={MODERN_INPUT_CLASS}
-        />
-      </div>
+      <EvaluatorDialTargetFields
+        label="To number *"
+        value={toNumber}
+        onChange={onToNumberChange}
+        helperText="Also used when you queue suite runs from the header."
+      />
       <Button
         variant="primary"
         onClick={() => callMutation.mutate()}

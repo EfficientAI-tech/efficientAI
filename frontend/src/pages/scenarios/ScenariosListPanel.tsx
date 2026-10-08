@@ -1,12 +1,10 @@
-import { Edit, FileText, Plus, Trash2 } from 'lucide-react'
-import Button from '../../components/Button'
+import { Edit, FileText, Trash2 } from 'lucide-react'
 import { markdownPreview } from './scenarioMarkdown'
 import type { Scenario } from './scenarioTypes'
 
 interface ScenariosListPanelProps {
   agentLabel: string
   scenarios: Scenario[]
-  onCreateScenario: () => void
   onEditScenario: (scenario: Scenario) => void
   onDeleteScenario: (scenario: Scenario) => void
   onViewScenario?: (scenario: Scenario) => void
@@ -15,14 +13,13 @@ interface ScenariosListPanelProps {
 export default function ScenariosListPanel({
   agentLabel,
   scenarios,
-  onCreateScenario,
   onEditScenario,
   onDeleteScenario,
   onViewScenario,
 }: ScenariosListPanelProps) {
   return (
     <section className="flex-1 min-w-0 rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden flex flex-col max-h-[70vh] lg:max-h-[calc(100vh-11rem)]">
-      <div className="px-5 py-4 border-b border-gray-100 flex flex-wrap items-center justify-between gap-3">
+      <div className="px-5 py-4 border-b border-gray-100">
         <div className="min-w-0">
           <h2 className="text-lg font-semibold text-gray-900 truncate">{agentLabel}</h2>
           <p className="text-sm text-gray-500 mt-0.5">
@@ -31,9 +28,6 @@ export default function ScenariosListPanel({
               : `${scenarios.length} scenario${scenarios.length !== 1 ? 's' : ''}`}
           </p>
         </div>
-        <Button variant="primary" size="sm" onClick={onCreateScenario} leftIcon={<Plus className="h-4 w-4" />}>
-          Create Scenario
-        </Button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4">
@@ -41,12 +35,9 @@ export default function ScenariosListPanel({
           <div className="flex flex-col items-center justify-center h-full min-h-[240px] text-center px-4">
             <FileText className="h-10 w-10 text-gray-300 mb-3" />
             <h3 className="text-sm font-medium text-gray-900 mb-1">No scenarios yet</h3>
-            <p className="text-sm text-gray-500 mb-4 max-w-sm">
-              Create a scenario for {agentLabel} or generate one from the agent prompt.
+            <p className="text-sm text-gray-500 max-w-sm">
+              Use <span className="font-medium text-gray-700">Create Scenario</span> at the top of the page.
             </p>
-            <Button variant="outline" size="sm" onClick={onCreateScenario} leftIcon={<Plus className="h-4 w-4" />}>
-              Create Scenario
-            </Button>
           </div>
         ) : (
           <div className="space-y-3">

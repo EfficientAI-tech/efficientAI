@@ -34,19 +34,21 @@ def list_integration_voice_agents(
     *,
     refresh: bool = False,
     search: Optional[str] = None,
+    agent_kind: str = "voice",
 ) -> VoiceAgentListResult:
     platform_val = (
         integration.platform.value
         if hasattr(integration.platform, "value")
         else str(integration.platform)
     )
-    key = _cache_key(str(integration.id), search)
+    kind = (agent_kind or "voice").strip().lower()
+    key = _cache_key(f"{integration.id}:{kind}", search)
 
     if not refresh:
         with _cache_lock:
             cached = _cache.get(key)
             if cached and (time.time() - cached[0]) < CACHE_TTL_SECONDS:
-                return VoiceAgentListResult(**cached[1], cached=True)
+                return VoiceAgentListResult(**{**cached[1], "cached": True})
 
     provider = _build_voice_provider(integration)
     truncated = False
@@ -54,11 +56,34 @@ def list_integration_voice_agents(
     list_supported = True
 
     try:
-        agents = provider.list_agents(search=search)
+        if kind == "chat":
+            if platform_val.lower() == "retell":
+                list_chat = getattr(provider, "list_chat_agents", None)
+                if not callable(list_chat):
+                    raise NotImplementedError("Retell chat agent listing is unavailable")
+                agents = list_chat(search=search)
+                if not agents:
+                    message = (
+                        "No chat-channel agents returned from Retell. Create a chat agent in Retell "
+                        "or enter a chat agent ID manually (not a voice-only agent ID)."
+                    )
+            else:
+                agents = provider.list_agents(search=search)
+                message = (
+                    "This platform uses the same agent for voice and chat. "
+                    "Pick the agent that handles your chat channel."
+                    if agents
+                    else None
+                )
+        else:
+            agents = provider.list_agents(search=search)
         if platform_val.lower() == "elevenlabs":
             truncated = bool(getattr(provider, "last_list_truncated", False))
             if truncated:
-                message = "Showing the first 1,000 ElevenLabs agents. Use search to narrow results."
+                trunc_note = (
+                    "Showing the first 1,000 ElevenLabs agents. Use search to narrow results."
+                )
+                message = trunc_note if not message else f"{message} {trunc_note}"
     except NotImplementedError:
         agents = []
         list_supported = False

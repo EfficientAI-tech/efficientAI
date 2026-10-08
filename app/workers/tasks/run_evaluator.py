@@ -64,8 +64,24 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
         has_voice_ai_integration = (
             agent.voice_ai_integration_id is not None and agent.voice_ai_agent_id is not None
         )
+        from app.services.agents.chat_llm_config import (
+            agent_has_chat_simulation_config,
+            should_use_llm_text_simulation,
+        )
 
-        if has_voice_bundle and has_voice_ai_integration:
+        call_medium = (agent.call_medium or "phone_call").lower()
+        use_llm_text_simulation = should_use_llm_text_simulation(
+            agent,
+            has_voice_bundle=has_voice_bundle,
+            has_voice_ai_integration=has_voice_ai_integration,
+        )
+
+        if (
+            call_medium != "chat"
+            and has_voice_bundle
+            and has_voice_ai_integration
+            and not use_llm_text_simulation
+        ):
             try:
                 result.status = EvaluatorResultStatus.CALL_INITIATING.value
                 result.call_event = "task_started"
@@ -109,13 +125,45 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
                 result.error_message = str(bridge_error)
                 result.call_event = "bridge_error"
                 db.commit()
-                raise
+                from app.services.testing.evaluator_run_errors import evaluator_error_is_retryable
 
-        elif has_voice_bundle:
+                if evaluator_error_is_retryable(bridge_error):
+                    raise
+                return {
+                    "evaluator_id": evaluator_id,
+                    "result_id": evaluator_result_id,
+                    "status": "failed",
+                    "error": str(bridge_error),
+                }
+
+        elif use_llm_text_simulation:
             from app.models.database import Persona, Scenario
+            from app.models.enums import ChatEvalModeEnum
+            from app.services.agents.chat_connection import validate_chat_connection_for_agent
+            from app.services.agents.chat_production_leg import normalized_chat_eval_mode
             from app.services.testing.llm_to_llm_evaluator_simulation import (
                 run_llm_to_llm_evaluator_simulation,
             )
+
+            if call_medium == "chat":
+                chat_config_err = validate_chat_connection_for_agent(agent)
+                if chat_config_err:
+                    result.status = EvaluatorResultStatus.FAILED.value
+                    result.error_message = chat_config_err
+                    result.call_event = "chat_configuration_error"
+                    db.commit()
+                    return {"error": chat_config_err}
+
+            if call_medium == "chat" and normalized_chat_eval_mode(agent) == ChatEvalModeEnum.POST_PROD_IMPORT.value:
+                result.status = EvaluatorResultStatus.FAILED.value
+                result.error_message = (
+                    "This chat agent is set to post-prod import evaluation. "
+                    "Upload production transcripts under Monitoring → Call imports "
+                    "(transcript column, no recording required), then run an import evaluation."
+                )
+                result.call_event = "post_prod_import_only"
+                db.commit()
+                return {"error": "post_prod_import_only"}
 
             persona = (
                 db.query(Persona).filter(Persona.id == evaluator.persona_id).first()
@@ -134,8 +182,12 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
                 return {"error": "Missing persona or scenario"}
 
             try:
-                result.status = EvaluatorResultStatus.CALL_INITIATING.value
-                result.call_event = "llm_simulation_started"
+                result.status = EvaluatorResultStatus.EVALUATING.value
+                result.call_event = (
+                    "chat_simulation_started"
+                    if call_medium == "chat"
+                    else "llm_text_simulation_started"
+                )
                 db.commit()
 
                 run_llm_to_llm_evaluator_simulation(
@@ -164,29 +216,80 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
                     "provider_platform": "internal",
                 }
             except Exception as sim_error:
-                logger.error(
-                    f"[RunEvaluator {evaluator.evaluator_id}] LLM simulation error: {sim_error}",
-                    exc_info=True,
+                from app.services.testing.evaluator_simulation_errors import (
+                    ProductionChatLegError,
+                    TestAgentLlmLegError,
                 )
+
+                if isinstance(sim_error, ProductionChatLegError):
+                    logger.error(
+                        "[RunEvaluator {}] Production chat leg error ({}): {}",
+                        evaluator.evaluator_id,
+                        sim_error.leg,
+                        sim_error,
+                        exc_info=True,
+                    )
+                    result.call_event = "production_chat_leg_error"
+                elif isinstance(sim_error, TestAgentLlmLegError):
+                    logger.error(
+                        "[RunEvaluator {}] Test agent LLM error: {}",
+                        evaluator.evaluator_id,
+                        sim_error,
+                        exc_info=True,
+                    )
+                    result.call_event = "test_agent_llm_error"
+                else:
+                    logger.error(
+                        "[RunEvaluator {}] LLM simulation error: {}",
+                        evaluator.evaluator_id,
+                        sim_error,
+                        exc_info=True,
+                    )
+                    result.call_event = "llm_simulation_error"
                 result.status = EvaluatorResultStatus.FAILED.value
                 result.error_message = str(sim_error)
-                result.call_event = "llm_simulation_error"
                 db.commit()
-                raise
+                from app.services.testing.evaluator_run_errors import evaluator_error_is_retryable
+
+                if evaluator_error_is_retryable(sim_error):
+                    raise
+                return {
+                    "evaluator_id": evaluator_id,
+                    "result_id": evaluator_result_id,
+                    "status": "failed",
+                    "error": str(sim_error),
+                }
 
         else:
             logger.error(f"[RunEvaluator {evaluator.evaluator_id}] Agent missing required configuration")
             result.status = EvaluatorResultStatus.FAILED.value
+            sim_ok = agent_has_chat_simulation_config(agent)
+            chat_detail = ""
+            if call_medium == "chat":
+                from app.services.agents.chat_connection import validate_chat_connection_for_agent
+
+                err = validate_chat_connection_for_agent(agent)
+                if err:
+                    chat_detail = f" {err}"
             result.error_message = (
-                f"Agent missing required configuration: voice_bundle={has_voice_bundle}, "
-                f"voice_ai_integration={has_voice_ai_integration}"
+                "Agent missing required configuration for this run. "
+                f"call_medium={call_medium}, chat_simulation_ready={sim_ok}, "
+                f"voice_bundle={has_voice_bundle}, voice_ai_integration={has_voice_ai_integration}."
+                f"{chat_detail} "
+                "For LLM chat agents set Chat Agent LLM; for platform chat set integration and agent ID "
+                "and production prompt."
             )
             result.call_event = "configuration_error"
             db.commit()
             return {"error": "Agent does not have required configuration for bridging"}
 
     except Exception as exc:
-        logger.error(f"[RunEvaluator {evaluator_id}] Task failed: {exc}", exc_info=True)
+        logger.error(
+            "[RunEvaluator {}] Task failed: {}",
+            evaluator_id,
+            exc,
+            exc_info=True,
+        )
         try:
             result = db.query(EvaluatorResult).filter(
                 EvaluatorResult.id == UUID(evaluator_result_id)
@@ -197,6 +300,10 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
                 db.commit()
         except Exception:
             pass
+        from app.services.testing.evaluator_run_errors import evaluator_error_is_retryable
+
+        if not evaluator_error_is_retryable(exc):
+            raise
         raise self.retry(exc=exc, countdown=60)
     finally:
         db.close()

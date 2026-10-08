@@ -2,9 +2,8 @@
 
 The original copy lives at the top of ``app/api/v1/routes/prompt_partials.py``.
 A second consumer was added for the call-import evaluation insights
-endpoint, so the helper now lives here and both routes import from this
-module to keep the "auto-detect first available provider" + "fallback
-to a sensible default model" behavior identical across surfaces.
+endpoint, so the helper now lives here. Callers must pass an explicit
+provider and/or credential_id and model (unless gateway_model pins the model).
 """
 
 from typing import Optional, Tuple
@@ -22,7 +21,18 @@ from app.services.ai.llm_gateway import (
 )
 from app.services.credentials import resolve_ai_provider, resolve_integration
 from app.services.ai.model_config_service import model_config_service
-from app.services.usage.enabled_models import filter_models_by_credential
+from app.services.usage.enabled_models import (
+    effective_enabled_models_for_credential,
+    filter_models_by_credential,
+)
+from app.services.ai.together_models import (
+    TOGETHER_SERVERLESS_DEFAULT_MODEL,
+    normalize_together_model_name,
+)
+from app.services.voice_agent.llm_voice_providers import (
+    LLM_VOICE_PROVIDER_KEYS,
+    default_llm_model,
+)
 
 
 _DEFAULT_MODELS: dict[ModelProvider, str] = {
@@ -31,6 +41,10 @@ _DEFAULT_MODELS: dict[ModelProvider, str] = {
     ModelProvider.GOOGLE: "gemini-2.5-flash",
     ModelProvider.SARVAM: "sarvam-30b",
     ModelProvider.FIREWORKS: "gpt-oss-20b",
+    ModelProvider.TOGETHER: TOGETHER_SERVERLESS_DEFAULT_MODEL,
+    ModelProvider.META: TOGETHER_SERVERLESS_DEFAULT_MODEL,
+    ModelProvider.OPENROUTER: "openai/gpt-4o-2024-11-20",
+    ModelProvider.XAI: "grok-3-beta",
 }
 
 _AUTO_DETECT_PRIORITY = (
@@ -60,6 +74,11 @@ def _default_model_for(
     provider: ModelProvider,
     ai_prov: Optional[AIProvider] = None,
 ) -> str:
+    if ai_prov is not None:
+        allowlist = effective_enabled_models_for_credential(ai_prov)
+        if allowlist:
+            return _maybe_normalize_together_model(provider, allowlist[0])
+
     preset = _DEFAULT_MODELS.get(provider)
     if preset:
         return preset
@@ -69,6 +88,9 @@ def _default_model_for(
         catalog = filter_models_by_credential(ai_prov, catalog)
     if catalog:
         return catalog[0]
+
+    if provider.value in LLM_VOICE_PROVIDER_KEYS:
+        return default_llm_model(provider.value)
 
     if provider == ModelProvider.OPENAI:
         return "gpt-5-mini"
@@ -86,20 +108,32 @@ def _provider_enum_from_integration_platform(platform: str) -> Optional[ModelPro
     return _INTEGRATION_LLM_PLATFORMS.get((platform or "").lower())
 
 
+def _maybe_normalize_together_model(provider: ModelProvider, model: str) -> str:
+    if provider in (ModelProvider.TOGETHER, ModelProvider.META):
+        return normalize_together_model_name(model)
+    return model
+
+
 def _resolved_model_for_row(
     organization_id: UUID,
     db: Session,
     ai_prov: AIProvider,
     explicit_model: Optional[str],
 ) -> str:
+    provider_enum = _provider_enum(ai_prov.provider)
     if explicit_model:
-        return explicit_model
+        return _maybe_normalize_together_model(provider_enum, explicit_model)
     ctx = routing_context_from_ai_provider(ai_prov)
     _, effective = resolve_effective_routing(organization_id, db, ctx)
     if effective != "direct" and ctx.gateway_model:
-        return ctx.gateway_model
-    provider_enum = _provider_enum(ai_prov.provider)
-    return _default_model_for(provider_enum, ai_prov)
+        return _maybe_normalize_together_model(provider_enum, ctx.gateway_model)
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "LLM model is required. Select a model from the enabled list for this credential, "
+            "or use a gateway credential with a pinned gateway model."
+        ),
+    )
 
 
 def _resolved_model_for_integration(
@@ -108,7 +142,13 @@ def _resolved_model_for_integration(
 ) -> str:
     if explicit_model:
         return explicit_model
-    return _default_model_for(provider_enum)
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"LLM model is required for {provider_enum.value}. "
+            "Select a model explicitly in the UI."
+        ),
+    )
 
 
 def _resolve_integration_llm_provider(
@@ -161,9 +201,9 @@ def get_llm_provider_and_model(
       LLM providers such as Sarvam.
     * When ``provider`` is supplied we resolve the matching active
       ``AIProvider`` row, falling back to Integration when configured.
-    * When both are omitted we prefer the org-wide default credential,
-      then OpenAI -> Anthropic -> Google, then Sarvam Integration, then
-      any other active AIProvider row.
+    * When both provider and credential_id are omitted, returns 400 — callers
+      must pass an explicit provider and/or credential_id (and model when
+      not pinned by gateway_model).
     * Raises ``HTTPException(400)`` with an actionable message when no
       LLM credential has been configured.
 
@@ -253,62 +293,72 @@ def get_llm_provider_and_model(
             ),
         )
 
-    default_row = (
-        db.query(AIProvider)
-        .filter(
-            AIProvider.organization_id == organization_id,
-            AIProvider.is_active == True,  # noqa: E712 (SQLAlchemy boolean)
-            AIProvider.is_default == True,  # noqa: E712
-        )
-        .order_by(desc(AIProvider.updated_at))
-        .first()
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "LLM provider and model are required. Select a credential and model "
+            "in the UI (or pass provider, model, and optional credential_id)."
+        ),
     )
-    if default_row:
-        provider_enum = _provider_enum(default_row.provider)
-        model_str = _resolved_model_for_row(
-            organization_id, db, default_row, explicit_model
-        )
-        return provider_enum, model_str
 
-    for prov in _AUTO_DETECT_PRIORITY:
-        ai_prov = resolve_ai_provider(prov.value, db, organization_id)
-        if ai_prov:
-            model_str = _resolved_model_for_row(
-                organization_id, db, ai_prov, explicit_model
-            )
-            return prov, model_str
 
-    sarvam_match = _resolve_integration_llm_provider(
-        organization_id,
-        db,
-        platform=IntegrationPlatform.SARVAM.value,
-    )
-    if sarvam_match:
-        provider_enum, _integration = sarvam_match
-        return provider_enum, _resolved_model_for_integration(
-            provider_enum, explicit_model
-        )
-
-    fallback = (
+def _default_org_llm_credential(db: Session, organization_id: UUID) -> Optional[AIProvider]:
+    return (
         db.query(AIProvider)
         .filter(
             AIProvider.organization_id == organization_id,
             AIProvider.is_active == True,  # noqa: E712
         )
-        .order_by(desc(AIProvider.updated_at))
+        .order_by(desc(AIProvider.is_default), AIProvider.created_at.asc())
         .first()
     )
-    if fallback:
-        provider_enum = _provider_enum(fallback.provider)
-        model_str = _resolved_model_for_row(
-            organization_id, db, fallback, explicit_model
-        )
-        return provider_enum, model_str
 
-    raise HTTPException(
-        status_code=400,
-        detail=(
-            "No active LLM credential configured. Add an AI provider "
-            "or voice-platform integration in settings."
-        ),
+
+def _default_model_for_org_credential(
+    organization_id: UUID,
+    db: Session,
+    ai_prov: AIProvider,
+    provider_enum: ModelProvider,
+) -> str:
+    if (ai_prov.routing_mode or "").lower() == "gateway" and ai_prov.gateway_model:
+        return _maybe_normalize_together_model(provider_enum, ai_prov.gateway_model)
+    enabled = effective_enabled_models_for_credential(ai_prov) or ai_prov.enabled_models
+    if enabled:
+        return _maybe_normalize_together_model(provider_enum, enabled[0])
+    if provider_enum == ModelProvider.OPENAI:
+        return "gpt-4o-mini"
+    return _default_model_for(provider_enum, ai_prov)
+
+
+def get_llm_provider_and_model_for_request(
+    organization_id: UUID,
+    db: Session,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    credential_id: Optional[UUID] = None,
+) -> Tuple[ModelProvider, str]:
+    """Resolve LLM settings from an API/worker request body (org default when omitted)."""
+    if (provider or "").strip() or (model or "").strip() or credential_id is not None:
+        return get_llm_provider_and_model(
+            organization_id, db, provider, model, credential_id
+        )
+    ai_prov = _default_org_llm_credential(db, organization_id)
+    if ai_prov is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No AI provider configured for this organization. "
+                "Add one in Settings → AI Providers."
+            ),
+        )
+    provider_enum = _provider_enum(ai_prov.provider)
+    model_str = _default_model_for_org_credential(
+        organization_id, db, ai_prov, provider_enum
+    )
+    return get_llm_provider_and_model(
+        organization_id,
+        db,
+        ai_prov.provider,
+        model_str,
+        credential_id=ai_prov.id,
     )
