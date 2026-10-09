@@ -24,7 +24,10 @@ from app.models.enums import (
     AlertNotifyFrequency,
     EvaluatorResultStatus,
 )
-from app.services.alerts.alert_notification_service import alert_notification_service
+from app.services.alerts.alert_notification_service import (
+    alert_notification_service,
+    notification_channel_key,
+)
 from app.services.alerts.production_metrics import (
     compute_production_calls_metric,
     compute_production_traces_metric,
@@ -1070,23 +1073,35 @@ class AlertEvaluationService:
         elif triggered_at is None:
             triggered_at = datetime.now(timezone.utc)
 
+        ctx = dict(history.context_data or {})
+        already = set(ctx.get("notified_channel_keys") or [])
         notification_results = alert_notification_service.send_all_notifications(
             alert=alert,
             triggered_value=triggered_value,
             triggered_at=triggered_at,
             agent_names=agent_names,
             history_id=str(history.id),
+            skip_channel_keys=already,
         )
 
-        any_success = any(r.get("success") for r in notification_results)
-        history.notified_at = datetime.now(timezone.utc) if any_success else None
+        succeeded = set(already)
+        pending_failure = False
+        for result in notification_results:
+            if result.get("success"):
+                succeeded.add(notification_channel_key(result))
+            else:
+                pending_failure = True
+        ctx["notified_channel_keys"] = sorted(succeeded)
+        history.context_data = ctx
+        all_delivered = bool(notification_results) and not pending_failure
+        history.notified_at = datetime.now(timezone.utc) if all_delivered else None
         history.notification_details = {
             "results": notification_results,
             "total_sent": len(notification_results),
             "successful": sum(1 for r in notification_results if r.get("success")),
             "failed": sum(1 for r in notification_results if not r.get("success")),
         }
-        if any_success and history.status == AlertHistoryStatus.TRIGGERED.value:
+        if all_delivered and history.status == AlertHistoryStatus.TRIGGERED.value:
             history.status = AlertHistoryStatus.NOTIFIED.value
         db.commit()
         return notification_results

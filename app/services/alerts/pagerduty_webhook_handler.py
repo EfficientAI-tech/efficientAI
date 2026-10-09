@@ -138,14 +138,16 @@ def apply_pagerduty_incident_event(
     if event_type == "incident.acknowledged":
         if history.status == AlertHistoryStatus.RESOLVED.value:
             return True, "already_resolved"
+        first_ack = history.status in (
+            AlertHistoryStatus.TRIGGERED.value,
+            AlertHistoryStatus.NOTIFIED.value,
+        )
         if history.acknowledged_at is None:
             history.acknowledged_at = now
             history.acknowledged_by = actor
-        if history.status in (
-            AlertHistoryStatus.TRIGGERED.value,
-            AlertHistoryStatus.NOTIFIED.value,
-        ):
+        if first_ack:
             history.status = AlertHistoryStatus.ACKNOWLEDGED.value
+            _fanout_other_channels(db, history, phase="acknowledge", actor=actor)
         db.commit()
         return True, "acknowledged"
 
@@ -167,7 +169,43 @@ def apply_pagerduty_incident_event(
         alert = db.query(Alert).filter(Alert.id == history.alert_id).first()
         if alert:
             alert.suppress_reopen_until_ok = True
+        _fanout_other_channels(db, history, phase="resolve", actor=actor)
         db.commit()
         return True, "resolved"
 
     return True, "ignored_event"
+
+
+def _fanout_other_channels(
+    db: Session,
+    history: AlertHistory,
+    *,
+    phase: str,
+    actor: Optional[str],
+) -> None:
+    """Tell Slack and email about a PagerDuty ack or resolve. Do not echo the action back."""
+    from app.services.alerts.alert_notification_service import alert_notification_service
+
+    alert = db.query(Alert).filter(Alert.id == history.alert_id).first()
+    if not alert:
+        return
+    if phase == "acknowledge":
+        results = alert_notification_service.send_acknowledge_notifications(
+            alert,
+            history_id=str(history.id),
+            acknowledged_by=actor,
+            include_pagerduty=False,
+        )
+    else:
+        results = alert_notification_service.send_recovery_notifications(
+            alert,
+            history_id=str(history.id),
+            include_pagerduty=False,
+        )
+    if not results:
+        return
+    details = dict(history.notification_details or {})
+    lifecycle = dict(details.get("lifecycle") or {})
+    lifecycle[phase] = results
+    details["lifecycle"] = lifecycle
+    history.notification_details = details

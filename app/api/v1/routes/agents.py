@@ -1583,11 +1583,15 @@ async def simulate_chat_messaging_meta_whatsapp_inbound(
     db: Session = Depends(get_db),
 ):
     """Complete a waiting live-eval turn when Meta webhooks are not reaching your API (local dev)."""
+    from app.config import settings
     from app.models.enums import ChatConnectionTypeEnum
     from app.services.agents.chat_connection import normalized_chat_connection_type
     from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
     from app.services.agents.chat_messaging_turn_wait import complete_messaging_inbound_routed
     from app.services.agents.messaging_channel_chat import _resolve_messaging_meta_whatsapp_context
+
+    if not settings.DEBUG:
+        raise HTTPException(status_code=404, detail="Not found")
 
     db_agent = _get_agent_for_org_workspace(db, agent_id, organization_id, workspace_id)
     conn = normalized_chat_connection_type(db_agent)
@@ -1615,6 +1619,7 @@ async def simulate_chat_messaging_meta_whatsapp_inbound(
         line_to=phone_id,
         reply_from=recipient,
         body=text,
+        expected_agent_id=str(db_agent.id),
     )
     if not ok:
         raise HTTPException(

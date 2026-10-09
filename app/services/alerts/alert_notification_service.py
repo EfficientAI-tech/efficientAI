@@ -13,6 +13,17 @@ import httpx
 SMTP_TIMEOUT_SECONDS = 30
 
 
+def notification_channel_key(result: Dict[str, Any]) -> str:
+    channel = str(result.get("channel") or "")
+    target = str(
+        result.get("to_email")
+        or result.get("webhook_url")
+        or result.get("routing_key")
+        or ""
+    )
+    return f"{channel}:{target}"
+
+
 class AlertNotificationService:
     """Service for sending alert notifications via Slack webhooks and email."""
 
@@ -511,6 +522,7 @@ class AlertNotificationService:
         *,
         history_id: Optional[str] = None,
         acknowledged_by: Optional[str] = None,
+        include_pagerduty: bool = True,
     ) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
         summary = f"👀 Acknowledged: {alert.name}"
@@ -546,7 +558,11 @@ class AlertNotificationService:
                         )
                     )
 
-        routing_keys = getattr(alert, "notify_pagerduty_routing_keys", None) or []
+        routing_keys = (
+            getattr(alert, "notify_pagerduty_routing_keys", None) or []
+            if include_pagerduty
+            else []
+        )
         for routing_key in routing_keys:
             if routing_key and str(routing_key).strip():
                 results.append(
@@ -566,6 +582,7 @@ class AlertNotificationService:
         *,
         history_id: Optional[str] = None,
         metric_value: Optional[float] = None,
+        include_pagerduty: bool = True,
     ) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
         summary = f"✅ Recovered: {alert.name}"
@@ -601,7 +618,11 @@ class AlertNotificationService:
                         )
                     )
 
-        routing_keys = getattr(alert, "notify_pagerduty_routing_keys", None) or []
+        routing_keys = (
+            getattr(alert, "notify_pagerduty_routing_keys", None) or []
+            if include_pagerduty
+            else []
+        )
         for routing_key in routing_keys:
             if routing_key and str(routing_key).strip():
                 results.append(
@@ -625,11 +646,13 @@ class AlertNotificationService:
         triggered_at: datetime,
         agent_names: Optional[List[str]] = None,
         history_id: Optional[str] = None,
+        skip_channel_keys: Optional[set] = None,
     ) -> List[Dict[str, Any]]:
         """
         Send notifications to all configured channels for an alert.
         """
         results = []
+        already = skip_channel_keys or set()
 
         common_params = dict(
             alert_name=alert.name,
@@ -650,6 +673,13 @@ class AlertNotificationService:
         if getattr(alert, "notify_webhooks", None):
             for webhook_url in alert.notify_webhooks:
                 if webhook_url and webhook_url.strip():
+                    masked = self._mask_webhook_url(webhook_url.strip())
+                    key = f"slack_webhook:{masked}"
+                    if key in already:
+                        results.append(
+                            {"success": True, "channel": "slack_webhook", "webhook_url": masked}
+                        )
+                        continue
                     result = self.send_slack_notification(
                         webhook_url=webhook_url.strip(),
                         **common_params,
@@ -660,6 +690,16 @@ class AlertNotificationService:
         if getattr(alert, "notify_emails", None):
             for email_addr in alert.notify_emails:
                 if email_addr and email_addr.strip():
+                    key = f"email:{email_addr.strip()}"
+                    if key in already:
+                        results.append(
+                            {
+                                "success": True,
+                                "channel": "email",
+                                "to_email": email_addr.strip(),
+                            }
+                        )
+                        continue
                     result = self.send_email_notification(
                         to_email=email_addr.strip(),
                         **common_params,
@@ -669,8 +709,15 @@ class AlertNotificationService:
         routing_keys = getattr(alert, "notify_pagerduty_routing_keys", None) or []
         for routing_key in routing_keys:
             if routing_key and str(routing_key).strip():
+                trimmed = str(routing_key).strip()
+                key = f"pagerduty:{trimmed[:8]}..."
+                if key in already:
+                    results.append(
+                        {"success": True, "channel": "pagerduty", "routing_key": trimmed[:8] + "..."}
+                    )
+                    continue
                 result = self.send_pagerduty_notification(
-                    routing_key=str(routing_key).strip(),
+                    routing_key=trimmed,
                     **common_params,
                 )
                 results.append(result)

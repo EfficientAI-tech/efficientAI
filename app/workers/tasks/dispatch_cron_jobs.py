@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from loguru import logger
 
 from app.database import SessionLocal
@@ -33,6 +35,7 @@ def dispatch_cron_jobs_task() -> dict:
                 celery_id = meta.get("celery_task_id")
                 if task_name == "unknown" or not celery_id:
                     job.last_dispatch_status = "failed"
+                    job.last_dispatch_at = datetime.now(timezone.utc)
                     job.last_dispatch_error = (
                         meta.get("error")
                         or f"enqueue failed for job_type={job.job_type}"
@@ -50,6 +53,7 @@ def dispatch_cron_jobs_task() -> dict:
                     continue
 
                 job.last_dispatch_status = "enqueued"
+                job.last_dispatch_at = datetime.now(timezone.utc)
                 job.last_dispatch_celery_task_id = celery_id
                 job.last_dispatch_error = None
                 advance_cron_job(db, job)
@@ -67,6 +71,7 @@ def dispatch_cron_jobs_task() -> dict:
                 logger.warning("cron dispatch failed for job {}: {}", job.id, exc)
                 try:
                     job.last_dispatch_status = "failed"
+                    job.last_dispatch_at = datetime.now(timezone.utc)
                     job.last_dispatch_error = str(exc)
                     db.commit()
                 except Exception:

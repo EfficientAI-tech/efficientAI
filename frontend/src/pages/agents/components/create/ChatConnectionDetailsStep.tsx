@@ -55,6 +55,7 @@ export type ChatConnectionConfigForm = {
   metaWhatsappAccessToken: string
   metaWhatsappOpeningTemplate: string
   metaWhatsappTemplateLanguage: string
+  metaWhatsappProdMode: string
   twilioAccountSid: string
   twilioAuthToken: string
   twilioFrom: string
@@ -81,6 +82,7 @@ export const DEFAULT_CHAT_CONNECTION_CONFIG: ChatConnectionConfigForm = {
   metaWhatsappAccessToken: '',
   metaWhatsappOpeningTemplate: '',
   metaWhatsappTemplateLanguage: 'en_US',
+  metaWhatsappProdMode: '',
   twilioAccountSid: '',
   twilioAuthToken: '',
   twilioFrom: '',

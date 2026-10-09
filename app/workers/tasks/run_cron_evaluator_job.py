@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from uuid import UUID
 
 from app.database import SessionLocal
@@ -36,6 +37,7 @@ def run_cron_evaluator_job_task(job_id: str) -> dict:
         else:
             job.last_run_status = "success"
             job.last_run_error = None
+        job.last_run_at = datetime.now(timezone.utc)
         db.commit()
         return result
     finally:

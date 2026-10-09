@@ -17,7 +17,10 @@ from app.services.clickhouse.client import clickhouse_enabled, get_client
 _FAILED_CALL_EVENTS = frozenset(
     {"call_failed", "failed", "error", "busy", "no_answer", "canceled", "cancelled"}
 )
-_SUCCESS_CALL_EVENTS = frozenset({"call_ended", "completed"})
+_FAILED_PROVIDER_STATUSES = frozenset(
+    {"busy", "no-answer", "no_answer", "canceled", "cancelled", "failed", "error"}
+)
+_SUCCESS_PROVIDER_STATUSES = frozenset({"completed", "hangup"})
 
 _TRACES_TABLE = "call_traces FINAL"
 
@@ -67,6 +70,24 @@ def _production_calls_query(
     return query
 
 
+def _saved_provider_status(row: CallRecording) -> str:
+    data = row.call_data if isinstance(row.call_data, dict) else {}
+    last = data.get("last_event") if isinstance(data.get("last_event"), dict) else {}
+    raw = str(last.get("CallStatus") or last.get("Event") or last.get("Status") or "")
+    return raw.strip().lower().replace("_", "-")
+
+
+def _call_outcome(row: CallRecording) -> str:
+    """Classify a finished attempt. Vobiz stores call_ended for busy and no-answer too."""
+    saved = _saved_provider_status(row)
+    event = (row.call_event or "").strip().lower()
+    if saved in _FAILED_PROVIDER_STATUSES or event in _FAILED_CALL_EVENTS:
+        return "failed"
+    if saved in _SUCCESS_PROVIDER_STATUSES or event in ("completed", "call_ended"):
+        return "success"
+    return "pending"
+
+
 def compute_production_calls_metric(
     db: Session,
     organization_id: UUID,
@@ -94,22 +115,18 @@ def compute_production_calls_metric(
         return _apply_numeric_agg(durations, aggregation)
 
     if mtype in (AlertMetricType.ERROR_RATE.value, "error_rate"):
-        total = len(rows)
-        failed = sum(
-            1
-            for r in rows
-            if (r.call_event or "").lower() in _FAILED_CALL_EVENTS
-        )
-        return round((failed / total) * 100, 2) if total else None
+        decided = [o for o in (_call_outcome(r) for r in rows) if o != "pending"]
+        if not decided:
+            return None
+        failed = sum(1 for o in decided if o == "failed")
+        return round((failed / len(decided)) * 100, 2)
 
     if mtype in (AlertMetricType.SUCCESS_RATE.value, "success_rate"):
-        total = len(rows)
-        ok = sum(
-            1
-            for r in rows
-            if (r.call_event or "").lower() in _SUCCESS_CALL_EVENTS
-        )
-        return round((ok / total) * 100, 2) if total else None
+        decided = [o for o in (_call_outcome(r) for r in rows) if o != "pending"]
+        if not decided:
+            return None
+        ok = sum(1 for o in decided if o == "success")
+        return round((ok / len(decided)) * 100, 2)
 
     return None
 
@@ -163,9 +180,21 @@ def compute_production_traces_metric(
             f"SELECT count() FROM {_TRACES_TABLE} WHERE {where}",
             parameters=params,
         ).first_row
-        return float(row[0]) if row else 0.0
+        count = float(row[0]) if row else 0.0
+        return None if count == 0 else count
 
     if mtype in (AlertMetricType.CALL_DURATION.value, "call_duration"):
+        if agg == "count":
+            row = client.query(
+                f"""
+                SELECT count()
+                FROM {_TRACES_TABLE}
+                WHERE {where} AND ended_at IS NOT NULL
+                """,
+                parameters=params,
+            ).first_row
+            count = float(row[0]) if row else 0.0
+            return None if count == 0 else count
         col = "avg" if agg == "avg" else agg
         if col not in ("avg", "min", "max", "sum"):
             col = "avg"
@@ -199,10 +228,12 @@ def compute_production_traces_metric(
         row = client.query(
             f"""
             SELECT
-                count() AS total,
+                countIf(status IN ('closed', 'finalized', 'closing')) AS total,
                 countIf(
-                    status NOT IN ('closed', 'finalized', 'closing')
-                    OR (failure_flags IS NOT NULL AND failure_flags != '' AND failure_flags != '[]')
+                    status IN ('closed', 'finalized', 'closing')
+                    AND failure_flags IS NOT NULL
+                    AND failure_flags != ''
+                    AND failure_flags != '[]'
                 ) AS failed
             FROM {_TRACES_TABLE}
             WHERE {where}
@@ -218,8 +249,15 @@ def compute_production_traces_metric(
         row = client.query(
             f"""
             SELECT
-                count() AS total,
-                countIf(status IN ('closed', 'finalized', 'closing')) AS ok
+                countIf(status IN ('closed', 'finalized', 'closing')) AS total,
+                countIf(
+                    status IN ('closed', 'finalized', 'closing')
+                    AND (
+                        failure_flags IS NULL
+                        OR failure_flags = ''
+                        OR failure_flags = '[]'
+                    )
+                ) AS ok
             FROM {_TRACES_TABLE}
             WHERE {where}
             """,

@@ -34,6 +34,7 @@ export function chatConfigFromAgent(agent: TestAgent): ChatConnectionConfigForm 
     metaWhatsappAccessToken: String(cfg.meta_whatsapp_access_token || ''),
     metaWhatsappOpeningTemplate: String(cfg.meta_whatsapp_opening_template || ''),
     metaWhatsappTemplateLanguage: String(cfg.meta_whatsapp_template_language || 'en_US'),
+    metaWhatsappProdMode: String(cfg.meta_whatsapp_prod_mode || ''),
     twilioAccountSid: String(cfg.twilio_account_sid || ''),
     twilioAuthToken: String(cfg.twilio_auth_token || ''),
     twilioFrom: String(cfg.twilio_from || ''),
@@ -116,6 +117,9 @@ export function buildChatConnectionConfigPayload(
         : {}),
       ...(config.metaWhatsappTemplateLanguage.trim()
         ? { meta_whatsapp_template_language: config.metaWhatsappTemplateLanguage.trim() }
+        : {}),
+      ...(config.metaWhatsappProdMode.trim()
+        ? { meta_whatsapp_prod_mode: config.metaWhatsappProdMode.trim() }
         : {}),
       ...(config.twilioAccountSid.trim()
         ? { twilio_account_sid: config.twilioAccountSid.trim() }

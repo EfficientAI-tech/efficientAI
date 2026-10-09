@@ -1325,7 +1325,6 @@ class ApiClient {
     twilio_public_base_url?: string
     telnyx_public_base_url?: string
     meta_whatsapp_inbound_webhook_url?: string
-    meta_whatsapp_webhook_verify_token?: string
   }> {
     const response = await this.client.get('/api/v1/chat/messaging/public-base-url')
     return response.data

@@ -125,23 +125,42 @@ def register_twilio_sms_turn(
     key = _pending_key(agent_id, twilio_from, messaging_recipient)
     try:
         client = _redis()
+        from_variants = _phone_lookup_variants(messaging_recipient) or [
+            _normalize_phone(messaging_recipient)
+        ]
+        line_variants = _phone_lookup_variants(twilio_from) or [_normalize_phone(twilio_from)]
+        route_val = f"{_agent_token(agent_id)}:{turn_id}"
+        claimed_routes: list[str] = []
+        for fv in from_variants:
+            for lv in line_variants:
+                route_key = _route_key(lv, fv)
+                if client.set(route_key, route_val, ex=ttl_secs, nx=True):
+                    claimed_routes.append(route_key)
+                    continue
+                if client.get(route_key) == route_val:
+                    claimed_routes.append(route_key)
+                    continue
+                for claimed in claimed_routes:
+                    if client.get(claimed) == route_val:
+                        client.delete(claimed)
+                logger.warning(
+                    "[MessagingTurnWait] line already waiting for another run ({} -> {})",
+                    _normalize_phone(twilio_from),
+                    _normalize_phone(messaging_recipient),
+                )
+                return ""
         if not client.set(key, turn_id, ex=ttl_secs, nx=True):
+            for claimed in claimed_routes:
+                if client.get(claimed) == route_val:
+                    client.delete(claimed)
             logger.warning(
                 "[MessagingTurnWait] concurrent SMS eval for same From/To pair ({} -> {})",
                 _normalize_phone(twilio_from),
                 _normalize_phone(messaging_recipient),
             )
             return ""
-        from_variants = _phone_lookup_variants(messaging_recipient) or [
-            _normalize_phone(messaging_recipient)
-        ]
-        line_variants = _phone_lookup_variants(twilio_from) or [_normalize_phone(twilio_from)]
-        route_val = f"{_agent_token(agent_id)}:{turn_id}"
         for recipient_variant in from_variants:
             client.set(_pending_from_key(agent_id, recipient_variant), turn_id, ex=ttl_secs)
-        for fv in from_variants:
-            for lv in line_variants:
-                client.set(_route_key(lv, fv), route_val, ex=ttl_secs)
         client.delete(_reply_list_key(turn_id))
         logger.info(
             "[MessagingTurnWait] registered turn {} pending inbound from {} to {}",
@@ -262,6 +281,7 @@ def complete_messaging_inbound_routed(
     reply_from: str,
     body: str,
     ttl_secs: int = _DEFAULT_TTL_SECS,
+    expected_agent_id: str | None = None,
 ) -> bool:
     """Complete a pending turn using Redis route keys (no DB agent lookup)."""
     try:
@@ -277,6 +297,8 @@ def complete_messaging_inbound_routed(
                 if len(parts) != 2:
                     continue
                 agent_id, _turn_id = parts[0], parts[1]
+                if expected_agent_id and str(agent_id) != str(expected_agent_id):
+                    continue
                 return complete_messaging_sms_turn(
                     agent_id=agent_id,
                     line_to=line_to,

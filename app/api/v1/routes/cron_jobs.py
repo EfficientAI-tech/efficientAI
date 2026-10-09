@@ -263,8 +263,9 @@ def update_cron_job(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid cron expression: {str(e)}"
             )
-        cron_job.cron_expression = cron_job_data.cron_expression
-        recalculate_next_run = True
+        if cron_job_data.cron_expression != cron_job.cron_expression:
+            cron_job.cron_expression = cron_job_data.cron_expression
+            recalculate_next_run = True
 
     if cron_job_data.timezone is not None:
         # Validate timezone
@@ -275,20 +276,24 @@ def update_cron_job(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid timezone: {cron_job_data.timezone}"
             )
-        cron_job.timezone = cron_job_data.timezone
-        recalculate_next_run = True
+        if cron_job_data.timezone != cron_job.timezone:
+            cron_job.timezone = cron_job_data.timezone
+            recalculate_next_run = True
 
     if cron_job_data.max_runs is not None:
         cron_job.max_runs = cron_job_data.max_runs
 
     if "interval_days" in cron_job_data.model_fields_set:
+        previous_interval = cron_job.interval_days
+        incoming_interval = cron_job_data.interval_days or None
         config = dict(cron_job.config or {})
-        if cron_job_data.interval_days:
-            config["interval_days"] = cron_job_data.interval_days
+        if incoming_interval:
+            config["interval_days"] = incoming_interval
         else:
             config.pop("interval_days", None)
         cron_job.config = config
-        recalculate_next_run = True
+        if incoming_interval != previous_interval:
+            recalculate_next_run = True
 
     if cron_job_data.evaluator_ids is not None or cron_job_data.evaluator_suite_ids is not None:
         resolved_evaluator_ids = _expand_evaluator_ids_for_cron(

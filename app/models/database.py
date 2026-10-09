@@ -1557,6 +1557,7 @@ class CronJob(Base):
     last_dispatch_celery_task_id = Column(String(255), nullable=True)
     last_dispatch_status = Column(String(32), nullable=True)
     last_dispatch_error = Column(String, nullable=True)
+    last_dispatch_at = Column(DateTime(timezone=True), nullable=True)
     last_run_status = Column(String(32), nullable=True)
     last_run_error = Column(String, nullable=True)
 

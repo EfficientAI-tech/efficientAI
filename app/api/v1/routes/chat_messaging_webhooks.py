@@ -8,7 +8,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from loguru import logger
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.dependencies import get_db
 from app.core.public_url import configured_public_base_url
 from app.services.telephony.meta_whatsapp_webhook_urls import meta_whatsapp_inbound_webhook_url
@@ -41,13 +40,11 @@ async def messaging_public_base_url() -> dict[str, str]:
         meta_whatsapp_url = meta_whatsapp_inbound_webhook_url()
     except ValueError:
         meta_whatsapp_url = ""
-    verify_token = (settings.META_WHATSAPP_WEBHOOK_VERIFY_TOKEN or "").strip()
     return {
         "public_base_url": twilio_base,
         "twilio_public_base_url": twilio_base,
         "telnyx_public_base_url": telnyx_base,
         "meta_whatsapp_inbound_webhook_url": meta_whatsapp_url,
-        "meta_whatsapp_webhook_verify_token": verify_token,
     }
 
 
