@@ -32,6 +32,7 @@ _CSRF_EXEMPT_SUFFIXES = (
     "platform/auth/login",
     "telephony/",
     "chat/messaging/twilio/",
+    "chat/messaging/meta/",
     "public-blind-test/",
 )
 

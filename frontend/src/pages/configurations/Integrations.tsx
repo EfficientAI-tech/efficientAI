@@ -22,6 +22,8 @@ import {
   getTelephonyProviderLogo,
 } from '../../config/providers'
 import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
+import AlertingSyncSettingsCard from '../../components/integrations/AlertingSyncSettingsCard'
+import { useIsAdmin } from '../../hooks/useRole'
 import { useLicenseStore } from '../../store/licenseStore'
 import AIProviderEnabledModelsStep from './AIProviderEnabledModelsStep'
 import { GATEWAY_FIELD_COPY, GATEWAY_TYPE_LABELS, type ResolvedGatewayType } from '../../lib/gatewayRouting'
@@ -67,6 +69,11 @@ const TELEPHONY_FIELD_PLACEHOLDERS: Partial<
     voice_app_id: 'Profile UUID',
     verify_app_uuid: 'Public key',
   },
+  [TelephonyProvider.META_WHATSAPP]: {
+    auth_id: 'Phone number ID',
+    auth_token: 'Access token',
+    voice_app_id: 'WABA ID',
+  },
 }
 
 const AI_INTEGRATION_PROVIDERS: ModelProvider[] = [
@@ -89,6 +96,7 @@ const AI_INTEGRATION_PROVIDERS: ModelProvider[] = [
 
 export default function Integrations() {
   const queryClient = useQueryClient()
+  const isAdmin = useIsAdmin()
   const { showToast, ToastContainer } = useToast()
   const gatewayRoutingAllowed = useLicenseStore((s) => s.gatewayRoutingAllowed)
   const licenseLoaded = useLicenseStore((s) => s.isLoaded)
@@ -414,6 +422,12 @@ export default function Integrations() {
       if (telephonyVoiceAppId.trim()) payload.voice_app_id = telephonyVoiceAppId.trim()
       if (telephonySipDomain.trim()) payload.sip_domain = telephonySipDomain.trim()
       if (editingTelephonyConfigId) {
+        if (payload.provider === 'meta_whatsapp' && telephonyVoiceAppId.trim() === '') {
+          throw new Error('WhatsApp Business Account ID (WABA) is required for Meta WhatsApp')
+        }
+        if (payload.provider === 'telnyx' && telephonyVerifyAppUuid.trim() === '') {
+          throw new Error('Telnyx webhook public key is required for inbound SMS')
+        }
         return apiClient.updateTelephonyConfig({ ...payload, id: editingTelephonyConfigId })
       }
       // Creating a new credential row. First-time setup requires both halves.
@@ -422,6 +436,12 @@ export default function Integrations() {
       }
       if (payload.provider === 'exotel' && !payload.voice_app_id) {
         throw new Error('Account SID is required for Exotel')
+      }
+      if (payload.provider === 'meta_whatsapp' && !payload.voice_app_id) {
+        throw new Error('WhatsApp Business Account ID (WABA) is required for Meta WhatsApp')
+      }
+      if (payload.provider === 'telnyx' && !payload.verify_app_uuid) {
+        throw new Error('Telnyx webhook public key is required for inbound SMS')
       }
       return apiClient.createTelephonyConfig(payload as any)
     },
@@ -1129,6 +1149,8 @@ export default function Integrations() {
           <p className="text-gray-500">Get started by adding a voice platform, AI provider, or telephony provider</p>
         </div>
       )}
+
+      {isAdmin && <AlertingSyncSettingsCard />}
 
       {showLlmGatewayModal && renderModal(
         <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">

@@ -28,7 +28,9 @@ npm run ci:check
 
 ## Deployment
 
-Deployment is handled by `.github/workflows/docs.yml` (the `deploy` job) and publishes static output from `docs-fumadocs/out` to S3/CloudFront on pushes to `main` (or via manual workflow dispatch).
+Deployment is handled by `.github/workflows/docs.yml` (the `deploy` job) and publishes static output from `docs-fumadocs/out` to S3/CloudFront on pushes to `main`, after each GitHub release, on a daily schedule, or via manual workflow dispatch.
+
+The changelog is generated at **build time** from the GitHub Releases API (`npm run changelog:generate`). This is a static export, so the site cannot poll GitHub at request time. Docs must rebuild after `gh release create` — a push to `main` is too early (the new GitHub release does not exist yet).
 
 Production site: `https://docs.efficientai.cloud`
 

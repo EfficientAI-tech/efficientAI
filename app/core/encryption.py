@@ -145,14 +145,9 @@ def decrypt_api_key(encrypted_api_key: str) -> str:
     if not encrypted_api_key:
         raise ValueError("API key is empty")
     
-    # Check if the key looks encrypted (Fernet tokens start with gAAAAA)
-    # OpenAI API keys typically start with 'sk-' and are not base64-encoded Fernet tokens
-    looks_encrypted = encrypted_api_key.startswith('gAAAAA') or (
-        len(encrypted_api_key) > 100 and 
-        not encrypted_api_key.startswith('sk-') and 
-        not encrypted_api_key.startswith('AIza') and
-        not encrypted_api_key.startswith('x-')
-    )
+    # Fernet ciphertext is url-safe base64 and always starts with gAAAAA.
+    # Do not infer encryption from length alone (Meta WhatsApp tokens are long EAA… plaintext).
+    looks_encrypted = encrypted_api_key.startswith('gAAAAA')
     
     f = get_fernet()
     try:

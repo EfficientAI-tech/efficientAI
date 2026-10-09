@@ -21,6 +21,20 @@ def _is_masked_secret(value: str) -> bool:
     return not text or text == CHAT_CONFIG_SECRET_MASK
 
 
+def _is_fernet_ciphertext(value: str) -> bool:
+    return value.strip().startswith("gAAAAA")
+
+
+def _secret_value_for_storage(value: str) -> str:
+    """Encrypt plaintext secrets; pass through ciphertext encrypted with this deployment key."""
+    stripped = value.strip()
+    if _is_fernet_ciphertext(stripped):
+        plain = decrypt_api_key(stripped)
+        if plain != stripped:
+            return stripped
+    return encrypt_api_key(stripped)
+
+
 def mask_chat_connection_config_for_response(
     config: Optional[dict[str, Any]],
 ) -> Optional[dict[str, Any]]:
@@ -71,11 +85,7 @@ def prepare_chat_connection_config_for_storage(
             else:
                 out.pop(key, None)
             continue
-        plain = decrypt_api_key(auth.strip())
-        if plain != auth.strip():
-            out[key] = auth.strip()
-        else:
-            out[key] = encrypt_api_key(plain)
+        out[key] = _secret_value_for_storage(auth)
     return out
 
 

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
+import { invalidateAlertHistoryQueries } from './alertUiUtils'
 import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
 import {
@@ -25,6 +26,13 @@ import {
   X,
   Plus,
 } from 'lucide-react'
+import {
+  ALL_METRIC_TYPES,
+  DATA_SOURCES,
+  metricTypesForDataSource,
+} from './alertFormConstants'
+import IncidentDetailPanel from './IncidentDetailPanel'
+import { DeliverySummaryBadge } from './IncidentTableCells'
 
 // Types
 interface Alert {
@@ -32,15 +40,18 @@ interface Alert {
   organization_id: string
   name: string
   description?: string
+  data_source?: string
   metric_type: string
   aggregation: string
   operator: string
   threshold_value: number
   time_window_minutes: number
+  alert_on_missing_data?: boolean
   agent_ids?: string[]
   notify_frequency: string
   notify_emails?: string[]
   notify_webhooks?: string[]
+  notify_pagerduty_routing_keys?: string[]
   status: string
   created_at: string
   updated_at: string
@@ -69,15 +80,6 @@ interface AlertHistoryItem {
   context_data?: Record<string, any>
 }
 
-const METRIC_TYPES = [
-  { value: 'number_of_calls', label: 'Number of Calls' },
-  { value: 'call_duration', label: 'Call Duration' },
-  { value: 'error_rate', label: 'Error Rate' },
-  { value: 'success_rate', label: 'Success Rate' },
-  { value: 'latency', label: 'Latency' },
-  { value: 'custom', label: 'Custom' },
-]
-
 const AGGREGATIONS = [
   { value: 'sum', label: 'Sum' },
   { value: 'avg', label: 'Average' },
@@ -102,7 +104,8 @@ const NOTIFY_FREQUENCIES = [
   { value: 'weekly', label: 'Weekly' },
 ]
 
-const METRIC_LABELS: Record<string, string> = Object.fromEntries(METRIC_TYPES.map(m => [m.value, m.label]))
+const METRIC_LABELS: Record<string, string> = Object.fromEntries(ALL_METRIC_TYPES.map(m => [m.value, m.label]))
+const DATA_SOURCE_LABELS: Record<string, string> = Object.fromEntries(DATA_SOURCES.map(s => [s.value, s.label]))
 const AGGREGATION_LABELS: Record<string, string> = Object.fromEntries(AGGREGATIONS.map(a => [a.value, a.label]))
 const FREQUENCY_LABELS: Record<string, string> = Object.fromEntries(NOTIFY_FREQUENCIES.map(f => [f.value, f.label]))
 
@@ -113,22 +116,28 @@ export default function AlertDetail() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
+  const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null)
   const [triggerLoading, setTriggerLoading] = useState(false)
   const [testLoading, setTestLoading] = useState(false)
   const [isEditMode, setIsEditMode] = useState(false)
   const [formData, setFormData] = useState({
     name: '',
     description: '',
+    data_source: 'evaluations',
     metric_type: 'number_of_calls',
     aggregation: 'sum',
     operator: '>',
     threshold_value: 100,
     time_window_minutes: 60,
+    alert_on_missing_data: false,
     agent_ids: [] as string[],
     notify_frequency: 'immediate',
     notify_emails: [''],
     notify_webhooks: [''],
+    notify_pagerduty_routing_keys: [''],
   })
+
+  const metricTypeOptions = metricTypesForDataSource(formData.data_source)
 
   // Fetch alert details
   const { data: alert, isLoading } = useQuery<Alert>({
@@ -156,15 +165,20 @@ export default function AlertDetail() {
       setFormData({
         name: alert.name,
         description: alert.description || '',
+        data_source: alert.data_source || 'evaluations',
         metric_type: alert.metric_type,
         aggregation: alert.aggregation,
         operator: alert.operator,
         threshold_value: alert.threshold_value,
         time_window_minutes: alert.time_window_minutes,
+        alert_on_missing_data: alert.alert_on_missing_data ?? false,
         agent_ids: alert.agent_ids || [],
         notify_frequency: alert.notify_frequency,
         notify_emails: alert.notify_emails?.length ? alert.notify_emails : [''],
         notify_webhooks: alert.notify_webhooks?.length ? alert.notify_webhooks : [''],
+        notify_pagerduty_routing_keys: alert.notify_pagerduty_routing_keys?.length
+          ? alert.notify_pagerduty_routing_keys
+          : [''],
       })
     }
   }, [alert])
@@ -218,15 +232,25 @@ export default function AlertDetail() {
     setTriggerLoading(true)
     try {
       const result = await apiClient.triggerAlert(id)
+      await invalidateAlertHistoryQueries(queryClient)
       queryClient.invalidateQueries({ queryKey: ['alertHistory', id] })
       if (result.triggered) {
-        showToast(
-          `Alert triggered! Value: ${result.metric_value} (${result.notifications_successful || 0} notification${result.notifications_successful !== 1 ? 's' : ''} sent)`,
-          'success'
-        )
+        if (result.ongoing_incident) {
+          showToast(
+            `Still over the limit (value: ${result.metric_value}). You’re already notified for this issue.`,
+            'success'
+          )
+        } else {
+          showToast(
+            `Alert triggered! Value: ${result.metric_value} (${result.notifications_successful || 0} notification${result.notifications_successful !== 1 ? 's' : ''} sent)`,
+            'success'
+          )
+        }
+      } else if (result.recovered) {
+        showToast(`Back to normal (value: ${result.metric_value}). This issue was closed automatically.`, 'success')
       } else {
         showToast(
-          result.reason || 'Not triggered — current value does not breach threshold',
+          result.reason || 'Within threshold — no alert right now.',
           'success'
         )
       }
@@ -242,14 +266,26 @@ export default function AlertDetail() {
     setTestLoading(true)
     try {
       const result = await apiClient.testAlertNotification(id, {})
-      if (result.successful > 0) {
+      const failed = (result.details || []).filter((d: { success?: boolean }) => !d.success)
+      if (result.successful > 0 && failed.length === 0) {
         showToast(
-          `Test sent: ${result.successful}/${result.total} notification${result.total !== 1 ? 's' : ''} succeeded`,
+          `Test sent: ${result.successful}/${result.total} channel${result.total !== 1 ? 's' : ''} succeeded`,
           'success'
         )
-      } else {
+      } else if (result.successful > 0 && failed.length > 0) {
+        const errSummary = failed
+          .map((d: { channel?: string; error?: string }) => `${d.channel}: ${d.error || 'failed'}`)
+          .join('; ')
         showToast(
-          result.detail || 'No notifications sent — configure emails or webhooks first',
+          `${result.successful}/${result.total} succeeded. Failed: ${errSummary}`,
+          'error'
+        )
+      } else {
+        const errSummary = failed
+          .map((d: { channel?: string; error?: string }) => `${d.channel}: ${d.error || 'failed'}`)
+          .join('; ')
+        showToast(
+          errSummary || result.detail || 'No notifications sent — configure channels on the alert',
           'error'
         )
       }
@@ -271,15 +307,18 @@ export default function AlertDetail() {
     const payload = {
       name: formData.name,
       description: formData.description || null,
+      data_source: formData.data_source,
       metric_type: formData.metric_type,
       aggregation: formData.aggregation,
       operator: formData.operator,
       threshold_value: formData.threshold_value,
       time_window_minutes: formData.time_window_minutes,
+      alert_on_missing_data: formData.alert_on_missing_data,
       agent_ids: formData.agent_ids.length > 0 ? formData.agent_ids : null,
       notify_frequency: formData.notify_frequency,
       notify_emails: formData.notify_emails.filter(e => e.trim()),
       notify_webhooks: formData.notify_webhooks.filter(w => w.trim()),
+      notify_pagerduty_routing_keys: formData.notify_pagerduty_routing_keys.filter(k => k.trim()),
     }
     updateMutation.mutate(payload)
   }
@@ -289,15 +328,20 @@ export default function AlertDetail() {
       setFormData({
         name: alert.name,
         description: alert.description || '',
+        data_source: alert.data_source || 'evaluations',
         metric_type: alert.metric_type,
         aggregation: alert.aggregation,
         operator: alert.operator,
         threshold_value: alert.threshold_value,
         time_window_minutes: alert.time_window_minutes,
+        alert_on_missing_data: alert.alert_on_missing_data ?? false,
         agent_ids: alert.agent_ids || [],
         notify_frequency: alert.notify_frequency,
         notify_emails: alert.notify_emails?.length ? alert.notify_emails : [''],
         notify_webhooks: alert.notify_webhooks?.length ? alert.notify_webhooks : [''],
+        notify_pagerduty_routing_keys: alert.notify_pagerduty_routing_keys?.length
+          ? alert.notify_pagerduty_routing_keys
+          : [''],
       })
     }
     setIsEditMode(false)
@@ -325,6 +369,24 @@ export default function AlertDetail() {
     const webhooks = [...formData.notify_webhooks]
     webhooks[index] = value
     setFormData({ ...formData, notify_webhooks: webhooks })
+  }
+
+  const addPagerDutyKey = () =>
+    setFormData({
+      ...formData,
+      notify_pagerduty_routing_keys: [...formData.notify_pagerduty_routing_keys, ''],
+    })
+  const removePagerDutyKey = (index: number) => {
+    const keys = formData.notify_pagerduty_routing_keys.filter((_, i) => i !== index)
+    setFormData({
+      ...formData,
+      notify_pagerduty_routing_keys: keys.length ? keys : [''],
+    })
+  }
+  const updatePagerDutyKey = (index: number, value: string) => {
+    const keys = [...formData.notify_pagerduty_routing_keys]
+    keys[index] = value
+    setFormData({ ...formData, notify_pagerduty_routing_keys: keys })
   }
 
   // --- Formatting helpers ---
@@ -570,6 +632,31 @@ export default function AlertDetail() {
               <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider border-b border-gray-200 pb-2">
                 Metric Condition
               </h3>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Data source</label>
+                <select
+                  value={formData.data_source}
+                  onChange={(e) => {
+                    const nextSource = e.target.value
+                    const allowed = metricTypesForDataSource(nextSource)
+                    const nextMetric = allowed.some(m => m.value === formData.metric_type)
+                      ? formData.metric_type
+                      : allowed[0]?.value || 'number_of_calls'
+                    setFormData({
+                      ...formData,
+                      data_source: nextSource,
+                      metric_type: nextMetric,
+                      alert_on_missing_data:
+                        nextSource === 'cron_jobs' ? false : formData.alert_on_missing_data,
+                    })
+                  }}
+                  className={`${inputClass} md:w-96`}
+                >
+                  {DATA_SOURCES.map(s => (
+                    <option key={s.value} value={s.value}>{s.label}</option>
+                  ))}
+                </select>
+              </div>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Metric</label>
@@ -578,7 +665,7 @@ export default function AlertDetail() {
                     onChange={(e) => setFormData({ ...formData, metric_type: e.target.value })}
                     className={inputClass}
                   >
-                    {METRIC_TYPES.map(m => (
+                    {metricTypeOptions.map(m => (
                       <option key={m.value} value={m.value}>{m.label}</option>
                     ))}
                   </select>
@@ -627,9 +714,23 @@ export default function AlertDetail() {
                   className={`${inputClass} md:w-48`}
                 />
               </div>
+              {formData.data_source !== 'cron_jobs' && (
+                <label className="flex items-center gap-2 text-sm text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={formData.alert_on_missing_data}
+                    onChange={e =>
+                      setFormData({ ...formData, alert_on_missing_data: e.target.checked })
+                    }
+                    className="rounded border-gray-300"
+                  />
+                  Treat no call data as zero (silence / no traffic)
+                </label>
+              )}
             </div>
 
             {/* Agent Selection */}
+            {formData.data_source !== 'cron_jobs' && (
             <div className="space-y-4">
               <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider border-b border-gray-200 pb-2">
                 Agent Selection
@@ -670,6 +771,7 @@ export default function AlertDetail() {
                 ))}
               </div>
             </div>
+            )}
 
             {/* Notification Settings */}
             <div className="space-y-4">
@@ -729,7 +831,7 @@ export default function AlertDetail() {
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   <Globe className="w-4 h-4 inline mr-2" />
-                  Webhook Notifications (Slack, etc.)
+                  Slack webhooks
                 </label>
                 <div className="space-y-2">
                   {formData.notify_webhooks.map((webhook, index) => (
@@ -756,6 +858,37 @@ export default function AlertDetail() {
                     className="inline-flex items-center gap-1 text-sm text-gray-600 hover:text-gray-900 font-medium"
                   >
                     <Plus className="w-4 h-4" /> Add another webhook
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">PagerDuty routing keys</label>
+                <div className="space-y-2">
+                  {formData.notify_pagerduty_routing_keys.map((key, index) => (
+                    <div key={index} className="flex gap-2">
+                      <input
+                        type="password"
+                        value={key}
+                        onChange={(e) => updatePagerDutyKey(index, e.target.value)}
+                        placeholder="Events API v2 integration key"
+                        className={`flex-1 ${inputClass}`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removePagerDutyKey(index)}
+                        className="p-3 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                      >
+                        <X className="w-5 h-5" />
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={addPagerDutyKey}
+                    className="inline-flex items-center gap-1 text-sm text-gray-600 hover:text-gray-900 font-medium"
+                  >
+                    <Plus className="w-4 h-4" /> Add PagerDuty key
                   </button>
                 </div>
               </div>
@@ -876,48 +1009,62 @@ export default function AlertDetail() {
               </div>
             </div>
 
-            {/* Recent Alert History */}
             <div className="bg-white shadow-sm rounded-xl border border-gray-200 overflow-hidden">
-              <div className="px-6 py-4 border-b border-gray-200 bg-gradient-to-r from-gray-50 to-white flex items-center justify-between">
+              <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
                 <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
                   <History className="w-5 h-5 text-gray-500" />
-                  Recent Alert History
+                  Recent incidents
                 </h2>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => navigate('/alerts/history')}
-                >
-                  View All
+                <Button variant="ghost" size="sm" onClick={() => navigate('/alerts/history')}>
+                  View all
                 </Button>
               </div>
               {historyItems.length === 0 ? (
                 <div className="p-8 text-center">
                   <History className="w-10 h-10 text-gray-300 mx-auto mb-3" />
-                  <p className="text-sm text-gray-500">No alert history yet</p>
-                  <p className="text-xs text-gray-400 mt-1">
-                    Triggered alerts will appear here
-                  </p>
+                  <p className="text-sm text-gray-500">No incidents yet</p>
                 </div>
               ) : (
                 <div className="divide-y divide-gray-100">
-                  {historyItems.slice(0, 10).map((item) => (
-                    <div key={item.id} className="px-6 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors">
-                      <div className="flex items-center gap-3">
-                        {getHistoryStatusBadge(item.status)}
-                        <div>
-                          <p className="text-sm text-gray-700">
-                            Value: <span className="font-mono font-medium text-red-600">{item.triggered_value}</span>
-                            <span className="text-gray-400 mx-1">/</span>
-                            <span className="font-mono text-gray-500">{item.threshold_value}</span>
-                          </p>
-                        </div>
+                  {historyItems.slice(0, 10).map(item => {
+                    const isOpen = item.status !== 'resolved'
+                    const expanded = expandedHistoryId === item.id
+                    return (
+                      <div key={item.id} className="px-6 py-3">
+                        <button
+                          type="button"
+                          className="w-full text-left flex items-center justify-between gap-3 hover:bg-gray-50 -mx-2 px-2 py-1 rounded-lg"
+                          onClick={() =>
+                            setExpandedHistoryId(expanded ? null : item.id)
+                          }
+                        >
+                          <div className="flex flex-wrap items-center gap-2 min-w-0">
+                            {getHistoryStatusBadge(item.status)}
+                            {isOpen && (
+                              <span className="text-xs font-medium text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full">
+                                Open
+                              </span>
+                            )}
+                            <span className="text-sm text-gray-700 font-mono">
+                              {item.triggered_value}/{item.threshold_value}
+                            </span>
+                            <DeliverySummaryBadge notificationDetails={item.notification_details} />
+                          </div>
+                          <span className="text-xs text-gray-500 shrink-0">
+                            {formatRelativeTime(item.triggered_at)}
+                          </span>
+                        </button>
+                        {expanded && (
+                          <div className="mt-4 pl-1 border-t border-gray-100 pt-4">
+                            <IncidentDetailPanel
+                              item={{ ...item, alert: { name: alert?.name } }}
+                              statusBadge={getHistoryStatusBadge(item.status)}
+                            />
+                          </div>
+                        )}
                       </div>
-                      <span className="text-xs text-gray-500" title={formatDate(item.triggered_at)}>
-                        {formatRelativeTime(item.triggered_at)}
-                      </span>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               )}
             </div>
@@ -959,6 +1106,13 @@ export default function AlertDetail() {
                 </div>
 
                 <div>
+                  <dt className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">Data source</dt>
+                  <dd className="text-sm font-medium text-gray-900 mb-3">
+                    {DATA_SOURCE_LABELS[alert.data_source || 'evaluations'] || alert.data_source}
+                  </dd>
+                </div>
+
+                <div>
                   <dt className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-1">
                     <Globe className="w-3.5 h-3.5" /> Webhooks
                   </dt>
@@ -972,6 +1126,17 @@ export default function AlertDetail() {
                     </div>
                   ) : (
                     <p className="text-sm text-gray-400 italic">No webhooks configured</p>
+                  )}
+                </div>
+
+                <div>
+                  <dt className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">PagerDuty</dt>
+                  {alert.notify_pagerduty_routing_keys && alert.notify_pagerduty_routing_keys.length > 0 ? (
+                    <p className="text-sm text-gray-700">
+                      {alert.notify_pagerduty_routing_keys.length} routing key(s) configured
+                    </p>
+                  ) : (
+                    <p className="text-sm text-gray-400 italic">No PagerDuty keys configured</p>
                   )}
                 </div>
               </div>

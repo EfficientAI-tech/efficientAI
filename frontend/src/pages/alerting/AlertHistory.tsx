@@ -1,8 +1,23 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
 import Button from '../../components/Button'
-import { History, Bell, AlertTriangle, CheckCircle, Clock, Eye, X, Check, MessageSquare } from 'lucide-react'
+import { History, Eye, X, Check, MessageSquare, Search, Clock, RefreshCw } from 'lucide-react'
+import AlertingPageShell from './AlertingPageShell'
+import StatCard from './StatCard'
+import {
+  formatRelativeTime,
+  getNotificationFailures,
+  isAlertHistoryListCache,
+  isOpenIncident,
+  OPEN_INCIDENT_SUMMARY_QUERY_KEY,
+} from './alertUiUtils'
+import IncidentDetailPanel from './IncidentDetailPanel'
+import { DeliverySummaryBadge, IncidentStatusBadge } from './IncidentTableCells'
+import { mergeAlertHistoryItem } from './mergeAlertHistoryItem'
+import { useToast } from '../../hooks/useToast'
+import { getApiErrorMessage } from '../../lib/apiErrors'
 
 // Types
 interface Alert {
@@ -36,8 +51,11 @@ interface AlertHistoryItem {
   alert?: Alert
 }
 
+const MANUAL_REFRESH_COOLDOWN_MS = 15_000
+
 const STATUS_FILTERS = [
-  { value: '', label: 'All Status' },
+  { value: '', label: 'All statuses' },
+  { value: '__open__', label: 'Open incidents' },
   { value: 'triggered', label: 'Triggered' },
   { value: 'notified', label: 'Notified' },
   { value: 'acknowledged', label: 'Acknowledged' },
@@ -45,75 +63,129 @@ const STATUS_FILTERS = [
 ]
 
 export default function AlertHistory() {
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { showToast, ToastContainer } = useToast()
   const [statusFilter, setStatusFilter] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
   const [selectedItem, setSelectedItem] = useState<AlertHistoryItem | null>(null)
   const [showResolveModal, setShowResolveModal] = useState(false)
   const [resolutionNotes, setResolutionNotes] = useState('')
+  const [incidentRefreshingId, setIncidentRefreshingId] = useState<string | null>(null)
+  const [refreshCooldownUntil, setRefreshCooldownUntil] = useState(0)
 
-  // Fetch alert history
-  const { data: historyItems = [], isLoading } = useQuery({
-    queryKey: ['alertHistory', statusFilter],
-    queryFn: () => apiClient.listAlertHistory(statusFilter || undefined),
+  useEffect(() => {
+    if (refreshCooldownUntil <= Date.now()) return
+    const id = window.setTimeout(
+      () => setRefreshCooldownUntil(0),
+      refreshCooldownUntil - Date.now()
+    )
+    return () => window.clearTimeout(id)
+  }, [refreshCooldownUntil])
+
+  const refreshOnCooldown = refreshCooldownUntil > Date.now()
+
+  const { data: historyItems = [], isLoading, isError, error, refetch, isRefetching, dataUpdatedAt } =
+    useQuery({
+      queryKey: ['alertHistory', statusFilter],
+      queryFn: () =>
+        apiClient.listAlertHistory(
+          statusFilter && statusFilter !== '__open__' ? statusFilter : undefined,
+          undefined,
+          0,
+          100,
+          statusFilter === '__open__'
+        ),
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      staleTime: Infinity,
+    })
+
+  const { data: openSummary } = useQuery({
+    queryKey: OPEN_INCIDENT_SUMMARY_QUERY_KEY,
+    queryFn: () => apiClient.getOpenIncidentSummary(),
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    staleTime: Infinity,
   })
+
+  const handleManualRefresh = async () => {
+    if (refreshOnCooldown || isRefetching) return
+    setRefreshCooldownUntil(Date.now() + MANUAL_REFRESH_COOLDOWN_MS)
+    try {
+      const result = await refetch()
+      await queryClient.invalidateQueries({ queryKey: OPEN_INCIDENT_SUMMARY_QUERY_KEY })
+      if (result.isError) {
+        showToast(getApiErrorMessage(result.error, 'Could not refresh alert history'), 'error')
+      }
+    } catch (err) {
+      showToast(getApiErrorMessage(err, 'Could not refresh alert history'), 'error')
+    }
+  }
+
+  const lastUpdatedLabel =
+    dataUpdatedAt > 0
+      ? formatRelativeTime(new Date(dataUpdatedAt).toISOString())
+      : null
+
+  const applyIncidentUpdate = (id: string, updated: AlertHistoryItem) => {
+    setSelectedItem(prev => {
+      if (!prev || prev.id !== id) return prev
+      return mergeAlertHistoryItem(prev, updated)
+    })
+    queryClient.setQueriesData<AlertHistoryItem[]>(
+      { queryKey: ['alertHistory'], predicate: isAlertHistoryListCache },
+      old => old?.map(h => (h.id === id ? mergeAlertHistoryItem(h, updated) : h))
+    )
+  }
+
+  const refreshSelectedIncident = async (id: string, updated?: AlertHistoryItem) => {
+    setIncidentRefreshingId(id)
+    if (updated) {
+      applyIncidentUpdate(id, updated)
+    }
+    try {
+      const fresh = await apiClient.getAlertHistoryItem(id)
+      if (fresh) {
+        setSelectedItem(prev =>
+          prev?.id === id ? mergeAlertHistoryItem(prev, fresh) : prev
+        )
+        queryClient.setQueriesData<AlertHistoryItem[]>(
+          { queryKey: ['alertHistory'], predicate: isAlertHistoryListCache },
+          old => old?.map(h => (h.id === id ? mergeAlertHistoryItem(h, fresh) : h))
+        )
+      }
+    } catch {
+      showToast('Could not refresh incident details; showing last known state.', 'error')
+    } finally {
+      setIncidentRefreshingId(null)
+      await queryClient.invalidateQueries({ queryKey: ['alertHistory'] })
+      await queryClient.invalidateQueries({ queryKey: OPEN_INCIDENT_SUMMARY_QUERY_KEY })
+    }
+  }
 
   const acknowledgeMutation = useMutation({
     mutationFn: (id: string) => apiClient.acknowledgeAlertHistory(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['alertHistory'] })
-      setSelectedItem(null)
+    onSuccess: (data, id) => {
+      void refreshSelectedIncident(id, data as AlertHistoryItem)
+      showToast('Incident acknowledged', 'success')
     },
+    onError: err =>
+      showToast(getApiErrorMessage(err, 'Could not acknowledge incident'), 'error'),
   })
 
   const resolveMutation = useMutation({
     mutationFn: ({ id, notes }: { id: string; notes: string }) =>
       apiClient.resolveAlertHistory(id, notes),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['alertHistory'] })
-      setSelectedItem(null)
+    onSuccess: (data, { id }) => {
       setShowResolveModal(false)
       setResolutionNotes('')
+      void refreshSelectedIncident(id, data as AlertHistoryItem)
+      showToast('Incident resolved', 'success')
     },
+    onError: err =>
+      showToast(getApiErrorMessage(err, 'Could not resolve incident'), 'error'),
   })
-
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'triggered':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium bg-red-100 text-red-800 rounded-full">
-            <AlertTriangle className="w-3 h-3" />
-            Triggered
-          </span>
-        )
-      case 'notified':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium bg-amber-100 text-amber-800 rounded-full">
-            <Bell className="w-3 h-3" />
-            Notified
-          </span>
-        )
-      case 'acknowledged':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium bg-blue-100 text-blue-800 rounded-full">
-            <Eye className="w-3 h-3" />
-            Acknowledged
-          </span>
-        )
-      case 'resolved':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium bg-emerald-100 text-emerald-800 rounded-full">
-            <CheckCircle className="w-3 h-3" />
-            Resolved
-          </span>
-        )
-      default:
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium bg-gray-100 text-gray-800 rounded-full">
-            {status}
-          </span>
-        )
-    }
-  }
 
   const formatDate = (dateString: string) => {
     const date = new Date(dateString)
@@ -126,20 +198,31 @@ export default function AlertHistory() {
     })
   }
 
-  const formatRelativeTime = (dateString: string) => {
-    const date = new Date(dateString)
-    const now = new Date()
-    const diffMs = now.getTime() - date.getTime()
-    const diffMins = Math.floor(diffMs / 60000)
-    const diffHours = Math.floor(diffMins / 60)
-    const diffDays = Math.floor(diffHours / 24)
+  const displayedItems = useMemo(() => {
+    let list = historyItems as AlertHistoryItem[]
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase()
+      list = list.filter(
+        i =>
+          (i.alert?.name || '').toLowerCase().includes(q) ||
+          i.status.toLowerCase().includes(q)
+      )
+    }
+    return list
+  }, [historyItems, statusFilter, searchQuery])
 
-    if (diffMins < 1) return 'Just now'
-    if (diffMins < 60) return `${diffMins}m ago`
-    if (diffHours < 24) return `${diffHours}h ago`
-    if (diffDays < 7) return `${diffDays}d ago`
-    return formatDate(dateString)
-  }
+  const openCount = openSummary?.total ?? 0
+  const resolvedCount = useMemo(
+    () => (historyItems as AlertHistoryItem[]).filter(i => i.status === 'resolved').length,
+    [historyItems]
+  )
+  const notifyFailCount = useMemo(
+    () =>
+      (historyItems as AlertHistoryItem[]).filter(
+        i => getNotificationFailures(i.notification_details).length > 0
+      ).length,
+    [historyItems]
+  )
 
   const handleAcknowledge = (item: AlertHistoryItem) => {
     acknowledgeMutation.mutate(item.id)
@@ -159,47 +242,78 @@ export default function AlertHistory() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">Alert History</h1>
-          <p className="mt-2 text-sm text-gray-600">
-            View and manage triggered alerts and their resolution status
-          </p>
-        </div>
+      <ToastContainer />
+      <AlertingPageShell
+        title="Alert history"
+        actions={
+          <div className="flex flex-col items-end gap-0.5">
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={() => void handleManualRefresh()}
+              disabled={isLoading || isRefetching || refreshOnCooldown}
+              leftIcon={
+                <RefreshCw className={`w-4 h-4 ${isRefetching ? 'animate-spin' : ''}`} />
+              }
+              title={
+                refreshOnCooldown
+                  ? 'Refresh is on a short cooldown — wait a few seconds'
+                  : 'Load the latest incidents from the server'
+              }
+            >
+              Refresh
+            </Button>
+            <span className="text-xs text-gray-500 tabular-nums">
+              {lastUpdatedLabel ? `Updated ${lastUpdatedLabel}` : 'Not loaded yet'}
+            </span>
+          </div>
+        }
+      />
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <StatCard label="Open" value={openCount} tone={openCount > 0 ? 'warning' : 'default'} />
+        <StatCard label="Resolved" value={resolvedCount} tone="success" />
+        <StatCard label="Failed notify" value={notifyFailCount} tone={notifyFailCount > 0 ? 'danger' : 'default'} />
+        <StatCard label="Shown" value={historyItems.length} />
       </div>
 
-      {/* Filters */}
-      <div className="flex items-center gap-4">
-        <div className="flex items-center gap-2">
-          <label className="text-sm font-medium text-gray-700">Status:</label>
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent text-sm"
-          >
-            {STATUS_FILTERS.map((f) => (
-              <option key={f.value} value={f.value}>
-                {f.label}
-              </option>
-            ))}
-          </select>
+      <div className="flex flex-col sm:flex-row gap-3 sm:items-center bg-white border border-gray-200 rounded-xl px-4 py-3 shadow-sm">
+        <div className="relative flex-1 max-w-md">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <input
+            type="search"
+            placeholder="Search alerts…"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            className="w-full pl-9 pr-3 py-2 text-sm border-0 bg-gray-50 rounded-lg focus:ring-2 focus:ring-gray-900/10"
+          />
         </div>
+        <select
+          value={statusFilter}
+          onChange={e => setStatusFilter(e.target.value)}
+          className="px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white min-w-[160px]"
+        >
+          {STATUS_FILTERS.map(f => (
+            <option key={f.value} value={f.value}>{f.label}</option>
+          ))}
+        </select>
       </div>
 
-      {/* History Table */}
       <div className="bg-white shadow-sm rounded-xl border border-gray-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-200 bg-gradient-to-r from-gray-50 to-white">
-          <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-            <History className="w-5 h-5 text-gray-500" />
-            Triggered Alerts
-          </h2>
-        </div>
-        {isLoading ? (
+        {isError ? (
+          <div className="p-12 text-center">
+            <p className="text-red-600 text-sm mb-3">
+              {getApiErrorMessage(error, 'Could not load alert history')}
+            </p>
+            <Button variant="secondary" onClick={() => refetch()}>Retry</Button>
+          </div>
+        ) : isLoading ? (
           <div className="p-12 text-center text-gray-500">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900 mx-auto mb-4"></div>
             Loading alert history...
           </div>
-        ) : historyItems.length === 0 ? (
+        ) : displayedItems.length === 0 ? (
           <div className="p-12 text-center">
             <History className="w-12 h-12 text-gray-300 mx-auto mb-4" />
             <p className="text-gray-500 mb-2">No alert history found</p>
@@ -217,62 +331,76 @@ export default function AlertHistory() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Alert
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">
                     Triggered
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">
                     Value / Threshold
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Status
                   </th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">
                     Actions
                   </th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {historyItems.map((item: AlertHistoryItem) => (
-                  <tr key={item.id} className="hover:bg-gray-50 transition-colors">
+                {displayedItems.map((item: AlertHistoryItem) => {
+                  const failures = getNotificationFailures(item.notification_details)
+                  return (
+                  <tr
+                    key={item.id}
+                    className={`hover:bg-gray-50 transition-colors ${
+                      isOpenIncident(item.status) ? 'bg-amber-50/40' : ''
+                    }`}
+                  >
                     <td className="px-6 py-4">
-                      <div className="text-sm font-medium text-gray-900">
+                      <button
+                        type="button"
+                        className="text-sm font-medium text-gray-900 hover:text-gray-600 text-left"
+                        onClick={() => navigate(`/alerts/${item.alert_id}`)}
+                      >
                         {item.alert?.name || 'Unknown Alert'}
-                      </div>
-                      {item.alert?.description && (
-                        <div className="text-sm text-gray-500 truncate max-w-xs">
-                          {item.alert.description}
-                        </div>
-                      )}
+                      </button>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="flex items-center gap-2 text-sm text-gray-700">
-                        <Clock className="w-4 h-4 text-gray-400" />
+                        <Clock className="w-4 h-4 text-gray-400 shrink-0" />
                         <span title={formatDate(item.triggered_at)}>
                           {formatRelativeTime(item.triggered_at)}
                         </span>
                       </div>
+                      {failures.length > 0 && (
+                        <span
+                          className="text-xs text-red-600 mt-1 block"
+                          title={failures.map(f => f.error).join('; ')}
+                        >
+                          Notify failed
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm">
+                      <span className="font-mono font-medium text-red-600">
+                        {item.triggered_value.toLocaleString()}
+                      </span>
+                      <span className="text-gray-400 mx-1">/</span>
+                      <span className="font-mono text-gray-500">
+                        {item.threshold_value.toLocaleString()}
+                      </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm">
-                        <span className="font-mono font-medium text-red-600">
-                          {item.triggered_value.toLocaleString()}
-                        </span>
-                        <span className="text-gray-400 mx-1">/</span>
-                        <span className="font-mono text-gray-500">
-                          {item.threshold_value.toLocaleString()}
-                        </span>
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                        <IncidentStatusBadge status={item.status} />
+                        <DeliverySummaryBadge notificationDetails={item.notification_details} />
                       </div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      {getStatusBadge(item.status)}
-                    </td>
                     <td className="px-6 py-4 whitespace-nowrap text-right">
-                      <div className="flex items-center justify-end gap-1">
+                      <div className="inline-flex items-center justify-end gap-1 flex-nowrap">
                         {item.status === 'triggered' || item.status === 'notified' ? (
                           <>
                             <Button
                               variant="ghost"
-                              size="sm"
                               onClick={() => handleAcknowledge(item)}
                               leftIcon={<Eye className="w-4 h-4" />}
                               isLoading={acknowledgeMutation.isPending}
@@ -281,7 +409,6 @@ export default function AlertHistory() {
                             </Button>
                             <Button
                               variant="ghost"
-                              size="sm"
                               onClick={() => openResolveModal(item)}
                               leftIcon={<Check className="w-4 h-4 text-emerald-600" />}
                             >
@@ -291,24 +418,14 @@ export default function AlertHistory() {
                         ) : item.status === 'acknowledged' ? (
                           <Button
                             variant="ghost"
-                            size="sm"
                             onClick={() => openResolveModal(item)}
                             leftIcon={<Check className="w-4 h-4 text-emerald-600" />}
                           >
                             Resolve
                           </Button>
-                        ) : (
-                          <span className="text-sm text-gray-400">
-                            {item.resolved_by && (
-                              <span title={`Resolved by ${item.resolved_by}`}>
-                                Resolved
-                              </span>
-                            )}
-                          </span>
-                        )}
+                        ) : null}
                         <Button
                           variant="ghost"
-                          size="sm"
                           onClick={() => setSelectedItem(item)}
                           leftIcon={<Eye className="w-4 h-4" />}
                         >
@@ -317,7 +434,8 @@ export default function AlertHistory() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -332,9 +450,9 @@ export default function AlertHistory() {
               className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
               onClick={() => setSelectedItem(null)}
             />
-            <div className="relative bg-white rounded-2xl shadow-2xl max-w-2xl w-full p-8 max-h-[90vh] overflow-y-auto">
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-2xl font-bold text-gray-900">Alert Details</h2>
+            <div className="relative bg-white rounded-2xl shadow-2xl max-w-3xl w-full p-8 max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-bold text-gray-900">Incident</h2>
                 <button
                   onClick={() => setSelectedItem(null)}
                   className="p-2 text-gray-400 hover:text-gray-500 hover:bg-gray-100 rounded-lg transition-colors"
@@ -343,131 +461,37 @@ export default function AlertHistory() {
                 </button>
               </div>
 
-              <div className="space-y-6">
-                {/* Alert Info */}
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-3">
-                    Alert Information
-                  </h3>
-                  <div className="space-y-2">
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">Name:</span>
-                      <span className="font-medium">{selectedItem.alert?.name || 'Unknown'}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">Status:</span>
-                      {getStatusBadge(selectedItem.status)}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Trigger Details */}
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-3">
-                    Trigger Details
-                  </h3>
-                  <div className="space-y-2">
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">Triggered At:</span>
-                      <span className="font-medium">{formatDate(selectedItem.triggered_at)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">Triggered Value:</span>
-                      <span className="font-mono font-medium text-red-600">
-                        {selectedItem.triggered_value.toLocaleString()}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">Threshold:</span>
-                      <span className="font-mono text-gray-700">
-                        {selectedItem.threshold_value.toLocaleString()}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Timeline */}
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-3">
-                    Timeline
-                  </h3>
-                  <div className="space-y-3">
-                    <div className="flex items-start gap-3">
-                      <div className="w-2 h-2 mt-2 rounded-full bg-red-500"></div>
-                      <div>
-                        <div className="font-medium text-gray-900">Triggered</div>
-                        <div className="text-sm text-gray-500">{formatDate(selectedItem.triggered_at)}</div>
-                      </div>
-                    </div>
-                    {selectedItem.notified_at && (
-                      <div className="flex items-start gap-3">
-                        <div className="w-2 h-2 mt-2 rounded-full bg-amber-500"></div>
-                        <div>
-                          <div className="font-medium text-gray-900">Notified</div>
-                          <div className="text-sm text-gray-500">{formatDate(selectedItem.notified_at)}</div>
-                        </div>
-                      </div>
-                    )}
-                    {selectedItem.acknowledged_at && (
-                      <div className="flex items-start gap-3">
-                        <div className="w-2 h-2 mt-2 rounded-full bg-blue-500"></div>
-                        <div>
-                          <div className="font-medium text-gray-900">Acknowledged</div>
-                          <div className="text-sm text-gray-500">
-                            {formatDate(selectedItem.acknowledged_at)}
-                            {selectedItem.acknowledged_by && ` by ${selectedItem.acknowledged_by}`}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                    {selectedItem.resolved_at && (
-                      <div className="flex items-start gap-3">
-                        <div className="w-2 h-2 mt-2 rounded-full bg-emerald-500"></div>
-                        <div>
-                          <div className="font-medium text-gray-900">Resolved</div>
-                          <div className="text-sm text-gray-500">
-                            {formatDate(selectedItem.resolved_at)}
-                            {selectedItem.resolved_by && ` by ${selectedItem.resolved_by}`}
-                          </div>
-                          {selectedItem.resolution_notes && (
-                            <div className="mt-1 text-sm text-gray-600 bg-white rounded p-2 border border-gray-200">
-                              {selectedItem.resolution_notes}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Actions */}
-                <div className="flex justify-end gap-3 pt-4 border-t border-gray-200">
-                  <Button variant="ghost" onClick={() => setSelectedItem(null)}>
-                    Close
-                  </Button>
-                  {(selectedItem.status === 'triggered' || selectedItem.status === 'notified') && (
-                    <Button
-                      variant="secondary"
-                      onClick={() => handleAcknowledge(selectedItem)}
-                      leftIcon={<Eye className="w-4 h-4" />}
-                      isLoading={acknowledgeMutation.isPending}
-                    >
-                      Acknowledge
+              <IncidentDetailPanel
+                item={selectedItem}
+                statusBadge={<IncidentStatusBadge status={selectedItem.status} />}
+                isRefreshing={incidentRefreshingId === selectedItem.id}
+                actions={
+                  <>
+                    <Button variant="ghost" onClick={() => setSelectedItem(null)}>
+                      Close
                     </Button>
-                  )}
-                  {selectedItem.status !== 'resolved' && (
-                    <Button
-                      variant="primary"
-                      onClick={() => {
-                        setShowResolveModal(true)
-                      }}
-                      leftIcon={<Check className="w-4 h-4" />}
-                    >
-                      Resolve
-                    </Button>
-                  )}
-                </div>
-              </div>
+                    {(selectedItem.status === 'triggered' || selectedItem.status === 'notified') && (
+                      <Button
+                        variant="secondary"
+                        onClick={() => handleAcknowledge(selectedItem)}
+                        leftIcon={<Eye className="w-4 h-4" />}
+                        isLoading={acknowledgeMutation.isPending}
+                      >
+                        Acknowledge
+                      </Button>
+                    )}
+                    {selectedItem.status !== 'resolved' && (
+                      <Button
+                        variant="primary"
+                        onClick={() => setShowResolveModal(true)}
+                        leftIcon={<Check className="w-4 h-4" />}
+                      >
+                        Resolve
+                      </Button>
+                    )}
+                  </>
+                }
+              />
             </div>
           </div>
         </div>

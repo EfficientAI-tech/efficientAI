@@ -22,6 +22,15 @@ def _migration_bypass_paths() -> list[str]:
     paths = ["/health", "/health/ready"]
     if settings.DEBUG:
         paths.extend(["/docs", "/redoc", "/openapi.json"])
+    prefix = (settings.API_V1_PREFIX or "/api/v1").rstrip("/")
+    paths.extend(
+        [
+            f"{prefix}/telephony/",
+            f"{prefix}/chat/messaging/twilio/",
+            f"{prefix}/chat/messaging/meta/",
+            f"{prefix}/chat/messaging/telnyx/",
+        ]
+    )
     return paths
 
 

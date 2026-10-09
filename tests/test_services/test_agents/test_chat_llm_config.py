@@ -72,3 +72,22 @@ def test_voice_agent_falls_back_to_voice_bundle(db_session, org_id, seed_org):
     resolved = resolve_simulation_llm(db_session, agent=agent, organization_id=org_id, leg="test")
     assert resolved.source == "voice_bundle"
     assert resolved.model == "gpt-4o-mini"
+
+
+def test_messaging_main_uses_test_llm_when_main_unset(db_session, org_id):
+    agent = SimpleNamespace(
+        call_medium=CallMediumEnum.CHAT.value,
+        chat_connection_type="messaging_channels",
+        chat_connection_config={"messaging_channel": "whatsapp"},
+        test_llm_provider=ModelProvider.OPENAI.value,
+        test_llm_model="gpt-4.1-nano",
+        test_llm_credential_id=uuid4(),
+        test_llm_config=None,
+        main_llm_provider=None,
+        main_llm_model=None,
+        voice_bundle_id=None,
+    )
+
+    resolved = resolve_simulation_llm(db_session, agent=agent, organization_id=org_id, leg="main")
+    assert resolved.source == "test_llm_for_messaging_production"
+    assert resolved.model == "gpt-4.1-nano"

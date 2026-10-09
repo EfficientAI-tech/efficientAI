@@ -77,6 +77,7 @@ IMPORTS_WORKER_QUEUES = "imports,diarization,eval-control,evaluations"
 EVAL_CONTROL_QUEUE = "eval-control"
 USAGE_WORKER_QUEUE = "usage"
 PLATFORM_WORKER_QUEUE = "platform"
+NOTIFICATIONS_WORKER_QUEUE = os.environ.get("NOTIFICATIONS_WORKER_QUEUE", "platform")
 TRACES_WORKER_QUEUE = "traces"
 
 
@@ -204,6 +205,8 @@ celery_app.conf.task_routes = {
     "flush_usage_counters": {"queue": USAGE_WORKER_QUEUE},
     "recompute_usage_costs": {"queue": USAGE_WORKER_QUEUE},
     "evaluate_alerts": {"queue": PLATFORM_WORKER_QUEUE},
+    "evaluate_alerts_for_org": {"queue": PLATFORM_WORKER_QUEUE},
+    "send_alert_notifications": {"queue": NOTIFICATIONS_WORKER_QUEUE},
     "refresh_fx_rates": {"queue": PLATFORM_WORKER_QUEUE},
     "prune_oss_usage_history": {"queue": PLATFORM_WORKER_QUEUE},
     "dispatch_cron_jobs": {"queue": USAGE_WORKER_QUEUE},

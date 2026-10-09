@@ -3,13 +3,14 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
+from sqlalchemy import and_, func
 from uuid import UUID
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
 
 from app.database import get_db
 from app.dependencies import get_organization_id, require_enterprise_feature
+from app.core.auth import Principal, get_principal
 from app.models.database import Alert, AlertHistory
 from app.models.enums import AlertStatus, AlertHistoryStatus
 from app.models.schemas import (
@@ -21,12 +22,40 @@ from app.models.schemas import (
 )
 from app.services.alerts.alert_evaluation_service import alert_evaluation_service
 from app.services.alerts.alert_notification_service import alert_notification_service
+from app.services.alerts.alerting_settings import is_lifecycle_sync_enabled
 
 router = APIRouter(
     prefix="/alerts",
     tags=["alerts"],
     dependencies=[Depends(require_enterprise_feature("alerts"))],
 )
+
+_PLACEHOLDER_EMAILS = frozenset(
+    {"email@example.com", "example@example.com", "test@example.com"}
+)
+
+
+def _record_lifecycle_notifications(
+    history: AlertHistory, phase: str, results: List[Dict[str, Any]]
+) -> None:
+    if not results:
+        return
+    details = dict(history.notification_details or {})
+    lifecycle = dict(details.get("lifecycle") or {})
+    lifecycle[phase] = results
+    details["lifecycle"] = lifecycle
+    history.notification_details = details
+
+
+def _reject_placeholder_emails(emails: Optional[List[str]]) -> None:
+    if not emails:
+        return
+    blocked = [e for e in emails if e and e.strip().lower() in _PLACEHOLDER_EMAILS]
+    if blocked:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Replace placeholder email addresses before saving: {', '.join(blocked)}",
+        )
 
 
 # ============================================
@@ -54,19 +83,24 @@ def create_alert(
             detail="An alert with this name already exists"
         )
 
+    _reject_placeholder_emails(alert_data.notify_emails)
+
     alert = Alert(
         organization_id=organization_id,
         name=alert_data.name,
         description=alert_data.description,
+        data_source=alert_data.data_source.value,
         metric_type=alert_data.metric_type.value,
         aggregation=alert_data.aggregation.value,
         operator=alert_data.operator.value,
         threshold_value=alert_data.threshold_value,
         time_window_minutes=alert_data.time_window_minutes,
+        alert_on_missing_data=alert_data.alert_on_missing_data,
         agent_ids=[str(aid) for aid in alert_data.agent_ids] if alert_data.agent_ids else None,
         notify_frequency=alert_data.notify_frequency.value,
         notify_emails=alert_data.notify_emails,
         notify_webhooks=alert_data.notify_webhooks,
+        notify_pagerduty_routing_keys=alert_data.notify_pagerduty_routing_keys,
         status=AlertStatus.ACTIVE.value,
     )
     db.add(alert)
@@ -150,6 +184,9 @@ def update_alert(
     if alert_data.description is not None:
         alert.description = alert_data.description
 
+    if alert_data.data_source is not None:
+        alert.data_source = alert_data.data_source.value
+
     if alert_data.metric_type is not None:
         alert.metric_type = alert_data.metric_type.value
 
@@ -165,6 +202,9 @@ def update_alert(
     if alert_data.time_window_minutes is not None:
         alert.time_window_minutes = alert_data.time_window_minutes
 
+    if alert_data.alert_on_missing_data is not None:
+        alert.alert_on_missing_data = alert_data.alert_on_missing_data
+
     if alert_data.agent_ids is not None:
         alert.agent_ids = [str(aid) for aid in alert_data.agent_ids] if alert_data.agent_ids else None
 
@@ -172,10 +212,14 @@ def update_alert(
         alert.notify_frequency = alert_data.notify_frequency.value
 
     if alert_data.notify_emails is not None:
+        _reject_placeholder_emails(alert_data.notify_emails)
         alert.notify_emails = alert_data.notify_emails
 
     if alert_data.notify_webhooks is not None:
         alert.notify_webhooks = alert_data.notify_webhooks
+
+    if alert_data.notify_pagerduty_routing_keys is not None:
+        alert.notify_pagerduty_routing_keys = alert_data.notify_pagerduty_routing_keys
 
     if alert_data.status is not None:
         alert.status = alert_data.status.value
@@ -247,6 +291,9 @@ class TestNotificationRequest(BaseModel):
     """Schema for testing notifications."""
     webhook_url: Optional[str] = Field(None, description="Slack webhook URL to test")
     email: Optional[str] = Field(None, description="Email address to test")
+    pagerduty_routing_key: Optional[str] = Field(
+        None, description="PagerDuty Events API v2 routing key to test"
+    )
 
 
 class AlertEvaluationResponse(BaseModel):
@@ -261,6 +308,9 @@ class AlertEvaluationResponse(BaseModel):
     notifications_sent: Optional[int] = None
     notifications_successful: Optional[int] = None
     skipped_cooldown: Optional[bool] = None
+    new_incident: Optional[bool] = None
+    ongoing_incident: Optional[bool] = None
+    recovered: Optional[bool] = None
     reason: Optional[str] = None
     error: Optional[str] = None
 
@@ -285,7 +335,9 @@ def trigger_alert_evaluation(
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
 
-    result = alert_evaluation_service.evaluate_single_alert(alert, db)
+    result = alert_evaluation_service.evaluate_single_alert(
+        alert, db, sync_notifications=True
+    )
     return result
 
 
@@ -298,42 +350,9 @@ def evaluate_all_alerts(
     Evaluate all active alerts for the organization.
     Checks all alert conditions and triggers notifications for any that are breached.
     """
-    # Get only this organization's active alerts
-    active_alerts = db.query(Alert).filter(
-        and_(
-            Alert.organization_id == organization_id,
-            Alert.status == AlertStatus.ACTIVE.value,
-        )
-    ).all()
-
-    results = {
-        "total_alerts": len(active_alerts),
-        "triggered": 0,
-        "not_triggered": 0,
-        "errors": 0,
-        "skipped_cooldown": 0,
-        "details": [],
-    }
-
-    for alert in active_alerts:
-        try:
-            result = alert_evaluation_service.evaluate_single_alert(alert, db)
-            results["details"].append(result)
-            if result.get("triggered"):
-                results["triggered"] += 1
-            elif result.get("skipped_cooldown"):
-                results["skipped_cooldown"] += 1
-            else:
-                results["not_triggered"] += 1
-        except Exception as e:
-            results["errors"] += 1
-            results["details"].append({
-                "alert_id": str(alert.id),
-                "alert_name": alert.name,
-                "error": str(e),
-            })
-
-    return results
+    return alert_evaluation_service.evaluate_organization_alerts(
+        db, organization_id, sync_notifications=True
+    )
 
 
 @router.post("/{alert_id}/test-notification")
@@ -407,11 +426,26 @@ def test_alert_notification(
                 )
                 results.append(result)
 
+    if request.pagerduty_routing_key:
+        result = alert_notification_service.send_pagerduty_notification(
+            routing_key=request.pagerduty_routing_key,
+            **common_params,
+        )
+        results.append(result)
+    elif getattr(alert, "notify_pagerduty_routing_keys", None):
+        for routing_key in alert.notify_pagerduty_routing_keys:
+            if routing_key and str(routing_key).strip():
+                result = alert_notification_service.send_pagerduty_notification(
+                    routing_key=str(routing_key).strip(),
+                    **common_params,
+                )
+                results.append(result)
+
     if not results:
         raise HTTPException(
             status_code=400,
-            detail="No notification channels configured. Provide a webhook_url or email, "
-                   "or configure notify_webhooks/notify_emails on the alert.",
+            detail="No notification channels configured. Provide webhook_url, email, or "
+                   "pagerduty_routing_key, or configure channels on the alert.",
         )
 
     return {
@@ -427,10 +461,49 @@ def test_alert_notification(
 # ALERT HISTORY ENDPOINTS
 # ============================================
 
+_OPEN_HISTORY_STATUSES = (
+    AlertHistoryStatus.TRIGGERED.value,
+    AlertHistoryStatus.NOTIFIED.value,
+    AlertHistoryStatus.ACKNOWLEDGED.value,
+)
+
+
+class OpenIncidentSummaryResponse(BaseModel):
+    total: int
+    by_alert_id: Dict[str, int]
+
+
+@router.get("/history/open-summary", response_model=OpenIncidentSummaryResponse)
+def open_incident_summary(
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    """Count open incidents (not limited by history list pagination)."""
+    base = db.query(AlertHistory).filter(
+        AlertHistory.organization_id == organization_id,
+        AlertHistory.status.in_(_OPEN_HISTORY_STATUSES),
+    )
+    total = base.count()
+    rows = (
+        db.query(AlertHistory.alert_id, func.count(AlertHistory.id))
+        .filter(
+            AlertHistory.organization_id == organization_id,
+            AlertHistory.status.in_(_OPEN_HISTORY_STATUSES),
+        )
+        .group_by(AlertHistory.alert_id)
+        .all()
+    )
+    return OpenIncidentSummaryResponse(
+        total=total,
+        by_alert_id={str(alert_id): count for alert_id, count in rows},
+    )
+
+
 @router.get("/history/all", response_model=List[AlertHistoryResponse])
 def list_all_alert_history(
     alert_id: Optional[UUID] = None,
     status_filter: Optional[AlertHistoryStatus] = None,
+    open_only: bool = False,
     skip: int = 0,
     limit: int = 100,
     organization_id: UUID = Depends(get_organization_id),
@@ -442,7 +515,9 @@ def list_all_alert_history(
     if alert_id:
         query = query.filter(AlertHistory.alert_id == alert_id)
     
-    if status_filter:
+    if open_only:
+        query = query.filter(AlertHistory.status.in_(_OPEN_HISTORY_STATUSES))
+    elif status_filter:
         query = query.filter(AlertHistory.status == status_filter.value)
     
     history = query.order_by(AlertHistory.triggered_at.desc()).offset(skip).limit(limit).all()
@@ -483,6 +558,8 @@ def list_alert_history(
         query = query.filter(AlertHistory.status == status_filter.value)
     
     history = query.order_by(AlertHistory.triggered_at.desc()).offset(skip).limit(limit).all()
+    for h in history:
+        h.alert = alert
     return history
 
 
@@ -516,6 +593,7 @@ def update_alert_history(
     history_id: UUID,
     update_data: AlertHistoryUpdate,
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ):
     """Update alert history (acknowledge or resolve)."""
@@ -536,19 +614,48 @@ def update_alert_history(
         # Set timestamps based on status transition
         if new_status == AlertHistoryStatus.ACKNOWLEDGED.value and history.acknowledged_at is None:
             history.acknowledged_at = datetime.now(timezone.utc)
-            if update_data.acknowledged_by:
-                history.acknowledged_by = update_data.acknowledged_by
-        
+            history.acknowledged_by = (
+                update_data.acknowledged_by
+                or principal.email
+                or (str(principal.user_id) if principal.user_id else None)
+            )
+            alert = db.query(Alert).filter(Alert.id == history.alert_id).first()
+            if alert and is_lifecycle_sync_enabled(organization_id, db):
+                ack_results = alert_notification_service.send_acknowledge_notifications(
+                    alert,
+                    history_id=str(history.id),
+                    acknowledged_by=history.acknowledged_by,
+                )
+                _record_lifecycle_notifications(history, "acknowledge", ack_results)
+
         if new_status == AlertHistoryStatus.RESOLVED.value and history.resolved_at is None:
             history.resolved_at = datetime.now(timezone.utc)
-            if update_data.resolved_by:
-                history.resolved_by = update_data.resolved_by
+            history.resolved_by = (
+                update_data.resolved_by
+                or principal.email
+                or (str(principal.user_id) if principal.user_id else None)
+            )
             if update_data.resolution_notes:
                 history.resolution_notes = update_data.resolution_notes
+
+            alert = db.query(Alert).filter(Alert.id == history.alert_id).first()
+            if alert:
+                alert.suppress_reopen_until_ok = True
+                if is_lifecycle_sync_enabled(organization_id, db):
+                    recovery_results = alert_notification_service.send_recovery_notifications(
+                        alert,
+                        history_id=str(history.id),
+                        metric_value=history.triggered_value,
+                    )
+                    _record_lifecycle_notifications(history, "recovery", recovery_results)
         
         history.status = new_status
 
     db.commit()
     db.refresh(history)
+
+    alert = db.query(Alert).filter(Alert.id == history.alert_id).first()
+    if alert:
+        history.alert = alert
 
     return history

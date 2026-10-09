@@ -4,4 +4,14 @@ title: Cron jobs
 
 # Cron jobs
 
-Operational cron job documentation is maintained in the repository under `docs/` and deployment runbooks. For product alerting, see [Alerting](/docs/advanced/alerting/).
+## Product (org)
+
+Scheduled **evaluator runs** live under **Configurations → Cron Jobs**. See [Alerting — Scheduled synthetic tests](/docs/products/alerting/#scheduled-synthetic-tests-cron-jobs).
+
+## Coverage map
+
+What cron does and does not do relative to alerts: [Alerting & cron coverage](/docs/products/alerting-and-cron-coverage/).
+
+## Operations
+
+Platform Beat tasks (`evaluate_alerts`, `dispatch_cron_jobs`, usage flush, trace sweeps, etc.) are configured in the API worker (`app/workers/config.py`). Runbooks and deployment notes remain under repository `docs/` as applicable.

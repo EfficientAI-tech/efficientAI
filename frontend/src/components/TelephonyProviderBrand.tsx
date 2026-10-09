@@ -27,12 +27,16 @@ export default function TelephonyProviderBrand({
     ? getTelephonyProviderLabel(enumVal)
     : (provider || '—').toString()
   const logo = enumVal ? getTelephonyProviderLogo(enumVal) : null
-  const imgClass = size === 'sm' ? 'h-5 w-5' : 'h-6 w-6'
+  const imgClass = size === 'sm' ? 'h-6 w-6' : 'h-7 w-7'
 
   return (
-    <div className={`flex items-center gap-2 min-w-0 ${className}`}>
+    <div className={`flex items-center gap-2.5 min-w-0 ${className}`}>
       {logo ? (
-        <img src={logo} alt="" className={`${imgClass} object-contain shrink-0`} aria-hidden />
+        <span
+          className={`${imgClass} shrink-0 flex items-center justify-center rounded-md border border-gray-200 bg-white p-0.5`}
+        >
+          <img src={logo} alt="" className="h-full w-full object-contain" aria-hidden />
+        </span>
       ) : null}
       {showLabel ? <span className="truncate text-inherit">{label}</span> : null}
     </div>

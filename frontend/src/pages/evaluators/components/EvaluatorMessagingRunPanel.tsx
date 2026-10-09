@@ -1,12 +1,20 @@
+import { useMemo } from 'react'
 import { MessagesSquare, Smartphone } from 'lucide-react'
 import { useMutation } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
 import Button from '../../../components/Button'
 import EvaluatorDialTargetFields from './EvaluatorDialTargetFields'
 import EvaluatorMessagingTrialTemplateField from './EvaluatorMessagingTrialTemplateField'
+import { useOrgTelephony } from '../../../hooks/useOrgTelephony'
+import {
+  messagingEvalProfile,
+  smsCarrierFromTelephony,
+} from '../../../lib/messagingEvalUi'
 
 interface Props {
   agentId: string
+  chatConnectionConfig?: Record<string, unknown> | null
+  telephonyPhoneNumberId?: string | null
   personaName?: string
   scenarioName?: string
   toNumber: string
@@ -18,6 +26,8 @@ interface Props {
 
 export default function EvaluatorMessagingRunPanel({
   agentId,
+  chatConnectionConfig,
+  telephonyPhoneNumberId,
   personaName,
   scenarioName,
   toNumber,
@@ -26,20 +36,56 @@ export default function EvaluatorMessagingRunPanel({
   onTrialSmsTemplateChange,
   showToast,
 }: Props) {
-  const testSmsMutation = useMutation({
-    mutationFn: () =>
-      apiClient.testAgentTwilioSms(agentId, {
-        ...(toNumber.trim() ? { messaging_recipient: toNumber.trim() } : {}),
-        twilio_sms_trial_body_template: trialSmsTemplate.trim(),
+  const { activeNumbers } = useOrgTelephony()
+
+  const profile = useMemo(
+    () =>
+      messagingEvalProfile({
+        chatConnectionConfig,
+        telephonyPhoneNumberId,
+        smsCarrier: smsCarrierFromTelephony(telephonyPhoneNumberId, activeNumbers),
       }),
+    [chatConnectionConfig, telephonyPhoneNumberId, activeNumbers],
+  )
+
+  const testSmsMutation = useMutation({
+    mutationFn: async () => {
+      const recipient = toNumber.trim()
+      const payload = recipient ? { messaging_recipient: recipient } : {}
+      if (profile.testSend === 'meta_whatsapp') {
+        return apiClient.testAgentMetaWhatsapp(agentId, payload)
+      }
+      if (profile.testSend === 'telnyx_sms') {
+        return apiClient.testAgentTelnyxSms(agentId, payload)
+      }
+      if (profile.testSend === 'twilio_sms') {
+        return apiClient.testAgentTwilioSms(agentId, {
+          ...payload,
+          twilio_sms_trial_body_template: trialSmsTemplate.trim(),
+        })
+      }
+      throw new Error('Test send is not available for this channel')
+    },
     onSuccess: (data) => {
-      const sid = data.message_sid ? ` · ${data.message_sid}` : ''
-      showToast(`Test SMS sent to ${data.to} (${data.body_sent})${sid}`, 'success')
+      const sid =
+        'message_sid' in data && data.message_sid
+          ? ` · ${data.message_sid}`
+          : 'message_id' in data && data.message_id
+            ? ` · ${data.message_id}`
+            : ''
+      const template =
+        'template_sent' in data && data.template_sent ? ` · ${data.template_sent}` : ''
+      const bodyBit =
+        'body_sent' in data && data.body_sent ? ` (${data.body_sent})` : template
+      showToast(`Test ${profile.testSendSuccessPrefix} sent to ${data.to}${bodyBit}${sid}`, 'success')
     },
     onError: (err: unknown) => {
       const ax = err as { response?: { data?: { detail?: string } }; message?: string }
       const detail = ax.response?.data?.detail
-      showToast(typeof detail === 'string' ? detail : ax.message || 'Test SMS failed', 'error')
+      showToast(
+        typeof detail === 'string' ? detail : ax.message || 'Test message failed',
+        'error',
+      )
     },
   })
 
@@ -52,9 +98,7 @@ export default function EvaluatorMessagingRunPanel({
           </div>
           <div>
             <h2 className="text-lg font-semibold text-gray-900">Messaging test</h2>
-            <p className="text-sm text-gray-500 mt-0.5">
-              Test SMS and eval runs for the first combination below
-            </p>
+            <p className="text-sm text-gray-500 mt-0.5">{profile.panelSubtitle}</p>
           </div>
         </div>
       </div>
@@ -74,25 +118,29 @@ export default function EvaluatorMessagingRunPanel({
           </div>
         )}
         <EvaluatorDialTargetFields
-          label="Recipient number *"
+          label={profile.recipientLabel}
           value={toNumber}
           onChange={onToNumberChange}
-          helperText="Same number is used for Test send SMS and when you queue suite runs."
+          helperText={profile.recipientHelper}
         />
-        <EvaluatorMessagingTrialTemplateField
-          value={trialSmsTemplate}
-          onChange={onTrialSmsTemplateChange}
-          helperText="Required on Twilio trial accounts. Also used when you queue suite runs."
-        />
-        <Button
-          variant="primary"
-          onClick={() => testSmsMutation.mutate()}
-          isLoading={testSmsMutation.isPending}
-          disabled={!toNumber.trim()}
-          leftIcon={<Smartphone className="h-4 w-4" />}
-        >
-          Test send SMS
-        </Button>
+        {profile.showTrialTemplate ? (
+          <EvaluatorMessagingTrialTemplateField
+            value={trialSmsTemplate}
+            onChange={onTrialSmsTemplateChange}
+            helperText={profile.trialTemplateHelper}
+          />
+        ) : null}
+        {profile.testSendButtonLabel ? (
+          <Button
+            variant="primary"
+            onClick={() => testSmsMutation.mutate()}
+            isLoading={testSmsMutation.isPending}
+            disabled={!toNumber.trim()}
+            leftIcon={<Smartphone className="h-4 w-4" />}
+          >
+            {profile.testSendButtonLabel}
+          </Button>
+        ) : null}
       </div>
     </div>
   )

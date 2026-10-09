@@ -19,6 +19,12 @@ import {
 } from 'lucide-react'
 import { useToast } from '../../../hooks/useToast'
 import { trialSmsTemplateFromAgentConfig } from '../../../lib/twilioSmsTrialTemplates'
+import {
+  messagingEvalProfile,
+  messagingChannelFromConfig,
+  smsCarrierFromTelephony,
+} from '../../../lib/messagingEvalUi'
+import { useOrgTelephony } from '../../../hooks/useOrgTelephony'
 import { ModelProvider } from '../../../types/api'
 import EvaluatorOutboundCallPanel from '../components/EvaluatorOutboundCallPanel'
 import EvaluatorMessagingRunPanel from '../components/EvaluatorMessagingRunPanel'
@@ -91,13 +97,30 @@ export default function EvaluatorDetail() {
     enabled: !!suite?.agent_id,
   })
 
+  const { activeNumbers: telephonyNumbers } = useOrgTelephony(Boolean(suite?.agent_id))
+
   useEffect(() => {
     if (!agent || agent.chat_connection_type !== 'messaging_channels') return
+    const channel = messagingChannelFromConfig(agent.chat_connection_config ?? null)
+    if (channel !== 'sms') return
+    const carrier = smsCarrierFromTelephony(agent.telephony_phone_number_id, telephonyNumbers)
+    const profile = messagingEvalProfile({
+      chatConnectionConfig: agent.chat_connection_config ?? null,
+      telephonyPhoneNumberId: agent.telephony_phone_number_id,
+      smsCarrier: carrier,
+    })
+    if (!profile.showTrialTemplate) return
     setRunTrialSmsTemplate((prev) => {
       if (prev) return prev
       return trialSmsTemplateFromAgentConfig(agent.chat_connection_config ?? null)
     })
-  }, [agent?.id, agent?.chat_connection_type, agent?.chat_connection_config])
+  }, [
+    agent?.id,
+    agent?.chat_connection_type,
+    agent?.chat_connection_config,
+    agent?.telephony_phone_number_id,
+    telephonyNumbers,
+  ])
 
   const { data: scenarios = [] } = useQuery({
     queryKey: ['scenarios', suite?.agent_id],
@@ -590,6 +613,8 @@ export default function EvaluatorDetail() {
       {isMessagingChat && firstCombo ? (
         <EvaluatorMessagingRunPanel
           agentId={suite.agent_id}
+          chatConnectionConfig={agent?.chat_connection_config}
+          telephonyPhoneNumberId={agent?.telephony_phone_number_id}
           personaName={firstCombo.persona_name || suite.persona_name || undefined}
           scenarioName={firstCombo.scenario_name || undefined}
           toNumber={runToNumber}

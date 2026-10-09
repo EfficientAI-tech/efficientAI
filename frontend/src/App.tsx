@@ -236,10 +236,11 @@ function App() {
           <Route path="profile" element={<Profile />} />
           <Route path="settings" element={<Settings />} />
           <Route path="alerts" element={<EnterpriseGate feature="alerts"><Alerts /></EnterpriseGate>} />
-          <Route path="alerts/:id" element={<EnterpriseGate feature="alerts"><AlertDetail /></EnterpriseGate>} />
           <Route path="alerts/history" element={<EnterpriseGate feature="alerts"><AlertHistory /></EnterpriseGate>} />
+          <Route path="alerts/:id" element={<EnterpriseGate feature="alerts"><AlertDetail /></EnterpriseGate>} />
           <Route path="voice-playground" element={<EnterpriseGate feature="voice_playground"><VoicePlayground /></EnterpriseGate>} />
           <Route path="cron-jobs" element={<CronJobs />} />
+          <Route path="configurations/cron-jobs" element={<Navigate to="/cron-jobs" replace />} />
           <Route path="prompt-partials" element={<PromptPartials />} />
           <Route path="prompt-partials/:id" element={<PromptPartials />} />
           <Route

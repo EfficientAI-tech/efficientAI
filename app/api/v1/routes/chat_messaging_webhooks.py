@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.dependencies import get_db
 from app.core.public_url import configured_public_base_url
+from app.services.telephony.meta_whatsapp_webhook_urls import meta_whatsapp_inbound_webhook_url
 from app.services.telephony.telnyx_webhook_urls import telnyx_webhook_base
 from app.services.telephony.twilio_webhook_urls import twilio_webhook_base
 from app.models.database import Agent
@@ -35,10 +36,15 @@ async def messaging_public_base_url() -> dict[str, str]:
     """Public API bases for messaging webhook URLs (per provider config, then security.public_base_url)."""
     twilio_base = _webhook_base_or_public(twilio_webhook_base)
     telnyx_base = _webhook_base_or_public(telnyx_webhook_base)
+    try:
+        meta_whatsapp_url = meta_whatsapp_inbound_webhook_url()
+    except ValueError:
+        meta_whatsapp_url = ""
     return {
         "public_base_url": twilio_base,
         "twilio_public_base_url": twilio_base,
         "telnyx_public_base_url": telnyx_base,
+        "meta_whatsapp_inbound_webhook_url": meta_whatsapp_url,
     }
 
 

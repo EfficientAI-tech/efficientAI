@@ -290,7 +290,6 @@ export default function AgentWorkspaceDetail({
             payload.main_llm_credential_id = chatConnection.mainLlmCredentialId
           }
         }
-
         if (connType === 'provider_chat') {
           payload.voice_ai_integration_id = data.voice_ai_integration_id?.trim() || null
           payload.voice_ai_agent_id = data.voice_ai_agent_id?.trim() || null

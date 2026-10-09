@@ -207,6 +207,17 @@ class TelephonyService:
         if provider.lower() == "exotel" and not effective_voice_app_id:
             raise ValueError("voice_app_id (Exotel Account SID) is required for Exotel")
 
+        from app.services.telephony.telephony_integration_requirements import (
+            validate_telephony_integration_for_save,
+        )
+
+        validate_telephony_integration_for_save(
+            provider,
+            data,
+            integration=integration,
+            is_create=integration is None,
+        )
+
         if provider.lower() == "exotel" and "sip_domain" in data:
             from app.services.telephony.exotel_client import (
                 validate_exotel_api_host_for_save,

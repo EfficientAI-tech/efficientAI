@@ -25,7 +25,7 @@ export function OverviewSection({
         <h3 className="text-sm font-semibold text-gray-900">{title}</h3>
         {description ? <p className="text-xs text-gray-500 mt-0.5">{description}</p> : null}
       </div>
-      <div className="p-5">{children}</div>
+      <div className="p-5 min-w-0">{children}</div>
     </section>
   )
 }
@@ -55,9 +55,15 @@ export function OverviewStatCard({
       >
         <Icon className="h-5 w-5" aria-hidden />
       </div>
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 overflow-hidden">
         <p className="text-xs font-medium text-gray-500">{label}</p>
-        <p className="mt-0.5 text-sm font-semibold text-gray-900 truncate">{value}</p>
+        <div className="mt-0.5 text-sm font-semibold text-gray-900 min-w-0 overflow-hidden [&_*]:max-w-full">
+          {typeof value === 'string' || typeof value === 'number' ? (
+            <p className="truncate">{value}</p>
+          ) : (
+            value
+          )}
+        </div>
       </div>
     </div>
   )
@@ -87,9 +93,17 @@ export function OverviewConfigBadge({ configured }: { configured: boolean }) {
 
 export function OverviewDetailRow({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-[minmax(8rem,38%)_1fr] gap-1 sm:gap-4 py-3 border-b border-gray-100 last:border-0 last:pb-0 first:pt-0">
-      <dt className="text-xs font-medium text-gray-500">{label}</dt>
-      <dd className="text-sm font-semibold text-gray-900 sm:text-right break-words">{value}</dd>
+    <div className="flex flex-col gap-1.5 py-3 border-b border-gray-100 last:border-0 last:pb-0 first:pt-0 min-w-0">
+      <dt className="text-xs font-medium text-gray-500 shrink-0">{label}</dt>
+      <dd className="text-sm font-semibold text-gray-900 min-w-0 w-full overflow-hidden">
+        {typeof value === 'string' || typeof value === 'number' ? (
+          <span className="block truncate font-semibold" title={String(value)}>
+            {value}
+          </span>
+        ) : (
+          value
+        )}
+      </dd>
     </div>
   )
 }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from uuid import UUID
 
 from app.database import SessionLocal
@@ -18,6 +19,26 @@ def run_cron_evaluator_job_task(job_id: str) -> dict:
         job = db.query(CronJob).filter(CronJob.id == UUID(job_id)).first()
         if job is None:
             return {"error": "job not found", "job_id": job_id}
-        return run_evaluator_cron_job(db, job)
+        result = run_evaluator_cron_job(db, job)
+        err = result.get("error")
+        tasks = int(result.get("evaluator_tasks") or 0)
+        expected = int(result.get("evaluator_ids_expected") or 0)
+        if err:
+            job.last_run_status = "failed"
+            job.last_run_error = str(err)[:2000]
+        elif tasks == 0:
+            job.last_run_status = "failed"
+            job.last_run_error = "no evaluator tasks enqueued"
+        elif expected > 0 and tasks < expected:
+            job.last_run_status = "failed"
+            job.last_run_error = (
+                f"partial enqueue: {tasks}/{expected} evaluator runs queued"
+            )[:2000]
+        else:
+            job.last_run_status = "success"
+            job.last_run_error = None
+        job.last_run_at = datetime.now(timezone.utc)
+        db.commit()
+        return result
     finally:
         db.close()
