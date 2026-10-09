@@ -1002,12 +1002,9 @@ class AlertEvaluationService:
         triggered_value: float,
         db: Session,
     ) -> List[Dict[str, Any]]:
-        if history.status == AlertHistoryStatus.RESOLVED.value:
+        if history.status not in OPEN_INCIDENT_STATUSES:
             return []
-        if history.status not in (
-            AlertHistoryStatus.TRIGGERED.value,
-            AlertHistoryStatus.NOTIFIED.value,
-        ):
+        if not self._should_notify_for_incident(alert, history):
             return []
 
         agent_names = (history.context_data or {}).get("agent_names")

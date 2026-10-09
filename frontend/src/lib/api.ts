@@ -5572,6 +5572,11 @@ class ApiClient {
   }
 
   // Alert History endpoints
+  async getOpenIncidentSummary(): Promise<{ total: number; by_alert_id: Record<string, number> }> {
+    const response = await this.client.get('/api/v1/alerts/history/open-summary')
+    return response.data
+  }
+
   async listAlertHistory(
     status?: string,
     alertId?: string,

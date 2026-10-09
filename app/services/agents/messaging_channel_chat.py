@@ -257,11 +257,35 @@ def _send_meta_whatsapp_text(
         return {"message_id": msg_id, "to": to_digits}
 
 
-def is_meta_whatsapp_live_cfg(cfg: dict[str, Any]) -> bool:
+def _effective_messaging_provider(
+    cfg: dict[str, Any],
+    db: Session | None = None,
+    organization_id: UUID | None = None,
+) -> str:
+    provider = _cfg_str(cfg, "messaging_provider", "messaging_telephony_provider").lower()
+    if provider:
+        return provider
+    if db is not None and organization_id is not None:
+        telephony_id = cfg.get("messaging_telephony_integration_id") or cfg.get(
+            "messaging_integration_id"
+        )
+        telephony = _resolve_telephony_integration(
+            db, organization_id=organization_id, integration_id_raw=telephony_id
+        )
+        if telephony:
+            return telephony.provider.lower()
+    return ""
+
+
+def is_meta_whatsapp_live_cfg(
+    cfg: dict[str, Any],
+    db: Session | None = None,
+    organization_id: UUID | None = None,
+) -> bool:
     channel = (_cfg_str(cfg, "messaging_channel").lower() or "sms")
     if channel != "whatsapp":
         return False
-    provider = _cfg_str(cfg, "messaging_provider", "messaging_telephony_provider").lower()
+    provider = _effective_messaging_provider(cfg, db=db, organization_id=organization_id)
     if provider in ("twilio", "telnyx", "plivo"):
         return False
     if provider in ("meta_whatsapp", "meta"):

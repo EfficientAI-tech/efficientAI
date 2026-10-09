@@ -248,7 +248,7 @@ def generate_production_chat_reply(
         )
 
         cfg = _apply_run_messaging_overrides(chat_connection_config_for_runtime(cfg_raw))
-        if is_meta_whatsapp_live_cfg(cfg):
+        if is_meta_whatsapp_live_cfg(cfg, db=db, organization_id=organization_id):
             reply, leg = run_meta_whatsapp_live_production_turn(
                 db,
                 organization_id=organization_id,

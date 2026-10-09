@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
+from sqlalchemy import and_, func
 from uuid import UUID
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
@@ -466,6 +466,37 @@ _OPEN_HISTORY_STATUSES = (
     AlertHistoryStatus.NOTIFIED.value,
     AlertHistoryStatus.ACKNOWLEDGED.value,
 )
+
+
+class OpenIncidentSummaryResponse(BaseModel):
+    total: int
+    by_alert_id: Dict[str, int]
+
+
+@router.get("/history/open-summary", response_model=OpenIncidentSummaryResponse)
+def open_incident_summary(
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    """Count open incidents (not limited by history list pagination)."""
+    base = db.query(AlertHistory).filter(
+        AlertHistory.organization_id == organization_id,
+        AlertHistory.status.in_(_OPEN_HISTORY_STATUSES),
+    )
+    total = base.count()
+    rows = (
+        db.query(AlertHistory.alert_id, func.count(AlertHistory.id))
+        .filter(
+            AlertHistory.organization_id == organization_id,
+            AlertHistory.status.in_(_OPEN_HISTORY_STATUSES),
+        )
+        .group_by(AlertHistory.alert_id)
+        .all()
+    )
+    return OpenIncidentSummaryResponse(
+        total=total,
+        by_alert_id={str(alert_id): count for alert_id, count in rows},
+    )
 
 
 @router.get("/history/all", response_model=List[AlertHistoryResponse])

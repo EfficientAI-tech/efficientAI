@@ -130,20 +130,13 @@ export default function Alerts() {
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
 
-  const { data: openHistorySummary = [] } = useQuery({
+  const { data: openSummary } = useQuery({
     queryKey: ['alertHistory', 'open_summary'],
-    queryFn: () => apiClient.listAlertHistory(undefined, undefined, 0, 500, true),
+    queryFn: () => apiClient.getOpenIncidentSummary(),
   })
 
-  const openIncidentCount = openHistorySummary.length
-
-  const openByAlertId = useMemo(() => {
-    const map: Record<string, number> = {}
-    for (const h of openHistorySummary as { alert_id: string }[]) {
-      map[h.alert_id] = (map[h.alert_id] || 0) + 1
-    }
-    return map
-  }, [openHistorySummary])
+  const openIncidentCount = openSummary?.total ?? 0
+  const openByAlertId = openSummary?.by_alert_id ?? {}
 
   const filteredAlerts = useMemo(() => {
     let list = alerts as Alert[]
