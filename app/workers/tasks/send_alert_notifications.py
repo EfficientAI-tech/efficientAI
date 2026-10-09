@@ -24,14 +24,20 @@ def send_alert_notifications_task(
     db = SessionLocal()
     try:
         alert = db.query(Alert).filter(Alert.id == UUID(alert_id)).first()
-        history = db.query(AlertHistory).filter(AlertHistory.id == UUID(history_id)).first()
+        history = (
+            db.query(AlertHistory)
+            .filter(AlertHistory.id == UUID(history_id))
+            .with_for_update()
+            .first()
+        )
         if not alert or not history:
             return {"error": "alert or history not found"}
 
-        db.refresh(history)
         if history.status not in OPEN_INCIDENT_STATUSES:
+            db.rollback()
             return {"skipped": f"incident status is {history.status}"}
         if not alert_evaluation_service._should_notify_for_incident(alert, history):
+            db.rollback()
             return {"skipped": "notification no longer due for incident state"}
 
         results = alert_evaluation_service.deliver_notifications_for_history(
