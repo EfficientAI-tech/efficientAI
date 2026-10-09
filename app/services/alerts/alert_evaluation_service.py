@@ -72,7 +72,10 @@ OPEN_INCIDENT_STATUSES = (
 AUTO_RESOLVE_OK_EVALUATIONS = 2
 def _pg_advisory_lock_alert(db: Session, alert_id: UUID) -> None:
     """Serialize incident open/notify for one alert (concurrent eval + manual trigger)."""
-    bind = db.get_bind()
+    get_bind = getattr(db, "get_bind", None)
+    if not callable(get_bind):
+        return
+    bind = get_bind()
     if bind is None or bind.dialect.name != "postgresql":
         return
     key = alert_id.int % (2**31 - 1) or 1

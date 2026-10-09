@@ -12,6 +12,7 @@ import {
   countNotificationChannels,
   formatAlertCondition,
   invalidateAlertHistoryQueries,
+  OPEN_INCIDENT_SUMMARY_QUERY_KEY,
 } from './alertUiUtils'
 
 // Types

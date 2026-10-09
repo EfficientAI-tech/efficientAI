@@ -40,4 +40,12 @@ def compute_cron_jobs_metric(
         )
         .all()
     )
-    return float(len(rows))
+    count = 0
+    for job in rows:
+        if job.last_dispatch_status == "failed":
+            count += 1
+            continue
+        if job.last_run_status == "failed" and job.last_run_at is not None:
+            if job.last_run_at >= window_start:
+                count += 1
+    return float(count)
