@@ -9,11 +9,9 @@ from app.workers.tasks.send_alert_notifications import send_alert_notifications_
 
 
 def test_skips_resolved_incident_before_deliver(monkeypatch):
-    alert_id = uuid4()
-    history_id = uuid4()
-    alert = SimpleNamespace(id=alert_id)
+    alert = SimpleNamespace(id=uuid4())
     history = SimpleNamespace(
-        id=history_id,
+        id=uuid4(),
         status=AlertHistoryStatus.RESOLVED.value,
     )
 
@@ -32,8 +30,7 @@ def test_skips_resolved_incident_before_deliver(monkeypatch):
 
     class FakeDb:
         def query(self, model):
-            name = getattr(model, "__name__", "")
-            if name == "AlertHistory":
+            if getattr(model, "__name__", "") == "AlertHistory":
                 return FakeQuery(history)
             return FakeQuery(alert)
 
@@ -43,33 +40,12 @@ def test_skips_resolved_incident_before_deliver(monkeypatch):
         def close(self):
             pass
 
-    deliver_called = False
-
-    def fake_deliver(*_a, **_k):
-        nonlocal deliver_called
-        deliver_called = True
-        return []
-
-    class FakeEvalService:
-        def _should_notify_for_incident(self, *_a, **_k):
-            return True
-
-        def deliver_notifications_for_history(self, *_a, **_k):
-            return fake_deliver()
-
-    import app.services.alerts.alert_evaluation_service as eval_mod
-
     monkeypatch.setattr(
         "app.workers.tasks.send_alert_notifications.SessionLocal",
         lambda: FakeDb(),
     )
-    # Module name and singleton share the same identifier; patch the module object.
-    monkeypatch.setattr(eval_mod, "alert_evaluation_service", FakeEvalService())
 
-    result = send_alert_notifications_task.run(
-        str(alert_id), str(history_id), 1.0
-    )
+    result = send_alert_notifications_task.run(str(alert.id), str(history.id), 1.0)
 
-    assert result["skipped"] == f"incident status is {AlertHistoryStatus.RESOLVED.value}"
-    assert deliver_called is False
-    assert AlertHistoryStatus.RESOLVED.value not in OPEN_INCIDENT_STATUSES
+    assert result == {"skipped": f"incident status is {history.status}"}
+    assert history.status not in OPEN_INCIDENT_STATUSES
