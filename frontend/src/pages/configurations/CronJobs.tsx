@@ -242,6 +242,7 @@ export default function CronJobs() {
   const handlePresetChange = (presetValue: string) => {
     setSelectedPreset(presetValue)
     if (presetValue === 'custom') {
+      setFormData(prev => ({ ...prev, interval_days: null }))
       return
     }
     if (presetValue.startsWith('interval:')) {

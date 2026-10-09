@@ -70,6 +70,7 @@ OPEN_INCIDENT_STATUSES = (
 # Require this many consecutive OK evaluations (Beat runs every 5 min → ~10 min) before
 # auto-resolve, so a single borderline metric reading does not close and re-open incidents.
 AUTO_RESOLVE_OK_EVALUATIONS = 2
+NOTIFICATION_PENDING_MAX_AGE_SECONDS = 600
 def _pg_advisory_lock_alert(db: Session, alert_id: UUID) -> None:
     """Serialize incident open/notify for one alert (concurrent eval + manual trigger)."""
     get_bind = getattr(db, "get_bind", None)
@@ -665,7 +666,7 @@ class AlertEvaluationService:
         frequency = alert.notify_frequency
         cooldown_seconds = FREQUENCY_COOLDOWN.get(frequency, 0)
 
-        if (incident.context_data or {}).get("notification_delivery_pending"):
+        if self._notification_reservation_active(incident):
             return False
 
         if cooldown_seconds == 0:
@@ -692,6 +693,28 @@ class AlertEvaluationService:
             )
             return False
         return True
+
+    def _notification_reservation_active(self, incident: AlertHistory) -> bool:
+        ctx = incident.context_data or {}
+        if not ctx.get("notification_delivery_pending"):
+            return False
+        raw = ctx.get("notification_delivery_pending_at")
+        if not raw:
+            return False
+        try:
+            started = datetime.fromisoformat(str(raw))
+        except ValueError:
+            return False
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - started).total_seconds()
+        return age < NOTIFICATION_PENDING_MAX_AGE_SECONDS
+
+    def _clear_notification_reservation(self, history: AlertHistory) -> None:
+        ctx = dict(history.context_data or {})
+        ctx.pop("notification_delivery_pending", None)
+        ctx.pop("notification_delivery_pending_at", None)
+        history.context_data = ctx
 
     def _merge_context(self, history: AlertHistory, **extra: Any) -> None:
         ctx = dict(history.context_data or {})
@@ -999,16 +1022,28 @@ class AlertEvaluationService:
         if not self._should_notify_for_incident(alert, history):
             return []
 
-        self._merge_context(history, notification_delivery_pending=True)
+        self._merge_context(
+            history,
+            notification_delivery_pending=True,
+            notification_delivery_pending_at=datetime.now(timezone.utc).isoformat(),
+        )
         db.commit()
 
         from app.workers.tasks.send_alert_notifications import send_alert_notifications_task
 
-        send_alert_notifications_task.delay(
-            str(alert.id),
-            str(history.id),
-            triggered_value,
-        )
+        try:
+            send_alert_notifications_task.delay(
+                str(alert.id),
+                str(history.id),
+                triggered_value,
+            )
+        except Exception as exc:
+            logger.warning(
+                f"[AlertEvaluation] Failed to queue notification for history {history.id}: {exc}"
+            )
+            db.refresh(history)
+            self._clear_notification_reservation(history)
+            db.commit()
         return []
 
     def _deliver_notifications(
@@ -1018,18 +1053,15 @@ class AlertEvaluationService:
         triggered_value: float,
         db: Session,
     ) -> List[Dict[str, Any]]:
-        ctx = dict(history.context_data or {})
-        pending = bool(ctx.pop("notification_delivery_pending", False))
-        history.context_data = ctx
-
+        db.refresh(history)
         if history.status not in OPEN_INCIDENT_STATUSES:
+            self._clear_notification_reservation(history)
             db.commit()
             return []
+        self._clear_notification_reservation(history)
         if not self._should_notify_for_incident(alert, history):
             db.commit()
             return []
-        if pending:
-            self._merge_context(history, notification_delivery_pending=False)
 
         agent_names = (history.context_data or {}).get("agent_names")
         triggered_at = history.triggered_at
