@@ -224,6 +224,19 @@ def update_cron_job(
             detail="System cron jobs cannot be modified",
         )
 
+    recalculate_next_run = False
+    if cron_job.status == CronJobStatus.COMPLETED.value:
+        reactivating = False
+        if cron_job_data.status == CronJobStatus.ACTIVE:
+            reactivating = True
+        if cron_job_data.max_runs is not None:
+            new_max = int(cron_job_data.max_runs or 0)
+            if new_max == 0 or int(cron_job.current_runs or 0) < new_max:
+                reactivating = True
+        if reactivating:
+            cron_job.status = CronJobStatus.ACTIVE.value
+            recalculate_next_run = True
+
     # Update fields if provided
     if cron_job_data.name is not None:
         # Check for name conflicts
@@ -240,8 +253,6 @@ def update_cron_job(
                 detail="A cron job with this name already exists"
             )
         cron_job.name = cron_job_data.name
-
-    recalculate_next_run = False
 
     if cron_job_data.cron_expression is not None:
         # Validate cron expression

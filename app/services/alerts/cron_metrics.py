@@ -9,7 +9,7 @@ from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.models.database import CronJob
-from app.models.enums import AlertMetricType, CronJobStatus
+from app.models.enums import AlertMetricType
 
 
 def compute_cron_jobs_metric(
@@ -28,21 +28,16 @@ def compute_cron_jobs_metric(
             and_(
                 CronJob.organization_id == organization_id,
                 CronJob.is_system.is_(False),
-                CronJob.status == CronJobStatus.ACTIVE.value,
                 or_(
                     CronJob.last_dispatch_status == "failed",
-                    CronJob.last_run_status == "failed",
+                    and_(
+                        CronJob.last_run_status == "failed",
+                        CronJob.last_run_at.isnot(None),
+                        CronJob.last_run_at >= window_start,
+                    ),
                 ),
             )
         )
         .all()
     )
-    count = 0
-    for job in rows:
-        if job.last_dispatch_status == "failed":
-            count += 1
-            continue
-        ts = job.last_run_at or job.updated_at
-        if ts is not None and ts >= window_start:
-            count += 1
-    return float(count)
+    return float(len(rows))

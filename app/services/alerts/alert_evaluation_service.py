@@ -6,7 +6,7 @@ from typing import Dict, Any, List, Optional
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import func, and_
+from sqlalchemy import func, and_, text
 from sqlalchemy.orm import Session
 
 from app.models.database import (
@@ -70,7 +70,13 @@ OPEN_INCIDENT_STATUSES = (
 # Require this many consecutive OK evaluations (Beat runs every 5 min → ~10 min) before
 # auto-resolve, so a single borderline metric reading does not close and re-open incidents.
 AUTO_RESOLVE_OK_EVALUATIONS = 2
-NOTIFICATION_DELIVERY_MAX_ATTEMPTS = 20
+def _pg_advisory_lock_alert(db: Session, alert_id: UUID) -> None:
+    """Serialize incident open/notify for one alert (concurrent eval + manual trigger)."""
+    bind = db.get_bind()
+    if bind is None or bind.dialect.name != "postgresql":
+        return
+    key = alert_id.int % (2**31 - 1) or 1
+    db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": key})
 
 
 class AlertEvaluationService:
@@ -272,6 +278,7 @@ class AlertEvaluationService:
             db.commit()
 
         if is_triggered:
+            _pg_advisory_lock_alert(db, alert.id)
             if getattr(alert, "suppress_reopen_until_ok", False):
                 logger.info(
                     f"[AlertEvaluation] Alert '{alert_name}': breach suppressed until metric clears"
@@ -840,11 +847,17 @@ class AlertEvaluationService:
             from app.services.alerts.alerting_settings import is_lifecycle_sync_enabled
 
             if is_lifecycle_sync_enabled(alert.organization_id, db):
-                alert_notification_service.send_recovery_notifications(
+                recovery_results = alert_notification_service.send_recovery_notifications(
                     alert,
                     history_id=str(history.id),
                     metric_value=metric_value,
                 )
+                details = dict(history.notification_details or {})
+                prior = list(details.get("results") or [])
+                details["results"] = prior + recovery_results
+                details["recovery"] = recovery_results
+                history.notification_details = details
+                db.commit()
 
     # ============================================
     # ALERT TRIGGERING
@@ -976,15 +989,9 @@ class AlertEvaluationService:
         if sync:
             return self._deliver_notifications(alert, history, triggered_value, db)
 
-        ctx = dict(history.context_data or {})
-        attempts = int(ctx.get("notification_delivery_attempts", 0))
-        if attempts >= NOTIFICATION_DELIVERY_MAX_ATTEMPTS:
-            logger.warning(
-                f"[AlertEvaluation] Max notification attempts for history {history.id}"
-            )
+        db.refresh(history)
+        if not self._should_notify_for_incident(alert, history):
             return []
-        self._merge_context(history, notification_delivery_attempts=attempts + 1)
-        db.commit()
 
         from app.workers.tasks.send_alert_notifications import send_alert_notifications_task
 

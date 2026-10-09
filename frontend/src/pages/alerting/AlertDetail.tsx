@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
+import { invalidateAlertHistoryQueries } from './alertUiUtils'
 import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
 import {
@@ -231,6 +232,7 @@ export default function AlertDetail() {
     setTriggerLoading(true)
     try {
       const result = await apiClient.triggerAlert(id)
+      await invalidateAlertHistoryQueries(queryClient)
       queryClient.invalidateQueries({ queryKey: ['alertHistory', id] })
       if (result.triggered) {
         if (result.ongoing_incident) {

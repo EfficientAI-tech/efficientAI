@@ -1,3 +1,4 @@
+import type { QueryClient } from '@tanstack/react-query'
 import { ALL_METRIC_TYPES } from './alertFormConstants'
 
 export const OPEN_INCIDENT_STATUSES = new Set(['triggered', 'notified', 'acknowledged'])
@@ -7,6 +8,14 @@ export const OPEN_INCIDENT_SUMMARY_QUERY_KEY = ['openIncidentSummary'] as const
 
 export function isAlertHistoryListCache(query: { state: { data: unknown } }): boolean {
   return Array.isArray(query.state.data)
+}
+
+/** After evaluate/trigger/resolve — list uses staleTime:Infinity until invalidated. */
+export function invalidateAlertHistoryQueries(queryClient: QueryClient) {
+  return Promise.all([
+    queryClient.invalidateQueries({ queryKey: ['alertHistory'] }),
+    queryClient.invalidateQueries({ queryKey: OPEN_INCIDENT_SUMMARY_QUERY_KEY }),
+  ])
 }
 
 export function isOpenIncident(status: string): boolean {

@@ -11,7 +11,7 @@ import StatCard from './StatCard'
 import {
   countNotificationChannels,
   formatAlertCondition,
-  OPEN_INCIDENT_SUMMARY_QUERY_KEY,
+  invalidateAlertHistoryQueries,
 } from './alertUiUtils'
 
 // Types
@@ -166,8 +166,7 @@ export default function Alerts() {
       const result = await apiClient.evaluateAllAlerts()
       setEvaluateAllResult(result)
       queryClient.invalidateQueries({ queryKey: ['alerts'] })
-      queryClient.invalidateQueries({ queryKey: ['alertHistory'] })
-      queryClient.invalidateQueries({ queryKey: OPEN_INCIDENT_SUMMARY_QUERY_KEY })
+      await invalidateAlertHistoryQueries(queryClient)
     } catch {
       setEvaluateAllResult({ error: 'Failed to evaluate alerts' })
     } finally {

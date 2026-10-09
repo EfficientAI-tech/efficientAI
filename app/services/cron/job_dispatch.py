@@ -71,7 +71,7 @@ def run_evaluator_cron_job(db: Session, job: CronJob) -> Dict[str, Any]:
             continue
 
     if not evaluator_ids:
-        return {"error": "no evaluator_ids configured"}
+        return {"error": "no evaluator_ids configured", "evaluator_ids_expected": 0}
 
     by_workspace: dict[UUID, List[UUID]] = defaultdict(list)
     for evaluator_id in evaluator_ids:
@@ -110,4 +110,8 @@ def run_evaluator_cron_job(db: Session, job: CronJob) -> Dict[str, Any]:
                 exc,
             )
 
-    return {"evaluator_tasks": len(task_ids), "celery_task_ids": task_ids[:20]}
+    return {
+        "evaluator_tasks": len(task_ids),
+        "evaluator_ids_expected": len(evaluator_ids),
+        "celery_task_ids": task_ids[:20],
+    }
