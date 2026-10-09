@@ -11,7 +11,7 @@ const HELP_LINES = [
   'When a rule is exceeded, we notify your team and list it in Alert history.',
   'With “Notify once”, you get one notification per issue until you resolve it.',
   'Acknowledge to show you’re on it; resolve when it’s fixed. Issues can also close on their own when readings stay healthy.',
-  'Lifecycle sync (ack/resolve across PagerDuty, Slack, email) is off unless an org admin enables it under IAM → Organization.',
+  'Lifecycle sync (ack/resolve across PagerDuty, Slack, email) is off unless an org admin enables it under Configurations → Integrations.',
 ]
 
 export function AlertingHelpButton() {

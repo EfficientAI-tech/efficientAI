@@ -74,13 +74,24 @@ def _route_key(line: str, from_digits: str) -> str:
     return f"chat:messaging:route:{_normalize_phone(line)}:{_normalize_phone(from_digits)}"
 
 
+def _redis_value_matches_turn(value: str | None, turn_id: str) -> bool:
+    if not value or not turn_id:
+        return False
+    if value == turn_id:
+        return True
+    return value.endswith(f":{turn_id}") and ":" in value
+
+
 def abandon_messaging_sms_turn(
     *,
     agent_id: UUID | str,
     twilio_from: str,
     messaging_recipient: str,
+    turn_id: str,
 ) -> None:
-    """Clear pending turn keys so a new eval run can register (stale lock from prior timeout)."""
+    """Clear pending keys only when they still belong to this turn (avoids clobbering overlapping runs)."""
+    if not turn_id:
+        return
     try:
         client = _redis()
         from_variants = _phone_lookup_variants(messaging_recipient) or [
@@ -89,9 +100,15 @@ def abandon_messaging_sms_turn(
         line_variants = _phone_lookup_variants(twilio_from) or [_normalize_phone(twilio_from)]
         for fv in from_variants:
             for lv in line_variants:
-                client.delete(_pending_key(agent_id, lv, fv))
-                client.delete(_route_key(lv, fv))
-            client.delete(_pending_from_key(agent_id, fv))
+                pair_key = _pending_key(agent_id, lv, fv)
+                if _redis_value_matches_turn(client.get(pair_key), turn_id):
+                    client.delete(pair_key)
+                route_key = _route_key(lv, fv)
+                if _redis_value_matches_turn(client.get(route_key), turn_id):
+                    client.delete(route_key)
+            from_key = _pending_from_key(agent_id, fv)
+            if _redis_value_matches_turn(client.get(from_key), turn_id):
+                client.delete(from_key)
     except redis.RedisError as exc:
         logger.warning("[MessagingTurnWait] abandon failed: {}", exc)
 
@@ -102,7 +119,6 @@ def register_twilio_sms_turn(
     twilio_from: str,
     messaging_recipient: str,
     ttl_secs: int = _DEFAULT_TTL_SECS,
-    replace_stale_lock: bool = False,
 ) -> str:
     """Register expectation: inbound SMS From recipient To twilio_from for this agent."""
     turn_id = str(uuid.uuid4())
@@ -110,33 +126,12 @@ def register_twilio_sms_turn(
     try:
         client = _redis()
         if not client.set(key, turn_id, ex=ttl_secs, nx=True):
-            if replace_stale_lock:
-                stale = client.get(key)
-                logger.warning(
-                    "[MessagingTurnWait] replacing stale pending turn {} ({} -> {})",
-                    stale,
-                    _normalize_phone(twilio_from),
-                    _normalize_phone(messaging_recipient),
-                )
-                abandon_messaging_sms_turn(
-                    agent_id=agent_id,
-                    twilio_from=twilio_from,
-                    messaging_recipient=messaging_recipient,
-                )
-                if not client.set(key, turn_id, ex=ttl_secs, nx=True):
-                    logger.warning(
-                        "[MessagingTurnWait] concurrent SMS eval for same From/To pair ({} -> {})",
-                        _normalize_phone(twilio_from),
-                        _normalize_phone(messaging_recipient),
-                    )
-                    return ""
-            else:
-                logger.warning(
-                    "[MessagingTurnWait] concurrent SMS eval for same From/To pair ({} -> {})",
-                    _normalize_phone(twilio_from),
-                    _normalize_phone(messaging_recipient),
-                )
-                return ""
+            logger.warning(
+                "[MessagingTurnWait] concurrent SMS eval for same From/To pair ({} -> {})",
+                _normalize_phone(twilio_from),
+                _normalize_phone(messaging_recipient),
+            )
+            return ""
         from_variants = _phone_lookup_variants(messaging_recipient) or [
             _normalize_phone(messaging_recipient)
         ]
@@ -239,9 +234,15 @@ def complete_messaging_sms_turn(
             return False
         for fv in from_variants:
             for lv in line_variants:
-                client.delete(_pending_key(agent_id, lv, fv))
-                client.delete(_route_key(lv, fv))
-            client.delete(_pending_from_key(agent_id, fv))
+                pair_key = _pending_key(agent_id, lv, fv)
+                if _redis_value_matches_turn(client.get(pair_key), turn_id):
+                    client.delete(pair_key)
+                route_key = _route_key(lv, fv)
+                if _redis_value_matches_turn(client.get(route_key), turn_id):
+                    client.delete(route_key)
+            from_key = _pending_from_key(agent_id, fv)
+            if _redis_value_matches_turn(client.get(from_key), turn_id):
+                client.delete(from_key)
         client.rpush(_reply_list_key(turn_id), (body or "").strip())
         client.expire(_reply_list_key(turn_id), ttl_secs)
         logger.info(

@@ -12,7 +12,6 @@ import { getApiErrorMessage } from '../../lib/apiErrors'
 import { useIsAdmin } from '../../hooks/useRole'
 import WorkspaceRolesSection from '../../components/WorkspaceRolesSection'
 import WorkspaceMembersSection from '../../components/iam/WorkspaceMembersSection'
-import AlertingSyncSettingsCard from '../../components/iam/AlertingSyncSettingsCard'
 import { PASSWORD_POLICY_HINT, validatePasswordPolicy } from '../../lib/passwordPolicy'
 import { buildInviteShareUrl } from '../../lib/inviteUrl'
 import { useOssQuotas } from '../../hooks/useOssQuotas'
@@ -507,8 +506,6 @@ export default function IAM() {
           </div>
         </div>
       )}
-
-      {isAdmin && <AlertingSyncSettingsCard />}
 
       {/* Users Section */}
       <div className="bg-white shadow rounded-lg">

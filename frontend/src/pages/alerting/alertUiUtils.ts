@@ -2,6 +2,13 @@ import { ALL_METRIC_TYPES } from './alertFormConstants'
 
 export const OPEN_INCIDENT_STATUSES = new Set(['triggered', 'notified', 'acknowledged'])
 
+/** Not under `alertHistory` — avoids setQueriesData prefix clashes with list caches. */
+export const OPEN_INCIDENT_SUMMARY_QUERY_KEY = ['openIncidentSummary'] as const
+
+export function isAlertHistoryListCache(query: { state: { data: unknown } }): boolean {
+  return Array.isArray(query.state.data)
+}
+
 export function isOpenIncident(status: string): boolean {
   return OPEN_INCIDENT_STATUSES.has(status)
 }

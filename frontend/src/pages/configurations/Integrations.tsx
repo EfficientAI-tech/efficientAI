@@ -22,6 +22,8 @@ import {
   getTelephonyProviderLogo,
 } from '../../config/providers'
 import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
+import AlertingSyncSettingsCard from '../../components/integrations/AlertingSyncSettingsCard'
+import { useIsAdmin } from '../../hooks/useRole'
 import { useLicenseStore } from '../../store/licenseStore'
 import AIProviderEnabledModelsStep from './AIProviderEnabledModelsStep'
 import { GATEWAY_FIELD_COPY, GATEWAY_TYPE_LABELS, type ResolvedGatewayType } from '../../lib/gatewayRouting'
@@ -94,6 +96,7 @@ const AI_INTEGRATION_PROVIDERS: ModelProvider[] = [
 
 export default function Integrations() {
   const queryClient = useQueryClient()
+  const isAdmin = useIsAdmin()
   const { showToast, ToastContainer } = useToast()
   const gatewayRoutingAllowed = useLicenseStore((s) => s.gatewayRoutingAllowed)
   const licenseLoaded = useLicenseStore((s) => s.isLoaded)
@@ -1146,6 +1149,8 @@ export default function Integrations() {
           <p className="text-gray-500">Get started by adding a voice platform, AI provider, or telephony provider</p>
         </div>
       )}
+
+      {isAdmin && <AlertingSyncSettingsCard />}
 
       {showLlmGatewayModal && renderModal(
         <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">

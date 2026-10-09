@@ -1,12 +1,18 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
 import Button from '../../components/Button'
-import { History, Eye, X, Check, MessageSquare, Search, Clock } from 'lucide-react'
+import { History, Eye, X, Check, MessageSquare, Search, Clock, RefreshCw } from 'lucide-react'
 import AlertingPageShell from './AlertingPageShell'
 import StatCard from './StatCard'
-import { formatRelativeTime, getNotificationFailures, isOpenIncident } from './alertUiUtils'
+import {
+  formatRelativeTime,
+  getNotificationFailures,
+  isAlertHistoryListCache,
+  isOpenIncident,
+  OPEN_INCIDENT_SUMMARY_QUERY_KEY,
+} from './alertUiUtils'
 import IncidentDetailPanel from './IncidentDetailPanel'
 import { DeliverySummaryBadge, IncidentStatusBadge } from './IncidentTableCells'
 import { mergeAlertHistoryItem } from './mergeAlertHistoryItem'
@@ -45,6 +51,8 @@ interface AlertHistoryItem {
   alert?: Alert
 }
 
+const MANUAL_REFRESH_COOLDOWN_MS = 15_000
+
 const STATUS_FILTERS = [
   { value: '', label: 'All statuses' },
   { value: '__open__', label: 'Open incidents' },
@@ -64,24 +72,61 @@ export default function AlertHistory() {
   const [showResolveModal, setShowResolveModal] = useState(false)
   const [resolutionNotes, setResolutionNotes] = useState('')
   const [incidentRefreshingId, setIncidentRefreshingId] = useState<string | null>(null)
+  const [refreshCooldownUntil, setRefreshCooldownUntil] = useState(0)
 
-  // Fetch alert history
-  const { data: historyItems = [], isLoading, isError, error, refetch } = useQuery({
-    queryKey: ['alertHistory', statusFilter],
-    queryFn: () =>
-      apiClient.listAlertHistory(
-        statusFilter && statusFilter !== '__open__' ? statusFilter : undefined,
-        undefined,
-        0,
-        100,
-        statusFilter === '__open__'
-      ),
-  })
+  useEffect(() => {
+    if (refreshCooldownUntil <= Date.now()) return
+    const id = window.setTimeout(
+      () => setRefreshCooldownUntil(0),
+      refreshCooldownUntil - Date.now()
+    )
+    return () => window.clearTimeout(id)
+  }, [refreshCooldownUntil])
+
+  const refreshOnCooldown = refreshCooldownUntil > Date.now()
+
+  const { data: historyItems = [], isLoading, isError, error, refetch, isRefetching, dataUpdatedAt } =
+    useQuery({
+      queryKey: ['alertHistory', statusFilter],
+      queryFn: () =>
+        apiClient.listAlertHistory(
+          statusFilter && statusFilter !== '__open__' ? statusFilter : undefined,
+          undefined,
+          0,
+          100,
+          statusFilter === '__open__'
+        ),
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      staleTime: Infinity,
+    })
 
   const { data: openSummary } = useQuery({
-    queryKey: ['alertHistory', 'open_summary'],
+    queryKey: OPEN_INCIDENT_SUMMARY_QUERY_KEY,
     queryFn: () => apiClient.getOpenIncidentSummary(),
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    staleTime: Infinity,
   })
+
+  const handleManualRefresh = async () => {
+    if (refreshOnCooldown || isRefetching) return
+    setRefreshCooldownUntil(Date.now() + MANUAL_REFRESH_COOLDOWN_MS)
+    try {
+      const result = await refetch()
+      await queryClient.invalidateQueries({ queryKey: OPEN_INCIDENT_SUMMARY_QUERY_KEY })
+      if (result.isError) {
+        showToast(getApiErrorMessage(result.error, 'Could not refresh alert history'), 'error')
+      }
+    } catch (err) {
+      showToast(getApiErrorMessage(err, 'Could not refresh alert history'), 'error')
+    }
+  }
+
+  const lastUpdatedLabel =
+    dataUpdatedAt > 0
+      ? formatRelativeTime(new Date(dataUpdatedAt).toISOString())
+      : null
 
   const applyIncidentUpdate = (id: string, updated: AlertHistoryItem) => {
     setSelectedItem(prev => {
@@ -89,7 +134,7 @@ export default function AlertHistory() {
       return mergeAlertHistoryItem(prev, updated)
     })
     queryClient.setQueriesData<AlertHistoryItem[]>(
-      { queryKey: ['alertHistory'] },
+      { queryKey: ['alertHistory'], predicate: isAlertHistoryListCache },
       old => old?.map(h => (h.id === id ? mergeAlertHistoryItem(h, updated) : h))
     )
   }
@@ -106,7 +151,7 @@ export default function AlertHistory() {
           prev?.id === id ? mergeAlertHistoryItem(prev, fresh) : prev
         )
         queryClient.setQueriesData<AlertHistoryItem[]>(
-          { queryKey: ['alertHistory'] },
+          { queryKey: ['alertHistory'], predicate: isAlertHistoryListCache },
           old => old?.map(h => (h.id === id ? mergeAlertHistoryItem(h, fresh) : h))
         )
       }
@@ -115,6 +160,7 @@ export default function AlertHistory() {
     } finally {
       setIncidentRefreshingId(null)
       await queryClient.invalidateQueries({ queryKey: ['alertHistory'] })
+      await queryClient.invalidateQueries({ queryKey: OPEN_INCIDENT_SUMMARY_QUERY_KEY })
     }
   }
 
@@ -197,7 +243,33 @@ export default function AlertHistory() {
   return (
     <div className="space-y-6">
       <ToastContainer />
-      <AlertingPageShell title="Alert history" />
+      <AlertingPageShell
+        title="Alert history"
+        actions={
+          <div className="flex flex-col items-end gap-0.5">
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={() => void handleManualRefresh()}
+              disabled={isLoading || isRefetching || refreshOnCooldown}
+              leftIcon={
+                <RefreshCw className={`w-4 h-4 ${isRefetching ? 'animate-spin' : ''}`} />
+              }
+              title={
+                refreshOnCooldown
+                  ? 'Refresh is on a short cooldown — wait a few seconds'
+                  : 'Load the latest incidents from the server'
+              }
+            >
+              Refresh
+            </Button>
+            <span className="text-xs text-gray-500 tabular-nums">
+              {lastUpdatedLabel ? `Updated ${lastUpdatedLabel}` : 'Not loaded yet'}
+            </span>
+          </div>
+        }
+      />
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         <StatCard label="Open" value={openCount} tone={openCount > 0 ? 'warning' : 'default'} />

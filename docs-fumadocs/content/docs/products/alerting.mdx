@@ -202,7 +202,7 @@ Evaluations still run on schedule; an open incident keeps its latest metric valu
 
 **Missing data:** if no metric can be computed for a window, the alert does **not** fire and does **not** auto-resolve open incidents (treated as insufficient data).
 
-**PagerDuty lifecycle (opt-in):** org admins enable **notification sync** under **IAM → Organization** (default off). Flow: (1) enable sync and copy the webhook URL, (2) create a PagerDuty v3 webhook subscription pointing at that URL, (3) paste the **signing secret** (shown once in PagerDuty) into EfficientAI — inbound webhooks are rejected until the secret is saved. Outbound ack/resolve works as soon as sync is on and routing keys are on the rule.
+**PagerDuty lifecycle (opt-in):** org admins enable **notification sync** under **Configurations → Integrations** (default off). Flow: (1) enable sync and copy the webhook URL, (2) create a PagerDuty v3 webhook subscription pointing at that URL, (3) paste the **signing secret** (shown once in PagerDuty) into EfficientAI — inbound webhooks are rejected until the secret is saved. Outbound ack/resolve works as soon as sync is on and routing keys are on the rule.
 
 **Recovery:** when an incident auto-resolves (or you resolve manually), Slack receives a short recovery message and PagerDuty receives `resolve` (same dedup key).
 
