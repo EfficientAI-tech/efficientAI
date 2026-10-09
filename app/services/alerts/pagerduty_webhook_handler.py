@@ -169,7 +169,7 @@ def apply_pagerduty_incident_event(
         alert = db.query(Alert).filter(Alert.id == history.alert_id).first()
         if alert:
             alert.suppress_reopen_until_ok = True
-        _fanout_other_channels(db, history, phase="resolve", actor=actor)
+        _fanout_other_channels(db, history, phase="recovery", actor=actor)
         db.commit()
         return True, "resolved"
 

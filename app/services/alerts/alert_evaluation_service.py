@@ -1074,6 +1074,9 @@ class AlertEvaluationService:
             triggered_at = datetime.now(timezone.utc)
 
         ctx = dict(history.context_data or {})
+        cooldown_seconds = FREQUENCY_COOLDOWN.get(alert.notify_frequency, 0)
+        if cooldown_seconds > 0 and history.notified_at is not None:
+            ctx.pop("notified_channel_keys", None)
         already = set(ctx.get("notified_channel_keys") or [])
         notification_results = alert_notification_service.send_all_notifications(
             alert=alert,
@@ -1091,7 +1094,10 @@ class AlertEvaluationService:
                 succeeded.add(notification_channel_key(result))
             else:
                 pending_failure = True
-        ctx["notified_channel_keys"] = sorted(succeeded)
+        if pending_failure:
+            ctx["notified_channel_keys"] = sorted(succeeded)
+        else:
+            ctx.pop("notified_channel_keys", None)
         history.context_data = ctx
         all_delivered = bool(notification_results) and not pending_failure
         history.notified_at = datetime.now(timezone.utc) if all_delivered else None
