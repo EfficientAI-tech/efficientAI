@@ -1560,6 +1560,16 @@ class CronJob(Base):
     last_run_status = Column(String(32), nullable=True)
     last_run_error = Column(String, nullable=True)
 
+    @property
+    def interval_days(self) -> int | None:
+        config = self.config if isinstance(self.config, dict) else {}
+        raw = config.get("interval_days")
+        try:
+            days = int(raw)
+        except (TypeError, ValueError):
+            return None
+        return days if days > 0 else None
+
     # Metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

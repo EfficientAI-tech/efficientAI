@@ -154,11 +154,15 @@ def apply_pagerduty_incident_event(
         status = str(data.get("status") or "").lower()
         if event_type == "incident.status_update" and status != "resolved":
             return True, "ignored_status"
-        if history.resolved_at is None:
-            history.resolved_at = now
-            history.resolved_by = actor
-            if not history.resolution_notes:
-                history.resolution_notes = "Resolved via PagerDuty."
+        if (
+            history.status == AlertHistoryStatus.RESOLVED.value
+            or history.resolved_at is not None
+        ):
+            return True, "already_resolved"
+        history.resolved_at = now
+        history.resolved_by = actor
+        if not history.resolution_notes:
+            history.resolution_notes = "Resolved via PagerDuty."
         history.status = AlertHistoryStatus.RESOLVED.value
         alert = db.query(Alert).filter(Alert.id == history.alert_id).first()
         if alert:

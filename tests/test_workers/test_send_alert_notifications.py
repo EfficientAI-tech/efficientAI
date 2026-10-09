@@ -34,6 +34,9 @@ def test_skips_resolved_incident_before_deliver(monkeypatch):
                 return FakeQuery(history)
             return FakeQuery(alert)
 
+        def commit(self):
+            pass
+
         def rollback(self):
             pass
 

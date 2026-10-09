@@ -2984,6 +2984,7 @@ class CronJobResponse(BaseModel):
     is_system: bool = False
     cron_expression: str
     timezone: str
+    interval_days: Optional[int] = None
     max_runs: int
     current_runs: int
     evaluator_ids: List[UUID]

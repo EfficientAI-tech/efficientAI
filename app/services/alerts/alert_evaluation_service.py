@@ -665,6 +665,9 @@ class AlertEvaluationService:
         frequency = alert.notify_frequency
         cooldown_seconds = FREQUENCY_COOLDOWN.get(frequency, 0)
 
+        if (incident.context_data or {}).get("notification_delivery_pending"):
+            return False
+
         if cooldown_seconds == 0:
             if incident.status in (
                 AlertHistoryStatus.NOTIFIED.value,
@@ -856,9 +859,9 @@ class AlertEvaluationService:
                     metric_value=metric_value,
                 )
                 details = dict(history.notification_details or {})
-                prior = list(details.get("results") or [])
-                details["results"] = prior + recovery_results
-                details["recovery"] = recovery_results
+                lifecycle = dict(details.get("lifecycle") or {})
+                lifecycle["recovery"] = recovery_results
+                details["lifecycle"] = lifecycle
                 history.notification_details = details
                 db.commit()
 
@@ -996,6 +999,9 @@ class AlertEvaluationService:
         if not self._should_notify_for_incident(alert, history):
             return []
 
+        self._merge_context(history, notification_delivery_pending=True)
+        db.commit()
+
         from app.workers.tasks.send_alert_notifications import send_alert_notifications_task
 
         send_alert_notifications_task.delay(
@@ -1012,10 +1018,18 @@ class AlertEvaluationService:
         triggered_value: float,
         db: Session,
     ) -> List[Dict[str, Any]]:
+        ctx = dict(history.context_data or {})
+        pending = bool(ctx.pop("notification_delivery_pending", False))
+        history.context_data = ctx
+
         if history.status not in OPEN_INCIDENT_STATUSES:
+            db.commit()
             return []
         if not self._should_notify_for_incident(alert, history):
+            db.commit()
             return []
+        if pending:
+            self._merge_context(history, notification_delivery_pending=False)
 
         agent_names = (history.context_data or {}).get("agent_names")
         triggered_at = history.triggered_at

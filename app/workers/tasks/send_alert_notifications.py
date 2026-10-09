@@ -33,12 +33,19 @@ def send_alert_notifications_task(
         if not alert or not history:
             return {"error": "alert or history not found"}
 
+        ctx = dict(getattr(history, "context_data", None) or {})
+        reserved = bool(ctx.pop("notification_delivery_pending", False))
+        history.context_data = ctx
+
         if history.status not in OPEN_INCIDENT_STATUSES:
-            db.rollback()
+            db.commit()
             return {"skipped": f"incident status is {history.status}"}
         if not alert_evaluation_service._should_notify_for_incident(alert, history):
-            db.rollback()
+            db.commit()
             return {"skipped": "notification no longer due for incident state"}
+        if not reserved:
+            db.commit()
+            return {"skipped": "notification was not reserved"}
 
         results = alert_evaluation_service.deliver_notifications_for_history(
             alert, history, triggered_value, db

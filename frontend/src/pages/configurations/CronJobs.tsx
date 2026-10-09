@@ -14,6 +14,7 @@ interface CronJob {
   name: string
   cron_expression: string
   timezone: string
+  interval_days?: number | null
   max_runs: number
   current_runs: number
   evaluator_ids: string[]
@@ -225,12 +226,16 @@ export default function CronJobs() {
       cron_expression: cronJob.cron_expression,
       timezone: cronJob.timezone,
       max_runs: cronJob.max_runs,
-      interval_days: null,
+      interval_days: cronJob.interval_days ?? null,
       evaluator_ids: cronJob.evaluator_ids || [],
     })
-    // Check if the cron expression matches a preset
+    const intervalPreset = cronJob.interval_days
+      ? CRON_PRESETS.find(p => p.value === `interval:${cronJob.interval_days}`)
+      : undefined
     const matchingPreset = CRON_PRESETS.find(p => p.value === cronJob.cron_expression)
-    setSelectedPreset(matchingPreset ? cronJob.cron_expression : 'custom')
+    setSelectedPreset(
+      intervalPreset?.value || (matchingPreset ? cronJob.cron_expression : 'custom')
+    )
     setShowCreateModal(true)
   }
 

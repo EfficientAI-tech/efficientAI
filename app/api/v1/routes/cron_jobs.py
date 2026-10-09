@@ -281,7 +281,7 @@ def update_cron_job(
     if cron_job_data.max_runs is not None:
         cron_job.max_runs = cron_job_data.max_runs
 
-    if cron_job_data.interval_days is not None:
+    if "interval_days" in cron_job_data.model_fields_set:
         config = dict(cron_job.config or {})
         if cron_job_data.interval_days:
             config["interval_days"] = cron_job_data.interval_days
