@@ -10,6 +10,9 @@ from loguru import logger
 import httpx
 
 
+SMTP_TIMEOUT_SECONDS = 30
+
+
 class AlertNotificationService:
     """Service for sending alert notifications via Slack webhooks and email."""
 
@@ -250,7 +253,11 @@ class AlertNotificationService:
             # Send email
             if settings.SMTP_USE_TLS:
                 context = ssl.create_default_context()
-                with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+                with smtplib.SMTP(
+                    settings.SMTP_HOST,
+                    settings.SMTP_PORT,
+                    timeout=SMTP_TIMEOUT_SECONDS,
+                ) as server:
                     server.ehlo()
                     server.starttls(context=context)
                     server.ehlo()
@@ -262,7 +269,11 @@ class AlertNotificationService:
                         msg.as_string(),
                     )
             else:
-                with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+                with smtplib.SMTP(
+                    settings.SMTP_HOST,
+                    settings.SMTP_PORT,
+                    timeout=SMTP_TIMEOUT_SECONDS,
+                ) as server:
                     if settings.SMTP_USERNAME and settings.SMTP_PASSWORD:
                         server.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
                     server.sendmail(

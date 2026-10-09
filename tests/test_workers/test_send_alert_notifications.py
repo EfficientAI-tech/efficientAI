@@ -50,10 +50,6 @@ def test_skips_resolved_incident_before_deliver(monkeypatch):
         deliver_called = True
         return []
 
-    monkeypatch.setattr(
-        "app.workers.tasks.send_alert_notifications.SessionLocal",
-        lambda: FakeDb(),
-    )
     class FakeEvalService:
         def _should_notify_for_incident(self, *_a, **_k):
             return True
@@ -61,10 +57,14 @@ def test_skips_resolved_incident_before_deliver(monkeypatch):
         def deliver_notifications_for_history(self, *_a, **_k):
             return fake_deliver()
 
+    import app.services.alerts.alert_evaluation_service as eval_mod
+
     monkeypatch.setattr(
-        "app.services.alerts.alert_evaluation_service.alert_evaluation_service",
-        FakeEvalService(),
+        "app.workers.tasks.send_alert_notifications.SessionLocal",
+        lambda: FakeDb(),
     )
+    # Module name and singleton share the same identifier; patch the module object.
+    monkeypatch.setattr(eval_mod, "alert_evaluation_service", FakeEvalService())
 
     result = send_alert_notifications_task.run(
         str(alert_id), str(history_id), 1.0
