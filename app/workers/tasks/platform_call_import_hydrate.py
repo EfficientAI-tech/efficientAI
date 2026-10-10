@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from uuid import UUID
 
@@ -21,6 +22,38 @@ from app.workers.concurrency.platform_import_limits import (
     credential_import_paused,
     record_platform_auth_failure,
 )
+
+
+def _apply_provider_transcript(
+    row,
+    call_import,
+    normalized,
+    *,
+    enabled: bool,
+) -> None:
+    if not enabled:
+        return
+    if (row.transcript_source or "") == "edited":
+        return
+    text = (normalized.transcript or "").strip()
+    row.transcript = normalized.transcript
+    row.transcript_source = "provider"
+    row.transcript_provider = (call_import.provider or "").strip().lower() or None
+    row.transcript_status = "completed" if text else "idle"
+    if text:
+        row.transcribed_at = datetime.now(timezone.utc)
+    segments = normalized.diarised_segments
+    if text and segments:
+        row.diarised_transcript = normalized.transcript
+        row.diarised_segments = segments
+        row.diarised_transcript_provider = row.transcript_provider
+        row.diarised_transcript_status = "completed"
+        row.diarised_at = datetime.now(timezone.utc)
+    elif text:
+        row.diarised_transcript = normalized.transcript
+        row.diarised_transcript_provider = row.transcript_provider
+        row.diarised_transcript_status = "completed"
+        row.diarised_at = datetime.now(timezone.utc)
 
 
 def _extension_for_content_type(content_type: str) -> str:
@@ -84,11 +117,15 @@ def hydrate_platform_call_import_row(
             process_call_import_row_task,
         )
 
+        from app.workers.concurrency.fair_platform_import_dispatch import (
+            PLATFORM_IMPORTS_QUEUE,
+        )
+
         process_call_import_row_task.apply_async(
             args=(row_id,),
             kwargs={"_eval_slot_task_id": slot_task_id, "_platform_import": True},
             countdown=60,
-            queue="platform-imports",
+            queue=PLATFORM_IMPORTS_QUEUE,
         )
         return {"status": "rescheduled", "reason": "credential_paused"}
 
@@ -102,11 +139,15 @@ def hydrate_platform_call_import_row(
             process_call_import_row_task,
         )
 
+        from app.workers.concurrency.fair_platform_import_dispatch import (
+            PLATFORM_IMPORTS_QUEUE,
+        )
+
         process_call_import_row_task.apply_async(
             args=(row_id,),
             kwargs={"_eval_slot_task_id": slot_task_id, "_platform_import": True},
             countdown=max(1, token.wait_seconds),
-            queue="platform-imports",
+            queue=PLATFORM_IMPORTS_QUEUE,
         )
         return {"status": "rescheduled", "reason": "rate_limited"}
 
@@ -152,9 +193,13 @@ def hydrate_platform_call_import_row(
             reason="platform_hydrate_failed",
         )
 
-    if (row.transcript_source or "") != "edited":
-        row.transcript = normalized.transcript
-        row.transcript_source = "provider"
+    import_transcript = bool(filters.get("import_provider_transcript", True))
+    _apply_provider_transcript(
+        row,
+        call_import,
+        normalized,
+        enabled=import_transcript,
+    )
     merged_raw = dict(row.raw_columns or {})
     merged_raw.update(normalized.raw_columns or {})
     row.raw_columns = merged_raw

@@ -73,7 +73,12 @@ from app.services.billing.flexprice_service import log_startup_status  # noqa: E
 log_startup_status(component="celery-worker")
 
 # Queues consumed by the dedicated call-import / evaluation worker.
-IMPORTS_WORKER_QUEUES = "imports,diarization,eval-control,evaluations"
+PLATFORM_IMPORTS_WORKER_QUEUE = "platform-imports"
+# Platform historical imports (discovery + hydrate) must run on a worker that
+# consumes this queue — same pool as CSV import workers is fine.
+IMPORTS_WORKER_QUEUES = (
+    f"{PLATFORM_IMPORTS_WORKER_QUEUE},imports,diarization,eval-control,evaluations"
+)
 EVAL_CONTROL_QUEUE = "eval-control"
 USAGE_WORKER_QUEUE = "usage"
 PLATFORM_WORKER_QUEUE = "platform"
@@ -133,6 +138,16 @@ def _platform_beat_schedule() -> dict:
         schedule["sweep-staging-ingest"] = {
             "task": "sweep_staging_ingest",
             "schedule": 3600.0,
+        }
+    if settings.PLATFORM_IMPORT_FEATURE_ENABLED:
+        schedule["bootstrap-platform-import-discovery"] = {
+            "task": "discover_platform_slice",
+            "schedule": 90.0,
+            "kwargs": {"bootstrap": True},
+        }
+        schedule["dispatch-fair-platform-import-rows"] = {
+            "task": "dispatch_fair_platform_import_rows",
+            "schedule": 45.0,
         }
     return schedule
 
@@ -194,8 +209,8 @@ celery_app.conf.task_routes = {
     "dispatch_fair_eval_rows": {"queue": "evaluations"},
     "dispatch_fair_diarization_rows": {"queue": "diarization"},
     "dispatch_fair_import_rows": {"queue": "imports"},
-    "dispatch_fair_platform_import_rows": {"queue": "platform-imports"},
-    "discover_platform_slice": {"queue": "platform-imports"},
+    "dispatch_fair_platform_import_rows": {"queue": "imports"},
+    "discover_platform_slice": {"queue": "imports"},
     "generate_evaluation_tldr_insights": {"queue": "evaluations"},
     "generate_evaluation_user_insights": {"queue": "evaluations"},
     "generate_evaluation_metric_clusters": {"queue": "evaluations"},

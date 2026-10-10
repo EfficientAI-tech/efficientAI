@@ -7,7 +7,12 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, Iterator, List, Optional, Protocol, Tuple
 
+from app.core.encryption import decrypt_api_key
 from app.models.database import Integration
+
+
+def integration_plain_api_key(integration: Integration) -> str:
+    return decrypt_api_key(integration.api_key)
 
 
 class SkipReason(str, Enum):
@@ -47,6 +52,7 @@ class NormalizedCall:
     audio_url: Optional[str] = None
     audio_content_type: str = "audio/mpeg"
     use_provider_api_for_audio: bool = False
+    diarised_segments: Optional[List[Dict[str, Any]]] = None
 
 
 class HistoricalProviderAdapter(Protocol):

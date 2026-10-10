@@ -70,6 +70,9 @@ import {
   isStandardJudgeModel,
 } from '../../lib/llmModelOptions'
 import CallImportProgressBar from './components/CallImportProgressBar'
+import PlatformImportProgressDock, {
+  usePinPlatformImport,
+} from './components/PlatformImportProgressDock'
 import RetryFailedImportModal from './components/RetryFailedImportModal'
 import UploadAudioModal from './components/UploadAudioModal'
 import InsightsMetricCard, {
@@ -918,6 +921,8 @@ export default function CallImportDetail() {
     [rowOffset, rowSearchQuery, diarisedStatusFilter],
   )
 
+  const pinPlatformImport = usePinPlatformImport()
+
   const { data, isLoading, isFetching, refetch, error } = useQuery({
     queryKey: ['call-import', activeWorkspaceId, id, queryParams],
     queryFn: () => apiClient.getCallImport(id!, queryParams),
@@ -953,6 +958,31 @@ export default function CallImportDetail() {
     // actions on this page, which already invalidate the query.
     staleTime: 0,
   })
+
+  useEffect(() => {
+    if (!data?.id || (data.source_format || '').toLowerCase() !== 'platform') return
+    if (data.status === 'deleting') return
+    const discovery = data.discovery_status
+    const discoveryActive =
+      typeof discovery === 'string' &&
+      !['completed', 'capped', 'failed'].includes(discovery)
+    const importActive =
+      data.status === 'processing' ||
+      data.status === 'pending' ||
+      discoveryActive
+    if (!importActive) return
+    const label =
+      data.dataset || `${(data.provider || 'platform').toUpperCase()} historical`
+    pinPlatformImport(data.id, label)
+  }, [
+    data?.id,
+    data?.source_format,
+    data?.status,
+    data?.discovery_status,
+    data?.dataset,
+    data?.provider,
+    pinPlatformImport,
+  ])
 
   useEffect(() => {
     if (!pendingScrollToEvaluation || data?.status !== 'mapped') return
@@ -1441,7 +1471,7 @@ export default function CallImportDetail() {
           className="inline-flex items-center gap-1 text-sm text-primary-600 hover:text-primary-700"
         >
           <ArrowLeft className="h-4 w-4" />
-          Back to Call Imports
+          Back to Imports
         </Link>
         <div className="bg-red-50 border border-red-200 rounded-lg p-4">
           <div className="flex items-start gap-2">
@@ -1543,7 +1573,7 @@ export default function CallImportDetail() {
           className="inline-flex items-center gap-1 text-sm text-primary-600 hover:text-primary-700"
         >
           <ArrowLeft className="h-4 w-4" />
-          Back to Call Imports
+          Back to Imports
         </Link>
         <div className="flex items-center gap-2">
           {canRunEvaluation && !isDeleting && showWorkflowTabs && (
@@ -5149,6 +5179,7 @@ export default function CallImportDetail() {
             </div>
           </div>,
         )}
+      <PlatformImportProgressDock />
     </div>
   )
 }

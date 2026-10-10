@@ -38,6 +38,7 @@ from app.workers.concurrency import eval_dispatch
 from app.workers.concurrency import fair_dispatch
 from app.workers.concurrency import fair_diarization_dispatch
 from app.workers.concurrency import fair_import_dispatch
+from app.workers.concurrency import fair_platform_import_dispatch
 
 __all__ = [
     "celery_app",
@@ -66,6 +67,8 @@ __all__ = [
     "dispatch_fair_diarization_rows_task",
     "evaluate_studio_run_item_task",
     "dispatch_fair_import_rows_task",
+    "dispatch_fair_platform_import_rows_task",
+    "discover_platform_slice_task",
     "bulk_diarize_call_import_task",
     "bulk_delete_call_import_rows_task",
     "materialize_call_import_rows_task",
@@ -120,6 +123,10 @@ dispatch_fair_diarization_rows_task = (
 dispatch_fair_import_rows_task = (
     fair_import_dispatch.dispatch_fair_import_rows_task
 )
+dispatch_fair_platform_import_rows_task = (
+    fair_platform_import_dispatch.dispatch_fair_platform_import_rows_task
+)
+discover_platform_slice_task = fair_platform_import_dispatch.discover_platform_slice_task
 bulk_diarize_call_import_task = call_import_bulk_ops.bulk_diarize_call_import_task
 bulk_delete_call_import_rows_task = (
     call_import_bulk_ops.bulk_delete_call_import_rows_task

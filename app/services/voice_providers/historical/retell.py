@@ -10,6 +10,7 @@ from app.services.voice_providers.historical.base import (
     HistoricalListItem,
     NormalizedCall,
     TimeSlice,
+    integration_plain_api_key,
 )
 from app.services.voice_providers.retell import RetellVoiceProvider
 
@@ -17,7 +18,8 @@ from app.services.voice_providers.retell import RetellVoiceProvider
 class RetellHistoricalAdapter:
     def __init__(self, integration: Integration):
         self.integration = integration
-        self._provider = RetellVoiceProvider(integration.api_key)
+        self._api_key = integration_plain_api_key(integration)
+        self._provider = RetellVoiceProvider(self._api_key)
 
     def list_page(
         self,
@@ -42,7 +44,7 @@ class RetellHistoricalAdapter:
 
         response = requests.post(
             "https://api.retellai.com/v2/list-calls",
-            headers={"Authorization": f"Bearer {self.integration.api_key}"},
+            headers={"Authorization": f"Bearer {self._api_key}"},
             json=body,
             timeout=60,
         )

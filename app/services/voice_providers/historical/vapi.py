@@ -12,6 +12,7 @@ from app.services.voice_providers.historical.base import (
     NormalizedCall,
     TimeSlice,
     build_canonical_recording_url,
+    integration_plain_api_key,
 )
 from app.services.voice_providers.vapi import VapiVoiceProvider
 from app.services.voice_providers.vapi_recording import extract_vapi_recording_url
@@ -20,7 +21,8 @@ from app.services.voice_providers.vapi_recording import extract_vapi_recording_u
 class VapiHistoricalAdapter:
     def __init__(self, integration: Integration):
         self.integration = integration
-        self._provider = VapiVoiceProvider(integration.api_key)
+        self._api_key = integration_plain_api_key(integration)
+        self._provider = VapiVoiceProvider(self._api_key)
 
     def list_page(
         self,
@@ -40,7 +42,7 @@ class VapiHistoricalAdapter:
             params["createdAtLt"] = cursor
 
         url = f"{self._provider.api_url}/call"
-        headers = {"Authorization": f"Bearer {self.integration.api_key}"}
+        headers = {"Authorization": f"Bearer {self._api_key}"}
         response = requests.get(url, headers=headers, params=params, timeout=60)
         response.raise_for_status()
         data = response.json()

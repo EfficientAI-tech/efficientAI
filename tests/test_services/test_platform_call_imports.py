@@ -36,6 +36,39 @@ def test_plan_time_slices_splits_by_day_and_agent():
     assert len(slices) == 4
 
 
+def test_reclaim_stale_platform_import_dispatches_clears_task_id(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import MagicMock
+
+    from app.models.enums import CallImportRowStatus
+    from app.workers.concurrency.platform_import_dispatch import (
+        reclaim_stale_platform_import_dispatches,
+    )
+
+    released: list[str] = []
+    monkeypatch.setattr(
+        "app.workers.concurrency.platform_import_dispatch.release_platform_import_slot",
+        lambda tid: released.append(tid),
+    )
+
+    row = MagicMock()
+    row.celery_task_id = "task-stale"
+    row.attempts = 0
+    row.updated_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    row.status = CallImportRowStatus.PENDING
+
+    db = MagicMock()
+    db.query.return_value.join.return_value.filter.return_value.limit.return_value.all.return_value = [
+        row
+    ]
+
+    count = reclaim_stale_platform_import_dispatches(db)
+    assert count == 1
+    assert row.celery_task_id is None
+    assert released == ["task-stale"]
+    db.commit.assert_called_once()
+
+
 def test_discovery_blocks_terminal_status_while_running():
     batch = SimpleNamespace(source_format="platform", discovery_status="running")
     assert platform_discovery_blocks_terminal_status(batch) is True

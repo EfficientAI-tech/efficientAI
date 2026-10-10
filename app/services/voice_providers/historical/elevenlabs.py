@@ -14,15 +14,17 @@ from app.services.voice_providers.historical.base import (
     NormalizedCall,
     TimeSlice,
     build_canonical_recording_url,
+    integration_plain_api_key,
 )
 
 
 class ElevenLabsHistoricalAdapter:
     def __init__(self, integration: Integration):
         self.integration = integration
+        self._api_key = integration_plain_api_key(integration)
         self.api_url = elevenlabs_api_v1_base(integration.api_base_url)
         self._provider = ElevenLabsVoiceProvider(
-            integration.api_key,
+            self._api_key,
             base_url=integration.api_base_url,
         )
 
@@ -44,7 +46,7 @@ class ElevenLabsHistoricalAdapter:
             params["agent_id"] = slice.agent_id
 
         url = f"{self.api_url}/convai/conversations"
-        headers = {"xi-api-key": self.integration.api_key}
+        headers = {"xi-api-key": self._api_key}
         response = requests.get(url, headers=headers, params=params, timeout=60)
         response.raise_for_status()
         data = response.json()
@@ -77,9 +79,38 @@ class ElevenLabsHistoricalAdapter:
             return [], None
         return items, next_cursor if next_cursor else None
 
+    @staticmethod
+    def _segments_from_metrics(metrics: dict) -> list:
+        segments = []
+        for entry in metrics.get("transcript_object") or []:
+            if not isinstance(entry, dict):
+                continue
+            text = (entry.get("text") or entry.get("message") or "").strip()
+            if not text:
+                continue
+            speaker_raw = (entry.get("speaker") or entry.get("role") or "unknown").lower()
+            if speaker_raw in ("agent", "ai", "assistant"):
+                speaker = "agent"
+            elif speaker_raw in ("user", "human", "customer"):
+                speaker = "user"
+            else:
+                speaker = speaker_raw
+            start = float(entry.get("start") or entry.get("time_in_call_secs") or 0)
+            end = float(entry.get("end") or start)
+            segments.append(
+                {
+                    "speaker": speaker,
+                    "text": text,
+                    "start": start,
+                    "end": end,
+                }
+            )
+        return segments
+
     def hydrate(self, item: HistoricalListItem) -> NormalizedCall:
         metrics = self._provider.retrieve_call_metrics(item.conversation_id)
         transcript = metrics.get("transcript") or ""
+        segments = self._segments_from_metrics(metrics)
         raw_columns = {
             "agent_id": metrics.get("agent_id") or item.agent_id,
             "duration_seconds": metrics.get("duration_seconds"),
@@ -97,12 +128,13 @@ class ElevenLabsHistoricalAdapter:
             audio_url=f"{self.api_url}/convai/conversations/{item.conversation_id}/audio",
             audio_content_type="audio/mpeg",
             use_provider_api_for_audio=True,
+            diarised_segments=segments or None,
         )
 
     def open_audio_stream(self, call: NormalizedCall) -> Tuple[Iterator[bytes], str]:
         if not call.audio_url:
             raise ValueError("no audio url")
-        headers = {"xi-api-key": self.integration.api_key}
+        headers = {"xi-api-key": self._api_key}
         response = requests.get(call.audio_url, headers=headers, stream=True, timeout=120)
         response.raise_for_status()
 

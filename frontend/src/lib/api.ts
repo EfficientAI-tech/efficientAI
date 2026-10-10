@@ -73,6 +73,7 @@ import type {
   CallImportTranscribeRequest,
   CallImportTranscribeResponse,
   CallImportRetryFailedRowsResponse,
+  PlatformImportProgress,
   Workspace,
   LLMGenerationConfig,
   TestAgent,
@@ -2618,6 +2619,35 @@ class ApiClient {
     })
   }
 
+  async previewPlatformCallImport(payload: {
+    voice_integration_id: string
+    window_start: string
+    window_end: string
+    window_timezone?: string
+    dataset?: string
+    filters?: {
+      agent_ids?: string[]
+      min_duration_seconds?: number
+      speed?: string
+      import_provider_transcript?: boolean
+    }
+  }): Promise<{
+    recordings_in_window: number
+    recordings_count_complete: boolean
+    count_pages_scanned?: number
+    discovery_slices?: number
+    sample_count: number
+    samples: Array<{
+      conversation_id: string
+      agent_id?: string | null
+      started_at?: string | null
+      status?: string | null
+    }>
+  }> {
+    const response = await this.client.post('/api/v1/call-imports/platform/preview', payload)
+    return response.data
+  }
+
   async createPlatformCallImport(payload: {
     voice_integration_id: string
     window_start: string
@@ -2625,6 +2655,12 @@ class ApiClient {
     window_timezone?: string
     dataset?: string
     max_calls?: number
+    filters?: {
+      agent_ids?: string[]
+      min_duration_seconds?: number
+      speed?: string
+      import_provider_transcript?: boolean
+    }
   }): Promise<{ id: string; status: string; discovery_status?: string }> {
     const response = await this.client.post('/api/v1/call-imports/platform', payload)
     return response.data
@@ -2634,6 +2670,13 @@ class ApiClient {
     const response = await this.client.get('/api/v1/call-imports/platform/agents', {
       params: { integration_id: integrationId },
     })
+    return response.data
+  }
+
+  async getPlatformImportProgress(importId: string): Promise<PlatformImportProgress> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/platform/${importId}/progress`,
+    )
     return response.data
   }
 

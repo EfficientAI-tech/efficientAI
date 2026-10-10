@@ -3697,6 +3697,13 @@ class CallImportResponse(BaseModel):
     updated_at: datetime
     created_by_email: Optional[str] = None
     last_updated_by_email: Optional[str] = None
+    voice_integration_id: Optional[UUID] = None
+    window_start: Optional[datetime] = None
+    window_end: Optional[datetime] = None
+    discovery_status: Optional[str] = None
+    paused_at: Optional[datetime] = None
+    pause_reason: Optional[str] = None
+    skip_counts: Dict[str, int] = Field(default_factory=dict)
 
     model_config = ConfigDict(from_attributes=True)
 

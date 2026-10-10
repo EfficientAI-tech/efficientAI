@@ -6,11 +6,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+import requests
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.core.encryption import decrypt_api_key
 from app.core.auth import Principal, get_principal
 from app.database import get_db
 from app.dependencies import (
@@ -23,6 +25,7 @@ from app.models.database import CallImport, CallImportDiscoverySlice, Integratio
 from app.models.enums import CallImportStatus
 from app.services.call_imports.audit import stamp_call_import_actor
 from app.services.call_imports.platform_discovery import create_discovery_slices
+from app.services.call_imports.platform_import_progress import build_platform_import_progress
 from app.services.voice_providers.historical.base import get_historical_adapter
 
 router = APIRouter(
@@ -38,6 +41,10 @@ class PlatformImportFilters(BaseModel):
     call_statuses: Optional[List[str]] = None
     include_previously_imported: bool = False
     speed: str = "standard"
+    import_provider_transcript: bool = Field(
+        default=True,
+        description="Persist the voice platform's production transcript on each row (recommended for ElevenLabs).",
+    )
 
 
 class PlatformCallImportCreate(BaseModel):
@@ -86,6 +93,25 @@ def _clamp_window_end(window_end: datetime) -> datetime:
     return min(window_end, latest)
 
 
+def _raise_for_voice_provider_http(err: requests.HTTPError) -> None:
+    response = err.response
+    code = response.status_code if response is not None else 502
+    if code in (401, 403):
+        raise HTTPException(
+            status_code=code,
+            detail="Voice platform rejected the API credential. Update the integration key and try again.",
+        ) from err
+    if code == 429:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Voice platform rate limit reached. Try again in a few minutes.",
+        ) from err
+    raise HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail=f"Voice platform request failed (HTTP {code}).",
+    ) from err
+
+
 @router.get("/agents", response_model=List[PlatformAgentOption])
 async def list_platform_agents(
     integration_id: UUID = Query(...),
@@ -99,12 +125,16 @@ async def list_platform_agents(
     integration = _resolve_voice_integration(db, organization_id, integration_id)
     from app.services.voice_providers import get_voice_provider
 
+    api_key = decrypt_api_key(integration.api_key)
     provider_cls = get_voice_provider(integration.platform)
-    if integration.platform.lower() == "elevenlabs":
-        client = provider_cls(integration.api_key, base_url=integration.api_base_url)
-    else:
-        client = provider_cls(integration.api_key)
-    agents = client.list_agents()
+    try:
+        if integration.platform.lower() == "elevenlabs":
+            client = provider_cls(api_key, base_url=integration.api_base_url)
+        else:
+            client = provider_cls(api_key)
+        agents = client.list_agents()
+    except requests.HTTPError as err:
+        _raise_for_voice_provider_http(err)
     return [
         PlatformAgentOption(id=str(a.get("id")), name=str(a.get("name") or a.get("id")))
         for a in agents
@@ -132,18 +162,50 @@ async def preview_platform_import(
         slice_end=end,
         agent_id=agent,
     )
-    items, _ = adapter.list_page(slice, None, page_size=10)
+    from app.services.call_imports.platform_discovery import plan_time_slices
+
+    agent_ids = payload.filters.agent_ids or None
+    discovery_slices = len(
+        plan_time_slices(payload.window_start, end, agent_ids)
+    )
+    max_pages = settings.PLATFORM_IMPORT_PREVIEW_COUNT_MAX_PAGES
+    sample_cap = settings.PLATFORM_IMPORT_PREVIEW_SAMPLE_SIZE
+
+    recordings_in_window = 0
+    samples_out: List[Dict[str, Any]] = []
+    cursor: Optional[str] = None
+    pages_scanned = 0
+    count_complete = True
+    try:
+        while pages_scanned < max_pages:
+            items, cursor = adapter.list_page(slice, cursor, page_size=100)
+            pages_scanned += 1
+            recordings_in_window += len(items)
+            for item in items:
+                if len(samples_out) >= sample_cap:
+                    continue
+                samples_out.append(
+                    {
+                        "conversation_id": item.conversation_id,
+                        "agent_id": item.agent_id,
+                        "started_at": item.started_at.isoformat() if item.started_at else None,
+                        "status": item.status,
+                    }
+                )
+            if not cursor:
+                break
+        if cursor:
+            count_complete = False
+    except requests.HTTPError as err:
+        _raise_for_voice_provider_http(err)
+
     return {
-        "sample_count": len(items),
-        "samples": [
-            {
-                "conversation_id": i.conversation_id,
-                "agent_id": i.agent_id,
-                "started_at": i.started_at.isoformat() if i.started_at else None,
-                "status": i.status,
-            }
-            for i in items[:10]
-        ],
+        "recordings_in_window": recordings_in_window,
+        "recordings_count_complete": count_complete,
+        "count_pages_scanned": pages_scanned,
+        "discovery_slices": discovery_slices,
+        "sample_count": len(samples_out),
+        "samples": samples_out,
     }
 
 
@@ -201,6 +263,7 @@ async def create_platform_call_import(
     db.refresh(call_import)
 
     from app.workers.concurrency.fair_platform_import_dispatch import (
+        PLATFORM_IMPORTS_QUEUE,
         discover_platform_slice_task,
     )
 
@@ -217,7 +280,7 @@ async def create_platform_call_import(
                 "call_import_id": str(call_import.id),
                 "slice_id": slice_row.slice_id,
             },
-            queue="platform-imports",
+            queue=PLATFORM_IMPORTS_QUEUE,
         )
 
     return {
@@ -226,6 +289,24 @@ async def create_platform_call_import(
         "discovery_status": call_import.discovery_status,
         "message": "Platform import accepted. Discovery runs in the background.",
     }
+
+
+@router.get("/{call_import_id}/progress")
+async def get_platform_import_progress(
+    call_import_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    del api_key
+    call_import = _get_platform_import(db, call_import_id, organization_id, workspace_id)
+    payload = build_platform_import_progress(db, call_import)
+    for key in ("window_start", "window_end", "updated_at"):
+        val = payload.get(key)
+        if val is not None and hasattr(val, "isoformat"):
+            payload[key] = val.isoformat()
+    return payload
 
 
 @router.post("/{call_import_id}/pause")
@@ -258,15 +339,12 @@ async def resume_platform_import(
     call_import.pause_reason = None
     db.commit()
     from app.workers.concurrency.fair_platform_import_dispatch import (
-        discover_platform_slice_task,
         schedule_fair_platform_import_dispatch,
+        schedule_platform_discovery_bootstrap,
     )
 
     schedule_fair_platform_import_dispatch()
-    discover_platform_slice_task.apply_async(
-        kwargs={"bootstrap": True},
-        queue="platform-imports",
-    )
+    schedule_platform_discovery_bootstrap()
     return {"status": "resumed"}
 
 
@@ -287,13 +365,10 @@ async def retry_platform_discovery(
     call_import.discovery_status = "running"
     db.commit()
     from app.workers.concurrency.fair_platform_import_dispatch import (
-        discover_platform_slice_task,
+        schedule_platform_discovery_bootstrap,
     )
 
-    discover_platform_slice_task.apply_async(
-        kwargs={"bootstrap": True},
-        queue="platform-imports",
-    )
+    schedule_platform_discovery_bootstrap()
     return {"status": "accepted"}
 
 

@@ -368,7 +368,7 @@ def process_call_import_row_task(
 
             filters = dict(call_import.platform_filters or {})
             slot_task_id = _eval_slot_task_id or self.request.id
-            return hydrate_platform_call_import_row(
+            result = hydrate_platform_call_import_row(
                 self,
                 row=row,
                 call_import=call_import,
@@ -379,6 +379,19 @@ def process_call_import_row_task(
                 slot_task_id=slot_task_id,
                 filters=filters,
             )
+            status = (result or {}).get("status")
+            if status not in ("completed", "rescheduled"):
+                from app.workers.concurrency.fair_platform_import_dispatch import (
+                    schedule_fair_platform_import_dispatch,
+                )
+                from app.workers.concurrency.platform_import_limits import (
+                    release_platform_import_slot,
+                )
+
+                release_platform_import_slot(slot_task_id)
+                if status not in ("skipped",):
+                    schedule_fair_platform_import_dispatch()
+            return result
 
         from app.services.telephony.recording_download import download_public_recording
 

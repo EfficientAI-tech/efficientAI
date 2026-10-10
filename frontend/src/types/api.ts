@@ -1264,6 +1264,53 @@ export interface CallImport {
   updated_at: string
   created_by_email?: string | null
   last_updated_by_email?: string | null
+  voice_integration_id?: string | null
+  window_start?: string | null
+  window_end?: string | null
+  discovery_status?: string | null
+  paused_at?: string | null
+  pause_reason?: string | null
+  skip_counts?: Record<string, number>
+}
+
+export interface PlatformImportDiscoveryProgress {
+  slices_total: number
+  slices_completed: number
+  slices_running: number
+  slices_pending: number
+  slices_failed: number
+  listed_total: number
+  percent: number
+}
+
+export interface PlatformImportRecordingsProgress {
+  total: number
+  completed: number
+  failed: number
+  processing: number
+  pending: number
+  queued?: number
+  percent: number
+}
+
+export interface PlatformImportProgress {
+  call_import_id: string
+  provider: string | null
+  dataset: string | null
+  status: string
+  discovery_status: string | null
+  paused: boolean
+  pause_reason: string | null
+  phase: 'discovering' | 'importing' | 'complete' | 'paused' | 'failed' | 'deleting'
+  overall_percent: number
+  is_active: boolean
+  calls_discovered: number
+  skip_counts: Record<string, number>
+  window_start?: string | null
+  window_end?: string | null
+  updated_at: string
+  discovery: PlatformImportDiscoveryProgress
+  recordings: PlatformImportRecordingsProgress
 }
 
 export interface CallImportDetail extends CallImport {
