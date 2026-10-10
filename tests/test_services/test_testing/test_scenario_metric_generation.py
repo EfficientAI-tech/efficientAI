@@ -25,6 +25,16 @@ def test_normalize_generated_metric_fields_defaults_enum_for_rating():
     assert normalized["enabled_surfaces"] == ["agent"]
 
 
+def test_normalize_generated_metric_fields_honors_forced_type():
+    normalized = smg.normalize_generated_metric_fields(
+        {"name": "X", "description": "Y", "metric_type": "rating"},
+        surface="agent",
+        forced_metric_type="boolean",
+    )
+    assert normalized["metric_type"] == "boolean"
+    assert normalized["custom_data_type"] == "boolean"
+
+
 def test_build_messages_includes_production_prompt_and_scenarios():
     messages = smg._build_messages(
         agent_name="Support Bot",
@@ -81,6 +91,7 @@ def test_generate_metrics_from_scenarios_parses_llm_array(monkeypatch, db_sessio
                 name="Refund request",
                 description="Caller wants money back.",
                 goal="Issue refund",
+                metric_type="boolean",
             )
         ],
         organization_id=org_id,
@@ -94,6 +105,7 @@ def test_generate_metrics_from_scenarios_parses_llm_array(monkeypatch, db_sessio
     metric = result.metrics[0]
     assert metric.name == "Refund Handled"
     assert metric.metric_type == "boolean"
+    assert "boolean" in captured["messages"][1]["content"]
     assert metric.scenario_name == "Refund request"
     assert metric.tags[:2] == ["Billing Agent", "auto-generated"]
     assert captured["messages"][0]["role"] == "system"

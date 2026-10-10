@@ -39,6 +39,8 @@ def test_generate_from_scenarios_forbidden_without_license(unlicensed_client):
 
 
 def test_generate_from_scenarios_returns_tagged_drafts(authenticated_client, make_agent):
+    from app.models.enums import ModelProvider
+
     agent = make_agent(name="Tagged Agent", description="Production prompt body.")
     payload = {
         "agent_name": agent.name,
@@ -66,6 +68,9 @@ def test_generate_from_scenarios_returns_tagged_drafts(authenticated_client, mak
     )
 
     with patch(
+        "app.api.v1.routes.scenario_metrics.get_llm_provider_and_model_for_request",
+        return_value=(ModelProvider.OPENAI, "gpt-test"),
+    ), patch(
         "app.api.v1.routes.scenario_metrics.generate_metrics_from_scenarios",
         return_value=smg.ScenarioMetricGenerationResult(
             metrics=[fake_metric],
