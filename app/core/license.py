@@ -54,6 +54,11 @@ FEATURE_CATALOG: Dict[str, Dict[str, str]] = {
         "description": "Batch ad-hoc metric scoring runs against evaluation results and call imports.",
         "category": "evaluation",
     },
+    "scenario_metrics": {
+        "title": "Scenario Metrics",
+        "description": "Auto-generate evaluation metrics from agent scenarios and push them into Metrics after review.",
+        "category": "evaluation",
+    },
     "db_sharding": {
         "title": "Call Import DB Sharding",
         "description": "Horizontally shard call-import row storage across multiple database nodes.",
@@ -119,6 +124,7 @@ ENTERPRISE_FEATURES = list(FEATURE_CATALOG.keys())
 DEFAULT_ENTERPRISE_OFFERINGS: List[str] = [
     "alerts",
     "metric_studio",
+    "scenario_metrics",
     "db_sharding",
     "llm_gateway",
 ]

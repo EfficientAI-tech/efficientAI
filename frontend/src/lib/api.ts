@@ -5400,6 +5400,34 @@ class ApiClient {
     return response.data
   }
 
+  async generateMetricsFromScenarios(data: {
+    agent_name: string
+    production_prompt: string
+    call_medium?: string | null
+    scenarios: Array<{ name: string; description: string; goal?: string }>
+    provider?: string
+    model?: string
+    credential_id?: string
+    llm_config?: Record<string, any>
+  }): Promise<{
+    metrics: Array<{
+      name: string
+      description: string
+      metric_type: 'rating' | 'boolean' | 'number' | 'text'
+      custom_data_type: 'boolean' | 'enum' | 'number_range' | null
+      custom_config: Record<string, any>
+      supported_surfaces: string[]
+      enabled_surfaces: string[]
+      tags: string[]
+      scenario_name: string
+    }>
+    provider: string
+    model: string
+  }> {
+    const response = await this.client.post('/api/v1/metrics/generate-from-scenarios', data)
+    return response.data
+  }
+
   async parseBulkMetric(data: {
     prompt: string
     surface: 'agent' | 'chat_agent' | 'voice_playground'

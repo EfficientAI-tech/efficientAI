@@ -75,6 +75,11 @@ const SECTIONS: ComparisonSection[] = [
         enterprise: { type: 'yes' },
       },
       {
+        feature: 'Scenario metrics',
+        oss: { type: 'no' },
+        enterprise: { type: 'yes' },
+      },
+      {
         feature: 'Alerts',
         oss: { type: 'no' },
         enterprise: { type: 'yes' },
