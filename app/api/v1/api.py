@@ -82,8 +82,10 @@ api_router.include_router(conversation_evaluations.router)
 api_router.include_router(voice_agent.router)
 api_router.include_router(evaluators.router)
 api_router.include_router(evaluator_suites.router)
-api_router.include_router(metrics.router)
+# Register before metrics.router so `/metrics/generate-from-scenarios` is not
+# captured by `/metrics/{metric_id}` (which yields 405 for POST).
 api_router.include_router(scenario_metrics.router)
+api_router.include_router(metrics.router)
 # Register before evaluator_results so `/evaluator-results/metric-clusters`
 # is not captured by `/evaluator-results/{id}` with id="metric-clusters".
 api_router.include_router(evaluator_result_metric_clusters.router)

@@ -23,6 +23,8 @@ class ScenarioMetricInput:
     name: str
     description: str
     goal: Optional[str] = None
+    # When set to boolean|rating|number|text, the generated metric must use that type.
+    metric_type: Optional[str] = None
 
 
 @dataclass
@@ -76,6 +78,16 @@ def _build_messages(
         ]
         if scenario.goal:
             parts.append(f"Goal: {scenario.goal.strip()}")
+        requested_type = (scenario.metric_type or "").strip().lower()
+        if requested_type in {"boolean", "rating", "number", "text"}:
+            parts.append(
+                f'Requested metric type: {requested_type} '
+                f'(you MUST set "metric_type" to "{requested_type}")'
+            )
+        else:
+            parts.append(
+                "Requested metric type: auto (choose the best structured type for this scenario)"
+            )
         scenario_blocks.append("\n".join(parts))
 
     schema_block = f"""
@@ -122,6 +134,7 @@ def normalize_generated_metric_fields(
     parsed: Dict[str, Any],
     *,
     surface: str,
+    forced_metric_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     allowed_surfaces = set(ALLOWED_METRIC_SURFACES)
     supported = [s for s in (parsed.get("supported_surfaces") or []) if s in allowed_surfaces]
@@ -131,9 +144,13 @@ def normalize_generated_metric_fields(
     if not enabled_surfaces:
         enabled_surfaces = list(supported)
 
-    metric_type = (parsed.get("metric_type") or "rating").lower()
-    if metric_type not in {"rating", "boolean", "number", "text"}:
-        metric_type = "rating"
+    forced = (forced_metric_type or "").strip().lower()
+    if forced in {"rating", "boolean", "number", "text"}:
+        metric_type = forced
+    else:
+        metric_type = (parsed.get("metric_type") or "rating").lower()
+        if metric_type not in {"rating", "boolean", "number", "text"}:
+            metric_type = "rating"
 
     custom_data_type = parsed.get("custom_data_type")
     if custom_data_type not in {"boolean", "enum", "number_range", None}:
@@ -281,7 +298,14 @@ def generate_metrics_from_scenarios(
         item = raw[index]
         if not isinstance(item, dict):
             raise ValueError(f"Metric at index {index} is not an object")
-        normalized = normalize_generated_metric_fields(item, surface=surface)
+        forced_type = (scenario.metric_type or "").strip().lower()
+        if forced_type == "auto":
+            forced_type = ""
+        normalized = normalize_generated_metric_fields(
+            item,
+            surface=surface,
+            forced_metric_type=forced_type or None,
+        )
         name = _dedupe_metric_name(
             db, organization_id, workspace_id, normalized["name"]
         )

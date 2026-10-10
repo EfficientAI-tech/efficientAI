@@ -942,6 +942,7 @@ def _build_session_api_app():
         integrations,
         manual_evaluations,
         metrics,
+        scenario_metrics,
         model_config,
         observability,
         personas,
@@ -984,6 +985,7 @@ def _build_session_api_app():
     app.include_router(integrations.router, prefix="/api/v1")
     app.include_router(aiproviders.router, prefix="/api/v1")
     app.include_router(llm_gateway.router, prefix="/api/v1")
+    app.include_router(scenario_metrics.router, prefix="/api/v1")
     app.include_router(metrics.router, prefix="/api/v1")
     app.include_router(evaluator_result_metric_clusters.router, prefix="/api/v1")
     app.include_router(evaluator_results.router, prefix="/api/v1")

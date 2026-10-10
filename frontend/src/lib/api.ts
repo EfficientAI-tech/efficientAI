@@ -5404,7 +5404,12 @@ class ApiClient {
     agent_name: string
     production_prompt: string
     call_medium?: string | null
-    scenarios: Array<{ name: string; description: string; goal?: string }>
+    scenarios: Array<{
+      name: string
+      description: string
+      goal?: string
+      metric_type?: 'auto' | 'boolean' | 'rating' | 'number' | 'text'
+    }>
     provider?: string
     model?: string
     credential_id?: string

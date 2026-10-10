@@ -39,6 +39,12 @@ class ScenarioMetricScenarioInput(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: str = Field(..., min_length=1)
     goal: Optional[str] = None
+    metric_type: Optional[
+        Literal["auto", "boolean", "rating", "number", "text"]
+    ] = Field(
+        default="auto",
+        description="Desired metric type for this scenario; auto lets the LLM choose.",
+    )
 
 
 class GenerateMetricsFromScenariosRequest(BaseModel):
@@ -89,6 +95,7 @@ async def generate_metrics_from_scenarios_route(
             name=item.name.strip(),
             description=item.description.strip(),
             goal=item.goal.strip() if item.goal else None,
+            metric_type=item.metric_type,
         )
         for item in data.scenarios
     ]
