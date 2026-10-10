@@ -2318,6 +2318,24 @@ class CallImport(Base):
     )
     error_message = Column(Text, nullable=True)
 
+    voice_integration_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("integrations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    platform_filters = Column(JSON, nullable=False, default=dict)
+    window_start = Column(DateTime(timezone=True), nullable=True)
+    window_end = Column(DateTime(timezone=True), nullable=True)
+    window_timezone = Column(String(64), nullable=True)
+    discovery_status = Column(String(32), nullable=True)
+    max_calls = Column(Integer, nullable=True)
+    next_row_index = Column(Integer, nullable=False, default=0)
+    skip_counts = Column(JSON, nullable=False, default=dict)
+    skip_samples = Column(JSON, nullable=False, default=list)
+    paused_at = Column(DateTime(timezone=True), nullable=True)
+    pause_reason = Column(Text, nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -2338,6 +2356,62 @@ class CallImport(Base):
         back_populates="call_import",
         cascade="all, delete-orphan",
     )
+
+
+class CallImportDiscoverySlice(Base):
+    """Time slice for platform historical import discovery."""
+
+    __tablename__ = "call_import_discovery_slices"
+
+    call_import_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_imports.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    slice_id = Column(Integer, primary_key=True)
+    slice_start = Column(DateTime(timezone=True), nullable=False)
+    slice_end = Column(DateTime(timezone=True), nullable=False)
+    cursor = Column(Text, nullable=True)
+    status = Column(String(32), nullable=False, default="pending")
+    listed = Column(Integer, nullable=False, default=0)
+    accepted = Column(Integer, nullable=False, default=0)
+    attempts = Column(Integer, nullable=False, default=0)
+    error = Column(Text, nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class PlatformConversationLedger(Base):
+    """Dedupes platform conversations per workspace."""
+
+    __tablename__ = "platform_conversation_ledger"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "provider",
+            "conversation_id",
+            name="uq_platform_ledger_workspace_provider_conversation",
+        ),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    provider = Column(String(50), nullable=False)
+    conversation_id = Column(String(255), nullable=False)
+    call_import_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_imports.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    row_id = Column(UUID(as_uuid=True), nullable=False)
+    row_index = Column(Integer, nullable=False)
+    state = Column(String(32), nullable=False, default="reserved")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class CallImportShardSlice(Base):

@@ -262,19 +262,19 @@ def _extension_for_content_type(content_type: str) -> str:
     return "mp3"
 
 
-def _rollup_parent_status(db, call_import) -> None:
-    """Recompute completed_rows / failed_rows and finalize the batch status."""
+def _rollup_parent_status(db, call_import, *, force: bool = False) -> None:
+    from app.services.call_imports.debounced_rollup import schedule_debounced_import_rollup
 
-    from app.services.call_imports.bulk_ops import rollup_call_import_batch_status
-
-    rollup_call_import_batch_status(db, call_import)
+    schedule_debounced_import_rollup(db, call_import, force=force)
 
 
-def _rollup_parent_on_catalog(catalog_db, row_db, call_import) -> None:
+def _rollup_parent_on_catalog(
+    catalog_db, row_db, call_import, *, force: bool = False
+) -> None:
     from app.db_sharding.sessions import is_sharding_enabled
 
     target = catalog_db if is_sharding_enabled() and catalog_db is not row_db else row_db
-    _rollup_parent_status(target, call_import)
+    _rollup_parent_status(target, call_import, force=force)
     if target is not row_db:
         target.commit()
 
@@ -285,6 +285,7 @@ def process_call_import_row_task(
     row_id: str,
     _eval_slot_task_id: Optional[str] = None,
     run_eval_row_id: Optional[str] = None,
+    _platform_import: bool = False,
 ):
     """Fetch one call recording from the provider and store it in S3.
 
@@ -359,6 +360,25 @@ def process_call_import_row_task(
         row.error_message = None
         if not _safe_commit(db, row_id=row_id, context="mark_processing"):
             return {"status": "skipped", "reason": "row_deleted"}
+
+        if (call_import.source_format or "").lower() == "platform":
+            from app.workers.tasks.platform_call_import_hydrate import (
+                hydrate_platform_call_import_row,
+            )
+
+            filters = dict(call_import.platform_filters or {})
+            slot_task_id = _eval_slot_task_id or self.request.id
+            return hydrate_platform_call_import_row(
+                self,
+                row=row,
+                call_import=call_import,
+                db=db,
+                row_id=row_id,
+                catalog_db=catalog_db,
+                row_db=row_db,
+                slot_task_id=slot_task_id,
+                filters=filters,
+            )
 
         from app.services.telephony.recording_download import download_public_recording
 

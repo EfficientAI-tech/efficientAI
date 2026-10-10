@@ -1408,6 +1408,19 @@ def _is_manual_audio_call_import(call_import: CallImport) -> bool:
     return (call_import.source_format or "").lower() == "audio"
 
 
+def _is_platform_call_import(call_import: CallImport) -> bool:
+    return (call_import.source_format or "").lower() == "platform"
+
+
+def platform_import_hydration_complete(call_import: CallImport) -> bool:
+    if not _is_platform_call_import(call_import):
+        return True
+    discovery = (call_import.discovery_status or "").lower()
+    if discovery not in {"completed", "capped", "failed"}:
+        return False
+    return True
+
+
 def _validate_diarised_eval_recording_ready(
     parameters: List[CallImportSchemaParameter],
     parameter_mapping: Dict[str, Any],
@@ -2749,7 +2762,10 @@ async def list_call_imports(
     source_filter = (source_format or "").strip().lower()
     if source_filter == "__non_audio__":
         query = query.filter(
-            or_(CallImport.source_format.is_(None), CallImport.source_format != "audio")
+            or_(
+                CallImport.source_format.is_(None),
+                CallImport.source_format.notin_(["audio", "platform"]),
+            )
         )
     elif source_filter:
         query = query.filter(func.lower(CallImport.source_format) == source_filter)

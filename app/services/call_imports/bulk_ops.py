@@ -1010,6 +1010,14 @@ def rollup_call_import_batch_status(db: Session, call_import: CallImport) -> Non
             call_import.status = CallImportStatus.PROCESSING
         return
 
+    from app.services.call_imports.debounced_rollup import (
+        platform_discovery_blocks_terminal_status,
+    )
+
+    if platform_discovery_blocks_terminal_status(call_import):
+        call_import.status = CallImportStatus.PROCESSING
+        return
+
     if total == 0:
         return
     if failed == 0:

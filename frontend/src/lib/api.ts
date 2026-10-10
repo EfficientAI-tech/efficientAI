@@ -2618,6 +2618,25 @@ class ApiClient {
     })
   }
 
+  async createPlatformCallImport(payload: {
+    voice_integration_id: string
+    window_start: string
+    window_end: string
+    window_timezone?: string
+    dataset?: string
+    max_calls?: number
+  }): Promise<{ id: string; status: string; discovery_status?: string }> {
+    const response = await this.client.post('/api/v1/call-imports/platform', payload)
+    return response.data
+  }
+
+  async listPlatformImportAgents(integrationId: string): Promise<Array<{ id: string; name: string }>> {
+    const response = await this.client.get('/api/v1/call-imports/platform/agents', {
+      params: { integration_id: integrationId },
+    })
+    return response.data
+  }
+
   async listCallImports(
     params: {
       page?: number

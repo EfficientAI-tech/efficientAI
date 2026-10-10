@@ -24,6 +24,7 @@ import StatusBadge from '../../components/shared/StatusBadge'
 import CallImportProgressBar from './components/CallImportProgressBar'
 import UploadAudioModal from './components/UploadAudioModal'
 import UploadCsvModal from './components/UploadCsvModal'
+import ImportPlatformModal from './components/ImportPlatformModal'
 import { itemsOf } from '../../lib/safeData'
 
 const PAGE_SIZE = 20
@@ -40,7 +41,7 @@ const STATUS_OPTIONS: Array<{ label: string; value: '' | CallImportStatus }> = [
   { label: 'Deleting', value: 'deleting' },
 ]
 
-type UploadTab = 'datasets' | 'audio'
+type UploadTab = 'datasets' | 'audio' | 'platform'
 
 export default function CallImports() {
   const navigate = useNavigate()
@@ -57,6 +58,7 @@ export default function CallImports() {
   const [activeTab, setActiveTab] = useState<UploadTab>('datasets')
   const [showUpload, setShowUpload] = useState(false)
   const [showAudioUpload, setShowAudioUpload] = useState(false)
+  const [showPlatformImport, setShowPlatformImport] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<CallImport | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
 
@@ -97,7 +99,12 @@ export default function CallImports() {
       ...(statusFilter ? { status: statusFilter } : {}),
       ...(datasetFilter ? { dataset: datasetFilter } : {}),
       ...(tagFilter.length > 0 ? { tag_id: tagFilter } : {}),
-      source_format: activeTab === 'audio' ? 'audio' : '__non_audio__',
+      source_format:
+        activeTab === 'audio'
+          ? 'audio'
+          : activeTab === 'platform'
+            ? 'platform'
+            : '__non_audio__',
     }),
     [page, statusFilter, datasetFilter, tagFilter, activeTab],
   )
@@ -152,12 +159,18 @@ export default function CallImports() {
           </Link>
           <Button
             variant="primary"
-            onClick={() =>
-              activeTab === 'audio' ? setShowAudioUpload(true) : setShowUpload(true)
-            }
+            onClick={() => {
+              if (activeTab === 'audio') setShowAudioUpload(true)
+              else if (activeTab === 'platform') setShowPlatformImport(true)
+              else setShowUpload(true)
+            }}
             leftIcon={<Upload className="h-5 w-5" />}
           >
-            {activeTab === 'audio' ? 'Upload Audio' : 'Upload CSV'}
+            {activeTab === 'audio'
+              ? 'Upload Audio'
+              : activeTab === 'platform'
+                ? 'Import from platform'
+                : 'Upload CSV'}
           </Button>
           <Button
             variant="secondary"
@@ -199,7 +212,22 @@ export default function CallImports() {
           }`}
         >
           <FileAudio className="h-4 w-4" />
-          Call Imports / Uploads
+          Manual audio
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setActiveTab('platform')
+            setPage(1)
+          }}
+          className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+            activeTab === 'platform'
+              ? 'bg-primary-50 text-primary-700'
+              : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+          }`}
+        >
+          <Phone className="h-4 w-4" />
+          Import from platforms
         </button>
       </div>
 
@@ -520,6 +548,10 @@ export default function CallImports() {
       </div>
 
       <UploadCsvModal open={showUpload} onClose={() => setShowUpload(false)} />
+      <ImportPlatformModal
+        open={showPlatformImport}
+        onClose={() => setShowPlatformImport(false)}
+      />
       <UploadAudioModal
         open={showAudioUpload}
         onClose={() => setShowAudioUpload(false)}

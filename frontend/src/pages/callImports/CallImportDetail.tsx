@@ -1474,7 +1474,10 @@ export default function CallImportDetail() {
   // until the user finishes the MAP + IMPORT steps. We swap out the
   // bottom of the page for the stage panels while the batch is still
   // pre-import so the user has a single linear next-action.
-  const needsMapping = data.status === 'uploaded' || data.status === 'mapped'
+  const isPlatformImport = (data.source_format || '').toLowerCase() === 'platform'
+  const needsMapping =
+    !isPlatformImport &&
+    (data.status === 'uploaded' || data.status === 'mapped')
   const showWorkflowTabs = !needsMapping
   const isDeleting = data.status === 'deleting'
   const isManualAudioImport = (data.source_format || '').toLowerCase() === 'audio'

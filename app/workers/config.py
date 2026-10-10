@@ -194,6 +194,8 @@ celery_app.conf.task_routes = {
     "dispatch_fair_eval_rows": {"queue": "evaluations"},
     "dispatch_fair_diarization_rows": {"queue": "diarization"},
     "dispatch_fair_import_rows": {"queue": "imports"},
+    "dispatch_fair_platform_import_rows": {"queue": "platform-imports"},
+    "discover_platform_slice": {"queue": "platform-imports"},
     "generate_evaluation_tldr_insights": {"queue": "evaluations"},
     "generate_evaluation_user_insights": {"queue": "evaluations"},
     "generate_evaluation_metric_clusters": {"queue": "evaluations"},

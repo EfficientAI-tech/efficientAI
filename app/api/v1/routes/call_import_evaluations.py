@@ -1055,9 +1055,15 @@ async def create_call_import_evaluation(
     )
 
     if use_diarised:
-        from app.api.v1.routes.call_imports import _is_manual_audio_call_import
+        from app.api.v1.routes.call_imports import (
+            _is_manual_audio_call_import,
+            _is_platform_call_import,
+            platform_import_hydration_complete,
+        )
 
-        if not _is_manual_audio_call_import(call_import):
+        if not _is_manual_audio_call_import(call_import) and not _is_platform_call_import(
+            call_import
+        ):
             if call_import.schema_id:
                 from app.api.v1.routes.call_imports import (
                     _resolve_schema,
@@ -1085,6 +1091,22 @@ async def create_call_import_evaluation(
                     )
 
     starting_from_mapped = False
+    from app.api.v1.routes.call_imports import (
+        _is_platform_call_import,
+        platform_import_hydration_complete,
+    )
+
+    if _is_platform_call_import(call_import) and not platform_import_hydration_complete(
+        call_import
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Platform import is still discovering or fetching recordings. "
+                "Wait until the batch is ready before running evaluation."
+            ),
+        )
+
     if call_import.status == CallImportStatus.MAPPED:
         if not call_import.source_s3_key or not call_import.source_format:
             raise HTTPException(
