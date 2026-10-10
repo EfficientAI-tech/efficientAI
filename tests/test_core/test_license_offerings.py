@@ -20,6 +20,7 @@ def test_default_offerings_enabled_with_any_entitlement(monkeypatch):
 
     assert license_module.is_feature_enabled("alerts", org_id) is True
     assert license_module.is_feature_enabled("metric_studio", org_id) is True
+    assert license_module.is_feature_enabled("scenario_metrics", org_id) is True
     assert license_module.is_feature_enabled("db_sharding", org_id) is True
     assert license_module.is_feature_enabled("llm_gateway", org_id) is True
 
@@ -94,3 +95,4 @@ def test_get_features_enabled_for_org_includes_defaults(monkeypatch):
     assert "enterprise_platform" in enabled
     assert "alerts" in enabled
     assert "metric_studio" in enabled
+    assert "scenario_metrics" in enabled
