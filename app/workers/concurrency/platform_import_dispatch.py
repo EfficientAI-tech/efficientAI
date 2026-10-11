@@ -39,13 +39,26 @@ def clear_expired_platform_row_claims(
         if not platform_import_ids:
             return 0
         query = query.filter(CallImportRow.call_import_id.in_(platform_import_ids))
-    rows = query.limit(128).all()
+    stuck = db.query(CallImportRow).filter(
+        CallImportRow.celery_task_id.isnot(None),
+        CallImportRow.status == CallImportRowStatus.PROCESSING,
+        CallImportRow.recording_s3_key.is_(None),
+    )
+    if platform_import_ids:
+        stuck = stuck.filter(CallImportRow.call_import_id.in_(platform_import_ids))
+    rows = query.limit(128).all() + stuck.limit(128).all()
     cleared = 0
+    seen: set = set()
     for row in rows:
+        if row.id in seen:
+            continue
+        seen.add(row.id)
         task_id = (row.celery_task_id or "").strip()
         if not task_id or lease_is_active(task_id):
             continue
         row.celery_task_id = None
+        if row.status == CallImportRowStatus.PROCESSING:
+            row.status = CallImportRowStatus.PENDING
         cleared += 1
     if cleared:
         db.commit()

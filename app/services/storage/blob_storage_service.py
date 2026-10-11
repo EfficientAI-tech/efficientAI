@@ -4,6 +4,7 @@ from typing import List, Optional
 import uuid
 
 from app.config import settings
+from app.core.exceptions import StorageError
 from app.services.storage.s3_service import S3Service
 
 
@@ -82,6 +83,15 @@ class BlobStorageService:
         self, file_content: bytes, key: str, content_type: str = "audio/mpeg"
     ) -> str:
         return self._backend().upload_file_by_key(file_content, key, content_type)
+
+    def upload_file_by_key_from_path(
+        self, path: str, key: str, content_type: str = "audio/mpeg"
+    ) -> str:
+        backend = self._backend()
+        upload = getattr(backend, "upload_file_by_key_from_path", None)
+        if not callable(upload):
+            raise StorageError("Blob backend cannot upload from a file path")
+        return upload(path, key, content_type=content_type)
 
     def download_file(self, file_id: uuid.UUID, file_format: str) -> bytes:
         return self._backend().download_file(file_id, file_format)

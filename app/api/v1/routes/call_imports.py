@@ -176,6 +176,25 @@ def _serialize_call_import(
     failed = min(int(call_import.failed_rows or 0), total) if total else int(
         call_import.failed_rows or 0
     )
+    # Shard rows are the live count. The catalog counter lags during download.
+    source = (getattr(call_import, "source_format", None) or "").lower()
+    batch_status = (
+        call_import.status.value
+        if isinstance(call_import.status, CallImportStatus)
+        else str(call_import.status or "")
+    )
+    if source == "platform" and batch_status in {"pending", "processing"}:
+        from app.services.call_imports.bulk_ops import (
+            _aggregate_import_row_status_counts,
+        )
+
+        agg_total, agg_completed, agg_failed, _, _ = (
+            _aggregate_import_row_status_counts(db, call_import.id)
+        )
+        if agg_total > 0:
+            total = agg_total
+            completed = agg_completed
+            failed = agg_failed
     if user_emails is None:
         user_emails = emails_for_user_ids(
             db, user_ids_from_call_imports([call_import])
@@ -186,6 +205,7 @@ def _serialize_call_import(
     base = CallImportResponse.model_validate(call_import)
     return base.model_copy(
         update={
+            "total_rows": total,
             "completed_rows": completed,
             "failed_rows": failed,
             "latest_evaluation_status": _latest_evaluation_status(

@@ -4794,7 +4794,7 @@ export default function CallImportDetail() {
             data.status === 'processing' ||
             data.status === 'deleting'
           const lines = [
-            `“${name}” will be permanently deleted, along with all ${data.total_rows} row record${data.total_rows === 1 ? '' : 's'} and ${data.completed_rows} stored recording${data.completed_rows === 1 ? '' : 's'} in S3.`,
+            `“${name}” will be permanently deleted, along with all of its recordings.`,
             inFlight
               ? 'This batch is still processing — pending tasks will be revoked before deletion.'
               : '',
@@ -4805,6 +4805,7 @@ export default function CallImportDetail() {
         })()}
         confirmLabel="Delete"
         cancelLabel="Cancel"
+        confirmPhrase="confirm"
         variant="danger"
         isLoading={deleteImportMutation.isPending}
         onConfirm={() => deleteImportMutation.mutate(data.id)}
@@ -4854,11 +4855,11 @@ export default function CallImportDetail() {
         description={(() => {
           if (!pendingDeleteRow) return ''
           const callId = pendingDeleteRow.conversation_id
-          const hasS3 = !!pendingDeleteRow.recording_s3_key
+          const hasRecording = !!pendingDeleteRow.recording_s3_key
           const lines = [
-            `The row for CallID ${callId} will be removed from this import.`,
-            hasS3
-              ? 'The associated recording will also be deleted from S3.'
+            `The row for CallID ${callId} will be permanently deleted.`,
+            hasRecording
+              ? 'The associated recording will also be permanently deleted.'
               : 'No recording is stored for this row yet, so only the row record will be removed.',
             'This cannot be undone.',
             deleteError ? `Error: ${deleteError}` : '',
@@ -4891,8 +4892,8 @@ export default function CallImportDetail() {
         description={(() => {
           const lines = [
             selectedRowIds.size === 1
-              ? 'The selected row will be removed from this import, along with its stored recording in S3.'
-              : `${selectedRowIds.size} rows will be removed from this import, along with their stored recordings in S3.`,
+              ? 'The selected row will be permanently deleted, along with its recording.'
+              : `${selectedRowIds.size} rows will be permanently deleted, along with their recordings.`,
             'In-flight transcribe / download tasks for these rows will be revoked.',
             'This cannot be undone.',
             bulkDeleteRowsError ? `Error: ${bulkDeleteRowsError}` : '',
@@ -5112,7 +5113,7 @@ export default function CallImportDetail() {
                       <p className="text-xs text-gray-600 mt-1">
                         Permanently remove {selectedCount} selected row
                         {selectedCount === 1 ? '' : 's'} from this import,
-                        along with their stored recordings in S3. In-flight
+                        along with their recordings. In-flight
                         tasks for these rows will be revoked. This cannot
                         be undone.
                       </p>

@@ -101,10 +101,10 @@ class Settings(BaseSettings):
     TELEPHONY_IMPORT_BACKOFF_BASE_SECONDS: int = 15
     TELEPHONY_IMPORT_BACKOFF_MAX_SECONDS: int = 60
     PLATFORM_IMPORT_GLOBAL_INFLIGHT_LIMIT: int = 64
-    PLATFORM_IMPORT_ORG_INFLIGHT_LIMIT: int = 16
-    PLATFORM_IMPORT_WORKSPACE_INFLIGHT_LIMIT: int = 8
-    PLATFORM_IMPORT_MAX_CALLS_DEFAULT: int = 100_000
-    PLATFORM_IMPORT_MAX_CALLS_CAP: int = 100_000
+    PLATFORM_IMPORT_ORG_INFLIGHT_LIMIT: int = 32
+    PLATFORM_IMPORT_WORKSPACE_INFLIGHT_LIMIT: int = 16
+    PLATFORM_IMPORT_MAX_CALLS_DEFAULT: int = 0
+    PLATFORM_IMPORT_MAX_CALLS_CAP: int = 0
     PLATFORM_IMPORT_RECORDING_MAX_BYTES: int = 300 * 1024 * 1024
     PLATFORM_IMPORT_DISCOVERY_PAGE_BUDGET: int = 20
     PLATFORM_IMPORT_DISCOVERY_SLICE_STALE_MINUTES: int = 20
@@ -113,9 +113,12 @@ class Settings(BaseSettings):
     # Healthy discovery keeps only a few slice tasks in flight.
     PLATFORM_IMPORT_DISCOVERY_QUEUE_CAP: int = 200
     PLATFORM_IMPORT_HYDRATE_QUEUE_CAP: int = 128
-    PLATFORM_IMPORT_PER_IMPORT_INFLIGHT_LIMIT: int = 4
+    PLATFORM_IMPORT_PER_IMPORT_INFLIGHT_LIMIT: int = 12
     PLATFORM_IMPORT_LEASE_SECONDS: int = 20 * 60
     PLATFORM_IMPORT_STALL_MINUTES: int = 10
+    PLATFORM_IMPORT_RPM_GENTLE: int = 30
+    PLATFORM_IMPORT_RPM_STANDARD: int = 120
+    PLATFORM_IMPORT_RPM_FAST: int = 300
     PLATFORM_IMPORT_PREVIEW_COUNT_MAX_PAGES: int = 25
     PLATFORM_IMPORT_PREVIEW_SAMPLE_SIZE: int = 5
     PLATFORM_IMPORT_FEATURE_ENABLED: bool = True
@@ -755,6 +758,23 @@ def load_config_from_file(config_path: str) -> None:
             settings.TELEPHONY_IMPORT_BACKOFF_MAX_SECONDS = int(
                 workers_config["telephony_import_backoff_max_seconds"]
             )
+        _platform_worker_keys = {
+            "platform_import_per_import_inflight_limit": "PLATFORM_IMPORT_PER_IMPORT_INFLIGHT_LIMIT",
+            "platform_import_workspace_inflight_limit": "PLATFORM_IMPORT_WORKSPACE_INFLIGHT_LIMIT",
+            "platform_import_org_inflight_limit": "PLATFORM_IMPORT_ORG_INFLIGHT_LIMIT",
+            "platform_import_global_inflight_limit": "PLATFORM_IMPORT_GLOBAL_INFLIGHT_LIMIT",
+            "platform_import_rpm_gentle": "PLATFORM_IMPORT_RPM_GENTLE",
+            "platform_import_rpm_standard": "PLATFORM_IMPORT_RPM_STANDARD",
+            "platform_import_rpm_fast": "PLATFORM_IMPORT_RPM_FAST",
+            "platform_import_hydrate_queue_cap": "PLATFORM_IMPORT_HYDRATE_QUEUE_CAP",
+            "platform_import_discovery_queue_cap": "PLATFORM_IMPORT_DISCOVERY_QUEUE_CAP",
+            "platform_import_max_calls_cap": "PLATFORM_IMPORT_MAX_CALLS_CAP",
+            "platform_import_max_calls_default": "PLATFORM_IMPORT_MAX_CALLS_DEFAULT",
+            "platform_import_stall_minutes": "PLATFORM_IMPORT_STALL_MINUTES",
+        }
+        for yaml_key, attr in _platform_worker_keys.items():
+            if yaml_key in workers_config:
+                setattr(settings, attr, int(workers_config[yaml_key]))
     
     if "storage" in config_data:
         storage_config = config_data["storage"]

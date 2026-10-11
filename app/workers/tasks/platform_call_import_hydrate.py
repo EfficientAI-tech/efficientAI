@@ -42,18 +42,9 @@ def _apply_provider_transcript(
     row.transcript_status = "completed" if text else "idle"
     if text:
         row.transcribed_at = datetime.now(timezone.utc)
-    segments = normalized.diarised_segments
-    if text and segments:
-        row.diarised_transcript = normalized.transcript
-        row.diarised_segments = segments
-        row.diarised_transcript_provider = row.transcript_provider
-        row.diarised_transcript_status = "completed"
-        row.diarised_at = datetime.now(timezone.utc)
-    elif text:
-        row.diarised_transcript = normalized.transcript
-        row.diarised_transcript_provider = row.transcript_provider
-        row.diarised_transcript_status = "completed"
-        row.diarised_at = datetime.now(timezone.utc)
+
+
+_MIN_RECORDING_BYTES = 1024
 
 
 def _extension_for_content_type(content_type: str) -> str:
@@ -94,7 +85,10 @@ def _hand_off(
     from celery.utils import uuid as celery_uuid
 
     from app.workers.concurrency.fair_platform_import_dispatch import PLATFORM_IMPORTS_QUEUE
-    from app.workers.concurrency.platform_import_limits import transfer_platform_lease
+    from app.workers.concurrency.platform_import_limits import (
+        release_platform_lease,
+        transfer_platform_lease,
+    )
     from app.workers.tasks.process_call_import_row import (
         _safe_commit,
         process_call_import_row_task,
@@ -106,14 +100,23 @@ def _hand_off(
     row.status = CallImportRowStatus.PENDING
     row.celery_task_id = next_id
     if not _safe_commit(db, row_id=row_id, context=f"platform_{reason}"):
+        release_platform_lease(next_id)
         return {"status": "skipped", "reason": "row_deleted"}
-    process_call_import_row_task.apply_async(
-        args=(row_id,),
-        kwargs={"_eval_slot_task_id": next_id, "_platform_import": True},
-        countdown=max(1, int(wait_seconds)),
-        queue=PLATFORM_IMPORTS_QUEUE,
-        task_id=next_id,
-    )
+    try:
+        process_call_import_row_task.apply_async(
+            args=(row_id,),
+            kwargs={"_eval_slot_task_id": next_id, "_platform_import": True},
+            countdown=max(1, int(wait_seconds)),
+            queue=PLATFORM_IMPORTS_QUEUE,
+            task_id=next_id,
+        )
+    except Exception:
+        logger.exception("platform import handoff publish failed row {}", row_id)
+        row.celery_task_id = None
+        row.status = CallImportRowStatus.PENDING
+        _safe_commit(db, row_id=row_id, context=f"platform_{reason}_publish")
+        release_platform_lease(next_id)
+        return {"status": "failed", "reason": "publish_failed"}
     return {"status": "rescheduled", "reason": reason}
 
 
@@ -350,6 +353,18 @@ def hydrate_platform_call_import_row(
             if callable(close):
                 close()
         tmp.close()
+        if total < _MIN_RECORDING_BYTES:
+            return _mark_row_failed_for_fetch(
+                row=row,
+                db=db,
+                row_id=row_id,
+                catalog_db=catalog_db,
+                row_db=row_db,
+                call_import=call_import,
+                message="Recording file is empty",
+                context="platform_empty_audio",
+                reason="recording_empty",
+            )
         s3_service.upload_file_by_key_from_path(
             tmp.name, key, content_type=content_type or "audio/mpeg"
         )
@@ -379,6 +394,7 @@ def hydrate_platform_call_import_row(
         previous_status=previous_status,
         new_status=row.status,
     )
+    call_import.last_progress_at = datetime.now(timezone.utc)
     _rollup_parent_on_catalog(catalog_db, row_db, call_import)
     _safe_commit(db, row_id=row_id, context="platform_rollup")
 
@@ -394,5 +410,5 @@ def hydrate_platform_call_import_row(
         "status": "completed",
         "row_id": row_id,
         "s3_key": key,
-        "size_bytes": len(body),
+        "size_bytes": total,
     }

@@ -205,19 +205,12 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
     },
   })
 
-  const windowSpanMs =
-    windowStart && windowEnd
-      ? parseLocalDatetime(windowEnd).getTime() -
-        parseLocalDatetime(windowStart).getTime()
-      : 0
-  const windowWithinYear = windowSpanMs > 0 && windowSpanMs <= 366 * 24 * 60 * 60 * 1000
   const canConfigure =
     platform &&
     integrationId &&
     windowStart &&
     windowEnd &&
     windowEnd > windowStart &&
-    windowWithinYear &&
     importName.trim().length > 0
 
   if (!open) return null

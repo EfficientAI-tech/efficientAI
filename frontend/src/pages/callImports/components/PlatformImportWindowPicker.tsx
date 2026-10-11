@@ -39,6 +39,11 @@ function joinDatetimeLocal(date: string, time: string): string {
 }
 
 const RELATIVE_DAY_OPTIONS = [1, 7, 14, 30, 60, 90] as const
+const RELATIVE_MONTH_OPTIONS = [
+  { id: '6m', label: '6 months', months: 6 },
+  { id: '9m', label: '9 months', months: 9 },
+  { id: '1y', label: '1 year', months: 12 },
+] as const
 
 export default function PlatformImportWindowPicker({
   windowStart,
@@ -164,6 +169,15 @@ export default function PlatformImportWindowPicker({
     setOpen(false)
   }
 
+  const applyRelativeMonths = (months: number) => {
+    const end = new Date()
+    end.setMinutes(end.getMinutes() - 15)
+    const start = new Date(end)
+    start.setMonth(start.getMonth() - months)
+    onRangeChange(toDatetimeLocalValue(start), toDatetimeLocalValue(end))
+    setOpen(false)
+  }
+
   return (
     <div ref={rootRef} className="relative">
       <div className="flex flex-wrap items-center gap-2">
@@ -247,6 +261,16 @@ export default function PlatformImportWindowPicker({
                     className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium hover:border-[#facc15] hover:bg-[#fefce8]"
                   >
                     Last {days}d
+                  </button>
+                ))}
+                {RELATIVE_MONTH_OPTIONS.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => applyRelativeMonths(option.months)}
+                    className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium hover:border-[#facc15] hover:bg-[#fefce8]"
+                  >
+                    {option.label}
                   </button>
                 ))}
               </div>

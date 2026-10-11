@@ -248,13 +248,22 @@ def flush_import_progress_to_catalog(db: Session, call_import_id: UUID) -> None:
         return
 
     try:
+        from sqlalchemy import update
+
         call_import = (
             db.query(CallImport).filter(CallImport.id == call_import_id).first()
         )
         if call_import is None:
             raise LookupError(f"call_import {call_import_id} not found")
-        call_import.completed_rows = int(call_import.completed_rows or 0) + completed_delta
-        call_import.failed_rows = int(call_import.failed_rows or 0) + failed_delta
+        db.execute(
+            update(CallImport)
+            .where(CallImport.id == call_import_id)
+            .values(
+                completed_rows=CallImport.completed_rows + completed_delta,
+                failed_rows=CallImport.failed_rows + failed_delta,
+            )
+        )
+        db.expire(call_import, ["completed_rows", "failed_rows"])
         db.flush()
     except Exception as exc:
         logger.warning(

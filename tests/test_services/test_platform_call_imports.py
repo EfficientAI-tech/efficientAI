@@ -5,7 +5,11 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from app.services.call_imports.debounced_rollup import platform_discovery_blocks_terminal_status
-from app.services.call_imports.platform_discovery import platform_row_id, plan_time_slices
+from app.services.call_imports.platform_discovery import (
+    list_failure_disposition,
+    platform_row_id,
+    plan_time_slices,
+)
 from app.services.voice_providers.historical.base import (
     build_canonical_recording_url,
     parse_canonical_recording_url,
@@ -226,6 +230,32 @@ def test_discovery_enqueue_stops_when_queue_is_deep(monkeypatch):
     assert limits.discovery_enqueue_blocked() is True
     fake.depth = 0
     assert limits.discovery_enqueue_blocked() is False
+
+
+def test_list_failure_retries_rate_limit_without_counting_attempt():
+    class RateLimited(Exception):
+        def __init__(self):
+            self.response = SimpleNamespace(status_code=429, headers={"Retry-After": "12"})
+
+    kind, wait = list_failure_disposition(RateLimited())
+    assert kind == "retry"
+    assert wait == 12
+
+
+def test_list_failure_auth_does_not_fail_the_slice():
+    class Denied(Exception):
+        def __init__(self):
+            self.response = SimpleNamespace(status_code=401, headers={})
+
+    kind, wait = list_failure_disposition(Denied())
+    assert kind == "auth"
+    assert wait >= 30
+
+
+def test_list_failure_timeout_retries():
+    kind, wait = list_failure_disposition(TimeoutError("timed out"))
+    assert kind == "retry"
+    assert wait == 5
 
 
 def test_discovery_blocks_terminal_status_while_running():

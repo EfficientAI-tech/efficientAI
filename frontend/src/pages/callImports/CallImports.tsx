@@ -631,14 +631,12 @@ export default function CallImports() {
         description={(() => {
           if (!pendingDelete) return ''
           const name = pendingDelete.original_filename || '(unnamed)'
-          const total = pendingDelete.total_rows
-          const completed = pendingDelete.completed_rows
           const inFlight =
             pendingDelete.status === 'pending' ||
             pendingDelete.status === 'processing' ||
             pendingDelete.status === 'deleting'
           const lines = [
-            `“${name}” will be permanently deleted, along with all ${total} row record${total === 1 ? '' : 's'} and ${completed} stored recording${completed === 1 ? '' : 's'} in S3.`,
+            `“${name}” will be permanently deleted, along with all of its recordings.`,
             inFlight
               ? 'This batch is still processing — pending tasks will be revoked before deletion.'
               : '',
@@ -649,6 +647,7 @@ export default function CallImports() {
         })()}
         confirmLabel="Delete"
         cancelLabel="Cancel"
+        confirmPhrase="confirm"
         variant="danger"
         isLoading={deleteMutation.isPending}
         onConfirm={() => {

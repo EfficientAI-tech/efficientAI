@@ -380,17 +380,31 @@ def process_call_import_row_task(
 
             filters = dict(call_import.platform_filters or {})
             slot_task_id = _eval_slot_task_id or self.request.id
-            result = hydrate_platform_call_import_row(
-                self,
-                row=row,
-                call_import=call_import,
-                db=db,
-                row_id=row_id,
-                catalog_db=catalog_db,
-                row_db=row_db,
-                slot_task_id=slot_task_id,
-                filters=filters,
-            )
+            try:
+                result = hydrate_platform_call_import_row(
+                    self,
+                    row=row,
+                    call_import=call_import,
+                    db=db,
+                    row_id=row_id,
+                    catalog_db=catalog_db,
+                    row_db=row_db,
+                    slot_task_id=slot_task_id,
+                    filters=filters,
+                )
+            except Exception as exc:
+                logger.exception("platform hydrate crashed row {}", row_id)
+                if (row.celery_task_id or "") == str(self.request.id) and not row.recording_s3_key:
+                    row.status = CallImportRowStatus.PENDING
+                    row.celery_task_id = None
+                    row.error_message = str(exc)[:500]
+                    _safe_commit(db, row_id=row_id, context="platform_hydrate_crash")
+                from app.workers.concurrency.fair_platform_import_dispatch import (
+                    schedule_fair_platform_import_dispatch,
+                )
+
+                schedule_fair_platform_import_dispatch()
+                return {"status": "failed", "reason": "hydrate_crashed"}
             status = (result or {}).get("status")
             if status == "rescheduled":
                 platform_release = False

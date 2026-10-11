@@ -125,6 +125,34 @@ def _should_skip_item(
     return None
 
 
+def list_failure_disposition(exc: Exception) -> Tuple[str, int]:
+    """Return (retry|auth|fail, wait_seconds). Retry and auth do not consume an attempt."""
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    try:
+        status_code = int(status_code) if status_code is not None else None
+    except (TypeError, ValueError):
+        status_code = None
+    name = type(exc).__name__.lower()
+    headers = getattr(response, "headers", None)
+    retry_after = None
+    if headers is not None and hasattr(headers, "get"):
+        retry_after = headers.get("Retry-After")
+    wait = 5
+    if retry_after:
+        try:
+            wait = min(120, max(1, int(float(retry_after))))
+        except (TypeError, ValueError):
+            wait = 5
+    if status_code in (401, 403):
+        return "auth", max(wait, 30)
+    if status_code == 429 or (status_code is not None and status_code >= 500):
+        return "retry", wait if status_code == 429 else max(1, min(wait, 15))
+    if "timeout" in name or "connection" in name:
+        return "retry", 5
+    return "fail", 0
+
+
 def _increment_skip(call_import: CallImport, reason: SkipReason, sample: Dict[str, Any]) -> None:
     samples = list(call_import.skip_samples or [])
     conversation_id = sample.get("conversation_id")
@@ -261,6 +289,8 @@ def discover_platform_slice_chunk(
     if credential_import_paused(integration.id):
         call_import.paused_at = datetime.now(timezone.utc)
         call_import.pause_reason = "credential_rejected"
+        if slice_row.status in {"queued", "running"}:
+            slice_row.status = "pending"
         db.commit()
         return False
 
@@ -308,13 +338,19 @@ def discover_platform_slice_chunk(
                 record_platform_auth_failure,
             )
 
-            status_code = getattr(getattr(exc, "response", None), "status_code", None)
-            slice_row.attempts = int(slice_row.attempts or 0) + 1
+            kind, wait = list_failure_disposition(exc)
             slice_row.error = str(exc)[:500]
-            if status_code in (401, 403):
+            slice_row.updated_at = datetime.now(timezone.utc)
+            if kind == "auth":
                 record_platform_auth_failure(integration.id)
+            if kind in {"auth", "retry"}:
+                db.commit()
+                return {"more": True, "wait": wait}
+            slice_row.attempts = int(slice_row.attempts or 0) + 1
             if slice_row.attempts >= 5:
                 slice_row.status = "failed"
+            else:
+                slice_row.status = "pending"
             db.commit()
             return {"more": False}
 
@@ -329,21 +365,21 @@ def discover_platform_slice_chunk(
                     {"conversation_id": item.conversation_id, "reason": skip.value},
                 )
                 continue
-            if (call_import.total_rows or 0) >= (call_import.max_calls or settings.PLATFORM_IMPORT_MAX_CALLS_DEFAULT):
-                call_import.discovery_status = "capped"
-                more = False
-                next_cursor = None
-                break
             accepted_batch.append(item)
 
+        capped = False
         if accepted_batch:
-            _reserve_and_insert_rows(
+            capped = _reserve_and_insert_rows(
                 db,
                 call_import,
                 integration,
                 accepted_batch,
                 include_reimport=include_reimport,
             )
+        if capped:
+            call_import.discovery_status = "capped"
+            more = False
+            next_cursor = None
 
         pages += 1
         list_cursor = next_cursor
@@ -357,6 +393,7 @@ def discover_platform_slice_chunk(
         from app.workers.concurrency.platform_import_limits import renew_slice_lock
 
         renew_slice_lock(call_import_id, slice_id)
+        db.commit()
 
     if call_import.discovery_status == "capped":
         slice_row.status = "completed"
@@ -426,13 +463,29 @@ def _reserve_and_insert_rows(
     items: List[HistoricalListItem],
     *,
     include_reimport: bool,
-) -> None:
+) -> bool:
+    """Insert one page. Returns True when the import has no room left."""
     from app.db_sharding.row_ops import bulk_insert_mappings_on_shards, register_shard_slices
     from app.db_sharding.sessions import is_sharding_enabled
 
     from sqlalchemy import text
 
     provider = (call_import.provider or integration.platform or "").lower()
+    locked = db.execute(
+        text("SELECT total_rows FROM call_imports WHERE id = :id FOR UPDATE"),
+        {"id": call_import.id},
+    ).one()
+    total_rows = int(locked.total_rows or 0)
+    limit = call_import.max_calls
+    room: Optional[int] = None
+    if limit is not None and int(limit) > 0:
+        room = max(0, int(limit) - total_rows)
+        if room <= 0:
+            db.expire(call_import, ["total_rows", "next_row_index"])
+            return True
+        items = list(items)[:room]
+    else:
+        items = list(items)
     n = len(items)
     allocated = db.execute(
         text(
@@ -447,7 +500,6 @@ def _reserve_and_insert_rows(
     ).scalar()
     end_index = int(allocated or n)
     start_index = end_index - n
-    call_import.next_row_index = end_index
 
     mappings = []
     for offset, item in enumerate(items):
@@ -499,11 +551,12 @@ def _reserve_and_insert_rows(
         )
 
     if not mappings:
-        return
+        db.expire(call_import, ["total_rows", "next_row_index"])
+        return False
 
     if is_sharding_enabled():
         bulk_insert_mappings_on_shards(db, call_import.id, mappings)
-        register_shard_slices(db, call_import.id, call_import.next_row_index)
+        register_shard_slices(db, call_import.id, end_index)
     else:
         for mapping in mappings:
             db.merge(CallImportRow(**mapping))
@@ -513,5 +566,15 @@ def _reserve_and_insert_rows(
         PlatformConversationLedger.row_id.in_(row_ids)
     ).update({"state": "materialized"}, synchronize_session=False)
 
-    call_import.total_rows = int(call_import.total_rows or 0) + len(mappings)
-    db.flush()
+    db.execute(
+        text(
+            """
+            UPDATE call_imports
+            SET total_rows = total_rows + :n
+            WHERE id = :id
+            """
+        ),
+        {"n": len(mappings), "id": call_import.id},
+    )
+    db.expire(call_import, ["total_rows", "next_row_index"])
+    return room is not None and len(mappings) >= room

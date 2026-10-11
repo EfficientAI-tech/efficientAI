@@ -15,11 +15,15 @@ from app.config import settings
 _PLATFORM_SLOT_TTL_SECONDS = 20 * 60
 _redis: redis.Redis | None = None
 
-SPEED_RPM = {
-    "gentle": 30,
-    "standard": 120,
-    "fast": 300,
-}
+
+def rpm_for_speed(speed: Optional[str]) -> int:
+    key = (speed or "standard").strip().lower()
+    table = {
+        "gentle": int(settings.PLATFORM_IMPORT_RPM_GENTLE),
+        "standard": int(settings.PLATFORM_IMPORT_RPM_STANDARD),
+        "fast": int(settings.PLATFORM_IMPORT_RPM_FAST),
+    }
+    return table.get(key, table["standard"])
 
 
 def _client() -> redis.Redis:
@@ -57,11 +61,6 @@ def _auth_fail_key(integration_id: UUID | str) -> str:
 class TokenResult:
     allowed: bool
     wait_seconds: int = 0
-
-
-def rpm_for_speed(speed: Optional[str]) -> int:
-    key = (speed or "standard").strip().lower()
-    return SPEED_RPM.get(key, SPEED_RPM["standard"])
 
 
 def _lease_ws_key(workspace_id: UUID | str) -> str:

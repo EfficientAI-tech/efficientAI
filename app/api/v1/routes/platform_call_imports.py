@@ -236,16 +236,19 @@ async def create_platform_call_import(
 
     if payload.window_end <= payload.window_start:
         raise HTTPException(status_code=400, detail="window_end must be after window_start")
-    if payload.window_end - payload.window_start > timedelta(days=366):
-        raise HTTPException(status_code=400, detail="Window cannot exceed 366 days")
 
     integration = _resolve_voice_integration(db, organization_id, payload.voice_integration_id)
     platform = (integration.platform or "").lower()
     if platform not in {"elevenlabs", "vapi", "retell"}:
         raise HTTPException(status_code=400, detail="Unsupported platform for historical import")
 
-    max_calls = payload.max_calls or settings.PLATFORM_IMPORT_MAX_CALLS_DEFAULT
-    max_calls = min(max_calls, settings.PLATFORM_IMPORT_MAX_CALLS_CAP)
+    max_calls = payload.max_calls
+    default_limit = int(settings.PLATFORM_IMPORT_MAX_CALLS_DEFAULT or 0)
+    hard_limit = int(settings.PLATFORM_IMPORT_MAX_CALLS_CAP or 0)
+    if max_calls is None and default_limit > 0:
+        max_calls = default_limit
+    if max_calls is not None and hard_limit > 0:
+        max_calls = min(int(max_calls), hard_limit)
 
     end = _clamp_window_end(payload.window_end)
     import_name = (payload.name or "").strip()
