@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 import requests
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -39,7 +39,6 @@ class PlatformImportFilters(BaseModel):
     agent_ids: List[str] = Field(default_factory=list)
     min_duration_seconds: float = 5.0
     call_statuses: Optional[List[str]] = None
-    include_previously_imported: bool = False
     speed: str = "standard"
     import_provider_transcript: bool = Field(
         default=True,
@@ -52,6 +51,7 @@ class PlatformCallImportCreate(BaseModel):
     window_start: datetime
     window_end: datetime
     window_timezone: str = "UTC"
+    name: Optional[str] = None
     dataset: Optional[str] = None
     tag_ids: List[UUID] = Field(default_factory=list)
     filters: PlatformImportFilters = Field(default_factory=PlatformImportFilters)
@@ -217,8 +217,20 @@ async def create_platform_call_import(
     workspace_id: UUID = Depends(get_workspace_id),
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ) -> Dict[str, Any]:
     del api_key
+    if idempotency_key:
+        from app.workers.concurrency.platform_import_limits import read_create_idempotency
+
+        existing_id = read_create_idempotency(workspace_id, idempotency_key)
+        if existing_id:
+            return {
+                "id": existing_id,
+                "status": "accepted",
+                "discovery_status": None,
+                "message": "Platform import already accepted.",
+            }
     if not settings.PLATFORM_IMPORT_FEATURE_ENABLED:
         raise HTTPException(status_code=404, detail="Platform imports are not enabled")
 
@@ -236,6 +248,12 @@ async def create_platform_call_import(
     max_calls = min(max_calls, settings.PLATFORM_IMPORT_MAX_CALLS_CAP)
 
     end = _clamp_window_end(payload.window_end)
+    import_name = (payload.name or "").strip()
+    if not import_name:
+        import_name = (
+            f"{platform.title()} "
+            f"{payload.window_start:%d %b %Y} – {end:%d %b %Y}"
+        )
 
     call_import = CallImport(
         organization_id=organization_id,
@@ -251,7 +269,7 @@ async def create_platform_call_import(
         max_calls=max_calls,
         dataset=payload.dataset,
         status=CallImportStatus.PROCESSING,
-        original_filename=f"platform:{platform}",
+        original_filename=import_name[:512],
     )
     stamp_call_import_actor(call_import, principal)
     db.add(call_import)
@@ -263,25 +281,15 @@ async def create_platform_call_import(
     db.refresh(call_import)
 
     from app.workers.concurrency.fair_platform_import_dispatch import (
-        PLATFORM_IMPORTS_QUEUE,
-        discover_platform_slice_task,
+        _schedule_pending_slices_for_import,
     )
 
-    slices = (
-        db.query(CallImportDiscoverySlice)
-        .filter(CallImportDiscoverySlice.call_import_id == call_import.id)
-        .order_by(CallImportDiscoverySlice.slice_id.asc())
-        .limit(2)
-        .all()
-    )
-    for slice_row in slices:
-        discover_platform_slice_task.apply_async(
-            kwargs={
-                "call_import_id": str(call_import.id),
-                "slice_id": slice_row.slice_id,
-            },
-            queue=PLATFORM_IMPORTS_QUEUE,
-        )
+    _schedule_pending_slices_for_import(db, call_import.id, limit=2)
+
+    if idempotency_key:
+        from app.workers.concurrency.platform_import_limits import store_create_idempotency
+
+        store_create_idempotency(workspace_id, idempotency_key, str(call_import.id))
 
     return {
         "id": str(call_import.id),
@@ -302,11 +310,21 @@ async def get_platform_import_progress(
     del api_key
     call_import = _get_platform_import(db, call_import_id, organization_id, workspace_id)
     payload = build_platform_import_progress(db, call_import)
-    for key in ("window_start", "window_end", "updated_at"):
+    for key in ("window_start", "window_end", "updated_at", "last_progress_at"):
         val = payload.get(key)
         if val is not None and hasattr(val, "isoformat"):
             payload[key] = val.isoformat()
     return payload
+
+
+@router.get("/diagnostics")
+async def platform_import_diagnostics(
+    api_key: str = Depends(get_api_key),
+) -> Dict[str, Any]:
+    del api_key
+    from app.workers.concurrency.platform_import_limits import platform_import_runtime_stats
+
+    return platform_import_runtime_stats()
 
 
 @router.post("/{call_import_id}/pause")
@@ -319,8 +337,23 @@ async def pause_platform_import(
 ) -> Dict[str, str]:
     del api_key
     call_import = _get_platform_import(db, call_import_id, organization_id, workspace_id)
+    if call_import.status == CallImportStatus.DELETING:
+        raise HTTPException(status_code=409, detail="Import is being deleted")
     call_import.paused_at = datetime.now(timezone.utc)
     call_import.pause_reason = "user_paused"
+    from app.workers.concurrency.platform_import_limits import force_release_slice_lock
+
+    slices = (
+        db.query(CallImportDiscoverySlice)
+        .filter(
+            CallImportDiscoverySlice.call_import_id == call_import.id,
+            CallImportDiscoverySlice.status.in_(("queued", "running")),
+        )
+        .all()
+    )
+    for slice_row in slices:
+        force_release_slice_lock(call_import.id, slice_row.slice_id)
+        slice_row.status = "pending"
     db.commit()
     return {"status": "paused"}
 
@@ -335,6 +368,8 @@ async def resume_platform_import(
 ) -> Dict[str, str]:
     del api_key
     call_import = _get_platform_import(db, call_import_id, organization_id, workspace_id)
+    if call_import.status == CallImportStatus.DELETING:
+        raise HTTPException(status_code=409, detail="Import is being deleted")
     call_import.paused_at = None
     call_import.pause_reason = None
     db.commit()
@@ -358,6 +393,8 @@ async def retry_platform_discovery(
 ) -> Dict[str, str]:
     del api_key
     call_import = _get_platform_import(db, call_import_id, organization_id, workspace_id)
+    if call_import.status == CallImportStatus.DELETING:
+        raise HTTPException(status_code=409, detail="Import is being deleted")
     db.query(CallImportDiscoverySlice).filter(
         CallImportDiscoverySlice.call_import_id == call_import.id,
         CallImportDiscoverySlice.status == "failed",

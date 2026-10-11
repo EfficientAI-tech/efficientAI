@@ -29,6 +29,7 @@ import ImportPlatformModal from './components/ImportPlatformModal'
 import PlatformImportProgressDock, {
   usePinPlatformImport,
 } from './components/PlatformImportProgressDock'
+import { platformImportLabel } from './platformImportLabel'
 import { itemsOf } from '../../lib/safeData'
 
 const PAGE_SIZE = 20
@@ -140,13 +141,13 @@ export default function CallImports() {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Imports</h1>
-          <p className="mt-2 text-sm text-gray-600">
-            {activeTab === 'platform'
-              ? 'Pull historical calls from ElevenLabs, Vapi, or Retell, then evaluate like any other import.'
-              : activeTab === 'audio'
+          {activeTab !== 'platform' && (
+            <p className="mt-2 text-sm text-gray-600">
+              {activeTab === 'audio'
                 ? 'Upload recordings directly for diarisation and evaluation.'
                 : 'Upload CSV or Excel datasets, map columns, and import call recordings.'}
-          </p>
+            </p>
+          )}
         </div>
         <div className="flex gap-3">
           {activeTab === 'datasets' && (
@@ -432,8 +433,7 @@ export default function CallImports() {
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm font-medium text-gray-900 truncate max-w-xs">
                         {item.source_format === 'platform'
-                          ? item.dataset ||
-                            `${(item.provider || 'Platform').toUpperCase()} historical`
+                          ? platformImportLabel(item)
                           : item.original_filename || '(unnamed)'}
                       </div>
                       {item.source_format === 'platform' &&
@@ -457,14 +457,20 @@ export default function CallImports() {
                       ) : item.source_format === 'platform' ? (
                         <span className="inline-flex flex-col normal-case">
                           <span>{item.provider || 'platform'}</span>
-                          {item.discovery_status &&
-                            !['completed', 'capped'].includes(
+                          {item.discovery_status === 'failed' ? (
+                            <span className="text-xs text-red-600 font-normal">
+                              Discovery failed
+                            </span>
+                          ) : item.discovery_status &&
+                            !['completed', 'capped', 'partial'].includes(
                               item.discovery_status,
-                            ) && (
-                              <span className="text-xs text-amber-600 font-normal">
-                                Discovering…
-                              </span>
-                            )}
+                            ) &&
+                            (item.status === 'processing' ||
+                              item.status === 'pending') ? (
+                            <span className="text-xs text-amber-600 font-normal">
+                              Discovering…
+                            </span>
+                          ) : null}
                         </span>
                       ) : (
                         item.provider || (
@@ -537,16 +543,15 @@ export default function CallImports() {
                         >
                           View
                         </Link>
-                        {item.source_format === 'platform' && !isDeleting && (
+                        {item.source_format === 'platform' &&
+                          !isDeleting &&
+                          (item.status === 'processing' || item.status === 'pending') && (
                           <button
                             type="button"
                             className="text-gray-500 hover:text-primary-600 transition-colors"
                             title="Track live import progress"
                             onClick={() => {
-                              const label =
-                                item.dataset ||
-                                `${(item.provider || 'Platform').toUpperCase()} historical`
-                              pinPlatformImport(item.id, label)
+                              pinPlatformImport(item.id, platformImportLabel(item))
                             }}
                           >
                             <Activity className="h-4 w-4" />

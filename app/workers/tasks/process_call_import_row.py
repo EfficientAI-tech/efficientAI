@@ -315,6 +315,7 @@ def process_call_import_row_task(
 
     slot_task_id = _eval_slot_task_id or self.request.id
     eval_chain_chained_transcribe = False
+    platform_release = bool(_platform_import)
     row_db = catalog_db = None
     from app.db_sharding.row_ops import close_row_sessions, locate_call_import_row
     from app.models.database import CallImport
@@ -343,23 +344,34 @@ def process_call_import_row_task(
 
         from app.models.enums import CallImportStatus
 
-        if call_import.status == CallImportStatus.DELETING:
+        if call_import is None:
+            return {"status": "skipped", "reason": "import_missing"}
+
+        if call_import.status == CallImportStatus.DELETING or (
+            _platform_import and call_import.paused_at is not None
+        ):
             logger.info(
-                "Skipping row {} — parent import {} is being deleted",
+                "Skipping row {} — parent import {} is {}",
                 row_id,
                 call_import.id,
+                "paused" if call_import.paused_at is not None else "deleting",
             )
-            return {"status": "skipped", "reason": "import_deleting"}
+            return {"status": "skipped", "reason": "import_inactive"}
+
+        if _platform_import and (row.celery_task_id or "") != str(self.request.id):
+            platform_release = False
+            return {"status": "superseded", "row_id": row_id}
 
         if row.status == CallImportRowStatus.COMPLETED:
             return {"status": "already_completed", "row_id": row_id}
 
-        row.status = CallImportRowStatus.PROCESSING
-        row.attempts = (row.attempts or 0) + 1
-        row.celery_task_id = self.request.id
-        row.error_message = None
-        if not _safe_commit(db, row_id=row_id, context="mark_processing"):
-            return {"status": "skipped", "reason": "row_deleted"}
+        if not _platform_import:
+            row.status = CallImportRowStatus.PROCESSING
+            row.attempts = (row.attempts or 0) + 1
+            row.celery_task_id = self.request.id
+            row.error_message = None
+            if not _safe_commit(db, row_id=row_id, context="mark_processing"):
+                return {"status": "skipped", "reason": "row_deleted"}
 
         if (call_import.source_format or "").lower() == "platform":
             from app.workers.tasks.platform_call_import_hydrate import (
@@ -380,16 +392,16 @@ def process_call_import_row_task(
                 filters=filters,
             )
             status = (result or {}).get("status")
-            if status not in ("completed", "rescheduled"):
+            if status == "rescheduled":
+                platform_release = False
+            elif status == "completed":
+                platform_release = False
+            else:
                 from app.workers.concurrency.fair_platform_import_dispatch import (
                     schedule_fair_platform_import_dispatch,
                 )
-                from app.workers.concurrency.platform_import_limits import (
-                    release_platform_import_slot,
-                )
 
-                release_platform_import_slot(slot_task_id)
-                if status not in ("skipped",):
+                if status not in ("skipped", "superseded", "already_completed"):
                     schedule_fair_platform_import_dispatch()
             return result
 
@@ -806,6 +818,12 @@ def process_call_import_row_task(
                 if not user_cancelled:
                     finish_eval_work_and_redispatch(slot_task_id)
         else:
+            if platform_release:
+                from app.workers.concurrency.platform_import_limits import (
+                    release_platform_lease,
+                )
+
+                release_platform_lease(slot_task_id)
             from app.workers.concurrency.limits import slot_registered_for_task
 
             if slot_registered_for_task(slot_task_id):

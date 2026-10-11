@@ -69,6 +69,54 @@ def _extension_for_content_type(content_type: str) -> str:
     return mapping.get(ct, "mp3")
 
 
+def _retryable_status(exc: Exception) -> int | None:
+    status_code = getattr(getattr(exc, "response", None), "status_code", None)
+    if status_code is None:
+        name = type(exc).__name__.lower()
+        if "timeout" in name or "connection" in name:
+            return 503
+        return None
+    try:
+        return int(status_code)
+    except (TypeError, ValueError):
+        return None
+
+
+def _hand_off(
+    *,
+    row,
+    db,
+    row_id: str,
+    slot_task_id: str,
+    wait_seconds: int,
+    reason: str,
+) -> Dict[str, Any]:
+    from celery.utils import uuid as celery_uuid
+
+    from app.workers.concurrency.fair_platform_import_dispatch import PLATFORM_IMPORTS_QUEUE
+    from app.workers.concurrency.platform_import_limits import transfer_platform_lease
+    from app.workers.tasks.process_call_import_row import (
+        _safe_commit,
+        process_call_import_row_task,
+    )
+
+    next_id = celery_uuid()
+    if not transfer_platform_lease(slot_task_id, next_id):
+        return {"status": "failed", "reason": "lease_transfer"}
+    row.status = CallImportRowStatus.PENDING
+    row.celery_task_id = next_id
+    if not _safe_commit(db, row_id=row_id, context=f"platform_{reason}"):
+        return {"status": "skipped", "reason": "row_deleted"}
+    process_call_import_row_task.apply_async(
+        args=(row_id,),
+        kwargs={"_eval_slot_task_id": next_id, "_platform_import": True},
+        countdown=max(1, int(wait_seconds)),
+        queue=PLATFORM_IMPORTS_QUEUE,
+        task_id=next_id,
+    )
+    return {"status": "rescheduled", "reason": reason}
+
+
 def hydrate_platform_call_import_row(
     task,
     *,
@@ -110,46 +158,30 @@ def hydrate_platform_call_import_row(
         )
 
     if credential_import_paused(integration.id):
-        row.status = CallImportRowStatus.PENDING
-        row.celery_task_id = None
-        _safe_commit(db, row_id=row_id, context="platform_cred_paused")
-        from app.workers.tasks.process_call_import_row import (
-            process_call_import_row_task,
+        return _hand_off(
+            row=row,
+            db=db,
+            row_id=row_id,
+            slot_task_id=slot_task_id,
+            wait_seconds=60,
+            reason="credential_paused",
         )
-
-        from app.workers.concurrency.fair_platform_import_dispatch import (
-            PLATFORM_IMPORTS_QUEUE,
-        )
-
-        process_call_import_row_task.apply_async(
-            args=(row_id,),
-            kwargs={"_eval_slot_task_id": slot_task_id, "_platform_import": True},
-            countdown=60,
-            queue=PLATFORM_IMPORTS_QUEUE,
-        )
-        return {"status": "rescheduled", "reason": "credential_paused"}
 
     speed = filters.get("speed")
-    token = consume_platform_api_token(integration.id, speed)
+    token = consume_platform_api_token(
+        integration.id,
+        speed,
+        member=f"hydrate:{row_id}:meta",
+    )
     if not token.allowed:
-        row.status = CallImportRowStatus.PENDING
-        row.celery_task_id = None
-        _safe_commit(db, row_id=row_id, context="platform_throttled")
-        from app.workers.tasks.process_call_import_row import (
-            process_call_import_row_task,
+        return _hand_off(
+            row=row,
+            db=db,
+            row_id=row_id,
+            slot_task_id=slot_task_id,
+            wait_seconds=token.wait_seconds,
+            reason="rate_limited",
         )
-
-        from app.workers.concurrency.fair_platform_import_dispatch import (
-            PLATFORM_IMPORTS_QUEUE,
-        )
-
-        process_call_import_row_task.apply_async(
-            args=(row_id,),
-            kwargs={"_eval_slot_task_id": slot_task_id, "_platform_import": True},
-            countdown=max(1, token.wait_seconds),
-            queue=PLATFORM_IMPORTS_QUEUE,
-        )
-        return {"status": "rescheduled", "reason": "rate_limited"}
 
     try:
         provider_key, conversation_id = parse_canonical_recording_url(row.recording_url or "")
@@ -177,9 +209,26 @@ def hydrate_platform_call_import_row(
         normalized = adapter.hydrate(item)
         clear_platform_auth_failures(integration.id)
     except Exception as exc:
-        status_code = getattr(getattr(exc, "response", None), "status_code", None)
+        status_code = _retryable_status(exc)
         if status_code in (401, 403):
             record_platform_auth_failure(integration.id)
+        elif status_code == 429 or (status_code is not None and status_code >= 500):
+            retry_after = 1
+            response = getattr(exc, "response", None)
+            header = getattr(response, "headers", None)
+            if header is not None:
+                try:
+                    retry_after = int(header.get("Retry-After") or 1)
+                except (TypeError, ValueError):
+                    retry_after = 1
+            return _hand_off(
+                row=row,
+                db=db,
+                row_id=row_id,
+                slot_task_id=slot_task_id,
+                wait_seconds=retry_after,
+                reason="provider_retry",
+            )
         logger.warning("platform hydrate failed row {}: {}", row_id, exc)
         return _mark_row_failed_for_fetch(
             row=row,
@@ -217,9 +266,34 @@ def hydrate_platform_call_import_row(
             reason="s3_unavailable",
         )
 
+    audio_token = consume_platform_api_token(
+        integration.id,
+        speed,
+        member=f"hydrate:{row_id}:audio",
+    )
+    if not audio_token.allowed:
+        return _hand_off(
+            row=row,
+            db=db,
+            row_id=row_id,
+            slot_task_id=slot_task_id,
+            wait_seconds=audio_token.wait_seconds,
+            reason="rate_limited",
+        )
+
     try:
         stream, content_type = adapter.open_audio_stream(normalized)
     except Exception as exc:
+        status_code = _retryable_status(exc)
+        if status_code == 429 or (status_code is not None and status_code >= 500):
+            return _hand_off(
+                row=row,
+                db=db,
+                row_id=row_id,
+                slot_task_id=slot_task_id,
+                wait_seconds=1,
+                reason="provider_retry",
+            )
         return _mark_row_failed_for_fetch(
             row=row,
             db=db,
@@ -232,38 +306,69 @@ def hydrate_platform_call_import_row(
             reason="recording_unavailable",
         )
 
+    import os
+    import tempfile
+
+    from app.workers.concurrency.platform_import_limits import renew_platform_lease
+    from app.workers.tasks.process_call_import_row import _row_or_import_gone
+
     ext = _extension_for_content_type(content_type)
     prefix = s3_service.prefix
     key = (
         f"{prefix}organizations/{row.organization_id}/call_imports/"
         f"{call_import.id}/{row.id}.{ext}"
     )
+    row.status = CallImportRowStatus.PROCESSING
+    row.attempts = (row.attempts or 0) + 1
+    if hasattr(row, "download_started_at"):
+        row.download_started_at = datetime.now(timezone.utc)
+    _safe_commit(db, row_id=row_id, context="platform_download_started")
     max_bytes = settings.PLATFORM_IMPORT_RECORDING_MAX_BYTES
     total = 0
-    chunks = []
-    for chunk in stream:
-        total += len(chunk)
-        if total > max_bytes:
-            return _mark_row_failed_for_fetch(
-                row=row,
-                db=db,
-                row_id=row_id,
-                catalog_db=catalog_db,
-                row_db=row_db,
-                call_import=call_import,
-                message="Recording exceeds size cap",
-                context="platform_oversize",
-                reason="recording_too_large",
-            )
-        chunks.append(chunk)
+    tmp = tempfile.NamedTemporaryFile(delete=False)
+    try:
+        try:
+            for chunk in stream:
+                total += len(chunk)
+                if total > max_bytes:
+                    return _mark_row_failed_for_fetch(
+                        row=row,
+                        db=db,
+                        row_id=row_id,
+                        catalog_db=catalog_db,
+                        row_db=row_db,
+                        call_import=call_import,
+                        message="Recording exceeds size cap",
+                        context="platform_oversize",
+                        reason="recording_too_large",
+                    )
+                tmp.write(chunk)
+                if total % (8 * 1024 * 1024) < len(chunk):
+                    renew_platform_lease(slot_task_id)
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                close()
+        tmp.close()
+        s3_service.upload_file_by_key_from_path(
+            tmp.name, key, content_type=content_type or "audio/mpeg"
+        )
+    finally:
+        tmp.close()
+        if os.path.exists(tmp.name):
+            os.unlink(tmp.name)
 
-    body = b"".join(chunks)
-    s3_service.upload_file_by_key(body, key, content_type=content_type or "audio/mpeg")
+    if _row_or_import_gone(db, UUID(row_id), catalog_db=catalog_db):
+        try:
+            s3_service.delete_keys_by_prefix(key)
+        except Exception:
+            logger.warning("orphan platform recording delete failed key={}", key)
+        return {"status": "skipped", "reason": "row_deleted"}
 
     previous_status = row.status
     row.recording_s3_key = key
     row.recording_content_type = content_type
-    row.recording_size_bytes = len(body)
+    row.recording_size_bytes = total
     row.status = CallImportRowStatus.COMPLETED
     row.error_message = None
     if not _safe_commit(db, row_id=row_id, context="platform_completed"):

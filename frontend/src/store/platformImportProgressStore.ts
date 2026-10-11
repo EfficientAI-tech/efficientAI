@@ -26,10 +26,19 @@ export const usePlatformImportProgressStore = create<State>()(
       panelMinimized: false,
       pin: (id, label) => {
         const existing = get().watches.find((w) => w.id === id)
-        const watches = existing
-          ? get().watches.map((w) => (w.id === id ? { ...w, label } : w))
-          : [...get().watches, { id, label, pinnedAt: Date.now() }]
-        set({ watches, panelOpen: true, panelMinimized: false })
+        if (existing) {
+          if (existing.label !== label) {
+            set({
+              watches: get().watches.map((w) => (w.id === id ? { ...w, label } : w)),
+            })
+          }
+          return
+        }
+        set({
+          watches: [...get().watches, { id, label, pinnedAt: Date.now() }],
+          panelOpen: true,
+          panelMinimized: false,
+        })
       },
       unpin: (id) => {
         set({ watches: get().watches.filter((w) => w.id !== id) })

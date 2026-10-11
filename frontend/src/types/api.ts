@@ -1277,6 +1277,7 @@ export interface PlatformImportDiscoveryProgress {
   slices_total: number
   slices_completed: number
   slices_running: number
+  slices_queued?: number
   slices_pending: number
   slices_failed: number
   listed_total: number
@@ -1301,7 +1302,15 @@ export interface PlatformImportProgress {
   discovery_status: string | null
   paused: boolean
   pause_reason: string | null
-  phase: 'discovering' | 'importing' | 'complete' | 'paused' | 'failed' | 'deleting'
+  phase:
+    | 'discovering'
+    | 'importing'
+    | 'complete'
+    | 'paused'
+    | 'failed'
+    | 'deleting'
+    | 'stalled'
+    | 'capped'
   overall_percent: number
   is_active: boolean
   calls_discovered: number
@@ -1309,6 +1318,11 @@ export interface PlatformImportProgress {
   window_start?: string | null
   window_end?: string | null
   updated_at: string
+  last_progress_at?: string | null
+  backlog?: number | null
+  inflight?: number | null
+  rate_limited?: boolean
+  slice_errors?: number
   discovery: PlatformImportDiscoveryProgress
   recordings: PlatformImportRecordingsProgress
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
@@ -42,24 +42,22 @@ type Step = 'provider' | 'configure' | 'preview' | 'starting' | 'started'
 const PLATFORMS: Array<{
   id: PlatformKey
   platform: IntegrationPlatform
-  blurb: string
 }> = [
-  {
-    id: 'elevenlabs',
-    platform: IntegrationPlatform.ELEVENLABS,
-    blurb: 'ConvAI conversations and recordings',
-  },
-  {
-    id: 'vapi',
-    platform: IntegrationPlatform.VAPI,
-    blurb: 'Assistant calls with stereo recordings',
-  },
-  {
-    id: 'retell',
-    platform: IntegrationPlatform.RETELL,
-    blurb: 'Voice agent call history',
-  },
+  { id: 'elevenlabs', platform: IntegrationPlatform.ELEVENLABS },
+  { id: 'vapi', platform: IntegrationPlatform.VAPI },
+  { id: 'retell', platform: IntegrationPlatform.RETELL },
 ]
+
+function suggestedImportName(platformLabel: string, start: string, end: string): string {
+  if (!start || !end) return platformLabel
+  const fmt = (value: string) =>
+    parseLocalDatetime(value).toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    })
+  return `${platformLabel} · ${fmt(start)} – ${fmt(end)}`
+}
 
 const RANGE_PRESETS = [
   { id: '7d', label: 'Last 7 days', days: 7 },
@@ -82,6 +80,7 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
   const navigate = useNavigate()
   const { showToast, ToastContainer } = useToast()
   const pinPlatformImport = usePinPlatformImport()
+  const idempotencyKey = useRef(crypto.randomUUID())
   const [step, setStep] = useState<Step>('provider')
   const [platform, setPlatform] = useState<PlatformKey | ''>('')
   const [integrationId, setIntegrationId] = useState('')
@@ -89,6 +88,8 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
   const [windowEnd, setWindowEnd] = useState('')
   const [preset, setPreset] = useState<string>('30d')
   const [dataset, setDataset] = useState('')
+  const [importName, setImportName] = useState('')
+  const [nameTouched, setNameTouched] = useState(false)
   const [importProviderTranscript, setImportProviderTranscript] = useState(true)
   const [preview, setPreview] = useState<{
     recordings_in_window: number
@@ -117,11 +118,25 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
   const platformMeta = PLATFORMS.find((p) => p.id === platform)
 
   useEffect(() => {
+    if (!open || nameTouched || !platformMeta || !windowStart || !windowEnd) return
+    setImportName(
+      suggestedImportName(
+        getIntegrationPlatformLabel(platformMeta.platform),
+        windowStart,
+        windowEnd,
+      ),
+    )
+  }, [open, nameTouched, platformMeta, windowStart, windowEnd])
+
+  useEffect(() => {
     if (!open) return
+    idempotencyKey.current = crypto.randomUUID()
     setStep('provider')
     setPlatform('')
     setIntegrationId('')
     setDataset('')
+    setImportName('')
+    setNameTouched(false)
     setPreview(null)
     setStartedImportId(null)
     const end = new Date()
@@ -174,16 +189,14 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
         voice_integration_id: integrationId,
         window_start: parseLocalDatetime(windowStart).toISOString(),
         window_end: parseLocalDatetime(windowEnd).toISOString(),
+        name: importName.trim() || undefined,
         dataset: dataset || undefined,
         filters: platformFilters,
-      }),
+      }, idempotencyKey.current),
     onSuccess: (result) => {
       setStartedImportId(result.id)
       setStep('started')
-      const label =
-        dataset.trim() ||
-        `${platformMeta?.platform ? getIntegrationPlatformLabel(platformMeta.platform) : 'Platform'} import`
-      pinPlatformImport(result.id, label)
+      pinPlatformImport(result.id, importName.trim() || 'Platform import')
       onImportStarted?.()
     },
     onError: (err: unknown) => {
@@ -192,27 +205,39 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
     },
   })
 
+  const windowSpanMs =
+    windowStart && windowEnd
+      ? parseLocalDatetime(windowEnd).getTime() -
+        parseLocalDatetime(windowStart).getTime()
+      : 0
+  const windowWithinYear = windowSpanMs > 0 && windowSpanMs <= 366 * 24 * 60 * 60 * 1000
   const canConfigure =
-    platform && integrationId && windowStart && windowEnd && windowEnd > windowStart
+    platform &&
+    integrationId &&
+    windowStart &&
+    windowEnd &&
+    windowEnd > windowStart &&
+    windowWithinYear &&
+    importName.trim().length > 0
 
   if (!open) return null
+
+  const modalWidthClass =
+    step === 'provider' ? 'w-[min(92vw,42rem)]' : 'w-[min(92vw,48rem)]'
 
   return renderModal(
     <div className="fixed inset-0 z-[200] flex items-start justify-center overflow-y-auto bg-black/50 p-4 py-6 sm:py-10">
       <ToastContainer />
       <div
-        className="relative my-auto flex w-full max-w-2xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl"
+        className={`relative my-auto flex flex-col overflow-hidden rounded-xl bg-white shadow-2xl transition-[width] duration-200 ease-out ${modalWidthClass}`}
         role="dialog"
         aria-labelledby="platform-import-title"
       >
         <div className="flex items-start justify-between px-6 py-4 border-b border-gray-100">
           <div>
             <h2 id="platform-import-title" className="text-lg font-semibold text-gray-900">
-              Import historical calls
+              Import calls
             </h2>
-            <p className="text-sm text-gray-500 mt-0.5">
-              Pull recordings and transcripts from your voice platform into Imports.
-            </p>
           </div>
           <button
             type="button"
@@ -260,7 +285,6 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
         <div className="max-h-[calc(90vh-12.5rem)] overflow-y-auto px-6 py-5 space-y-5">
           {step === 'provider' && (
             <>
-              <p className="text-sm text-gray-600">Which platform are you importing from?</p>
               <div className="grid sm:grid-cols-3 gap-3">
                 {PLATFORMS.map((p) => {
                   const logo = getIntegrationPlatformLogo(p.platform)
@@ -291,7 +315,6 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
                       <div className="font-medium text-gray-900 text-sm">
                         {getIntegrationPlatformLabel(p.platform)}
                       </div>
-                      <div className="text-xs text-gray-500 mt-1">{p.blurb}</div>
                       <div className="text-xs text-gray-400 mt-2">
                         {count > 0 ? `${count} credential${count === 1 ? '' : 's'}` : 'No credentials'}
                       </div>
@@ -363,7 +386,7 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
                     <Calendar className="h-4 w-4 text-gray-400" />
                     Call time range
                   </label>
-                  <span className="text-xs text-gray-500">End capped ~15 min before now</span>
+                  <span className="text-xs text-gray-500">Ends 15 min ago</span>
                 </div>
                 <PlatformImportWindowPicker
                   windowStart={windowStart}
@@ -388,21 +411,26 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
                     checked={importProviderTranscript}
                     onChange={(e) => setImportProviderTranscript(e.target.checked)}
                   />
-                  <span className="min-w-0">
-                    <span className="text-sm font-medium text-gray-900">
-                      Import production transcript from platform
-                    </span>
-                    <span className="block text-xs text-gray-600 mt-0.5">
-                      {platform === 'elevenlabs'
-                        ? 'Fetches ElevenLabs ConvAI turns into the production transcript (and speaker turns when available) alongside the recording. Use Evaluate → Production transcript — same flow as CSV imports with a transcript column.'
-                        : 'Stores the provider call transcript on each row with the recording so you can run evaluations on the production transcript without re-diarising.'}
-                    </span>
+                  <span className="text-sm font-medium text-gray-900">
+                    Import production transcript
                   </span>
                 </label>
               </div>
 
               <label className="block text-sm">
-                <span className="font-medium text-gray-700">Dataset label (optional)</span>
+                <span className="font-medium text-gray-700">Name</span>
+                <input
+                  className="mt-1.5 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
+                  value={importName}
+                  onChange={(e) => {
+                    setNameTouched(true)
+                    setImportName(e.target.value)
+                  }}
+                />
+              </label>
+
+              <label className="block text-sm">
+                <span className="font-medium text-gray-700">Dataset</span>
                 <input
                   className="mt-1.5 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
                   placeholder="e.g. Q4 production calls"
@@ -429,14 +457,6 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
                     <div className="text-sm text-primary-900/90 mt-1 font-medium">
                       recordings in this window
                     </div>
-                    <p className="text-xs text-primary-800/70 mt-2 max-w-md mx-auto">
-                      {preview.recordings_count_complete
-                        ? 'Counted from your provider for the selected dates.'
-                        : `At least this many (preview scanned ${preview.count_pages_scanned ?? '?'} API pages; full import may find more).`}
-                      {preview.discovery_slices != null && preview.discovery_slices > 0
-                        ? ` Import runs in ${preview.discovery_slices} daily discovery windows.`
-                        : ''}
-                    </p>
                   </div>
                   {preview.samples.length > 0 && (
                     <div>
@@ -462,9 +482,6 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
                   )}
                 </div>
               </div>
-              <p className="text-xs text-gray-500">
-                You can close this dialog after starting — live progress is on the import detail page.
-              </p>
             </>
           )}
 
@@ -474,15 +491,8 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
                 <Sparkles className="h-7 w-7 text-green-600" />
               </div>
               <div>
-                <h3 className="text-lg font-semibold text-gray-900">Import is running</h3>
-                <p className="text-sm text-gray-600 mt-1 max-w-md mx-auto">
-                  We are listing calls in your time window, then fetching each recording. This runs
-                  in the background so evaluations and other imports are not blocked.
-                </p>
+                <h3 className="text-lg font-semibold text-gray-900">{importName.trim() || 'Import started'}</h3>
               </div>
-              <p className="text-xs text-gray-500">
-                Total runtime depends on how many calls are in the window — not just the preview count.
-              </p>
               <div className="flex flex-col sm:flex-row gap-2 justify-center pt-2">
                 <Button
                   variant="primary"
@@ -499,7 +509,7 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
                     onClose()
                   }}
                 >
-                  Keep working — status panel stays open
+                  Close
                 </Button>
               </div>
             </div>
@@ -532,7 +542,9 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
               <Button
                 variant="primary"
                 isLoading={createMutation.isPending}
+                disabled={createMutation.isPending}
                 onClick={() => {
+                  if (createMutation.isPending) return
                   setStep('starting')
                   createMutation.mutate()
                 }}

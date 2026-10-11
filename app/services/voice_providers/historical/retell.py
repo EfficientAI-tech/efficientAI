@@ -26,7 +26,7 @@ class RetellHistoricalAdapter:
         slice: TimeSlice,
         cursor: Optional[str],
         *,
-        page_size: int = 1000,
+        page_size: int = 100,
     ) -> Tuple[List[HistoricalListItem], Optional[str]]:
         body = {
             "filter_criteria": {
@@ -77,18 +77,33 @@ class RetellHistoricalAdapter:
                         else None
                     ),
                     status=entry.get("call_status"),
-                    has_audio=bool(recording)
-                    and not entry.get("opt_out_sensitive_data_storage"),
+                    has_audio=(
+                        False
+                        if entry.get("opt_out_sensitive_data_storage")
+                        else (True if recording else None)
+                    ),
                     raw=entry,
                 )
             )
+        if not items:
+            return [], None
         next_key = None
         if isinstance(data, dict):
             next_key = data.get("pagination_key")
-        return items, next_key if next_key else None
+        if not next_key or next_key == cursor:
+            return items, None
+        return items, next_key
 
     def hydrate(self, item: HistoricalListItem) -> NormalizedCall:
-        entry = item.raw or self._provider.retrieve_call_metrics(item.conversation_id)
+        entry = item.raw if isinstance(item.raw, dict) else {}
+        recording = (
+            entry.get("recording_multi_channel_url") or entry.get("recording_url")
+        )
+        transcript = entry.get("transcript") or ""
+        if not recording and not transcript:
+            fetched = self._provider.retrieve_call_metrics(item.conversation_id)
+            if isinstance(fetched, dict):
+                entry = fetched
         transcript = entry.get("transcript") or ""
         recording = (
             entry.get("recording_multi_channel_url")

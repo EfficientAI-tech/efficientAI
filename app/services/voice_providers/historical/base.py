@@ -39,7 +39,7 @@ class HistoricalListItem:
     started_at: Optional[datetime] = None
     duration_seconds: Optional[float] = None
     status: Optional[str] = None
-    has_audio: bool = True
+    has_audio: Optional[bool] = None
     raw: Dict[str, Any] = field(default_factory=dict)
 
 

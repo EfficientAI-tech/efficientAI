@@ -70,9 +70,9 @@ import {
   isStandardJudgeModel,
 } from '../../lib/llmModelOptions'
 import CallImportProgressBar from './components/CallImportProgressBar'
-import PlatformImportProgressDock, {
-  usePinPlatformImport,
-} from './components/PlatformImportProgressDock'
+import PlatformImportProgressDock from './components/PlatformImportProgressDock'
+import { usePlatformImportProgressStore } from '../../store/platformImportProgressStore'
+import { platformImportLabel, platformSkipLines } from './platformImportLabel'
 import RetryFailedImportModal from './components/RetryFailedImportModal'
 import UploadAudioModal from './components/UploadAudioModal'
 import InsightsMetricCard, {
@@ -921,8 +921,6 @@ export default function CallImportDetail() {
     [rowOffset, rowSearchQuery, diarisedStatusFilter],
   )
 
-  const pinPlatformImport = usePinPlatformImport()
-
   const { data, isLoading, isFetching, refetch, error } = useQuery({
     queryKey: ['call-import', activeWorkspaceId, id, queryParams],
     queryFn: () => apiClient.getCallImport(id!, queryParams),
@@ -961,28 +959,10 @@ export default function CallImportDetail() {
 
   useEffect(() => {
     if (!data?.id || (data.source_format || '').toLowerCase() !== 'platform') return
-    if (data.status === 'deleting') return
-    const discovery = data.discovery_status
-    const discoveryActive =
-      typeof discovery === 'string' &&
-      !['completed', 'capped', 'failed'].includes(discovery)
-    const importActive =
-      data.status === 'processing' ||
-      data.status === 'pending' ||
-      discoveryActive
-    if (!importActive) return
-    const label =
-      data.dataset || `${(data.provider || 'platform').toUpperCase()} historical`
-    pinPlatformImport(data.id, label)
-  }, [
-    data?.id,
-    data?.source_format,
-    data?.status,
-    data?.discovery_status,
-    data?.dataset,
-    data?.provider,
-    pinPlatformImport,
-  ])
+    if (data.status === 'deleting') {
+      usePlatformImportProgressStore.getState().unpin(data.id)
+    }
+  }, [data?.id, data?.source_format, data?.status])
 
   useEffect(() => {
     if (!pendingScrollToEvaluation || data?.status !== 'mapped') return
@@ -1648,7 +1628,9 @@ export default function CallImportDetail() {
         <div className="space-y-4">
           <div className="min-w-0">
             <h1 className="text-2xl font-bold text-gray-900 truncate">
-              {data.original_filename || '(unnamed import)'}
+              {(data.source_format || '').toLowerCase() === 'platform'
+                ? platformImportLabel(data)
+                : data.original_filename || '(unnamed import)'}
             </h1>
             <div className="mt-1 text-xs text-gray-500 font-mono">{data.id}</div>
             <div className="mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 min-w-0 max-w-full text-sm text-gray-600">
@@ -1693,6 +1675,18 @@ export default function CallImportDetail() {
                 failed={data.failed_rows}
                 deleting={isDeleting}
               />
+              {(data.source_format || '').toLowerCase() === 'platform' &&
+                data.discovery_status && (
+                  <p className="mt-2 text-xs text-gray-600">
+                    Discovery {data.discovery_status}
+                    {data.paused_at ? ' · paused' : ''}
+                  </p>
+                )}
+              {platformSkipLines(data.skip_counts).length > 0 && (
+                <p className="mt-2 text-xs text-gray-600">
+                  {platformSkipLines(data.skip_counts).join(' · ')}
+                </p>
+              )}
               <div className="mt-2.5 grid grid-cols-3 gap-2 text-center text-xs">
                 <div className="bg-white rounded-md border border-slate-100 p-2">
                   <div className="text-gray-500">Total</div>
@@ -2189,6 +2183,14 @@ export default function CallImportDetail() {
                 </span>
                 .
               </p>
+            ) : (data.source_format || '').toLowerCase() === 'platform' &&
+              platformSkipLines(data.skip_counts).length > 0 ? (
+              <div className="space-y-1">
+                <p>No new calls in this window.</p>
+                <p className="text-sm text-gray-700">
+                  {platformSkipLines(data.skip_counts).join(' · ')}
+                </p>
+              </div>
             ) : (
               <p>No rows in this slice.</p>
             )}

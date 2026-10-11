@@ -1416,9 +1416,19 @@ def platform_import_hydration_complete(call_import: CallImport) -> bool:
     if not _is_platform_call_import(call_import):
         return True
     discovery = (call_import.discovery_status or "").lower()
-    if discovery not in {"completed", "capped", "failed"}:
+    if discovery not in {"completed", "capped", "failed", "partial"}:
         return False
-    return True
+    from sqlalchemy.orm import object_session
+
+    from app.services.call_imports.bulk_ops import _aggregate_import_row_status_counts
+
+    db = object_session(call_import)
+    if db is None:
+        return False
+    _total, _completed, _failed, pending, processing = _aggregate_import_row_status_counts(
+        db, call_import.id
+    )
+    return pending == 0 and processing == 0
 
 
 def _validate_diarised_eval_recording_ready(

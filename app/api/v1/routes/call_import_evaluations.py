@@ -5760,13 +5760,29 @@ def _generate_and_persist_tldr_summary(
                 organization_id=organization_id,
                 db=db,
                 temperature=0.4,
-                max_tokens=1400,
+                max_tokens=4096,
             )
+            if llm_result.get("truncated"):
+                llm_result = llm_service.generate_response(
+                    messages=messages,
+                    llm_provider=provider_enum,
+                    llm_model=model_str,
+                    organization_id=organization_id,
+                    db=db,
+                    temperature=0.2,
+                    max_tokens=8192,
+                )
     except Exception as e:
         logger.error(f"[CallImportInsights] LLM call failed: {e}")
         raise HTTPException(
             status_code=502, detail=f"LLM call failed: {e}"
         ) from e
+
+    if llm_result.get("truncated"):
+        raise HTTPException(
+            status_code=502,
+            detail="Insights response was cut off before it finished. Try again.",
+        )
 
     total = int(evaluation.total_rows or 0)
     summary = _parse_insights_response(llm_result.get("text", ""))

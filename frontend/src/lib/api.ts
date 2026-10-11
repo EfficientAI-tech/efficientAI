@@ -2653,6 +2653,7 @@ class ApiClient {
     window_start: string
     window_end: string
     window_timezone?: string
+    name?: string
     dataset?: string
     max_calls?: number
     filters?: {
@@ -2661,8 +2662,27 @@ class ApiClient {
       speed?: string
       import_provider_transcript?: boolean
     }
-  }): Promise<{ id: string; status: string; discovery_status?: string }> {
-    const response = await this.client.post('/api/v1/call-imports/platform', payload)
+  }, idempotencyKey?: string): Promise<{ id: string; status: string; discovery_status?: string }> {
+    const response = await this.client.post('/api/v1/call-imports/platform', payload, {
+      headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+    })
+    return response.data
+  }
+
+  async pausePlatformImport(importId: string): Promise<{ status: string }> {
+    const response = await this.client.post(`/api/v1/call-imports/platform/${importId}/pause`)
+    return response.data
+  }
+
+  async resumePlatformImport(importId: string): Promise<{ status: string }> {
+    const response = await this.client.post(`/api/v1/call-imports/platform/${importId}/resume`)
+    return response.data
+  }
+
+  async retryPlatformDiscovery(importId: string): Promise<{ status: string }> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/platform/${importId}/retry-discovery`,
+    )
     return response.data
   }
 

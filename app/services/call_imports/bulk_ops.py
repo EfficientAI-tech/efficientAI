@@ -467,6 +467,91 @@ def _revoke_call_import_task_ids(db: Session, call_import_id: UUID) -> int:
         return 0
 
 
+def _release_platform_import_work(db: Session, call_import: CallImport) -> None:
+    from app.db_sharding.pool_manager import db_pool_manager
+    from app.db_sharding.sessions import is_sharding_enabled
+    from app.models.database import CallImportDiscoverySlice, CallImportRow
+    from app.workers.concurrency.platform_import_limits import (
+        force_release_slice_lock,
+        release_platform_lease,
+    )
+
+    slices = (
+        db.query(CallImportDiscoverySlice)
+        .filter(CallImportDiscoverySlice.call_import_id == call_import.id)
+        .all()
+    )
+    for slice_row in slices:
+        force_release_slice_lock(call_import.id, slice_row.slice_id)
+
+    def _release_ids(session: Session) -> None:
+        task_ids = [
+            task_id
+            for (task_id,) in session.query(CallImportRow.celery_task_id)
+            .filter(
+                CallImportRow.call_import_id == call_import.id,
+                CallImportRow.celery_task_id.isnot(None),
+            )
+            .all()
+            if task_id
+        ]
+        for task_id in task_ids:
+            release_platform_lease(task_id)
+
+    if not is_sharding_enabled():
+        _release_ids(db)
+        return
+    router = db_pool_manager.router
+    if router is None:
+        return
+    for shard_id in router.shard_ids:
+        factory = db_pool_manager.shard_session_factory(shard_id)
+        shard_db = factory()
+        try:
+            _release_ids(shard_db)
+        finally:
+            shard_db.close()
+
+
+def _delete_import_rows_everywhere(db: Session, call_import_id: UUID) -> None:
+    from app.db_sharding.pool_manager import db_pool_manager
+    from app.db_sharding.sessions import is_sharding_enabled
+    from app.models.database import CallImportEvaluationRow, CallImportRow
+
+    def _wipe(session: Session) -> None:
+        row_ids = [
+            row_id
+            for (row_id,) in session.query(CallImportRow.id)
+            .filter(CallImportRow.call_import_id == call_import_id)
+            .all()
+        ]
+        if row_ids:
+            session.query(CallImportEvaluationRow).filter(
+                CallImportEvaluationRow.call_import_row_id.in_(row_ids)
+            ).delete(synchronize_session=False)
+        session.query(CallImportRow).filter(
+            CallImportRow.call_import_id == call_import_id
+        ).delete(synchronize_session=False)
+        session.commit()
+
+    if not is_sharding_enabled():
+        _wipe(db)
+        return
+    router = db_pool_manager.router
+    if router is None:
+        return
+    for shard_id in router.shard_ids:
+        factory = db_pool_manager.shard_session_factory(shard_id)
+        shard_db = factory()
+        try:
+            _wipe(shard_db)
+        except Exception:
+            shard_db.rollback()
+            raise
+        finally:
+            shard_db.close()
+
+
 def execute_call_import_delete(
     db: Session,
     call_import_id: UUID,
@@ -492,7 +577,8 @@ def execute_call_import_delete(
         return {"status": "completed", "deleted_rows": 0}
 
     total_rows = int(call_import.total_rows or 0)
-    _revoke_call_import_task_ids(db, call_import_id)
+    _release_platform_import_work(db, call_import)
+    _delete_import_rows_everywhere(db, call_import_id)
 
     deleted_objects = 0
     s3_errors = 0

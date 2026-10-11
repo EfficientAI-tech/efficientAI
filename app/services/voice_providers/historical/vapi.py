@@ -31,15 +31,19 @@ class VapiHistoricalAdapter:
         *,
         page_size: int = 100,
     ) -> Tuple[List[HistoricalListItem], Optional[str]]:
+        bound = slice.slice_end.isoformat()
+        seen_id = None
+        if cursor and "|" in cursor:
+            bound, seen_id = cursor.split("|", 1)
+        elif cursor:
+            bound = cursor
         params = {
             "limit": page_size,
             "createdAtGe": slice.slice_start.isoformat(),
-            "createdAtLt": slice.slice_end.isoformat(),
+            "createdAtLt": bound,
         }
         if slice.agent_id:
             params["assistantId"] = slice.agent_id
-        if cursor:
-            params["createdAtLt"] = cursor
 
         url = f"{self._provider.api_url}/call"
         headers = {"Authorization": f"Bearer {self._api_key}"}
@@ -50,6 +54,7 @@ class VapiHistoricalAdapter:
             data = data.get("calls") or data.get("data") or []
         items: List[HistoricalListItem] = []
         last_created: Optional[str] = None
+        last_id: Optional[str] = None
         for entry in data:
             if not isinstance(entry, dict):
                 continue
@@ -66,6 +71,8 @@ class VapiHistoricalAdapter:
                         started_at = started_at.replace(tzinfo=timezone.utc)
                 except Exception:
                     started_at = None
+            if seen_id and str(call_id) == seen_id:
+                continue
             recording_url = extract_vapi_recording_url(entry, stereo=True)
             items.append(
                 HistoricalListItem(
@@ -73,15 +80,31 @@ class VapiHistoricalAdapter:
                     agent_id=entry.get("assistantId") or slice.agent_id,
                     started_at=started_at,
                     status=entry.get("status"),
-                    has_audio=bool(recording_url),
+                    has_audio=True if recording_url else None,
                     raw=entry,
                 )
             )
-        next_cursor = last_created if len(items) >= page_size and last_created else None
+            last_id = str(call_id)
+        next_cursor = None
+        if len(data) >= page_size and last_created and items:
+            candidate = f"{last_created}|{items[-1].conversation_id}"
+            if candidate != cursor:
+                next_cursor = candidate
+        elif len(data) >= page_size and last_created and last_id:
+            candidate = f"{last_created}|{last_id}"
+            if candidate != cursor:
+                next_cursor = candidate
         return items, next_cursor
 
     def hydrate(self, item: HistoricalListItem) -> NormalizedCall:
-        entry = item.raw or self._provider.retrieve_call_metrics(item.conversation_id)
+        entry = item.raw if isinstance(item.raw, dict) else {}
+        recording_url = extract_vapi_recording_url(entry, stereo=True) if entry else None
+        transcript = entry.get("transcript") or ""
+        if not recording_url and not transcript:
+            fetched = self._provider.retrieve_call_metrics(item.conversation_id)
+            if isinstance(fetched, dict):
+                entry = fetched
+                recording_url = extract_vapi_recording_url(entry, stereo=True)
         transcript = entry.get("transcript") or ""
         recording_url = extract_vapi_recording_url(entry, stereo=True)
         return NormalizedCall(

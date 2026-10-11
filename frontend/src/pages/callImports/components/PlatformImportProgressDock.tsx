@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { Link } from 'react-router-dom'
-import { useQueries } from '@tanstack/react-query'
+import { useQueries, useQueryClient } from '@tanstack/react-query'
 import {
   CheckCircle2,
   ChevronDown,
@@ -14,6 +14,8 @@ import {
 import { apiClient } from '../../../lib/api'
 import type { PlatformImportProgress } from '../../../types/api'
 import { usePlatformImportProgressStore } from '../../../store/platformImportProgressStore'
+import { useWorkspaceStore } from '../../../store/workspaceStore'
+import { platformSkipLines } from '../platformImportLabel'
 
 function phaseLabel(phase: PlatformImportProgress['phase']): string {
   switch (phase) {
@@ -23,6 +25,10 @@ function phaseLabel(phase: PlatformImportProgress['phase']): string {
       return 'Downloading recordings'
     case 'paused':
       return 'Paused'
+    case 'stalled':
+      return 'Stalled'
+    case 'capped':
+      return 'Stopped at call cap'
     case 'failed':
       return 'Needs attention'
     case 'deleting':
@@ -66,8 +72,12 @@ function ImportProgressCard({
   label: string
   onDismiss: () => void
 }) {
-  const { discovery, recordings, overall_percent, phase, is_active, skip_counts } = progress
-  const skipTotal = Object.values(skip_counts || {}).reduce((a, b) => a + b, 0)
+  const { discovery, recordings, overall_percent, phase, is_active, skip_counts, paused } = progress
+  const skipLines = platformSkipLines(skip_counts)
+  const queryClient = useQueryClient()
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ['platform-import-progress'] })
+  }
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-3 shadow-sm space-y-2.5">
@@ -113,6 +123,10 @@ function ImportProgressCard({
           <ProgressTrack percent={discovery.percent} tone="amber" />
           <p className="text-gray-600 mt-1 tabular-nums">
             {discovery.slices_completed}/{discovery.slices_total} windows
+            {discovery.slices_running > 0 ? ` · ${discovery.slices_running} listing` : ''}
+            {(discovery.slices_queued ?? 0) > 0
+              ? ` · ${discovery.slices_queued} queued`
+              : ''}
             {discovery.listed_total > 0 ? ` · ${discovery.listed_total} listed` : ''}
           </p>
         </div>
@@ -144,11 +158,45 @@ function ImportProgressCard({
         </div>
       </div>
 
-      {skipTotal > 0 && (
-        <p className="text-[11px] text-gray-500">
-          {skipTotal.toLocaleString()} skipped (filters, duplicates, no audio, etc.)
-        </p>
+      {skipLines.length > 0 && (
+        <p className="text-[11px] text-gray-500">{skipLines.join(' · ')}</p>
       )}
+
+      <div className="flex gap-2">
+        {is_active && !paused && phase !== 'deleting' && (
+          <button
+            type="button"
+            className="text-xs font-medium text-gray-700 hover:text-gray-900"
+            onClick={() => {
+              void apiClient.pausePlatformImport(progress.call_import_id).then(refresh)
+            }}
+          >
+            Pause
+          </button>
+        )}
+        {paused && (
+          <button
+            type="button"
+            className="text-xs font-medium text-primary-700 hover:text-primary-800"
+            onClick={() => {
+              void apiClient.resumePlatformImport(progress.call_import_id).then(refresh)
+            }}
+          >
+            Resume
+          </button>
+        )}
+        {(phase === 'failed' || (progress.slice_errors ?? 0) > 0) && (
+          <button
+            type="button"
+            className="text-xs font-medium text-amber-700 hover:text-amber-800"
+            onClick={() => {
+              void apiClient.retryPlatformDiscovery(progress.call_import_id).then(refresh)
+            }}
+          >
+            Retry discovery
+          </button>
+        )}
+      </div>
 
       {progress.paused && progress.pause_reason && (
         <p className="text-[11px] text-amber-800 bg-amber-50 rounded px-2 py-1">
@@ -174,23 +222,17 @@ export default function PlatformImportProgressDock() {
   const setPanelOpen = usePlatformImportProgressStore((s) => s.setPanelOpen)
   const setPanelMinimized = usePlatformImportProgressStore((s) => s.setPanelMinimized)
   const unpin = usePlatformImportProgressStore((s) => s.unpin)
-  const openPanel = usePlatformImportProgressStore((s) => s.openPanel)
-  const restoredPanel = useRef(false)
-
-  useEffect(() => {
-    if (!restoredPanel.current && watches.length > 0) {
-      restoredPanel.current = true
-      openPanel()
-    }
-  }, [watches.length, openPanel])
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
 
   const progressQueries = useQueries({
     queries: watches.map((w) => ({
-      queryKey: ['platform-import-progress', w.id],
+      queryKey: ['platform-import-progress', activeWorkspaceId, w.id],
       queryFn: () => apiClient.getPlatformImportProgress(w.id),
-      refetchInterval: (query: { state: { data?: PlatformImportProgress } }) =>
-        query.state.data?.is_active === false ? false : 3000,
-      enabled: Boolean(w.id),
+      refetchInterval: (query: { state: { data?: PlatformImportProgress } }) => {
+        if (typeof document !== 'undefined' && document.hidden) return false
+        return query.state.data?.is_active === false ? false : 3000
+      },
+      enabled: Boolean(w.id && activeWorkspaceId),
     })),
   })
 
@@ -220,18 +262,6 @@ export default function PlatformImportProgressDock() {
       : items.reduce((sum, x) => sum + (x.progress?.overall_percent ?? 0), 0) /
         Math.max(items.filter((x) => x.progress).length, 1)
 
-  useEffect(() => {
-    for (const { watch, progress } of items) {
-      if (progress && !progress.is_active) {
-        const pinnedAt = watch.pinnedAt
-        const doneFor = Date.now() - pinnedAt
-        if (doneFor > 2 * 60 * 60 * 1000) {
-          unpin(watch.id)
-        }
-      }
-    }
-  }, [items, unpin])
-
   if (watches.length === 0) return null
 
   const content = panelMinimized ? (
@@ -257,11 +287,9 @@ export default function PlatformImportProgressDock() {
     <div className="fixed bottom-4 right-4 z-[10070] w-[min(100vw-2rem,24rem)] rounded-xl border border-gray-200 bg-gray-50/95 shadow-2xl backdrop-blur-sm overflow-hidden">
       <div className="flex items-center justify-between gap-2 px-3 py-2.5 border-b border-gray-200 bg-white">
         <div className="min-w-0">
-          <p className="text-sm font-semibold text-gray-900">Platform import status</p>
+          <p className="text-sm font-semibold text-gray-900">Platform imports</p>
           <p className="text-[11px] text-gray-500 truncate">
-            {activeCount > 0
-              ? `${activeCount} running · updates every few seconds`
-              : 'All tracked imports finished'}
+            {activeCount > 0 ? `${activeCount} running` : 'Finished'}
           </p>
         </div>
         <div className="flex items-center gap-0.5 shrink-0">
@@ -304,8 +332,7 @@ export default function PlatformImportProgressDock() {
                   key={watch.id}
                   className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-800"
                 >
-                  Could not load live status for {watch.label}. Restart the API if you just
-                  deployed, then refresh.
+                  Could not load {watch.label}.
                 </div>
               )
             }
@@ -330,9 +357,7 @@ export default function PlatformImportProgressDock() {
 
 export function usePinPlatformImport() {
   const pin = usePlatformImportProgressStore((s) => s.pin)
-  const openPanel = usePlatformImportProgressStore((s) => s.openPanel)
   return (id: string, label: string) => {
     pin(id, label)
-    openPanel()
   }
 }

@@ -2335,6 +2335,8 @@ class CallImport(Base):
     skip_samples = Column(JSON, nullable=False, default=list)
     paused_at = Column(DateTime(timezone=True), nullable=True)
     pause_reason = Column(Text, nullable=True)
+    billed_at = Column(DateTime(timezone=True), nullable=True)
+    last_progress_at = Column(DateTime(timezone=True), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -2372,6 +2374,7 @@ class CallImportDiscoverySlice(Base):
     slice_start = Column(DateTime(timezone=True), nullable=False)
     slice_end = Column(DateTime(timezone=True), nullable=False)
     cursor = Column(Text, nullable=True)
+    agent_id = Column(String(255), nullable=True)
     status = Column(String(32), nullable=False, default="pending")
     listed = Column(Integer, nullable=False, default=0)
     accepted = Column(Integer, nullable=False, default=0)
@@ -2381,15 +2384,14 @@ class CallImportDiscoverySlice(Base):
 
 
 class PlatformConversationLedger(Base):
-    """Dedupes platform conversations per workspace."""
+    """One ledger row per conversation inside a single import."""
 
     __tablename__ = "platform_conversation_ledger"
     __table_args__ = (
         UniqueConstraint(
-            "workspace_id",
-            "provider",
+            "call_import_id",
             "conversation_id",
-            name="uq_platform_ledger_workspace_provider_conversation",
+            name="uq_platform_ledger_import_conversation",
         ),
     )
 
@@ -2589,6 +2591,8 @@ class CallImportRow(Base):
     error_message = Column(Text, nullable=True)
     attempts = Column(Integer, nullable=False, default=0)
     celery_task_id = Column(String(255), nullable=True)
+    dispatched_at = Column(DateTime(timezone=True), nullable=True)
+    download_started_at = Column(DateTime(timezone=True), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
