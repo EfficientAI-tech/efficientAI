@@ -1863,6 +1863,7 @@ class PromptPartial(Base):
     created_by = Column(String, nullable=True)
 
     versions = relationship("PromptPartialVersion", back_populates="prompt_partial", cascade="all, delete-orphan", order_by="PromptPartialVersion.version.desc()")
+    pushes = relationship("PromptPush", back_populates="prompt_partial", cascade="all, delete-orphan", order_by="PromptPush.created_at.desc()")
 
 
 class PromptPartialVersion(Base):
@@ -1890,6 +1891,29 @@ class PromptPartialVersion(Base):
     __table_args__ = (
         UniqueConstraint('prompt_partial_id', 'version', name='uq_prompt_partial_version'),
     )
+
+
+class PromptPush(Base):
+    """Audit row for a live provider prompt push. The prompt body stays on PromptPartialVersion."""
+
+    __tablename__ = "prompt_pushes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    workspace_id = Column(UUID(as_uuid=True), ForeignKey("workspaces.id", ondelete="RESTRICT"), nullable=False, index=True)
+    prompt_partial_id = Column(UUID(as_uuid=True), ForeignKey("prompt_partials.id", ondelete="CASCADE"), nullable=False, index=True)
+    prompt_version = Column(Integer, nullable=False)
+    provider = Column(String(50), nullable=False)
+    external_agent_id = Column(String(255), nullable=False)
+    external_agent_name = Column(String(255), nullable=True)
+    integration_id = Column(UUID(as_uuid=True), ForeignKey("integrations.id", ondelete="SET NULL"), nullable=True)
+    evaluation_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    pushed_by = Column(String, nullable=True)
+    status = Column(String(20), nullable=False)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    prompt_partial = relationship("PromptPartial", back_populates="pushes")
 
 
 class CustomTTSVoice(Base):

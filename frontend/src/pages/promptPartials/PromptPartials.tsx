@@ -57,7 +57,8 @@ import {
   serializeMetricPartialContent,
   type MetricPartialContent,
 } from './metricPartialUtils'
-import type { AgentFlowGraph, AgentFlowNode } from '../../types/api'
+import type { AgentFlowGraph, AgentFlowNode, PromptPushRecord, PromptVersionPushPreview } from '../../types/api'
+import PromptLineDiff from '../callImports/components/PromptLineDiff'
 import {
   countMappedNodes,
   flowchartNeedsPromptMapping,
@@ -127,6 +128,7 @@ interface PromptPartialVersion {
 
 interface PromptPartialDetail extends PromptPartial {
   versions: PromptPartialVersion[]
+  pushes?: PromptPushRecord[]
 }
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -169,6 +171,9 @@ export default function PromptPartials() {
   const [nodeMapError, setNodeMapError] = useState<string | null>(null)
   const [listSidebarCollapsed, setListSidebarCollapsed] = useState(readListCollapsedPreference)
   const [agentDiagramCollapsed, setAgentDiagramCollapsed] = useState(false)
+  const [rollbackVersion, setRollbackVersion] = useState<number | null>(null)
+  const [rollbackConfirm, setRollbackConfirm] = useState('')
+  const [rollbackError, setRollbackError] = useState<string | null>(null)
 
   const toggleListSidebar = (collapsed: boolean) => {
     setListSidebarCollapsed(collapsed)
@@ -232,6 +237,27 @@ export default function PromptPartials() {
       queryClient.invalidateQueries({ queryKey: ['prompt-partials'] })
       queryClient.invalidateQueries({ queryKey: ['prompt-partial'] })
       setCompareVersion(null)
+    },
+  })
+
+  const rollbackPreview = useQuery<PromptVersionPushPreview>({
+    queryKey: ['prompt-version-push-preview', selectedPartial?.id, rollbackVersion],
+    queryFn: () => apiClient.previewPromptPartialVersionPush(selectedPartial!.id, rollbackVersion!),
+    enabled: !!selectedPartial?.id && rollbackVersion != null,
+    retry: false,
+  })
+
+  const rollbackMutation = useMutation({
+    mutationFn: () => apiClient.pushPromptPartialVersion(selectedPartial!.id, rollbackVersion!, 'confirm'),
+    onSuccess: () => {
+      setRollbackVersion(null)
+      setRollbackConfirm('')
+      setRollbackError(null)
+      queryClient.invalidateQueries({ queryKey: ['prompt-partials'] })
+      queryClient.invalidateQueries({ queryKey: ['prompt-partial'] })
+    },
+    onError: (err: unknown) => {
+      setRollbackError(getApiErrorMessage(err, 'The live prompt was not updated.'))
     },
   })
 
@@ -1163,22 +1189,57 @@ export default function PromptPartials() {
                               Compare
                             </button>
                             {version.version !== (partialDetail?.current_version || selectedPartial.current_version) && (
-                              <button
-                                onClick={() =>
-                                  revertMutation.mutate({
-                                    id: selectedPartial.id,
-                                    version: version.version,
-                                  })
-                                }
-                                className="inline-flex items-center gap-1 text-xs text-amber-600 hover:text-amber-800 font-medium"
-                              >
-                                <RotateCcw className="h-3 w-3" />
-                                Revert
-                              </button>
+                              selectedIsAgent ? (
+                                <button
+                                  onClick={() => {
+                                    setRollbackError(null)
+                                    setRollbackConfirm('')
+                                    setRollbackVersion(version.version)
+                                  }}
+                                  className="inline-flex items-center gap-1 text-xs text-amber-600 hover:text-amber-800 font-medium"
+                                >
+                                  <RotateCcw className="h-3 w-3" />
+                                  Roll back
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() =>
+                                    revertMutation.mutate({
+                                      id: selectedPartial.id,
+                                      version: version.version,
+                                    })
+                                  }
+                                  className="inline-flex items-center gap-1 text-xs text-amber-600 hover:text-amber-800 font-medium"
+                                >
+                                  <RotateCcw className="h-3 w-3" />
+                                  Revert
+                                </button>
+                              )
                             )}
                           </div>
                         </div>
                       ))}
+                      {selectedIsAgent && (partialDetail?.pushes || []).length > 0 ? (
+                        <div className="px-4 py-3 border-t border-gray-200">
+                          <h4 className="text-xs font-semibold text-gray-900 mb-2">Live pushes</h4>
+                          {(partialDetail?.pushes || []).map((push) => (
+                            <div key={push.id} className="mb-3 text-xs text-gray-600">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-medium text-gray-800">v{push.prompt_version}</span>
+                                <span className={push.status === 'pushed' ? 'text-emerald-700' : 'text-rose-700'}>
+                                  {push.status}
+                                </span>
+                              </div>
+                              <p>
+                                {push.provider}
+                                {push.external_agent_name ? ` · ${push.external_agent_name}` : ''}
+                              </p>
+                              <p>{push.pushed_by || 'Unknown'} · {format(new Date(push.created_at), 'MMM d, yyyy HH:mm')}</p>
+                              {push.error_message ? <p className="text-rose-600">{push.error_message}</p> : null}
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 )}
@@ -1195,6 +1256,70 @@ export default function PromptPartials() {
           )}
         </div>
       </div>
+
+      {rollbackVersion != null && selectedPartial ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-xl bg-white p-5 shadow-xl space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">Roll back live prompt to v{rollbackVersion}</h3>
+                <p className="text-xs text-gray-500 mt-1">
+                  This pushes the older text to {rollbackPreview.data?.provider || 'the provider'}
+                  {rollbackPreview.data?.external_agent_name ? ` · ${rollbackPreview.data.external_agent_name}` : ''} and saves a new version.
+                </p>
+              </div>
+              <button type="button" onClick={() => setRollbackVersion(null)} className="text-gray-400 hover:text-gray-700">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            {rollbackPreview.isLoading ? (
+              <div className="flex justify-center py-8">
+                <Loader2 className="h-5 w-5 animate-spin text-gray-500" />
+              </div>
+            ) : rollbackPreview.isError ? (
+              <p className="text-sm text-red-600">{getApiErrorMessage(rollbackPreview.error, 'Could not load the live prompt.')}</p>
+            ) : rollbackPreview.data ? (
+              <>
+                {rollbackPreview.data.block_reason ? (
+                  <p className="text-sm text-amber-700">{rollbackPreview.data.block_reason}</p>
+                ) : null}
+                <PromptLineDiff before={rollbackPreview.data.live_prompt} after={rollbackPreview.data.version_prompt} />
+                <label className="block text-sm text-gray-700">
+                  Type confirm to push this prompt live
+                  <input
+                    value={rollbackConfirm}
+                    onChange={(event) => setRollbackConfirm(event.target.value)}
+                    autoComplete="off"
+                    className="mt-1 w-full max-w-xs rounded border border-gray-300 px-2 py-1.5 text-sm"
+                  />
+                </label>
+              </>
+            ) : null}
+            {rollbackError ? <p className="text-sm text-red-600">{rollbackError}</p> : null}
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setRollbackVersion(null)}
+                className="rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={
+                  rollbackMutation.isPending ||
+                  !rollbackPreview.data?.can_push ||
+                  rollbackConfirm !== 'confirm'
+                }
+                onClick={() => rollbackMutation.mutate()}
+                className="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+              >
+                {rollbackMutation.isPending ? 'Pushing…' : 'Push older prompt'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* Create Modal */}
       {showCreateModal && (

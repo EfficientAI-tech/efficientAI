@@ -2983,6 +2983,56 @@ class ApiClient {
     return response.data
   }
 
+  async reviewCallImportEvaluationPromptImprovement(
+    callImportId: string,
+    evaluationId: string,
+    data: {
+      suggestion_id: string
+      review_status: 'pending' | 'accepted' | 'rejected'
+      edited_text?: string | null
+    },
+  ): Promise<import('../types/api').EvaluationPromptImprovementsState> {
+    const response = await this.client.patch(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/prompt-improvements/review`,
+      data,
+    )
+    return response.data
+  }
+
+  async updateCallImportEvaluationPromptImprovementSettings(
+    callImportId: string,
+    evaluationId: string,
+    data: { require_review: boolean },
+  ): Promise<import('../types/api').EvaluationPromptImprovementsState> {
+    const response = await this.client.patch(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/prompt-improvements/settings`,
+      data,
+    )
+    return response.data
+  }
+
+  async previewCallImportEvaluationPromptPush(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<import('../types/api').PromptPushPreview> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/prompt-improvements/push-preview`,
+    )
+    return response.data
+  }
+
+  async pushCallImportEvaluationPrompt(
+    callImportId: string,
+    evaluationId: string,
+    confirm: string,
+  ): Promise<import('../types/api').PromptPushRecord> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/prompt-improvements/push`,
+      { confirm },
+    )
+    return response.data
+  }
+
   async listCallImportEvaluationMetricClusterEligibleRows(
     callImportId: string,
     evaluationId: string,
@@ -6253,6 +6303,28 @@ class ApiClient {
 
   async revertPromptPartial(partialId: string, versionNumber: number): Promise<any> {
     const response = await this.client.post(`/api/v1/prompt-partials/${partialId}/revert/${versionNumber}`)
+    return response.data
+  }
+
+  async previewPromptPartialVersionPush(
+    partialId: string,
+    versionNumber: number,
+  ): Promise<import('../types/api').PromptVersionPushPreview> {
+    const response = await this.client.get(
+      `/api/v1/prompt-partials/${partialId}/versions/${versionNumber}/push-preview`,
+    )
+    return response.data
+  }
+
+  async pushPromptPartialVersion(
+    partialId: string,
+    versionNumber: number,
+    confirm: string,
+  ): Promise<import('../types/api').PromptPushRecord> {
+    const response = await this.client.post(
+      `/api/v1/prompt-partials/${partialId}/versions/${versionNumber}/push`,
+      { confirm },
+    )
     return response.data
   }
 

@@ -87,6 +87,11 @@ from app.models.schemas import (
     EvaluationMetricClustersState,
     EvaluationPromptImprovementsRequest,
     EvaluationPromptImprovementsState,
+    PromptImprovementReviewUpdate,
+    PromptImprovementSettingsUpdate,
+    PromptPushConfirm,
+    PromptPushPreviewResponse,
+    PromptPushResponse,
     MetricFailurePoliciesResponse,
     MetricFailurePoliciesSaveRequest,
     MetricFailurePolicy,
@@ -7074,6 +7079,142 @@ async def generate_call_import_evaluation_prompt_improvements(
         imported_agent_id=str(body.imported_agent_id),
         imported_agent_name=imported_agent.name,
     )
+
+
+def _load_evaluation_for_prompt_push(
+    db: Session,
+    call_import_id: UUID,
+    eval_id: UUID,
+    organization_id: UUID,
+) -> tuple[CallImport, CallImportEvaluation]:
+    call_import = _require_import(db, call_import_id, organization_id)
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="Call import evaluation not found")
+    return call_import, evaluation
+
+
+@router.patch(
+    "/{eval_id}/prompt-improvements/review",
+    response_model=EvaluationPromptImprovementsState,
+    operation_id="reviewCallImportEvaluationPromptImprovement",
+)
+async def review_call_import_evaluation_prompt_improvement(
+    call_import_id: UUID,
+    eval_id: UUID,
+    body: PromptImprovementReviewUpdate,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> EvaluationPromptImprovementsState:
+    del api_key
+    from app.services.call_import_prompt_push import PromptPushError, set_suggestion_review
+
+    _, evaluation = _load_evaluation_for_prompt_push(db, call_import_id, eval_id, organization_id)
+    try:
+        set_suggestion_review(evaluation, body.suggestion_id, body.review_status, body.edited_text)
+    except PromptPushError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    stamp_evaluation_actor(evaluation, principal)
+    db.commit()
+    db.refresh(evaluation)
+    return _prompt_improvements_payload(evaluation) or EvaluationPromptImprovementsState(status="idle")
+
+
+@router.patch(
+    "/{eval_id}/prompt-improvements/settings",
+    response_model=EvaluationPromptImprovementsState,
+    operation_id="updateCallImportEvaluationPromptImprovementSettings",
+)
+async def update_call_import_evaluation_prompt_improvement_settings(
+    call_import_id: UUID,
+    eval_id: UUID,
+    body: PromptImprovementSettingsUpdate,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> EvaluationPromptImprovementsState:
+    del api_key
+    from app.services.call_import_prompt_push import set_require_review
+
+    _, evaluation = _load_evaluation_for_prompt_push(db, call_import_id, eval_id, organization_id)
+    set_require_review(evaluation, body.require_review)
+    db.commit()
+    db.refresh(evaluation)
+    return _prompt_improvements_payload(evaluation) or EvaluationPromptImprovementsState(status="idle")
+
+
+@router.get(
+    "/{eval_id}/prompt-improvements/push-preview",
+    response_model=PromptPushPreviewResponse,
+    operation_id="previewCallImportEvaluationPromptPush",
+)
+async def preview_call_import_evaluation_prompt_push(
+    call_import_id: UUID,
+    eval_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+) -> PromptPushPreviewResponse:
+    del api_key
+    from app.services.call_import_prompt_push import PromptPushError, preview_evaluation_push
+
+    call_import, evaluation = _load_evaluation_for_prompt_push(
+        db, call_import_id, eval_id, organization_id
+    )
+    try:
+        payload = preview_evaluation_push(
+            db, evaluation, call_import, organization_id, workspace_id
+        )
+    except PromptPushError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return PromptPushPreviewResponse(**payload)
+
+
+@router.post(
+    "/{eval_id}/prompt-improvements/push",
+    response_model=PromptPushResponse,
+    operation_id="pushCallImportEvaluationPrompt",
+)
+async def push_call_import_evaluation_prompt(
+    call_import_id: UUID,
+    eval_id: UUID,
+    body: PromptPushConfirm,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> PromptPushResponse:
+    del api_key
+    from app.services.call_import_prompt_push import PromptPushError, push_evaluation_prompt
+
+    call_import, evaluation = _load_evaluation_for_prompt_push(
+        db, call_import_id, eval_id, organization_id
+    )
+    try:
+        row = push_evaluation_prompt(
+            db,
+            evaluation,
+            call_import,
+            organization_id,
+            workspace_id,
+            body.confirm,
+            principal,
+        )
+    except PromptPushError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return row
 
 
 # ---------------------------------------------------------------------------

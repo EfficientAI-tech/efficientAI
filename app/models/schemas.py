@@ -3142,9 +3142,29 @@ class PromptPartialResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PromptPushResponse(BaseModel):
+    """One live provider prompt push. The prompt text lives on the version row."""
+
+    id: UUID
+    prompt_partial_id: UUID
+    prompt_version: int
+    provider: str
+    external_agent_id: str
+    external_agent_name: Optional[str] = None
+    integration_id: Optional[UUID] = None
+    evaluation_id: Optional[UUID] = None
+    pushed_by: Optional[str] = None
+    status: str
+    error_message: Optional[str] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class PromptPartialDetailResponse(PromptPartialResponse):
     """Schema for prompt partial detail with versions."""
     versions: List[PromptPartialVersionResponse] = []
+    pushes: List[PromptPushResponse] = []
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -5435,6 +5455,8 @@ class PromptImprovementSuggestion(BaseModel):
     rationale: str = ""
     flow_node_id: str = ""
     flow_node_label: str = ""
+    review_status: Literal["pending", "accepted", "rejected"] = "pending"
+    edited_text: Optional[str] = None
 
 
 class EvaluationPromptImprovementsState(BaseModel):
@@ -5451,6 +5473,7 @@ class EvaluationPromptImprovementsState(BaseModel):
     model: Optional[str] = None
     error_message: Optional[str] = None
     is_stale: bool = False
+    require_review: bool = True
 
 
 class EvaluationPromptImprovementsRequest(BaseModel):
@@ -5462,6 +5485,45 @@ class EvaluationPromptImprovementsRequest(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = None
     credential_id: Optional[UUID] = None
+
+
+class PromptImprovementReviewUpdate(BaseModel):
+    suggestion_id: str
+    review_status: Literal["pending", "accepted", "rejected"]
+    edited_text: Optional[str] = None
+
+
+class PromptImprovementSettingsUpdate(BaseModel):
+    require_review: bool
+
+
+class PromptPushConfirm(BaseModel):
+    confirm: str
+
+
+class PromptPushPreviewResponse(BaseModel):
+    base_prompt: str
+    composed_prompt: str
+    accepted_count: int = 0
+    rejected_count: int = 0
+    pending_count: int = 0
+    require_review: bool = True
+    can_push: bool = False
+    block_reason: Optional[str] = None
+    provider: Optional[str] = None
+    external_agent_id: Optional[str] = None
+    external_agent_name: Optional[str] = None
+
+
+class PromptVersionPushPreviewResponse(BaseModel):
+    live_prompt: str
+    version_prompt: str
+    version: int
+    provider: Optional[str] = None
+    external_agent_id: Optional[str] = None
+    external_agent_name: Optional[str] = None
+    can_push: bool = False
+    block_reason: Optional[str] = None
 
 
 class EvaluationMetricClustersRequest(BaseModel):

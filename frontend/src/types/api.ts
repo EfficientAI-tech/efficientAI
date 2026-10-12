@@ -1850,6 +1850,8 @@ export interface PromptImprovementSuggestion {
   rationale: string
   flow_node_id?: string
   flow_node_label?: string
+  review_status?: 'pending' | 'accepted' | 'rejected'
+  edited_text?: string | null
 }
 
 export interface EvaluationPromptImprovementsState {
@@ -1864,6 +1866,47 @@ export interface EvaluationPromptImprovementsState {
   model?: string | null
   error_message?: string | null
   is_stale: boolean
+  require_review?: boolean
+}
+
+export interface PromptPushRecord {
+  id: string
+  prompt_partial_id: string
+  prompt_version: number
+  provider: string
+  external_agent_id: string
+  external_agent_name?: string | null
+  integration_id?: string | null
+  evaluation_id?: string | null
+  pushed_by?: string | null
+  status: 'pushed' | 'failed' | string
+  error_message?: string | null
+  created_at: string
+}
+
+export interface PromptPushPreview {
+  base_prompt: string
+  composed_prompt: string
+  accepted_count: number
+  rejected_count: number
+  pending_count: number
+  require_review: boolean
+  can_push: boolean
+  block_reason?: string | null
+  provider?: string | null
+  external_agent_id?: string | null
+  external_agent_name?: string | null
+}
+
+export interface PromptVersionPushPreview {
+  live_prompt: string
+  version_prompt: string
+  version: number
+  provider?: string | null
+  external_agent_id?: string | null
+  external_agent_name?: string | null
+  can_push: boolean
+  block_reason?: string | null
 }
 
 export interface MetricPeriodDelta {

@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel
 from loguru import logger
 
+from app.core.auth import Principal, get_principal
 from app.dependencies import get_db, get_organization_id, get_workspace_id, get_api_key
 from app.models.database import PromptPartial, PromptPartialVersion
 from app.models.schemas import (
@@ -22,6 +23,9 @@ from app.models.schemas import (
     PromptPartialResponse,
     PromptPartialDetailResponse,
     PromptPartialVersionResponse,
+    PromptPushConfirm,
+    PromptPushResponse,
+    PromptVersionPushPreviewResponse,
 )
 from app.services.imported_agent_constants import IMPORTED_AGENT_TAG, partial_supports_flowchart
 from app.services.metric_partial_constants import METRIC_PARTIAL_TAG
@@ -628,6 +632,66 @@ async def revert_prompt_partial(
     except SQLAlchemyError as e:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Database error: {str(e)}")
+
+
+def _workspace_partial(db: Session, partial_id: UUID, organization_id: UUID, workspace_id: UUID) -> PromptPartial:
+    partial = (
+        db.query(PromptPartial)
+        .filter(
+            PromptPartial.id == partial_id,
+            PromptPartial.organization_id == organization_id,
+            PromptPartial.workspace_id == workspace_id,
+        )
+        .first()
+    )
+    if not partial:
+        raise HTTPException(status_code=404, detail=f"Prompt partial {partial_id} not found")
+    return partial
+
+
+@router.get(
+    "/{partial_id}/versions/{version_number}/push-preview",
+    response_model=PromptVersionPushPreviewResponse,
+)
+async def preview_prompt_version_push(
+    partial_id: UUID,
+    version_number: int,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    from app.services.call_import_prompt_push import PromptPushError, preview_version_push
+
+    partial = _workspace_partial(db, partial_id, organization_id, workspace_id)
+    try:
+        payload = preview_version_push(db, partial, version_number, organization_id)
+    except PromptPushError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return payload
+
+
+@router.post(
+    "/{partial_id}/versions/{version_number}/push",
+    response_model=PromptPushResponse,
+)
+async def push_prompt_version(
+    partial_id: UUID,
+    version_number: int,
+    body: PromptPushConfirm,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    from app.services.call_import_prompt_push import PromptPushError, push_version_rollback
+
+    partial = _workspace_partial(db, partial_id, organization_id, workspace_id)
+    try:
+        return push_version_rollback(
+            db, partial, version_number, organization_id, body.confirm, principal
+        )
+    except PromptPushError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @router.post("/{partial_id}/clone", response_model=PromptPartialResponse, status_code=status.HTTP_201_CREATED)

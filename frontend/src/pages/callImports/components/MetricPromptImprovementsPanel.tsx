@@ -1,19 +1,21 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, ExternalLink, GitBranch, Loader2, Sparkles } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
+import { AlertTriangle, Check, ExternalLink, GitBranch, Loader2, Pencil, Sparkles, X } from 'lucide-react'
 
 import AIProviderModelPicker from '../../../components/AIProviderModelPicker'
 import type { LLMGenerationConfig } from '../../../config/llmGenerationParams'
 import { apiClient } from '../../../lib/api'
+import { getApiErrorMessage } from '../../../lib/apiErrors'
 import AgentFlowChart from '../../promptPartials/components/AgentFlowChart'
+import PromptLineDiff from './PromptLineDiff'
 import type {
   AgentFlowGraph,
   EvaluationMetricClustersState,
   EvaluationPromptImprovementsState,
   ImportedAgent,
   PromptImprovementSuggestion,
+  PromptPushPreview,
 } from '../../../types/api'
 
 const GAP_LABEL_STYLES: Record<string, string> = {
@@ -65,6 +67,11 @@ export default function MetricPromptImprovementsPanel({
   const [agentPickerTouched, setAgentPickerTouched] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [activeSuggestionId, setActiveSuggestionId] = useState<string | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [draftText, setDraftText] = useState('')
+  const [pushPreview, setPushPreview] = useState<PromptPushPreview | null>(null)
+  const [confirmText, setConfirmText] = useState('')
+  const [pushError, setPushError] = useState<string | null>(null)
 
   const { data: importedAgents = [] } = useQuery<ImportedAgent[]>({
     queryKey: ['imported-agents-picker'],
@@ -154,6 +161,54 @@ export default function MetricPromptImprovementsPanel({
         e?.response?.data?.detail || 'Failed to generate agent logic diagram.',
       )
     },
+  })
+
+  const reviewMutation = useMutation({
+    mutationFn: (data: {
+      suggestion_id: string
+      review_status: 'pending' | 'accepted' | 'rejected'
+      edited_text?: string | null
+    }) => apiClient.reviewCallImportEvaluationPromptImprovement(callImportId, evaluationId, data),
+    onSuccess: () => {
+      setEditingId(null)
+      setPushPreview(null)
+      setConfirmText('')
+      onGenerated()
+    },
+    onError: (e: unknown) => setError(getApiErrorMessage(e, 'Failed to save the review.')),
+  })
+
+  const settingsMutation = useMutation({
+    mutationFn: (requireReview: boolean) =>
+      apiClient.updateCallImportEvaluationPromptImprovementSettings(callImportId, evaluationId, {
+        require_review: requireReview,
+      }),
+    onSuccess: () => onGenerated(),
+    onError: (e: unknown) => setError(getApiErrorMessage(e, 'Failed to update review settings.')),
+  })
+
+  const previewMutation = useMutation({
+    mutationFn: () => apiClient.previewCallImportEvaluationPromptPush(callImportId, evaluationId),
+    onSuccess: (preview) => {
+      setPushError(null)
+      setConfirmText('')
+      setPushPreview(preview)
+    },
+    onError: (e: unknown) => setPushError(getApiErrorMessage(e, 'Failed to prepare the prompt diff.')),
+  })
+
+  const pushMutation = useMutation({
+    mutationFn: () => apiClient.pushCallImportEvaluationPrompt(callImportId, evaluationId, 'confirm'),
+    onSuccess: () => {
+      setPushPreview(null)
+      setConfirmText('')
+      setPushError(null)
+      onGenerated()
+      if (selectedAgentId) {
+        queryClient.invalidateQueries({ queryKey: ['prompt-partial', selectedAgentId] })
+      }
+    },
+    onError: (e: unknown) => setPushError(getApiErrorMessage(e, 'The live prompt was not updated.')),
   })
 
   const clustersReady = clustersState?.status === 'completed'
@@ -463,45 +518,174 @@ export default function MetricPromptImprovementsPanel({
                   </p>
                 ) : null}
 
-                {changeType === 'edit' && suggestion.anchor_excerpt ? (
-                  <div className="grid gap-2 md:grid-cols-2 min-w-0">
-                    <div className="rounded border border-rose-200 bg-rose-50/40 p-3 text-xs text-gray-800 max-w-full overflow-hidden">
-                      <p className="text-[10px] font-semibold uppercase tracking-wide text-rose-600 mb-1.5">
-                        Current prompt (being changed)
-                      </p>
-                      <div className="prose prose-sm max-w-none break-words prose-headings:text-gray-900 prose-headings:text-sm prose-headings:font-semibold prose-headings:mt-2 prose-headings:mb-1 prose-p:text-gray-800 prose-p:my-1 prose-li:text-gray-800 prose-li:my-0.5 prose-ul:my-1 prose-ol:my-1">
-                        <ReactMarkdown>{suggestion.anchor_excerpt}</ReactMarkdown>
-                      </div>
-                    </div>
-                    <div className="rounded border border-emerald-200 bg-emerald-50/40 p-3 text-xs text-gray-800 max-w-full overflow-hidden">
-                      <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700 mb-1.5">
-                        Suggested replacement
-                      </p>
-                      <div className="prose prose-sm max-w-none break-words prose-headings:text-gray-900 prose-headings:text-sm prose-headings:font-semibold prose-headings:mt-2 prose-headings:mb-1 prose-p:text-gray-800 prose-p:my-1 prose-li:text-gray-800 prose-li:my-0.5 prose-ul:my-1 prose-ol:my-1">
-                        <ReactMarkdown>{suggestion.suggested_text}</ReactMarkdown>
-                      </div>
-                    </div>
-                  </div>
-                ) : suggestion.suggested_text ? (
-                  <div className="rounded border border-gray-200 bg-white p-3 text-xs text-gray-800 max-w-full overflow-hidden">
-                    <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 mb-1.5">
-                      Suggested prompt addition
-                    </p>
-                    <div className="prose prose-sm max-w-none break-words prose-headings:text-gray-900 prose-headings:text-sm prose-headings:font-semibold prose-headings:mt-2 prose-headings:mb-1 prose-p:text-gray-800 prose-p:my-1 prose-li:text-gray-800 prose-li:my-0.5 prose-ul:my-1 prose-ol:my-1">
-                      <ReactMarkdown>{suggestion.suggested_text}</ReactMarkdown>
-                    </div>
-                  </div>
-                ) : null}
-
                 {suggestion.rationale ? (
                   <p className="text-xs text-gray-500 break-words">{suggestion.rationale}</p>
                 ) : null}
+
+                <PromptLineDiff
+                  before={changeType === 'edit' ? suggestion.anchor_excerpt || '' : ''}
+                  after={
+                    suggestion.edited_text?.trim()
+                      ? suggestion.edited_text
+                      : suggestion.suggested_text
+                  }
+                />
+
+                {editingId === suggestion.id ? (
+                  <div className="space-y-2">
+                    <textarea
+                      value={draftText}
+                      onChange={(event) => setDraftText(event.target.value)}
+                      rows={6}
+                      className="w-full rounded border border-gray-300 px-2 py-1.5 text-xs font-mono text-gray-800"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        disabled={reviewMutation.isPending || !draftText.trim()}
+                        onClick={() =>
+                          reviewMutation.mutate({
+                            suggestion_id: suggestion.id,
+                            review_status: 'accepted',
+                            edited_text: draftText,
+                          })
+                        }
+                        className="rounded border border-emerald-300 bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-800 disabled:opacity-50"
+                      >
+                        Accept edited text
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingId(null)}
+                        className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span
+                      className={`text-[10px] uppercase tracking-wide font-semibold rounded border px-1.5 py-0.5 ${
+                        suggestion.review_status === 'accepted'
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          : suggestion.review_status === 'rejected'
+                            ? 'bg-rose-50 text-rose-700 border-rose-200'
+                            : 'bg-gray-100 text-gray-600 border-gray-200'
+                      }`}
+                    >
+                      {suggestion.review_status || 'pending'}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={reviewMutation.isPending}
+                      onClick={() =>
+                        reviewMutation.mutate({
+                          suggestion_id: suggestion.id,
+                          review_status: 'accepted',
+                        })
+                      }
+                      className="inline-flex items-center gap-1 rounded border border-emerald-300 bg-white px-2 py-1 text-xs font-medium text-emerald-800"
+                    >
+                      <Check className="h-3 w-3" />
+                      Accept this change
+                    </button>
+                    <button
+                      type="button"
+                      disabled={reviewMutation.isPending}
+                      onClick={() =>
+                        reviewMutation.mutate({
+                          suggestion_id: suggestion.id,
+                          review_status: 'rejected',
+                        })
+                      }
+                      className="inline-flex items-center gap-1 rounded border border-rose-300 bg-white px-2 py-1 text-xs font-medium text-rose-800"
+                    >
+                      <X className="h-3 w-3" />
+                      Reject this change
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingId(suggestion.id)
+                        setDraftText(
+                          suggestion.edited_text?.trim()
+                            ? suggestion.edited_text
+                            : suggestion.suggested_text,
+                        )
+                      }}
+                      className="inline-flex items-center gap-1 rounded border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-700"
+                    >
+                      <Pencil className="h-3 w-3" />
+                      Edit manually
+                    </button>
+                  </div>
+                )}
               </article>
             )
           })}
         </div>
       ) : improvementsState?.status === 'completed' ? (
         <p className="text-sm text-gray-500">No suggestions were produced for this run.</p>
+      ) : null}
+
+      {improvementsState?.suggestions?.length ? (
+        <div className="rounded-md border border-gray-200 bg-white p-3 space-y-3">
+          <label className="flex items-center justify-between gap-3 text-sm text-gray-800">
+            <span>Require review before push</span>
+            <input
+              type="checkbox"
+              checked={improvementsState.require_review !== false}
+              disabled={settingsMutation.isPending}
+              onChange={(event) => settingsMutation.mutate(event.target.checked)}
+            />
+          </label>
+          <p className="text-xs text-gray-500">
+            Accepted changes are applied to the imported agent prompt. Rejected changes stay out.
+            The live agent is updated only after the full diff and a typed confirm.
+          </p>
+          <button
+            type="button"
+            disabled={previewMutation.isPending}
+            onClick={() => previewMutation.mutate()}
+            className="rounded-md bg-gray-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+          >
+            {previewMutation.isPending ? 'Preparing diff…' : 'Review full prompt'}
+          </button>
+          {pushError ? <p className="text-xs text-red-600">{pushError}</p> : null}
+          {pushPreview ? (
+            <div className="space-y-2">
+              <p className="text-xs text-gray-700">
+                {pushPreview.external_agent_name
+                  ? `Target: ${pushPreview.provider || 'provider'} · ${pushPreview.external_agent_name}`
+                  : 'Target agent'}
+                {pushPreview.block_reason ? ` · ${pushPreview.block_reason}` : ''}
+              </p>
+              <PromptLineDiff before={pushPreview.base_prompt} after={pushPreview.composed_prompt} />
+              <label className="block text-xs text-gray-700">
+                Type confirm to push this prompt live
+                <input
+                  value={confirmText}
+                  onChange={(event) => setConfirmText(event.target.value)}
+                  autoComplete="off"
+                  className="mt-1 w-full max-w-xs rounded border border-gray-300 px-2 py-1.5 text-sm"
+                />
+              </label>
+              <button
+                type="button"
+                disabled={
+                  pushMutation.isPending ||
+                  !pushPreview.can_push ||
+                  confirmText !== 'confirm'
+                }
+                onClick={() => pushMutation.mutate()}
+                className="rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+              >
+                {pushMutation.isPending ? 'Pushing…' : 'Push live prompt'}
+              </button>
+            </div>
+          ) : null}
+        </div>
       ) : null}
     </section>
   )

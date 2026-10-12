@@ -50,7 +50,6 @@ from app.services.metric_failure_policy import (
     policy_has_failure_criteria,
 )
 from app.services.call_import_user_insights import (
-    _call_llm,
     _parse_json_object,
     _pick_transcript,
     compute_extraction_plan,
@@ -67,9 +66,14 @@ METRIC_CLUSTERS_CANCELLED_BY_USER_ERROR = (
 )
 ROW_TRANSCRIPT_CHAR_CAP = 3000
 RATIONALE_CHAR_CAP = 600
-EXTRACTION_MAX_TOKENS = 1800
-CLUSTER_SYNTHESIS_MAX_TOKENS = 2400
-DISCOVERY_MAX_TOKENS = 2000
+EXTRACTION_MAX_TOKENS = 8000
+CLUSTER_SYNTHESIS_MAX_TOKENS = 8000
+DISCOVERY_MAX_TOKENS = 6000
+CLUSTER_TOKEN_CEILING = 16000
+
+
+class ClusterOutputTruncated(RuntimeError):
+    """The cluster model hit max_tokens before the JSON finished."""
 
 MetricClusterProgressUpdate = Dict[str, Any]
 ProgressCallback = Callable[[MetricClusterProgressUpdate], None]
@@ -427,6 +431,57 @@ def _build_flagged_row_payload_from_source(
     }
 
 
+def _call_cluster_llm(
+    db: Session,
+    organization_id: UUID,
+    provider: ModelProvider,
+    model: str,
+    messages: List[Dict[str, str]],
+    *,
+    temperature: float,
+    max_tokens: int,
+) -> str:
+    """Call the cluster model and retry once when the JSON is cut off."""
+    from app.services.ai.llm_service import llm_service
+    from app.services.usage.context import get_usage_context, llm_usage_context
+
+    retry_budget = min(CLUSTER_TOKEN_CEILING, max(max_tokens * 2, 8000))
+    budgets = [max_tokens] if retry_budget <= max_tokens else [max_tokens, retry_budget]
+    effective_ctx = get_usage_context()
+    text = ""
+    for attempt, budget in enumerate(budgets):
+        def _run(token_budget: int = budget) -> Dict[str, Any]:
+            return llm_service.generate_response(
+                messages=messages,
+                llm_provider=provider,
+                llm_model=model,
+                organization_id=organization_id,
+                db=db,
+                temperature=temperature,
+                max_tokens=token_budget,
+            )
+
+        if effective_ctx is not None:
+            with llm_usage_context(effective_ctx):
+                result = _run()
+        else:
+            result = _run()
+        text = str(result.get("text") or "")
+        if not result.get("truncated"):
+            return text
+        if attempt < len(budgets) - 1:
+            logger.warning(
+                "Cluster LLM output truncated at max_tokens={} (model={}); retrying at {}.",
+                budget,
+                model,
+                budgets[attempt + 1],
+            )
+    raise ClusterOutputTruncated(
+        f"Model output was truncated at max_tokens={budgets[-1]} ({model}). "
+        "The cluster JSON did not finish. Retry with a different model."
+    )
+
+
 def _batch_rows(
     rows: Sequence[Dict[str, Any]],
     batch_size: int,
@@ -455,7 +510,7 @@ def _run_extraction(
         ensure_ascii=False,
         default=str,
     )
-    text = _call_llm(
+    text = _call_cluster_llm(
         db,
         organization_id,
         provider,
@@ -589,7 +644,7 @@ def _synthesize_metric_clusters(
         "signature_frequencies": signature_counts,
         "samples": list(sample_rows)[:30],
     }
-    text = _call_llm(
+    text = _call_cluster_llm(
         db,
         organization_id,
         provider,
@@ -715,7 +770,7 @@ def _run_discovery(
         "sample_failed_calls": list(sample_payloads)[:40],
         "total_flagged_calls": total_flagged,
     }
-    text = _call_llm(
+    text = _call_cluster_llm(
         db,
         organization_id,
         provider,
@@ -976,6 +1031,8 @@ def generate_metric_clusters_for_source_rows(
                     batch,
                 )
                 extractions.extend(extracted)
+            except ClusterOutputTruncated:
+                raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "Metric cluster extraction failed for {} / {}: {}",
@@ -1017,6 +1074,8 @@ def generate_metric_clusters_for_source_rows(
                 sample_rows=extractions,
                 flagged_count=flagged_count,
             )
+        except ClusterOutputTruncated:
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "Metric cluster synthesis failed for {} / {}: {}",
@@ -1067,6 +1126,8 @@ def generate_metric_clusters_for_source_rows(
             all_flagged_samples,
             total_flagged=max(total_flagged, 1),
         )
+    except ClusterOutputTruncated:
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.warning("Proactive discovery failed for job {}: {}", job_key, exc)
     completed_calls += 1

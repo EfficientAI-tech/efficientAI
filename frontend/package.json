@@ -24,6 +24,7 @@
     "country-flag-icons": "^1.6.15",
     "dagre": "^0.8.5",
     "date-fns": "^3.0.6",
+    "diff": "^9.0.0",
     "framer-motion": "^11.0.0",
     "livekit-client": "^2.17.0",
     "lucide-react": "^0.303.0",
@@ -39,6 +40,7 @@
   "devDependencies": {
     "@tailwindcss/typography": "^0.5.10",
     "@types/dagre": "^0.7.52",
+    "@types/diff": "^7.0.2",
     "@types/node": "^22.15.30",
     "@types/protobufjs": "^6.0.0",
     "@types/react": "^18.2.43",
