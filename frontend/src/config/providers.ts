@@ -262,13 +262,23 @@ export const TELEPHONY_PROVIDER_CONFIG: Record<TelephonyProvider, TelephonyProvi
   },
   [TelephonyProvider.TELNYX]: {
     label: 'Telnyx',
-    logo: null,
+    logo: '/telnyx-mark.png',
     description: 'Voice and SMS',
     fields: [
       { key: 'auth_id', label: 'Connection ID', required: true, type: 'text' },
       { key: 'auth_token', label: 'API Key', required: true, type: 'password' },
       { key: 'voice_app_id', label: 'Messaging profile ID', required: false, type: 'text' },
-      { key: 'verify_app_uuid', label: 'Webhook public key', required: false, type: 'password' },
+      { key: 'verify_app_uuid', label: 'Webhook public key (inbound SMS)', required: true, type: 'password' },
+    ],
+  },
+  [TelephonyProvider.META_WHATSAPP]: {
+    label: 'WhatsApp (Meta)',
+    logo: '/whatsapp.svg',
+    description: 'WhatsApp Cloud API for messaging evals',
+    fields: [
+      { key: 'auth_id', label: 'Phone number ID', required: true, type: 'text' },
+      { key: 'auth_token', label: 'Access token', required: true, type: 'password' },
+      { key: 'voice_app_id', label: 'WhatsApp Business Account ID (WABA)', required: true, type: 'text' },
     ],
   },
 }

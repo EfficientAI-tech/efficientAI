@@ -48,6 +48,16 @@ def resolve_trusted_hosts() -> List[str]:
     for entry in settings.TRUSTED_HOSTS_EXPLICIT or []:
         if entry and str(entry).strip():
             hosts.append(str(entry).strip())
+    for url in (
+        settings.TWILIO_WEBHOOK_BASE_URL,
+        settings.TELNYX_WEBHOOK_BASE_URL,
+        settings.META_WHATSAPP_WEBHOOK_BASE_URL,
+        settings.PLIVO_WEBHOOK_BASE_URL,
+        settings.VOBIZ_WEBHOOK_BASE_URL,
+    ):
+        hostname = _hostname_from_url(url)
+        if hostname:
+            hosts.append(hostname)
     return _dedupe_hosts(hosts)
 
 

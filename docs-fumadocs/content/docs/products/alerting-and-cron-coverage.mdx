@@ -1,0 +1,76 @@
+---
+id: alerting-and-cron-coverage
+title: Alerting & cron coverage
+sidebar_position: 7
+---
+
+# Alerting and cron coverage
+
+What org **Alerts** and **Cron Jobs** cover today, and what they do not.
+
+## Org alerts (threshold rules)
+
+Evaluated every **5 minutes** by Celery Beat (`evaluate_alerts`), per organization. Notifications: Slack webhook, email, PagerDuty routing keys. Optional lifecycle sync (IAM): ack/resolve with PagerDuty, Slack, and email when enabled.
+
+### Data sources and metrics
+
+| Category | Source | Metrics | Notes |
+|---|---|---|---|
+| Synthetic evaluations | `evaluations` | call count, duration, error rate, success rate, latency, custom | Error/success = evaluator result status. Latency uses **call duration**, not turn latency. Custom = **count** of results, not a named rubric metric. |
+| Production calls | `production_calls` | call count, duration, error rate, success rate | Webhook `call_recordings` only. Error/success from `call_event` values. No latency. |
+| Production traces | `production_traces` | call count, duration, error rate, success rate, latency | ClickHouse `call_traces` (production only). Latency from trace latency columns. Skipped if ClickHouse is disabled. |
+
+### Implemented extensions
+
+- **Silence / no traffic:** enable **Treat no call data as zero** on the alert. Use with call-count metrics (e.g. `number_of_calls` &lt; 1).
+- **Cron failures:** data source **Scheduled cron jobs**, metric **Failed cron jobs** (`failure_count`), threshold e.g. `> 0`. Counts active jobs with failed dispatch or failed last run.
+
+### Not covered by org alert rules
+
+- Billing, quotas, auth failures
+- API or worker health, queue depth, stuck imports
+- Webhook ingest errors (calls never stored → production rules see no data unless missing-as-zero is on)
+- Missed cron runs with no failure status (schedule drift)
+- LLM provider errors (unless reflected in eval/trace metrics you already alert on)
+- Metric Studio scores on a chosen metric (custom does not bind to a metric id today)
+
+### Suggested extension categories (future)
+
+1. **Volume** — call count, explicit no-data / silence
+2. **Reliability** — error/success rates, cron failure signals
+3. **Performance** — trace latency; rename or split eval “latency” from duration
+4. **Quality** — threshold on a specific evaluator metric score
+5. **Platform** — infra monitoring (Beat, Redis, workers); only “alert evaluator not running” might belong in-product
+
+**Recommended next product work:** volume silence + cron job failure alerting (highest customer leverage).
+
+---
+
+## Cron jobs (org UI)
+
+**Configurations → Cron Jobs** creates `evaluator_run` jobs only: schedule synthetic evaluator runs for your org.
+
+- Due jobs are picked up by Beat `dispatch_cron_jobs` (~30s).
+- Dispatch writes `last_dispatch_status` / `last_dispatch_error` on the job row.
+- Failed evaluator runs do **not** open alert incidents.
+
+Presets: daily/weekly, twice monthly (1st & 15th), every 14 days, **Run now**, max runs (`0` = unlimited).
+
+---
+
+## Platform schedule (not on Cron Jobs page)
+
+System tasks run from **Celery Beat** (single replica). They are not editable in the Cron Jobs UI.
+
+| Task | Typical cadence | Purpose |
+|---|---|---|
+| `evaluate_alerts` | every 5 min | org alert rules |
+| `dispatch_cron_jobs` | ~30s | org evaluator schedules |
+| `flush_usage_counters` | ~2 min | usage aggregation |
+| `refresh_fx_rates` | daily 06:00 UTC | FX rates |
+| `prune_oss_usage_history` | daily 03:00 UTC | retention |
+| `sweep_idle_traces` | 30s | trace lifecycle |
+| `sweep_orphan_s3_batches` | 15 min | S3 cleanup |
+| `sweep_staging_ingest` | hourly | only when ClickHouse is off |
+
+Failures on these tasks are for **operations monitoring** (logs/metrics), not org Alert history.

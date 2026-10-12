@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.models.database import Agent, Evaluator, EvaluatorResult, Persona, Scenario
 from app.services.agents.chat_connection import normalized_chat_connection_type
 from app.services.agents.chat_llm_config import resolve_simulation_llm
+from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
 from app.services.agents.chat_production_leg import (
     generate_production_chat_reply,
     uses_live_production_leg,
@@ -111,14 +112,30 @@ def _should_end_conversation(text: str, *, turn_index: int, min_turns: int = 2) 
     return bool(_THANKS_CLOSING_RE.search(stripped))
 
 
-def _caller_messages(system_prompt: str, transcript: list[dict[str, str]]) -> list[dict[str, str]]:
+_CUSTOMER_CHAT_TURN_NUDGE = (
+    "The company's agent sent the last message above. "
+    "Write the customer's next chat reply only (plain text, stay in character as the customer)."
+)
+
+
+def _caller_messages(
+    system_prompt: str,
+    transcript: list[dict[str, str]],
+    *,
+    chat: bool = False,
+) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     for entry in transcript:
         speaker = entry.get("speaker")
         text = (entry.get("text") or "").strip()
         if not text:
             continue
-        if speaker == "Speaker 1":
+        if chat:
+            if speaker == "Speaker 1":
+                messages.append({"role": "user", "content": text})
+            else:
+                messages.append({"role": "assistant", "content": text})
+        elif speaker == "Speaker 1":
             messages.append({"role": "assistant", "content": text})
         else:
             messages.append({"role": "user", "content": text})
@@ -126,9 +143,15 @@ def _caller_messages(system_prompt: str, transcript: list[dict[str, str]]) -> li
         messages.append(
             {
                 "role": "user",
-                "content": "The call has just connected. Start the conversation.",
+                "content": (
+                    "Start the conversation as the customer (one short message)."
+                    if chat
+                    else "The call has just connected. Start the conversation."
+                ),
             }
         )
+    elif chat:
+        messages.append({"role": "user", "content": _CUSTOMER_CHAT_TURN_NUDGE})
     return messages
 
 
@@ -315,7 +338,10 @@ def run_llm_to_llm_evaluator_simulation(
 
     try:
         while exchanges < max_turns:
-            if uses_live_production_leg(agent) and _production_turn_needs_user_seed(transcript):
+            if (
+                uses_live_production_leg(agent)
+                and _production_turn_needs_user_seed(transcript)
+            ):
                 transcript.append(
                     {
                         "speaker": "Speaker 1",
@@ -369,7 +395,7 @@ def run_llm_to_llm_evaluator_simulation(
             try:
                 with llm_usage_context(caller_ctx):
                     caller_text = _generate_turn(
-                        messages=_caller_messages(caller_system, transcript),
+                        messages=_caller_messages(caller_system, transcript, chat=chat_mode),
                         llm_provider=test_llm.provider,
                         llm_model=test_llm.model,
                         organization_id=organization_id,

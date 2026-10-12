@@ -12,6 +12,17 @@ from app.core.operational_access_middleware import _ip_in_trusted
 _HEALTH_PATHS = {"/health", "/health/ready"}
 
 
+def _external_webhook_path(path: str) -> bool:
+    prefix = (settings.API_V1_PREFIX or "/api/v1").rstrip("/")
+    normalized = _normalize_path(path)
+    webhook_prefixes = (
+        f"{prefix}/telephony/",
+        f"{prefix}/chat/messaging/meta/",
+        f"{prefix}/chat/messaging/twilio/",
+    )
+    return any(normalized.startswith(p) for p in webhook_prefixes)
+
+
 def _normalize_path(path: str) -> str:
     return path.rstrip("/") or "/"
 
@@ -43,7 +54,10 @@ def _matches_trusted_host(host: str, allowed_hosts: list[str]) -> bool:
 
 
 def is_host_allowed(request: Request, allowed_hosts: list[str]) -> bool:
-    if _normalize_path(request.url.path) in _HEALTH_PATHS:
+    path = _normalize_path(request.url.path)
+    if path in _HEALTH_PATHS:
+        return True
+    if _external_webhook_path(path):
         return True
 
     host = _parse_host(request)

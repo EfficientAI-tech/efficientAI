@@ -311,6 +311,22 @@ export interface LLMGatewaySettingsUpdate {
   clear_master_key?: boolean
 }
 
+export interface AlertingSyncSettings {
+  sync_notification_lifecycle: boolean
+  pagerduty_webhook_url: string | null
+  has_pagerduty_webhook_signing_secret: boolean
+  pagerduty_inbound_ready: boolean
+  confirmation_phrase_required: string
+}
+
+export interface AlertingSyncSettingsUpdate {
+  sync_notification_lifecycle: boolean
+  confirm_enable?: boolean
+  confirmation_phrase?: string
+  pagerduty_webhook_signing_secret?: string
+  clear_pagerduty_webhook_signing_secret?: boolean
+}
+
 export interface TelephonyIntegrationResponse {
   id: string
   organization_id: string
@@ -1308,8 +1324,20 @@ class ApiClient {
     public_base_url: string
     twilio_public_base_url?: string
     telnyx_public_base_url?: string
+    meta_whatsapp_inbound_webhook_url?: string
   }> {
     const response = await this.client.get('/api/v1/chat/messaging/public-base-url')
+    return response.data
+  }
+
+  async simulateAgentMetaWhatsappInbound(
+    agentId: string,
+    payload: { messaging_recipient: string; body?: string },
+  ): Promise<{ ok: boolean }> {
+    const response = await this.client.post(
+      `/api/v1/agents/${agentId}/chat-messaging/simulate-meta-whatsapp-inbound`,
+      payload,
+    )
     return response.data
   }
 
@@ -1329,6 +1357,43 @@ class ApiClient {
   }> {
     const response = await this.client.post(
       `/api/v1/agents/${agentId}/chat-messaging/test-twilio-sms`,
+      overrides ?? {},
+    )
+    return response.data
+  }
+
+  async testAgentMetaWhatsapp(
+    agentId: string,
+    overrides?: { messaging_recipient?: string },
+  ): Promise<{
+    ok: boolean
+    message_id: string
+    to: string
+    wa_id: string
+    template_sent: string
+  }> {
+    const response = await this.client.post(
+      `/api/v1/agents/${agentId}/chat-messaging/test-meta-whatsapp`,
+      overrides ?? {},
+    )
+    return response.data
+  }
+
+  async testAgentTelnyxSms(
+    agentId: string,
+    overrides?: {
+      messaging_recipient?: string
+      telnyx_from?: string
+    },
+  ): Promise<{
+    ok: boolean
+    message_id: string
+    to: string
+    from: string
+    body_sent: string
+  }> {
+    const response = await this.client.post(
+      `/api/v1/agents/${agentId}/chat-messaging/test-telnyx-sms`,
       overrides ?? {},
     )
     return response.data
@@ -1829,6 +1894,16 @@ class ApiClient {
 
   async updateLLMGatewaySettings(data: LLMGatewaySettingsUpdate): Promise<LLMGatewaySettings> {
     const response = await this.client.put('/api/v1/organizations/llm-gateway', data)
+    return response.data
+  }
+
+  async getAlertingSyncSettings(): Promise<AlertingSyncSettings> {
+    const response = await this.client.get('/api/v1/organizations/alerting-sync')
+    return response.data
+  }
+
+  async updateAlertingSyncSettings(data: AlertingSyncSettingsUpdate): Promise<AlertingSyncSettings> {
+    const response = await this.client.put('/api/v1/organizations/alerting-sync', data)
     return response.data
   }
 
@@ -5450,6 +5525,7 @@ class ApiClient {
   async createAlert(data: {
     name: string
     description?: string | null
+    data_source?: string
     metric_type: string
     aggregation: string
     operator: string
@@ -5459,6 +5535,7 @@ class ApiClient {
     notify_frequency: string
     notify_emails?: string[]
     notify_webhooks?: string[]
+    notify_pagerduty_routing_keys?: string[]
   }): Promise<any> {
     const response = await this.client.post('/api/v1/alerts', data)
     return response.data
@@ -5467,6 +5544,7 @@ class ApiClient {
   async updateAlert(alertId: string, data: {
     name?: string
     description?: string | null
+    data_source?: string
     metric_type?: string
     aggregation?: string
     operator?: string
@@ -5476,6 +5554,7 @@ class ApiClient {
     notify_frequency?: string
     notify_emails?: string[]
     notify_webhooks?: string[]
+    notify_pagerduty_routing_keys?: string[]
     status?: string
   }): Promise<any> {
     const response = await this.client.put(`/api/v1/alerts/${alertId}`, data)
@@ -5492,9 +5571,22 @@ class ApiClient {
   }
 
   // Alert History endpoints
-  async listAlertHistory(status?: string, alertId?: string, skip = 0, limit = 100): Promise<any[]> {
+  async getOpenIncidentSummary(): Promise<{ total: number; by_alert_id: Record<string, number> }> {
+    const response = await this.client.get('/api/v1/alerts/history/open-summary')
+    return response.data
+  }
+
+  async listAlertHistory(
+    status?: string,
+    alertId?: string,
+    skip = 0,
+    limit = 100,
+    openOnly = false
+  ): Promise<any[]> {
     const params: any = { skip, limit }
-    if (status) {
+    if (openOnly) {
+      params.open_only = true
+    } else if (status) {
       params.status_filter = status
     }
     if (alertId) {
@@ -5538,6 +5630,7 @@ class ApiClient {
   async testAlertNotification(alertId: string, data: {
     webhook_url?: string
     email?: string
+    pagerduty_routing_key?: string
   }): Promise<any> {
     const response = await this.client.post(`/api/v1/alerts/${alertId}/test-notification`, data)
     return response.data
@@ -5559,6 +5652,7 @@ class ApiClient {
     cron_expression: string
     timezone: string
     max_runs: number
+    interval_days?: number | null
     evaluator_ids: string[]
   }): Promise<any> {
     const response = await this.client.post('/api/v1/cron-jobs', data)
@@ -5570,6 +5664,7 @@ class ApiClient {
     cron_expression?: string
     timezone?: string
     max_runs?: number
+    interval_days?: number | null
     evaluator_ids?: string[]
     status?: string
   }): Promise<any> {
@@ -5583,6 +5678,11 @@ class ApiClient {
 
   async toggleCronJobStatus(cronJobId: string): Promise<any> {
     const response = await this.client.post(`/api/v1/cron-jobs/${cronJobId}/toggle`)
+    return response.data
+  }
+
+  async runCronJobNow(cronJobId: string): Promise<any> {
+    const response = await this.client.post(`/api/v1/cron-jobs/${cronJobId}/run`)
     return response.data
   }
 

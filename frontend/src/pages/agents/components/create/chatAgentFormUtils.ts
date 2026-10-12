@@ -32,6 +32,9 @@ export function chatConfigFromAgent(agent: TestAgent): ChatConnectionConfigForm 
     messagingSyncReplyUrl: String(cfg.messaging_sync_reply_url || cfg.sync_reply_url || ''),
     metaWhatsappPhoneNumberId: String(cfg.meta_whatsapp_phone_number_id || ''),
     metaWhatsappAccessToken: String(cfg.meta_whatsapp_access_token || ''),
+    metaWhatsappOpeningTemplate: String(cfg.meta_whatsapp_opening_template || ''),
+    metaWhatsappTemplateLanguage: String(cfg.meta_whatsapp_template_language || 'en_US'),
+    metaWhatsappProdMode: String(cfg.meta_whatsapp_prod_mode || ''),
     twilioAccountSid: String(cfg.twilio_account_sid || ''),
     twilioAuthToken: String(cfg.twilio_auth_token || ''),
     twilioFrom: String(cfg.twilio_from || ''),
@@ -39,7 +42,10 @@ export function chatConfigFromAgent(agent: TestAgent): ChatConnectionConfigForm 
     websocketAuthHeader: String(cfg.websocket_auth_header || 'Authorization'),
     websocketAuthValue: String(cfg.websocket_auth_value || ''),
     messagingTelephonyIntegrationId: String(
-      cfg.messaging_telephony_integration_id || cfg.messaging_integration_id || '',
+      cfg.messaging_telephony_integration_id ||
+        (cfg.messaging_channel === 'whatsapp' ? cfg.messaging_integration_id : '') ||
+        cfg.messaging_integration_id ||
+        '',
     ),
     twilioInboundWebhookToken: String(cfg.twilio_inbound_webhook_token || ''),
     twilioSmsTrialBodyTemplate: String(
@@ -81,8 +87,8 @@ export function buildChatConnectionConfigPayload(
   if (connectionType === 'messaging_channels') {
     return {
       messaging_channel: config.messagingChannel || 'sms',
-      ...(config.messagingTelephonyIntegrationId
-        ? { messaging_telephony_integration_id: config.messagingTelephonyIntegrationId }
+      ...(config.messagingTelephonyIntegrationId.trim()
+        ? { messaging_telephony_integration_id: config.messagingTelephonyIntegrationId.trim() }
         : {}),
       ...(config.messagingIntegrationId
         ? { messaging_integration_id: config.messagingIntegrationId }
@@ -96,13 +102,25 @@ export function buildChatConnectionConfigPayload(
       ...(config.messagingSyncReplyUrl.trim()
         ? { messaging_sync_reply_url: config.messagingSyncReplyUrl.trim() }
         : {}),
-      ...(config.metaWhatsappPhoneNumberId.trim()
+      ...(!config.messagingTelephonyIntegrationId.trim() &&
+      config.metaWhatsappPhoneNumberId.trim()
         ? { meta_whatsapp_phone_number_id: config.metaWhatsappPhoneNumberId.trim() }
         : {}),
-      ...(() => {
-        const token = chatSecretForPayload(config.metaWhatsappAccessToken)
-        return token ? { meta_whatsapp_access_token: token } : {}
-      })(),
+      ...(!config.messagingTelephonyIntegrationId.trim()
+        ? (() => {
+            const token = chatSecretForPayload(config.metaWhatsappAccessToken)
+            return token ? { meta_whatsapp_access_token: token } : {}
+          })()
+        : {}),
+      ...(config.metaWhatsappOpeningTemplate.trim()
+        ? { meta_whatsapp_opening_template: config.metaWhatsappOpeningTemplate.trim() }
+        : {}),
+      ...(config.metaWhatsappTemplateLanguage.trim()
+        ? { meta_whatsapp_template_language: config.metaWhatsappTemplateLanguage.trim() }
+        : {}),
+      ...(config.metaWhatsappProdMode.trim()
+        ? { meta_whatsapp_prod_mode: config.metaWhatsappProdMode.trim() }
+        : {}),
       ...(config.twilioAccountSid.trim()
         ? { twilio_account_sid: config.twilioAccountSid.trim() }
         : {}),

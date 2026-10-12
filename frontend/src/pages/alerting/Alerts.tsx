@@ -1,10 +1,19 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
 import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
-import { Plus, Trash2, X, Bell, Mail, Globe, Zap, CheckCircle, AlertTriangle } from 'lucide-react'
+import { Plus, Trash2, X, Bell, Zap, CheckCircle, AlertTriangle, Search, Mail, Globe } from 'lucide-react'
+import { DATA_SOURCES, metricTypesForDataSource } from './alertFormConstants'
+import AlertingPageShell from './AlertingPageShell'
+import StatCard from './StatCard'
+import {
+  countNotificationChannels,
+  formatAlertCondition,
+  invalidateAlertHistoryQueries,
+  OPEN_INCIDENT_SUMMARY_QUERY_KEY,
+} from './alertUiUtils'
 
 // Types
 interface Alert {
@@ -17,6 +26,8 @@ interface Alert {
   operator: string
   threshold_value: number
   time_window_minutes: number
+  alert_on_missing_data?: boolean
+  data_source?: string
   agent_ids?: string[]
   notify_frequency: string
   notify_emails?: string[]
@@ -31,15 +42,6 @@ interface Agent {
   name: string
   agent_id?: string
 }
-
-const METRIC_TYPES = [
-  { value: 'number_of_calls', label: 'Number of Calls' },
-  { value: 'call_duration', label: 'Call Duration' },
-  { value: 'error_rate', label: 'Error Rate' },
-  { value: 'success_rate', label: 'Success Rate' },
-  { value: 'latency', label: 'Latency' },
-  { value: 'custom', label: 'Custom' },
-]
 
 const AGGREGATIONS = [
   { value: 'sum', label: 'Sum' },
@@ -74,15 +76,18 @@ export default function Alerts() {
   const [formData, setFormData] = useState({
     name: '',
     description: '',
+    data_source: 'evaluations',
     metric_type: 'number_of_calls',
     aggregation: 'sum',
     operator: '>',
     threshold_value: 100,
     time_window_minutes: 60,
+    alert_on_missing_data: false,
     agent_ids: [] as string[],
     notify_frequency: 'immediate',
     notify_emails: [''],
     notify_webhooks: [''],
+    notify_pagerduty_routing_keys: [''],
   })
 
   // Fetch alerts
@@ -124,6 +129,33 @@ export default function Alerts() {
   })
 
   const navigate = useNavigate()
+  const [searchQuery, setSearchQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
+
+  const { data: openSummary } = useQuery({
+    queryKey: OPEN_INCIDENT_SUMMARY_QUERY_KEY,
+    queryFn: () => apiClient.getOpenIncidentSummary(),
+  })
+
+  const openIncidentCount = openSummary?.total ?? 0
+  const openByAlertId = openSummary?.by_alert_id ?? {}
+
+  const filteredAlerts = useMemo(() => {
+    let list = alerts as Alert[]
+    if (statusFilter) {
+      list = list.filter(a => a.status === statusFilter)
+    }
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase()
+      list = list.filter(
+        a =>
+          a.name.toLowerCase().includes(q) ||
+          (a.description || '').toLowerCase().includes(q) ||
+          formatAlertCondition(a).toLowerCase().includes(q)
+      )
+    }
+    return list
+  }, [alerts, statusFilter, searchQuery])
 
   const [evaluatingAll, setEvaluatingAll] = useState(false)
   const [evaluateAllResult, setEvaluateAllResult] = useState<any | null>(null)
@@ -135,7 +167,7 @@ export default function Alerts() {
       const result = await apiClient.evaluateAllAlerts()
       setEvaluateAllResult(result)
       queryClient.invalidateQueries({ queryKey: ['alerts'] })
-      queryClient.invalidateQueries({ queryKey: ['alertHistory'] })
+      await invalidateAlertHistoryQueries(queryClient)
     } catch {
       setEvaluateAllResult({ error: 'Failed to evaluate alerts' })
     } finally {
@@ -147,15 +179,18 @@ export default function Alerts() {
     setFormData({
       name: '',
       description: '',
+      data_source: 'evaluations',
       metric_type: 'number_of_calls',
       aggregation: 'sum',
       operator: '>',
       threshold_value: 100,
       time_window_minutes: 60,
+      alert_on_missing_data: false,
       agent_ids: [],
       notify_frequency: 'immediate',
       notify_emails: [''],
       notify_webhooks: [''],
+      notify_pagerduty_routing_keys: [''],
     })
   }
 
@@ -174,15 +209,18 @@ export default function Alerts() {
     const payload = {
       name: formData.name,
       description: formData.description || null,
+      data_source: formData.data_source,
       metric_type: formData.metric_type,
       aggregation: formData.aggregation,
       operator: formData.operator,
       threshold_value: formData.threshold_value,
       time_window_minutes: formData.time_window_minutes,
+      alert_on_missing_data: formData.alert_on_missing_data,
       agent_ids: formData.agent_ids.length > 0 ? formData.agent_ids : null,
       notify_frequency: formData.notify_frequency,
       notify_emails: formData.notify_emails.filter(e => e.trim()),
       notify_webhooks: formData.notify_webhooks.filter(w => w.trim()),
+      notify_pagerduty_routing_keys: formData.notify_pagerduty_routing_keys.filter(k => k.trim()),
     }
 
     if (editingAlert) {
@@ -238,6 +276,29 @@ export default function Alerts() {
     setFormData({ ...formData, notify_webhooks: webhooks })
   }
 
+  const addPagerDutyKey = () => {
+    setFormData({
+      ...formData,
+      notify_pagerduty_routing_keys: [...formData.notify_pagerduty_routing_keys, ''],
+    })
+  }
+
+  const removePagerDutyKey = (index: number) => {
+    const keys = formData.notify_pagerduty_routing_keys.filter((_, i) => i !== index)
+    setFormData({
+      ...formData,
+      notify_pagerduty_routing_keys: keys.length ? keys : [''],
+    })
+  }
+
+  const updatePagerDutyKey = (index: number, value: string) => {
+    const keys = [...formData.notify_pagerduty_routing_keys]
+    keys[index] = value
+    setFormData({ ...formData, notify_pagerduty_routing_keys: keys })
+  }
+
+  const metricTypeOptions = metricTypesForDataSource(formData.data_source)
+
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'active':
@@ -251,42 +312,47 @@ export default function Alerts() {
     }
   }
 
-  const formatCondition = (alertItem: Alert) => {
-    const metric = METRIC_TYPES.find(m => m.value === alertItem.metric_type)?.label || alertItem.metric_type
-    const agg = AGGREGATIONS.find(a => a.value === alertItem.aggregation)?.label || alertItem.aggregation
-    return `${agg} of ${metric} ${alertItem.operator} ${alertItem.threshold_value}`
-  }
+  const activeCount = (alerts as Alert[]).filter(a => a.status === 'active').length
+  const pausedCount = (alerts as Alert[]).filter(a => a.status === 'paused').length
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">Alerts</h1>
-          <p className="mt-2 text-sm text-gray-600">
-            Configure monitoring alerts for your voice AI agents
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <Button
-            variant="secondary"
-            onClick={handleEvaluateAll}
-            isLoading={evaluatingAll}
-            leftIcon={<Zap className="w-4 h-4" />}
-          >
-            Evaluate All
-          </Button>
-          <Button
-            variant="primary"
-            onClick={() => {
-              resetForm()
-              setEditingAlert(null)
-              setShowCreateModal(true)
-            }}
-            leftIcon={<Plus className="w-4 h-4" />}
-          >
-            Create Alert
-          </Button>
-        </div>
+      <AlertingPageShell
+        title="Alerts"
+        actions={
+          <>
+            <Button
+              variant="secondary"
+              onClick={handleEvaluateAll}
+              isLoading={evaluatingAll}
+              leftIcon={<Zap className="w-4 h-4" />}
+            >
+              Evaluate all
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => {
+                resetForm()
+                setEditingAlert(null)
+                setShowCreateModal(true)
+              }}
+              leftIcon={<Plus className="w-4 h-4" />}
+            >
+              New rule
+            </Button>
+          </>
+        }
+      />
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <StatCard label="Active" value={activeCount} tone="success" />
+        <StatCard label="Paused" value={pausedCount} />
+        <StatCard
+          label="Open"
+          value={openIncidentCount}
+          tone={openIncidentCount > 0 ? 'warning' : 'default'}
+        />
+        <StatCard label="Total" value={(alerts as Alert[]).length} />
       </div>
 
       {/* Evaluate All Result Banner */}
@@ -333,23 +399,41 @@ export default function Alerts() {
         </div>
       )}
 
-      {/* Alerts Table */}
-      <div className="bg-white shadow-sm rounded-xl border border-gray-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-200 bg-gradient-to-r from-gray-50 to-white">
-          <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-            <Bell className="w-5 h-5 text-gray-500" />
-            Alert Configurations
-          </h2>
+      <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
+        <div className="relative flex-1 max-w-md">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <input
+            type="search"
+            placeholder="Search rules…"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            className="w-full pl-9 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-900 focus:border-transparent"
+          />
         </div>
+        <select
+          value={statusFilter}
+          onChange={e => setStatusFilter(e.target.value)}
+          className="px-3 py-2 text-sm border border-gray-300 rounded-lg"
+        >
+          <option value="">All statuses</option>
+          <option value="active">Active</option>
+          <option value="paused">Paused</option>
+          <option value="disabled">Disabled</option>
+        </select>
+      </div>
+
+      <div className="bg-white shadow-sm rounded-xl border border-gray-200 overflow-hidden">
         {isLoading ? (
           <div className="p-12 text-center text-gray-500">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900 mx-auto mb-4"></div>
             Loading alerts...
           </div>
-        ) : alerts.length === 0 ? (
+        ) : filteredAlerts.length === 0 ? (
           <div className="p-12 text-center">
             <Bell className="w-12 h-12 text-gray-300 mx-auto mb-4" />
-            <p className="text-gray-500 mb-4">No alerts configured yet</p>
+            <p className="text-gray-500 mb-4">
+              {alerts.length === 0 ? 'No alerts configured yet' : 'No rules match your filters'}
+            </p>
             <Button
               variant="primary"
               onClick={() => setShowCreateModal(true)}
@@ -376,6 +460,9 @@ export default function Alerts() {
                     Notifications
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Incident
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Status
                   </th>
                   <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -384,7 +471,10 @@ export default function Alerts() {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {alerts.map((alertItem: Alert) => (
+                {filteredAlerts.map((alertItem: Alert) => {
+                  const channels = countNotificationChannels(alertItem)
+                  const open = openByAlertId[alertItem.id] || 0
+                  return (
                   <tr
                     key={alertItem.id}
                     className="hover:bg-gray-50 transition-colors cursor-pointer"
@@ -397,28 +487,42 @@ export default function Alerts() {
                       )}
                     </td>
                     <td className="px-6 py-4">
-                      <div className="text-sm text-gray-700 font-mono bg-gray-100 px-2 py-1 rounded">
-                        {formatCondition(alertItem)}
+                      <div className="text-sm text-gray-700 font-mono bg-gray-100 px-2 py-1 rounded inline-block">
+                        {formatAlertCondition(alertItem)}
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm text-gray-700">{alertItem.time_window_minutes} min</div>
                     </td>
                     <td className="px-6 py-4">
-                      <div className="flex items-center gap-2">
-                        {alertItem.notify_emails && alertItem.notify_emails.length > 0 && (
-                          <span className="flex items-center gap-1 text-xs text-gray-600">
-                            <Mail className="w-3 h-3" />
-                            {alertItem.notify_emails.length}
-                          </span>
-                        )}
-                        {alertItem.notify_webhooks && alertItem.notify_webhooks.length > 0 && (
-                          <span className="flex items-center gap-1 text-xs text-gray-600">
-                            <Globe className="w-3 h-3" />
-                            {alertItem.notify_webhooks.length}
-                          </span>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {channels.total === 0 ? (
+                          <span className="text-xs text-amber-700 bg-amber-50 px-2 py-0.5 rounded">No channels</span>
+                        ) : (
+                          <>
+                            {channels.slack > 0 && (
+                              <span className="text-xs bg-gray-100 px-2 py-0.5 rounded" title="Slack webhooks">
+                                Slack ×{channels.slack}
+                              </span>
+                            )}
+                            {channels.email > 0 && (
+                              <span className="text-xs bg-gray-100 px-2 py-0.5 rounded">Email ×{channels.email}</span>
+                            )}
+                            {channels.pagerduty > 0 && (
+                              <span className="text-xs bg-gray-100 px-2 py-0.5 rounded">PD ×{channels.pagerduty}</span>
+                            )}
+                          </>
                         )}
                       </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      {open > 0 ? (
+                        <span className="text-xs font-medium text-amber-800 bg-amber-100 px-2 py-1 rounded-full">
+                          {open} open
+                        </span>
+                      ) : (
+                        <span className="text-xs text-gray-400">—</span>
+                      )}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       {getStatusBadge(alertItem.status)}
@@ -436,7 +540,8 @@ export default function Alerts() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -499,6 +604,31 @@ export default function Alerts() {
                 {/* Metric Condition */}
                 <div className="space-y-4">
                   <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">Metric Condition</h3>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Data source</label>
+                    <select
+                      value={formData.data_source}
+                      onChange={(e) => {
+                        const nextSource = e.target.value
+                        const allowed = metricTypesForDataSource(nextSource)
+                        const nextMetric = allowed.some(m => m.value === formData.metric_type)
+                          ? formData.metric_type
+                          : allowed[0]?.value || 'number_of_calls'
+                        setFormData({
+                          ...formData,
+                          data_source: nextSource,
+                          metric_type: nextMetric,
+                          alert_on_missing_data:
+                            nextSource === 'cron_jobs' ? false : formData.alert_on_missing_data,
+                        })
+                      }}
+                      className="w-full md:w-96 px-4 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
+                    >
+                      {DATA_SOURCES.map(s => (
+                        <option key={s.value} value={s.value}>{s.label}</option>
+                      ))}
+                    </select>
+                  </div>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -509,7 +639,7 @@ export default function Alerts() {
                         onChange={(e) => setFormData({ ...formData, metric_type: e.target.value })}
                         className="w-full px-4 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
                       >
-                        {METRIC_TYPES.map(m => (
+                        {metricTypeOptions.map(m => (
                           <option key={m.value} value={m.value}>{m.label}</option>
                         ))}
                       </select>
@@ -566,9 +696,23 @@ export default function Alerts() {
                       className="w-full md:w-48 px-4 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
                     />
                   </div>
+                  {formData.data_source !== 'cron_jobs' && (
+                    <label className="flex items-center gap-2 text-sm text-gray-700">
+                      <input
+                        type="checkbox"
+                        checked={formData.alert_on_missing_data}
+                        onChange={e =>
+                          setFormData({ ...formData, alert_on_missing_data: e.target.checked })
+                        }
+                        className="rounded border-gray-300"
+                      />
+                      Treat no call data as zero (silence / no traffic)
+                    </label>
+                  )}
                 </div>
 
                 {/* Agent Selection */}
+                {formData.data_source !== 'cron_jobs' && (
                 <div className="space-y-4">
                   <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">Agent Selection</h3>
                   <div>
@@ -612,6 +756,7 @@ export default function Alerts() {
                     </div>
                   </div>
                 </div>
+                )}
 
                 {/* Notification Settings */}
                 <div className="space-y-4">
@@ -671,7 +816,7 @@ export default function Alerts() {
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
                       <Globe className="w-4 h-4 inline mr-2" />
-                      Webhook Notifications (Slack, etc.)
+                      Slack webhooks
                     </label>
                     <div className="space-y-2">
                       {formData.notify_webhooks.map((webhook, index) => (
@@ -698,6 +843,39 @@ export default function Alerts() {
                         className="text-sm text-gray-600 hover:text-gray-900 font-medium"
                       >
                         + Add another webhook
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      PagerDuty routing keys
+                    </label>
+                    <div className="space-y-2">
+                      {formData.notify_pagerduty_routing_keys.map((key, index) => (
+                        <div key={index} className="flex gap-2">
+                          <input
+                            type="password"
+                            value={key}
+                            onChange={(e) => updatePagerDutyKey(index, e.target.value)}
+                            placeholder="Events API v2 integration key"
+                            className="flex-1 px-4 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => removePagerDutyKey(index)}
+                            className="p-3 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                          >
+                            <X className="w-5 h-5" />
+                          </button>
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={addPagerDutyKey}
+                        className="text-sm text-gray-600 hover:text-gray-900 font-medium"
+                      >
+                        + Add PagerDuty key
                       </button>
                     </div>
                   </div>

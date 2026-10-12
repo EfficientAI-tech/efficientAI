@@ -77,6 +77,74 @@ def _twilio_api_error_detail(response: httpx.Response) -> str:
     return text[:400] if text else f"HTTP {response.status_code}"
 
 
+def _meta_whatsapp_error_hint(code: Any) -> str:
+    try:
+        n = int(code)
+    except (TypeError, ValueError):
+        return ""
+    hints = {
+        131030: (
+            " Add the recipient under Meta Developer Console → WhatsApp → API setup → "
+            "“To” phone numbers (required in dev/test mode)."
+        ),
+        131047: (
+            " Business-initiated chats need an approved template — set "
+            "meta_whatsapp_opening_template on the agent (e.g. hello_world)."
+        ),
+        131026: " Check the recipient is a valid WhatsApp number in E.164 format.",
+        100: " Check phone number ID, access token, and recipient format.",
+        190: " Access token expired or invalid — refresh the token in agent settings.",
+    }
+    return hints.get(n, "")
+
+
+def _meta_graph_api_error_detail(response: httpx.Response) -> str:
+    try:
+        data = response.json()
+        if isinstance(data, dict) and isinstance(data.get("error"), dict):
+            err = data["error"]
+            code = err.get("code")
+            message = (err.get("message") or err.get("error_user_msg") or "").strip()
+            hint = _meta_whatsapp_error_hint(code)
+            if code is not None and message:
+                return f"Meta WhatsApp {code}: {message}{hint}"
+            if message:
+                return f"Meta WhatsApp: {message}{hint}"
+    except Exception:
+        pass
+    text = (response.text or "").strip()
+    return text[:500] if text else f"HTTP {response.status_code}"
+
+
+def _normalize_whatsapp_to(value: str) -> str:
+    try:
+        return normalize_e164(value.strip()).lstrip("+")
+    except ValueError:
+        return value.strip().lstrip("+").replace(" ", "")
+
+
+def _meta_whatsapp_text_payload(to_digits: str, body: str) -> dict[str, Any]:
+    return {
+        "messaging_product": "whatsapp",
+        "to": to_digits,
+        "type": "text",
+        "text": {"body": (body or "").strip()[:4096]},
+    }
+
+
+def _meta_whatsapp_outbound_payload(cfg: dict[str, Any], to_digits: str, user_text: str) -> dict[str, Any]:
+    template = (
+        _cfg_str(cfg, "meta_whatsapp_opening_template", "whatsapp_opening_template") or "hello_world"
+    )
+    lang = _cfg_str(cfg, "meta_whatsapp_template_language", "whatsapp_template_language") or "en_US"
+    return {
+        "messaging_product": "whatsapp",
+        "to": to_digits,
+        "type": "template",
+        "template": {"name": template, "language": {"code": lang}},
+    }
+
+
 def _send_plivo_sms(
     integration: TelephonyIntegration,
     *,
@@ -101,22 +169,263 @@ def _send_meta_whatsapp(
     access_token: str,
     to: str,
     body: str,
-) -> None:
-    to_digits = to.lstrip("+").replace(" ", "")
+    cfg: Optional[dict[str, Any]] = None,
+) -> dict[str, str]:
+    to_digits = _normalize_whatsapp_to(to)
+    if len(to_digits) < 8:
+        raise ValueError(f"Invalid WhatsApp recipient: {to!r}")
     url = f"https://graph.facebook.com/v21.0/{phone_number_id}/messages"
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to_digits,
-        "type": "text",
-        "text": {"body": body},
-    }
+    payload = _meta_whatsapp_outbound_payload(cfg or {}, to_digits, body)
     with httpx.Client(timeout=60.0) as client:
         resp = client.post(
             url,
             headers={"Authorization": f"Bearer {access_token}"},
             json=payload,
         )
-        resp.raise_for_status()
+        if resp.is_error:
+            detail = _meta_graph_api_error_detail(resp)
+            raise httpx.HTTPStatusError(
+                detail,
+                request=resp.request,
+                response=resp,
+            )
+        data = resp.json() if resp.content else {}
+        messages = data.get("messages") if isinstance(data, dict) else None
+        if not isinstance(messages, list) or not messages:
+            raise ValueError(f"Meta WhatsApp accepted request but returned no message id: {data!r}")
+        msg_id = str((messages[0] or {}).get("id") or "").strip()
+        contacts = data.get("contacts") if isinstance(data, dict) else None
+        wa_id = ""
+        if isinstance(contacts, list) and contacts:
+            wa_id = str((contacts[0] or {}).get("wa_id") or "").strip()
+        if not wa_id:
+            logger.warning(
+                "[MessagingChat] Meta WhatsApp send to={} returned no wa_id (not a WhatsApp user?)",
+                to_digits,
+            )
+        template_name = (payload.get("template") or {}).get("name") if isinstance(payload.get("template"), dict) else ""
+        logger.info(
+            "[MessagingChat] Meta WhatsApp sent template={} to={} wa_id={} wamid={}",
+            template_name,
+            to_digits,
+            wa_id or "?",
+            msg_id,
+        )
+        return {
+            "message_id": msg_id,
+            "to": to_digits,
+            "wa_id": wa_id,
+            "template_sent": template_name or "",
+        }
+
+
+def _send_meta_whatsapp_text(
+    *,
+    phone_number_id: str,
+    access_token: str,
+    to: str,
+    body: str,
+) -> dict[str, str]:
+    to_digits = _normalize_whatsapp_to(to)
+    text = (body or "").strip()
+    if len(to_digits) < 8:
+        raise ValueError(f"Invalid WhatsApp recipient: {to!r}")
+    if not text:
+        raise ValueError("WhatsApp text body is empty")
+    url = f"https://graph.facebook.com/v21.0/{phone_number_id}/messages"
+    payload = _meta_whatsapp_text_payload(to_digits, text)
+    with httpx.Client(timeout=60.0) as client:
+        resp = client.post(
+            url,
+            headers={"Authorization": f"Bearer {access_token}"},
+            json=payload,
+        )
+        if resp.is_error:
+            detail = _meta_graph_api_error_detail(resp)
+            raise httpx.HTTPStatusError(detail, request=resp.request, response=resp)
+        data = resp.json() if resp.content else {}
+        messages = data.get("messages") if isinstance(data, dict) else None
+        if not isinstance(messages, list) or not messages:
+            raise ValueError(f"Meta WhatsApp text send returned no message id: {data!r}")
+        msg_id = str((messages[0] or {}).get("id") or "").strip()
+        logger.info(
+            "[MessagingChat] Meta WhatsApp sent text to={} wamid={} body_len={}",
+            to_digits,
+            msg_id,
+            len(text),
+        )
+        return {"message_id": msg_id, "to": to_digits}
+
+
+def _effective_messaging_provider(
+    cfg: dict[str, Any],
+    db: Session | None = None,
+    organization_id: UUID | None = None,
+) -> str:
+    provider = _cfg_str(cfg, "messaging_provider", "messaging_telephony_provider").lower()
+    if provider:
+        return provider
+    if db is not None and organization_id is not None:
+        telephony_id = cfg.get("messaging_telephony_integration_id") or cfg.get(
+            "messaging_integration_id"
+        )
+        telephony = _resolve_telephony_integration(
+            db, organization_id=organization_id, integration_id_raw=telephony_id
+        )
+        if telephony:
+            return telephony.provider.lower()
+    return ""
+
+
+def is_meta_whatsapp_live_cfg(
+    cfg: dict[str, Any],
+    db: Session | None = None,
+    organization_id: UUID | None = None,
+) -> bool:
+    channel = (_cfg_str(cfg, "messaging_channel").lower() or "sms")
+    if channel != "whatsapp":
+        return False
+    provider = _effective_messaging_provider(cfg, db=db, organization_id=organization_id)
+    if provider in ("twilio", "telnyx", "plivo"):
+        return False
+    if provider in ("meta_whatsapp", "meta"):
+        return True
+    if _cfg_str(cfg, "meta_whatsapp_phone_number_id", "whatsapp_phone_number_id"):
+        return True
+    if _cfg_str(cfg, "meta_whatsapp_access_token", "whatsapp_access_token"):
+        return True
+    return False
+
+
+def meta_whatsapp_prod_mode(cfg: dict[str, Any]) -> str:
+    """manual_inbound: Recipient plays prod (reply on WhatsApp). simulated_llm: internal prod LLM sends replies."""
+    raw = _cfg_str(cfg, "meta_whatsapp_prod_mode", "whatsapp_prod_mode").lower()
+    if raw in ("simulated_llm", "sim_llm", "llm", "sim"):
+        return "simulated_llm"
+    return "manual_inbound"
+
+
+def run_meta_whatsapp_live_production_turn(
+    db: Session,
+    *,
+    organization_id: UUID,
+    cfg: dict[str, Any],
+    transcript: list[dict[str, str]],
+    agent_id: Optional[UUID],
+    generate_agent_reply,
+) -> tuple[str, str]:
+    """Test-agent customer is in transcript; prod is manual inbound on Recipient or simulated LLM."""
+    from app.services.agents.chat_messaging_turn_wait import (
+        abandon_messaging_sms_turn,
+        register_messaging_sms_turn,
+        wait_messaging_sms_reply_or_raise,
+    )
+    from app.services.telephony.meta_whatsapp_webhook_setup import (
+        ensure_meta_whatsapp_webhook_delivery,
+    )
+
+    recipient = _normalize_whatsapp_to(
+        _cfg_str(cfg, "messaging_recipient", "messaging_test_recipient")
+    )
+    if not recipient:
+        return None, "messaging_skip_no_recipient"
+
+    user_text = _last_user_text(transcript)
+    if not user_text:
+        return None, "messaging_skip_no_user_text"
+
+    meta_phone_id, meta_token = _resolve_messaging_meta_whatsapp_context(
+        db,
+        organization_id=organization_id,
+        cfg=cfg,
+    )
+    if not meta_phone_id or not meta_token:
+        return None, "messaging_meta_whatsapp_missing_credentials"
+
+    ensure_meta_whatsapp_webhook_delivery(
+        db,
+        organization_id=organization_id,
+        cfg=cfg,
+        access_token=meta_token,
+    )
+
+    mode = meta_whatsapp_prod_mode(cfg)
+    agent_turns = sum(
+        1 for t in transcript if (t.get("speaker") or "").strip() == "Speaker 2"
+    )
+    turn_agent_id = agent_id or organization_id
+    turn_id = None
+    if mode == "manual_inbound":
+        turn_id = register_messaging_sms_turn(
+            agent_id=turn_agent_id,
+            twilio_from=meta_phone_id,
+            messaging_recipient=recipient,
+            ttl_secs=120,
+        )
+        if not turn_id:
+            return None, "messaging_whatsapp_concurrent_turn"
+
+    if agent_turns == 0:
+        try:
+            _send_meta_whatsapp(
+                phone_number_id=meta_phone_id,
+                access_token=meta_token,
+                to=recipient,
+                body="",
+                cfg=cfg,
+            )
+        except Exception as exc:
+            logger.warning("[MessagingChat] Meta WhatsApp opening template skipped: {}", exc)
+
+    if mode == "manual_inbound":
+        try:
+            _send_meta_whatsapp_text(
+                phone_number_id=meta_phone_id,
+                access_token=meta_token,
+                to=recipient,
+                body=user_text[:4096],
+            )
+        except Exception as exc:
+            if turn_id:
+                abandon_messaging_sms_turn(
+                    agent_id=turn_agent_id,
+                    twilio_from=meta_phone_id,
+                    messaging_recipient=recipient,
+                    turn_id=turn_id,
+                )
+            logger.warning("[MessagingChat] Meta WhatsApp customer line send failed: {}", exc)
+            return None, f"messaging_meta_whatsapp_customer_send_failed:{exc}"
+
+        try:
+            inbound = wait_messaging_sms_reply_or_raise(turn_id, timeout_secs=120)
+        except RuntimeError as exc:
+            return None, f"messaging_turn_wait_failed:{exc}"
+        if not inbound:
+            abandon_messaging_sms_turn(
+                agent_id=turn_agent_id,
+                twilio_from=meta_phone_id,
+                messaging_recipient=recipient,
+                turn_id=turn_id,
+            )
+            return None, "messaging_meta_whatsapp_manual_prod_timeout"
+        return inbound.strip(), "messaging_meta_whatsapp_manual_prod"
+
+    agent_text = (generate_agent_reply(list(transcript)) or "").strip()
+    if not agent_text:
+        return None, "messaging_meta_whatsapp_empty_agent_reply"
+
+    try:
+        _send_meta_whatsapp_text(
+            phone_number_id=meta_phone_id,
+            access_token=meta_token,
+            to=recipient,
+            body=agent_text,
+        )
+    except Exception as exc:
+        logger.warning("[MessagingChat] Meta WhatsApp agent text send failed: {}", exc)
+        return None, f"messaging_meta_whatsapp_agent_send_failed:{exc}"
+
+    return agent_text, "messaging_meta_whatsapp_sim_prod"
 
 
 def _send_twilio_message(
@@ -439,6 +748,56 @@ def test_telnyx_sms_send(
     }
 
 
+def test_meta_whatsapp_send(
+    db: Session,
+    *,
+    organization_id: UUID,
+    cfg: dict[str, Any],
+    overrides: Optional[dict[str, str]] = None,
+) -> dict[str, str]:
+    channel = _cfg_str(cfg, "messaging_channel").lower() or "sms"
+    if channel != "whatsapp":
+        raise ValueError("Agent messaging channel must be whatsapp")
+    merged = dict(cfg)
+    if overrides:
+        for key, val in overrides.items():
+            if isinstance(val, str) and val.strip():
+                merged[key] = val.strip()
+    recipient = _cfg_str(merged, "messaging_recipient", "messaging_test_recipient")
+    if overrides and overrides.get("messaging_recipient"):
+        recipient = overrides["messaging_recipient"].strip()
+    meta_phone_id, meta_token = _resolve_messaging_meta_whatsapp_context(
+        db,
+        organization_id=organization_id,
+        cfg=merged,
+    )
+    if not meta_phone_id or not meta_token:
+        raise ValueError(
+            "WhatsApp credentials required — link a Meta WhatsApp telephony integration "
+            "or set meta_whatsapp_phone_number_id and meta_whatsapp_access_token on the agent"
+        )
+    if not recipient:
+        raise ValueError("Eval recipient (messaging_recipient) is required")
+    recipient = _normalize_whatsapp_to(recipient)
+    from app.services.telephony.meta_whatsapp_webhook_setup import (
+        ensure_meta_whatsapp_webhook_delivery,
+    )
+
+    ensure_meta_whatsapp_webhook_delivery(
+        db,
+        organization_id=organization_id,
+        cfg=merged,
+        access_token=meta_token,
+    )
+    return _send_meta_whatsapp(
+        phone_number_id=meta_phone_id,
+        access_token=meta_token,
+        to=recipient,
+        body="EfficientAI test",
+        cfg=merged,
+    )
+
+
 def _resolve_messaging_twilio_context(
     db: Session,
     *,
@@ -485,6 +844,28 @@ def _resolve_messaging_twilio_context(
     return twilio_sid, twilio_token, twilio_from
 
 
+def _resolve_messaging_meta_whatsapp_context(
+    db: Session,
+    *,
+    organization_id: UUID,
+    cfg: dict[str, Any],
+) -> tuple[str, str]:
+    """Return (phone_number_id, access_token) from telephony integration or agent config."""
+    telephony_id = cfg.get("messaging_telephony_integration_id") or cfg.get(
+        "messaging_integration_id"
+    )
+    telephony = _resolve_telephony_integration(
+        db, organization_id=organization_id, integration_id_raw=telephony_id
+    )
+    if telephony and telephony.provider.lower() == "meta_whatsapp":
+        phone_id = decrypt_api_key(telephony.auth_id)
+        token = decrypt_api_key(telephony.auth_token)
+        return phone_id.strip(), token.strip()
+    phone_id = _cfg_str(cfg, "meta_whatsapp_phone_number_id", "whatsapp_phone_number_id")
+    token = _cfg_str(cfg, "meta_whatsapp_access_token", "whatsapp_access_token")
+    return phone_id, token
+
+
 def _resolve_twilio_credentials(
     db: Session,
     *,
@@ -524,13 +905,19 @@ def try_messaging_worker_send(
         return None, "messaging_skip_no_user_text"
     if not recipient:
         return None, "messaging_skip_no_recipient"
-    recipient = _normalize_sms_phone(recipient) if channel == "sms" else recipient
+    if channel == "sms":
+        recipient = _normalize_sms_phone(recipient)
+    elif channel == "whatsapp":
+        recipient = _normalize_whatsapp_to(recipient)
     outbound_body = _sms_outbound_body(cfg, user_text) if channel == "sms" else user_text
 
     sent_via = ""
 
-    meta_token = _cfg_str(cfg, "meta_whatsapp_access_token", "whatsapp_access_token")
-    meta_phone_id = _cfg_str(cfg, "meta_whatsapp_phone_number_id", "whatsapp_phone_number_id")
+    meta_phone_id, meta_token = _resolve_messaging_meta_whatsapp_context(
+        db,
+        organization_id=organization_id,
+        cfg=cfg,
+    )
     twilio_sid, twilio_token, twilio_from = _resolve_messaging_twilio_context(
         db,
         organization_id=organization_id,
@@ -573,13 +960,57 @@ def try_messaging_worker_send(
 
     try:
         if channel == "whatsapp" and meta_phone_id and meta_token:
-            _send_meta_whatsapp(
+            from app.services.agents.chat_messaging_turn_wait import (
+                abandon_messaging_sms_turn,
+                register_messaging_sms_turn,
+                wait_messaging_sms_reply_or_raise,
+            )
+            from app.services.telephony.meta_whatsapp_webhook_setup import (
+                ensure_meta_whatsapp_webhook_delivery,
+            )
+
+            _waba, _subscribed = ensure_meta_whatsapp_webhook_delivery(
+                db,
+                organization_id=organization_id,
+                cfg=cfg,
+                access_token=meta_token,
+            )
+
+            turn_agent_id = agent_id or organization_id
+            turn_id = register_messaging_sms_turn(
+                agent_id=turn_agent_id,
+                twilio_from=meta_phone_id,
+                messaging_recipient=recipient,
+                ttl_secs=120,
+            )
+            if not turn_id:
+                return None, "messaging_whatsapp_concurrent_turn"
+            send_info = _send_meta_whatsapp(
                 phone_number_id=meta_phone_id,
                 access_token=meta_token,
                 to=recipient,
-                body=user_text,
+                body=outbound_body,
+                cfg=cfg,
             )
             sent_via = "meta_whatsapp"
+            try:
+                inbound = wait_messaging_sms_reply_or_raise(turn_id, timeout_secs=120)
+            except RuntimeError as exc:
+                return None, f"messaging_turn_wait_failed:{exc}"
+            if inbound:
+                return inbound.strip(), f"messaging_{sent_via}_inbound"
+            abandon_messaging_sms_turn(
+                agent_id=turn_agent_id,
+                twilio_from=meta_phone_id,
+                messaging_recipient=recipient,
+                turn_id=turn_id,
+            )
+            logger.warning(
+                "[MessagingChat] Meta WhatsApp no inbound reply within timeout "
+                "(to={} wamid={} — reply on WhatsApp; check webhook + Redis)",
+                send_info.get("to"),
+                send_info.get("message_id"),
+            )
         elif twilio_sid and twilio_token and twilio_from:
             turn_id = None
             if channel == "sms":
@@ -647,7 +1078,10 @@ def try_messaging_worker_send(
         else:
             return None, "messaging_skip_no_credentials"
     except httpx.HTTPStatusError as exc:
-        detail = str(exc) or _twilio_api_error_detail(exc.response)
+        if exc.response is not None and "graph.facebook.com" in str(exc.response.url):
+            detail = str(exc) or _meta_graph_api_error_detail(exc.response)
+        else:
+            detail = str(exc) or _twilio_api_error_detail(exc.response)
         if "572006" in detail:
             detail = (
                 f"{detail} — Twilio trial accounts require Body to be a template name "

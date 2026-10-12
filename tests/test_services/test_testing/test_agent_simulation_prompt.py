@@ -129,7 +129,7 @@ def test_build_test_agent_system_prompt_uses_persona_max_turns():
 def test_build_test_agent_chat_system_prompt_uses_chat_framing():
     agent = _agent(call_medium="chat", provider_prompt="You are a clinic scheduling bot.")
     prompt = build_test_agent_chat_system_prompt(agent, _persona(), _scenario(), max_turns=6)
-    assert "real user in a text chat" in prompt
+    assert "real customer in a text chat" in prompt
     assert "on a phone call" not in prompt.lower()
     assert "interpret that as a chat customer" in prompt.lower()
 

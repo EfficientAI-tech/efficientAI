@@ -243,8 +243,15 @@ def run_suite(
                     status_code=400,
                     detail="to_number (recipient) is required for messaging chat evaluator runs",
                 )
+            recipient_raw = str(request.to_number).strip()
+            try:
+                from app.services.telephony.plivo_client import normalize_e164
+
+                recipient_raw = normalize_e164(recipient_raw)
+            except ValueError:
+                pass
             initial_call_data: dict[str, str] = {
-                "run_messaging_recipient": str(request.to_number).strip(),
+                "run_messaging_recipient": recipient_raw,
             }
             trial_tpl = request.twilio_sms_trial_body_template
             if trial_tpl is not None:

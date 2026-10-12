@@ -35,3 +35,8 @@ def test_decrypt_plain_text_key_falls_back_for_backward_compatibility(isolated_f
 def test_decrypt_empty_key_raises_value_error(isolated_fernet):
     with pytest.raises(ValueError, match="API key is empty"):
         encryption.decrypt_api_key("")
+
+
+def test_decrypt_long_meta_whatsapp_token_treated_as_plaintext(isolated_fernet):
+    token = "EAA" + ("x" * 200)
+    assert encryption.decrypt_api_key(token) == token

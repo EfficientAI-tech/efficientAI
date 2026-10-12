@@ -12,6 +12,7 @@ from app.models.database import Agent
 from app.models.database import ModelProvider, VoiceBundle
 from app.services.ai.together_models import normalize_together_model_name
 from app.models.enums import CallMediumEnum
+from app.models.enums import ChatConnectionTypeEnum
 from app.services.agents.chat_connection import (
     normalized_chat_connection_type,
     validate_chat_connection_for_agent,
@@ -134,13 +135,30 @@ def resolve_simulation_llm(
         llm_config = agent.test_llm_config if isinstance(agent.test_llm_config, dict) else None
         source = "test_llm"
     else:
-        provider_raw = _provider_field_str(agent.main_llm_provider)
-        model = (agent.main_llm_model or "").strip()
-        credential_id = agent.main_llm_credential_id
-        llm_config = agent.main_llm_config if isinstance(agent.main_llm_config, dict) else None
+        provider_raw = _provider_field_str(getattr(agent, "main_llm_provider", None))
+        model = (getattr(agent, "main_llm_model", None) or "").strip()
+        credential_id = getattr(agent, "main_llm_credential_id", None)
+        raw_cfg = getattr(agent, "main_llm_config", None)
+        llm_config = raw_cfg if isinstance(raw_cfg, dict) else None
         source = "main_llm"
 
     if not provider_raw or not model:
+        if leg == "main":
+            conn = normalized_chat_connection_type(agent)
+            if conn == ChatConnectionTypeEnum.MESSAGING_CHANNELS.value:
+                test_provider = _provider_field_str(agent.test_llm_provider)
+                test_model = (getattr(agent, "test_llm_model", None) or "").strip()
+                if test_provider and test_model:
+                    test_cred = getattr(agent, "test_llm_credential_id", None)
+                    test_cfg = getattr(agent, "test_llm_config", None)
+                    prov = _parse_provider(test_provider)
+                    return ResolvedSimulationLlm(
+                        provider=prov,
+                        model=_normalize_simulation_model(prov, test_model),
+                        llm_config=test_cfg if isinstance(test_cfg, dict) else None,
+                        credential_id=test_cred,
+                        source="test_llm_for_messaging_production",
+                    )
         fallback = _voice_bundle_simulation_llm(db, agent=agent)
         if fallback is not None:
             return fallback

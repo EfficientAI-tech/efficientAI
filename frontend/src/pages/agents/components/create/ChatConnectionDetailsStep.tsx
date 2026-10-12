@@ -53,6 +53,9 @@ export type ChatConnectionConfigForm = {
   messagingSyncReplyUrl: string
   metaWhatsappPhoneNumberId: string
   metaWhatsappAccessToken: string
+  metaWhatsappOpeningTemplate: string
+  metaWhatsappTemplateLanguage: string
+  metaWhatsappProdMode: string
   twilioAccountSid: string
   twilioAuthToken: string
   twilioFrom: string
@@ -77,6 +80,9 @@ export const DEFAULT_CHAT_CONNECTION_CONFIG: ChatConnectionConfigForm = {
   messagingSyncReplyUrl: '',
   metaWhatsappPhoneNumberId: '',
   metaWhatsappAccessToken: '',
+  metaWhatsappOpeningTemplate: '',
+  metaWhatsappTemplateLanguage: 'en_US',
+  metaWhatsappProdMode: '',
   twilioAccountSid: '',
   twilioAuthToken: '',
   twilioFrom: '',
@@ -276,9 +282,11 @@ export function validateChatConnectionDetails(
   if (integrationType === 'messaging_channels') {
     const hasProviderSmsLine = Boolean(formData.telephony_phone_number_id?.trim())
     const hasSmsBasics = config.messagingChannel === 'sms' && hasProviderSmsLine
-    const hasWhatsappMeta =
-      config.messagingChannel === 'whatsapp' &&
+    const hasWhatsappIntegration = Boolean(config.messagingTelephonyIntegrationId?.trim())
+    const hasWhatsappLegacy =
       Boolean(config.metaWhatsappPhoneNumberId.trim() && config.metaWhatsappAccessToken.trim())
+    const hasWhatsappMeta =
+      config.messagingChannel === 'whatsapp' && (hasWhatsappIntegration || hasWhatsappLegacy)
     return Boolean(
       config.messagingChannel &&
         (hasSmsBasics || hasWhatsappMeta) &&
@@ -305,7 +313,13 @@ export default function ChatConnectionDetailsStep({
   variant = 'wizard',
   agentId,
 }: ChatConnectionDetailsStepProps) {
-  const { activeNumbers: telephonyNumbers } = useOrgTelephony()
+  const { activeNumbers: telephonyNumbers, activeConfigs: telephonyConfigs } = useOrgTelephony()
+  const metaWhatsappIntegrations = telephonyConfigs.filter(
+    (c) =>
+      c.is_active &&
+      (c.provider || '').toLowerCase() === 'meta_whatsapp' &&
+      Boolean((c.voice_app_id || '').trim()),
+  )
   const smsCarrierNumbers = telephonyNumbers.filter((n) => {
     const provider = (n.provider || '').toLowerCase()
     return (
@@ -332,6 +346,8 @@ export default function ChatConnectionDetailsStep({
     messagingPublicBase?.twilio_public_base_url || messagingPublicBase?.public_base_url || null
   const telnyxWebhookPublicBase =
     messagingPublicBase?.telnyx_public_base_url || messagingPublicBase?.public_base_url || null
+  const metaWhatsappInboundWebhookUrl =
+    messagingPublicBase?.meta_whatsapp_inbound_webhook_url || ''
 
   const sectionClass = embedded ? 'w-full' : 'space-y-4'
   const fieldClass =
@@ -499,32 +515,79 @@ export default function ChatConnectionDetailsStep({
 
           {channel === 'whatsapp' ? (
             <div className="rounded-lg border border-emerald-100 bg-emerald-50/40 p-3 space-y-3">
-              <p className="text-xs font-medium text-emerald-900">Meta WhatsApp Cloud</p>
+              <div>
+                <label className={labelClass}>WhatsApp integration *</label>
+                {metaWhatsappIntegrations.length === 0 ? (
+                  <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                    Add WhatsApp (Meta) with WABA ID under Integrations → Telephony.
+                  </p>
+                ) : (
+                  <select
+                    className={fieldClass}
+                    value={config.messagingTelephonyIntegrationId}
+                    onChange={(e) =>
+                      onConfigChange({
+                        messagingTelephonyIntegrationId: e.target.value,
+                        metaWhatsappPhoneNumberId: '',
+                        metaWhatsappAccessToken: '',
+                      })
+                    }
+                  >
+                    <option value="">Select integration</option>
+                    {metaWhatsappIntegrations.map((row) => (
+                      <option key={row.id} value={row.id}>
+                        {row.name || 'WhatsApp (Meta)'}
+                        {row.voice_app_id ? ` · WABA ${row.voice_app_id}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className={labelClass}>Phone number ID</label>
+                  <label className={labelClass}>Opening template</label>
                   <input
                     className={fieldClass}
-                    value={config.metaWhatsappPhoneNumberId}
-                    onChange={(e) => onConfigChange({ metaWhatsappPhoneNumberId: e.target.value })}
-                    placeholder="From Meta developer console"
+                    value={config.metaWhatsappOpeningTemplate}
+                    onChange={(e) =>
+                      onConfigChange({ metaWhatsappOpeningTemplate: e.target.value })
+                    }
+                    placeholder="hello_world"
                   />
                 </div>
                 <div>
-                  <label className={labelClass}>Access token</label>
+                  <label className={labelClass}>Template language</label>
                   <input
-                    type="password"
                     className={fieldClass}
-                    value={config.metaWhatsappAccessToken}
-                    onChange={(e) => onConfigChange({ metaWhatsappAccessToken: e.target.value })}
-                    placeholder={
-                      isStoredChatSecret(config.metaWhatsappAccessToken)
-                        ? `${CHAT_CONFIG_SECRET_MASK} (stored — enter new value to replace)`
-                        : 'Access token'
+                    value={config.metaWhatsappTemplateLanguage}
+                    onChange={(e) =>
+                      onConfigChange({ metaWhatsappTemplateLanguage: e.target.value })
                     }
+                    placeholder="en_US"
                   />
                 </div>
               </div>
+              {metaWhatsappInboundWebhookUrl ? (
+                <div>
+                  <label className={labelClass}>Webhook URL</label>
+                  <div className="flex gap-2">
+                    <input className={fieldClass} readOnly value={metaWhatsappInboundWebhookUrl} />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void navigator.clipboard
+                          .writeText(metaWhatsappInboundWebhookUrl)
+                          .then(() => showToast('Copied', 'success'))
+                          .catch(() => showToast('Copy failed', 'error'))
+                      }}
+                      className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-xs font-medium text-gray-800 hover:bg-gray-50"
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                      Copy
+                    </button>
+                  </div>
+                </div>
+              ) : null}
             </div>
           ) : null}
 

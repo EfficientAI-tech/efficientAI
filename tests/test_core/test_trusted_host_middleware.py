@@ -63,6 +63,16 @@ def test_api_rejects_untrusted_host(host_client):
     assert response.text == "Invalid host header"
 
 
+def test_carrier_webhook_allows_public_host_not_in_trusted_list(host_client):
+    response = host_client.post(
+        "/api/v1/chat/messaging/meta/whatsapp-inbound",
+        headers={"Host": "lake-overfeed-dispute.ngrok-free.dev"},
+        json={"object": "whatsapp_business_account", "entry": []},
+    )
+
+    assert response.status_code != 400 or response.text != "Invalid host header"
+
+
 def test_api_rejects_missing_host_header(host_client):
     response = host_client.get("/api/v1/ping", headers={"Host": ""})
 

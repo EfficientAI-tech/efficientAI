@@ -181,3 +181,13 @@ flexprice:
   enabled: true
   api_host: "https://api.cloud.flexprice.io/v1"
   # api_key: use FLEXPRICE_API_KEY in .env / container env
+
+# SMTP (alert email). Use a real provider in production (SES, SendGrid, etc.).
+# smtp:
+#   host: "smtp.example.com"
+#   port: 587
+#   username: "..."
+#   password: "..."   # SMTP_PASSWORD env, never commit
+#   from_email: "alerts@yourcompany.com"
+#   from_name: "EfficientAI Alerts"
+#   use_tls: true

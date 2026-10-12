@@ -33,7 +33,7 @@ An **Alert** is a monitoring rule. It defines:
 
 ### Alert History
 
-Every time an alert's condition is met and fires, an **Alert History** record is created. This gives you a full audit trail of when alerts were triggered, what the value was, and whether notifications were sent.
+Each **incident** (one breach cycle) gets an **Alert History** record when the metric crosses from OK → ALARM. While the condition stays true, the same incident is updated (latest value) — you do not get a new row every five minutes. When the metric returns to OK, the incident is **auto-resolved** after **two consecutive** OK evaluations (~10 minutes with the default 5-minute schedule), so a single borderline reading does not close and immediately re-open the incident (which would send duplicate Slack/PagerDuty messages). A new breach after recovery opens a new incident.
 
 ---
 
@@ -83,7 +83,17 @@ Choose which agents this alert applies to:
 | **Email Recipients** | No | One or more email addresses to receive alert emails |
 | **Webhooks** | No | One or more webhook URLs (e.g., Slack incoming webhooks) |
 
-You must configure at least one email or webhook for notifications to work.
+You must configure at least one notification channel (email, Slack webhook, or PagerDuty routing key).
+
+#### Data source
+
+Choose where metrics are computed:
+
+| Source | Description |
+|---|---|
+| **Synthetic evaluations** | `EvaluatorResult` rows from playground / cron evaluator runs (default) |
+| **Production calls** | Webhook `call_recordings` (telephony production feed) |
+| **Production traces** | ClickHouse `call_traces` excluding synthetic eval traces (`evaluator_result_id` is null) |
 
 ### Step 3: Save
 
@@ -99,8 +109,10 @@ Click **Create Alert**. Your alert is now **Active** and will be evaluated autom
 | **Call Duration** | `call_duration` | Duration of calls (in seconds) |
 | **Error Rate** | `error_rate` | Percentage of calls that resulted in errors |
 | **Success Rate** | `success_rate` | Percentage of calls that completed successfully |
-| **Latency** | `latency` | Response latency of the voice AI agent |
-| **Custom** | `custom` | Custom metric (for advanced use cases) |
+| **Latency** | `latency` | **Traces:** response latency from ClickHouse. **Evaluations:** same as call duration (seconds), not turn latency. |
+| **Custom** | `custom` | **Evaluations:** count of results in the window. **Production calls:** same as call count. |
+
+Not every metric is available for every [data source](#data-source). See [Alerting & cron coverage](/docs/products/alerting-and-cron-coverage/) for gaps (silence, cron failures, platform jobs).
 
 ## Aggregations
 
@@ -155,7 +167,21 @@ Email alerts are sent as rich HTML emails containing:
 - Agent scope information
 - Timestamp
 
-**Requirements:** Email notifications require SMTP to be configured in your EfficientAI deployment. See the [Configuration Reference](/docs/reference/configuration/) for SMTP settings.
+**Requirements:** SMTP in `config.yml` (see [Local email testing with Mailpit](#local-email-testing-with-mailpit)).
+
+### PagerDuty (Events API v2)
+
+Add one or more **PagerDuty routing keys** (integration keys) on the alert. EfficientAI sends `event_action=trigger` events with a stable `dedup_key` per alert to reduce duplicate incidents during cooldown.
+
+Use **Test Notification** on the alert detail page to verify delivery without creating history.
+
+---
+
+## Scheduled synthetic tests (Cron Jobs)
+
+Use **Configurations → Cron Jobs** to schedule evaluator runs (synthetic tests). Presets include daily/weekly schedules, **twice monthly (1st & 15th)**, and **every 14 days** (rolling interval stored in job config). Set **max runs** to `0` for unlimited recurrence. Use **Run now** (⚡) to enqueue a run immediately for E2E validation.
+
+Workers involved: Beat `dispatch_cron_jobs` (usage queue) → `run_cron_evaluator_job` (celery queue) → evaluations workers.
 
 ---
 
@@ -165,12 +191,22 @@ The notification frequency controls how often you are re-notified when an alert 
 
 | Frequency | Cooldown | Description |
 |---|---|---|
-| **Immediate** | None | Notify every time the alert evaluates as triggered |
-| **Hourly** | 1 hour | At most one notification per hour |
-| **Daily** | 24 hours | At most one notification per day |
-| **Weekly** | 7 days | At most one notification per week |
+| **Immediate** | N/A (notify once per incident) | Notify when the incident **opens** (OK → ALARM), not on every evaluation tick |
+| **Hourly** | 1 hour | Re-notify at most once per hour **while the same incident stays open** |
+| **Daily** | 24 hours | Re-notify at most once per day while open |
+| **Weekly** | 7 days | Re-notify at most once per week while open |
 
-If an alert fires and you were already notified within the cooldown period, the alert will still be evaluated (and recorded in history) but no new notification will be sent.
+Evaluations still run on schedule; an open incident keeps its latest metric value. Notifications respect cooldown on that incident. Manual **Acknowledge** / **Resolve** does not change the metric — only **Resolve** (or auto-resolve when OK) closes the incident so a new breach can open a new one.
+
+**Manual resolve while still breaching:** resolving an incident sets **suppress until OK** — no new pages until the metric clears, then a fresh breach can open a new incident.
+
+**Missing data:** if no metric can be computed for a window, the alert does **not** fire and does **not** auto-resolve open incidents (treated as insufficient data).
+
+**PagerDuty lifecycle (opt-in):** org admins enable **notification sync** under **Configurations → Integrations** (default off). Flow: (1) enable sync and copy the webhook URL, (2) create a PagerDuty v3 webhook subscription pointing at that URL, (3) paste the **signing secret** (shown once in PagerDuty) into EfficientAI — inbound webhooks are rejected until the secret is saved. Outbound ack/resolve works as soon as sync is on and routing keys are on the rule.
+
+**Recovery:** when an incident auto-resolves (or you resolve manually), Slack receives a short recovery message and PagerDuty receives `resolve` (same dedup key).
+
+**Workers:** Beat runs `evaluate_alerts` every **5 minutes** (single Beat replica). The coordinator fans out **one task per organization** on the `platform` queue. Outbound notifications are sent on the `notifications` queue (defaults to `platform` unless `NOTIFICATIONS_WORKER_QUEUE` is set).
 
 ---
 
@@ -188,14 +224,14 @@ You can **Pause** and **Resume** alerts at any time from the alert detail page.
 
 ### Alert History Statuses
 
-Each alert history entry progresses through:
+Each incident progresses through:
 
 | Status | Description |
 |---|---|
-| **Triggered** | The alert condition was met |
+| **Triggered** | Incident opened (condition breached) |
 | **Notified** | Notifications were sent successfully |
-| **Acknowledged** | A team member has acknowledged the alert |
-| **Resolved** | The issue has been resolved |
+| **Acknowledged** | A team member has acknowledged the incident |
+| **Resolved** | Closed manually or **auto-resolved** when the metric returns to OK |
 
 ---
 
@@ -303,7 +339,7 @@ All alert endpoints are under `/api/v1/alerts` and require authentication via AP
 | `GET` | `/alerts/history/all` | List all alert history |
 | `GET` | `/alerts/{alert_id}/history` | List history for a specific alert |
 | `GET` | `/alerts/history/{history_id}` | Get a specific history entry |
-| `PATCH` | `/alerts/history/{history_id}` | Update history (acknowledge/resolve) |
+| `PUT` | `/alerts/history/{history_id}` | Update history (acknowledge/resolve) |
 
 ### Create Alert — Request Body
 
@@ -349,6 +385,28 @@ All alert endpoints are under `/api/v1/alerts` and require authentication via AP
 ---
 
 ## Configuration
+
+### Local email testing with Mailpit
+
+1. Start Mailpit: `docker compose up mailpit -d`
+2. Add to `config.yml` (API on the host):
+
+```yaml
+smtp:
+  host: "localhost"
+  port: 1025
+  from_email: "alerts@localhost"
+  from_name: "EfficientAI Alerts"
+  use_tls: false
+```
+
+Docker Compose API uses `config.docker.yml` with `host: mailpit` (service name).
+
+3. Restart the API so it reloads config.
+4. Create or edit an alert — add a real recipient (not `test@example.com`; placeholders are rejected).
+5. Open the alert → **Test Notification**. Messages appear in **http://localhost:8025**.
+
+**Test Notification** sends from the API process. **Scheduled evaluations** queue `send_alert_notifications` on the `platform` queue (or `NOTIFICATIONS_WORKER_QUEUE`) — run a worker that consumes that queue or alerts may not page/email after a real breach.
 
 ### SMTP Settings (for Email Notifications)
 
@@ -398,6 +456,21 @@ celery -A app.workers.celery_app beat --loglevel=info
 ```
 
 A default-queue worker does **not** process `evaluate_alerts`.
+
+For cron-based synthetic tests you also need a **usage** worker (`dispatch_cron_jobs`), a default **celery** worker (`run_cron_evaluator_job`), and **evaluations** workers for the actual runs.
+
+---
+
+## E2E verification checklist
+
+1. **Slack** — Test Notification + triggered alert delivers Block Kit message.
+2. **Email** — SMTP configured; test message in inbox/Mailpit.
+3. **PagerDuty** — Test Notification opens/updates incident via Events API v2.
+4. **Cron** — Run now + short schedule produces evaluator results; eval-source alert can fire.
+5. **Production calls** — Webhook `call_recordings` drive `production_calls` alerts.
+6. **Production traces** — ClickHouse traces (non-eval) drive `production_traces` alerts.
+7. **History** — `/alerts/history` lists events; acknowledge/resolve works.
+8. **Cooldown** — Second trigger within hourly window creates history without re-notifying.
 
 ---
 

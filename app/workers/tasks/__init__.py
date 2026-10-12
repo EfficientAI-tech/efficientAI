@@ -29,6 +29,8 @@ from . import recompute_usage_costs
 from . import prune_oss_usage_history
 from . import dispatch_cron_jobs
 from . import evaluate_alerts
+from . import evaluate_alerts_for_org
+from . import send_alert_notifications
 from . import refresh_fx_rates
 from . import run_cron_evaluator_job
 from . import trace_tasks

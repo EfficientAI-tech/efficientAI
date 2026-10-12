@@ -143,6 +143,7 @@ class TelephonyProvider(str, enum.Enum):
     VOBIZ = "vobiz"
     TWILIO = "twilio"
     TELNYX = "telnyx"
+    META_WHATSAPP = "meta_whatsapp"
 
 
 class CredentialRoutingMode(str, enum.Enum):
@@ -242,6 +243,15 @@ class CallRecordingStatus(str, enum.Enum):
     UPDATED = "updated"
 
 
+class AlertDataSource(str, enum.Enum):
+    """Where alert metrics are computed from."""
+
+    EVALUATIONS = "evaluations"
+    PRODUCTION_CALLS = "production_calls"
+    PRODUCTION_TRACES = "production_traces"
+    CRON_JOBS = "cron_jobs"
+
+
 class AlertMetricType(str, enum.Enum):
     """Alert metric type enumeration."""
     NUMBER_OF_CALLS = "number_of_calls"
@@ -250,6 +260,7 @@ class AlertMetricType(str, enum.Enum):
     SUCCESS_RATE = "success_rate"
     LATENCY = "latency"
     CUSTOM = "custom"
+    FAILURE_COUNT = "failure_count"
 
 
 class AlertAggregation(str, enum.Enum):

@@ -349,6 +349,7 @@ export enum TelephonyProvider {
   VOBIZ = 'vobiz',
   TWILIO = 'twilio',
   TELNYX = 'telnyx',
+  META_WHATSAPP = 'meta_whatsapp',
 }
 
 export type CredentialRoutingMode = 'inherit' | 'gateway' | 'direct'
@@ -770,6 +771,12 @@ export enum AlertStatus {
   DISABLED = 'disabled',
 }
 
+export enum AlertDataSource {
+  EVALUATIONS = 'evaluations',
+  PRODUCTION_CALLS = 'production_calls',
+  PRODUCTION_TRACES = 'production_traces',
+}
+
 export enum AlertHistoryStatus {
   TRIGGERED = 'triggered',
   NOTIFIED = 'notified',
@@ -782,6 +789,7 @@ export interface Alert {
   organization_id: string
   name: string
   description?: string | null
+  data_source?: AlertDataSource | string
   metric_type: AlertMetricType
   aggregation: AlertAggregation
   operator: AlertOperator
@@ -791,6 +799,7 @@ export interface Alert {
   notify_frequency: AlertNotifyFrequency
   notify_emails?: string[] | null
   notify_webhooks?: string[] | null
+  notify_pagerduty_routing_keys?: string[] | null
   status: AlertStatus
   created_at: string
   updated_at: string

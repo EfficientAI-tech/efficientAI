@@ -9,7 +9,7 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.models.database import Agent, TelephonyPhoneNumber
-from app.models.enums import CallMediumEnum, ChatConnectionTypeEnum
+from app.models.enums import CallMediumEnum, ChatConnectionTypeEnum, TelephonyProvider
 from app.services.telephony.plivo_client import expand_phone_candidates, normalize_e164
 
 
@@ -302,6 +302,88 @@ def resolve_messaging_sms_agent_for_inbound(
         candidates,
     )
     return None, None, None
+
+
+def _agent_is_messaging_whatsapp(agent: Agent) -> bool:
+    raw_conn = getattr(agent, "chat_connection_type", None) or ""
+    conn = str(raw_conn).strip().lower()
+    if "." in conn:
+        conn = conn.rsplit(".", 1)[-1]
+    if conn != ChatConnectionTypeEnum.MESSAGING_CHANNELS.value:
+        return False
+    cfg = agent.chat_connection_config if isinstance(agent.chat_connection_config, dict) else {}
+    channel = (cfg.get("messaging_channel") or "").strip().lower()
+    return channel == "whatsapp"
+
+
+def resolve_meta_whatsapp_agent_for_inbound(
+    db: Session,
+    phone_number_id: Optional[str],
+) -> Optional[Agent]:
+    """Resolve chat WhatsApp agent by Meta Cloud phone_number_id."""
+    from app.core.encryption import decrypt_api_key
+    from app.models.database import TelephonyIntegration
+
+    pid = str(phone_number_id or "").strip()
+    if not pid:
+        return None
+    pid_expr = Agent.chat_connection_config.op("->>")("meta_whatsapp_phone_number_id")
+    candidates = (
+        db.query(Agent)
+        .filter(
+            Agent.call_medium == CallMediumEnum.CHAT.value,
+            pid_expr == pid,
+        )
+        .all()
+    )
+    for agent in candidates:
+        if _agent_is_messaging_whatsapp(agent):
+            return agent
+
+    integration_expr = Agent.chat_connection_config.op("->>")("messaging_telephony_integration_id")
+    linked = (
+        db.query(Agent)
+        .filter(
+            Agent.call_medium == CallMediumEnum.CHAT.value,
+            integration_expr.isnot(None),
+        )
+        .all()
+    )
+    for agent in linked:
+        if not _agent_is_messaging_whatsapp(agent):
+            continue
+        cfg = agent.chat_connection_config if isinstance(agent.chat_connection_config, dict) else {}
+        raw_integ = cfg.get("messaging_telephony_integration_id")
+        if not raw_integ:
+            continue
+        try:
+            integ_uuid = UUID(str(raw_integ))
+        except (TypeError, ValueError):
+            continue
+        row = (
+            db.query(TelephonyIntegration)
+            .filter(
+                TelephonyIntegration.id == integ_uuid,
+                TelephonyIntegration.organization_id == agent.organization_id,
+                TelephonyIntegration.provider == TelephonyProvider.META_WHATSAPP.value,
+            )
+            .first()
+        )
+        if not row:
+            continue
+        try:
+            stored_pid = decrypt_api_key(row.auth_id).strip()
+        except Exception:
+            stored_pid = (row.auth_id or "").strip()
+        if stored_pid == pid:
+            return agent
+
+    logger.warning(
+        "Meta WhatsApp inbound routing miss for phone_number_id={} (config_matches={})",
+        pid,
+        len(candidates),
+    )
+    return None
 
 
 def sync_agent_telephony_number_link(db: Session, agent: Agent) -> None:

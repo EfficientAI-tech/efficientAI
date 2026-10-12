@@ -321,3 +321,11 @@ jobs:
             --target "$MERGE_SHA" \
             --title "$NEXT_TAG" \
             --generate-notes
+
+  # Docs is a static S3 export. Changelog pages are generated at build time
+  # from the GitHub Releases API, so this must run AFTER gh release create.
+  # GITHUB_TOKEN-created releases do not trigger `on: release` workflows.
+  docs:
+    needs: merge
+    uses: ./.github/workflows/docs.yml
+    secrets: inherit

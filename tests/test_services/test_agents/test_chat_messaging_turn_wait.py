@@ -1,88 +1,212 @@
-from unittest.mock import MagicMock, patch
-from uuid import uuid4
-
 from app.services.agents.chat_messaging_turn_wait import (
-    complete_twilio_sms_turn,
-    register_twilio_sms_turn,
-    wait_twilio_sms_reply,
+    _phone_lookup_variants,
+    abandon_messaging_sms_turn,
+    complete_messaging_inbound_routed,
+    complete_messaging_sms_turn,
+    register_messaging_sms_turn,
 )
 
-AGENT_A = uuid4()
-AGENT_B = uuid4()
+
+def test_phone_lookup_variants_india():
+    assert "917051228092" in _phone_lookup_variants("+917051228092")
+    assert "7051228092" in _phone_lookup_variants("+917051228092")
 
 
-@patch("app.services.agents.chat_messaging_turn_wait._redis")
-def test_register_and_complete_turn(mock_redis_fn):
-    client = MagicMock()
-    mock_redis_fn.return_value = client
-    client.get.return_value = "turn-1"
+def test_phone_lookup_variants_no_generic_tail():
+    variants = _phone_lookup_variants("+447123456789")
+    assert variants == ["447123456789"]
+    assert "7123456789" not in variants
 
-    turn_id = register_twilio_sms_turn(
-        agent_id=AGENT_A,
-        twilio_from="+15550001",
-        messaging_recipient="+15550002",
+
+def test_register_blocks_concurrent_turn(monkeypatch):
+    import app.services.agents.chat_messaging_turn_wait as mod
+
+    store: dict[str, str] = {}
+
+    class FakeRedis:
+        def set(self, key, val, ex=None, nx=False):
+            if nx and key in store:
+                return False
+            store[key] = val
+            return True
+
+        def get(self, key):
+            return store.get(key)
+
+        def delete(self, key):
+            store.pop(key, None)
+
+    monkeypatch.setattr(mod, "_redis", lambda: FakeRedis())
+    first = register_messaging_sms_turn(
+        agent_id="a1",
+        twilio_from="1395406326980468",
+        messaging_recipient="917051228092",
+    )
+    assert first
+    second = register_messaging_sms_turn(
+        agent_id="a1",
+        twilio_from="1395406326980468",
+        messaging_recipient="917051228092",
+    )
+    assert second == ""
+
+
+def test_complete_turn_matches_national_from_format(monkeypatch):
+    import app.services.agents.chat_messaging_turn_wait as mod
+
+    store: dict[str, str] = {}
+
+    class FakeRedis:
+        def set(self, key, val, ex=None, nx=False):
+            if nx and key in store:
+                return False
+            store[key] = val
+            return True
+
+        def get(self, key):
+            return store.get(key)
+
+        def delete(self, key):
+            store.pop(key, None)
+
+        def rpush(self, key, val):
+            store.setdefault(key, val)
+
+        def expire(self, key, ttl):
+            pass
+
+    monkeypatch.setattr(mod, "_redis", lambda: FakeRedis())
+    turn_id = register_messaging_sms_turn(
+        agent_id="agent-1",
+        twilio_from="1395406326980468",
+        messaging_recipient="917051228092",
     )
     assert turn_id
-
-    ok = complete_twilio_sms_turn(
-        agent_id=AGENT_A,
-        twilio_to="+15550001",
-        reply_from="+15550002",
-        body="Hello back",
+    ok = complete_messaging_sms_turn(
+        agent_id="agent-1",
+        line_to="1395406326980468",
+        reply_from="7051228092",
+        body="hey",
     )
-    assert ok is True
-    client.rpush.assert_called()
+    assert ok
+    assert store.get(f"chat:messaging:reply:{turn_id}") == "hey"
 
 
-@patch("app.services.agents.chat_messaging_turn_wait._redis")
-def test_wait_returns_body(mock_redis_fn):
-    client = MagicMock()
-    mock_redis_fn.return_value = client
-    client.blpop.return_value = ("key", "agent reply")
+def test_abandon_does_not_clear_another_turn(monkeypatch):
+    import app.services.agents.chat_messaging_turn_wait as mod
 
-    assert wait_twilio_sms_reply("turn-abc", timeout_secs=2) == "agent reply"
+    store: dict[str, str] = {}
 
+    class FakeRedis:
+        def set(self, key, val, ex=None, nx=False):
+            if nx and key in store:
+                return False
+            store[key] = val
+            return True
 
-@patch("app.services.agents.chat_messaging_turn_wait._redis")
-def test_complete_turn_when_twilio_to_differs_from_configured_from(mock_redis_fn):
-    client = MagicMock()
-    mock_redis_fn.return_value = client
+        def get(self, key):
+            return store.get(key)
 
-    def fake_get(key: str):
-        if f"pending:from:{AGENT_A}:+15550002" in key:
-            return "turn-1"
-        return None
+        def delete(self, key):
+            store.pop(key, None)
 
-    client.get.side_effect = fake_get
-
-    ok = complete_twilio_sms_turn(
-        agent_id=AGENT_A,
-        twilio_to="56161703",
-        reply_from="+15550002",
-        body="5",
+    monkeypatch.setattr(mod, "_redis", lambda: FakeRedis())
+    first = register_messaging_sms_turn(
+        agent_id="agent-1",
+        twilio_from="1395406326980468",
+        messaging_recipient="917051228092",
     )
-    assert ok is True
-    client.rpush.assert_called()
-
-
-@patch("app.services.agents.chat_messaging_turn_wait._redis")
-def test_inbound_for_other_agent_does_not_steal_pending_turn(mock_redis_fn):
-    client = MagicMock()
-    mock_redis_fn.return_value = client
-    client.set.return_value = True
-
-    register_twilio_sms_turn(
-        agent_id=AGENT_A,
-        twilio_from="+15550001",
-        messaging_recipient="+15550002",
+    second = register_messaging_sms_turn(
+        agent_id="agent-1",
+        twilio_from="1395406326980468",
+        messaging_recipient="917051228092",
     )
-
-    client.get.return_value = None
-
-    ok = complete_twilio_sms_turn(
-        agent_id=AGENT_B,
-        twilio_to="+19998887777",
-        reply_from="+15550002",
-        body="wrong route",
+    assert first
+    assert second == ""
+    abandon_messaging_sms_turn(
+        agent_id="agent-1",
+        twilio_from="1395406326980468",
+        messaging_recipient="917051228092",
+        turn_id="wrong-turn-id",
     )
-    assert ok is False
+    assert store.get(
+        "chat:messaging:pending:agent-1:1395406326980468:917051228092"
+    ) == first
+
+
+def test_routed_complete_without_db_agent(monkeypatch):
+    import app.services.agents.chat_messaging_turn_wait as mod
+
+    store: dict[str, str] = {}
+
+    class FakeRedis:
+        def set(self, key, val, ex=None, nx=False):
+            if nx and key in store:
+                return False
+            store[key] = val
+            return True
+
+        def get(self, key):
+            return store.get(key)
+
+        def delete(self, key):
+            store.pop(key, None)
+
+        def rpush(self, key, val):
+            store.setdefault(key, val)
+
+        def expire(self, key, ttl):
+            pass
+
+    monkeypatch.setattr(mod, "_redis", lambda: FakeRedis())
+    turn_id = register_messaging_sms_turn(
+        agent_id="agent-1",
+        twilio_from="1395406326980468",
+        messaging_recipient="917051228092",
+    )
+    ok = complete_messaging_inbound_routed(
+        line_to="1395406326980468",
+        reply_from="917051228092",
+        body="hey i need help",
+    )
+    assert ok
+    assert store.get(f"chat:messaging:reply:{turn_id}") == "hey i need help"
+
+
+def test_shared_line_is_reserved_for_one_agent(monkeypatch):
+    import app.services.agents.chat_messaging_turn_wait as mod
+
+    store: dict[str, str] = {}
+
+    class FakeRedis:
+        def set(self, key, val, ex=None, nx=False):
+            if nx and key in store:
+                return False
+            store[key] = val
+            return True
+
+        def get(self, key):
+            return store.get(key)
+
+        def delete(self, key):
+            store.pop(key, None)
+
+    monkeypatch.setattr(mod, "_redis", lambda: FakeRedis())
+    first = register_messaging_sms_turn(
+        agent_id="agent-1",
+        twilio_from="1395406326980468",
+        messaging_recipient="917051228092",
+    )
+    second = register_messaging_sms_turn(
+        agent_id="agent-2",
+        twilio_from="1395406326980468",
+        messaging_recipient="917051228092",
+    )
+    assert first
+    assert second == ""
+    assert complete_messaging_inbound_routed(
+        line_to="1395406326980468",
+        reply_from="917051228092",
+        body="nope",
+        expected_agent_id="agent-2",
+    ) is False

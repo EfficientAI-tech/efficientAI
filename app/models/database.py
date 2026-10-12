@@ -58,6 +58,8 @@ class Organization(Base):
     judge_alignment_settings = Column(JSON, nullable=True)
     # Per-org LLM gateway overrides (enabled, gateway_type, base_url, keys).
     llm_gateway_settings = Column(JSON, nullable=True)
+    # Alerting: sync_notification_lifecycle, pagerduty_inbound_token, signing secret
+    alerting_settings = Column(JSON, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False, server_default=text("true"), index=True)
     disabled_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -1450,13 +1452,18 @@ class Alert(Base):
     name = Column(String(255), nullable=False)
     description = Column(String, nullable=True)
     
+    data_source = Column(String, nullable=False, default="evaluations")
+
     # Metric condition configuration
     metric_type = Column(String, nullable=False, default=AlertMetricType.NUMBER_OF_CALLS.value)
     aggregation = Column(String, nullable=False, default=AlertAggregation.SUM.value)
     operator = Column(String, nullable=False, default=AlertOperator.GREATER_THAN.value)
     threshold_value = Column(Float, nullable=False)
     time_window_minutes = Column(Integer, nullable=False, default=60)  # Time window for aggregation
-    
+    alert_on_missing_data = Column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+
     # Agent selection (JSON array of agent UUIDs, null means all agents)
     agent_ids = Column(JSON, nullable=True)
     
@@ -1464,10 +1471,14 @@ class Alert(Base):
     notify_frequency = Column(String, nullable=False, default=AlertNotifyFrequency.IMMEDIATE.value)
     notify_emails = Column(JSON, nullable=True)  # Array of email addresses
     notify_webhooks = Column(JSON, nullable=True)  # Array of webhook URLs (Slack, etc.)
-    
+    notify_pagerduty_routing_keys = Column(JSON, nullable=True)
+
     # Status
     status = Column(String, nullable=False, default=AlertStatus.ACTIVE.value)
-    
+    suppress_reopen_until_ok = Column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+
     # Metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -1543,7 +1554,23 @@ class CronJob(Base):
     # Run tracking
     next_run_at = Column(DateTime(timezone=True), nullable=True)
     last_run_at = Column(DateTime(timezone=True), nullable=True)
-    
+    last_dispatch_celery_task_id = Column(String(255), nullable=True)
+    last_dispatch_status = Column(String(32), nullable=True)
+    last_dispatch_error = Column(String, nullable=True)
+    last_dispatch_at = Column(DateTime(timezone=True), nullable=True)
+    last_run_status = Column(String(32), nullable=True)
+    last_run_error = Column(String, nullable=True)
+
+    @property
+    def interval_days(self) -> int | None:
+        config = self.config if isinstance(self.config, dict) else {}
+        raw = config.get("interval_days")
+        try:
+            days = int(raw)
+        except (TypeError, ValueError):
+            return None
+        return days if days > 0 else None
+
     # Metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

@@ -283,6 +283,11 @@ class Settings(BaseSettings):
     # Twilio SMS inbound webhooks (chat eval; public API host, optional override)
     TWILIO_WEBHOOK_BASE_URL: str = ""
 
+    # Meta WhatsApp Cloud webhooks (chat eval inbound replies)
+    META_WHATSAPP_WEBHOOK_BASE_URL: str = ""
+    META_WHATSAPP_WEBHOOK_VERIFY_TOKEN: str = ""
+    META_WHATSAPP_APP_SECRET: str = ""
+
     # Telnyx voice + SMS webhooks (public API host, optional override)
     TELNYX_WEBHOOK_BASE_URL: str = ""
 
@@ -993,6 +998,15 @@ def load_config_from_file(config_path: str) -> None:
         twilio_cfg = config_data["twilio"]
         if twilio_cfg.get("webhook_base_url"):
             settings.TWILIO_WEBHOOK_BASE_URL = str(twilio_cfg["webhook_base_url"]).strip()
+
+    if "meta_whatsapp" in config_data:
+        meta_cfg = config_data["meta_whatsapp"]
+        if meta_cfg.get("webhook_base_url"):
+            settings.META_WHATSAPP_WEBHOOK_BASE_URL = str(meta_cfg["webhook_base_url"]).strip()
+        if meta_cfg.get("webhook_verify_token"):
+            settings.META_WHATSAPP_WEBHOOK_VERIFY_TOKEN = str(meta_cfg["webhook_verify_token"]).strip()
+        if meta_cfg.get("app_secret"):
+            settings.META_WHATSAPP_APP_SECRET = str(meta_cfg["app_secret"]).strip()
 
     if "telnyx" in config_data:
         telnyx_cfg = config_data["telnyx"]

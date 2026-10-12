@@ -7,6 +7,7 @@
     "evaluators",
     "metrics",
     "metrics-studio",
-    "alerting"
+    "alerting",
+    "alerting-and-cron-coverage"
   ]
 }
