@@ -138,6 +138,49 @@ def test_vapi_hydrate_fetches_call_when_list_has_no_audio():
     assert "hello" in call.transcript
 
 
+def test_retell_list_calls_uses_v3_agent_filter():
+    from app.services.voice_providers.historical.base import TimeSlice
+    from app.services.voice_providers.historical.retell import (
+        RETELL_LIST_CALLS_URL,
+        RetellHistoricalAdapter,
+    )
+
+    captured: dict = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"items": [], "has_more": False}
+
+    adapter = RetellHistoricalAdapter.__new__(RetellHistoricalAdapter)
+    adapter._api_key = "k"
+    import app.services.voice_providers.historical.retell as retell_mod
+
+    def _post(url, *args, **kwargs):
+        captured["url"] = url
+        captured["json"] = kwargs.get("json")
+        return _Resp()
+
+    original = retell_mod.requests.post
+    retell_mod.requests.post = _post
+    try:
+        window = TimeSlice(
+            slice_id=0,
+            slice_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            slice_end=datetime(2026, 1, 2, tzinfo=timezone.utc),
+            agent_id="agent_abc123",
+        )
+        adapter.list_page(window, None)
+        assert captured["url"] == RETELL_LIST_CALLS_URL
+        fc = captured["json"]["filter_criteria"]
+        assert fc.get("agent") == [{"agent_id": "agent_abc123"}]
+        assert "agent_id" not in fc
+    finally:
+        retell_mod.requests.post = original
+
+
 def test_retell_pagination_stops_on_repeated_cursor():
     from app.services.voice_providers.historical.base import TimeSlice
     from app.services.voice_providers.historical.retell import (

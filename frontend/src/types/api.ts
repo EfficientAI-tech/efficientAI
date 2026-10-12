@@ -1886,7 +1886,12 @@ export interface PromptPushRecord {
 
 export interface PromptPushPreview {
   base_prompt: string
+  live_prompt: string
   composed_prompt: string
+  saved_prompt_matches_live?: boolean | null
+  imported_agent_name?: string | null
+  partial_current_version?: number
+  partial_next_version?: number
   accepted_count: number
   rejected_count: number
   pending_count: number

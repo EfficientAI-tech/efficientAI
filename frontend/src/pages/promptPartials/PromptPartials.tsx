@@ -810,14 +810,15 @@ export default function PromptPartials() {
                               Close comparison
                             </button>
                           </div>
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div className="bg-green-50 border border-green-200 rounded-lg p-4 prose prose-sm max-w-none">
-                              <ReactMarkdown>{partialDetail?.content || selectedPartial.content}</ReactMarkdown>
-                            </div>
-                            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 prose prose-sm max-w-none">
-                              <ReactMarkdown>{compareVersion.content}</ReactMarkdown>
-                            </div>
-                          </div>
+                          <PromptLineDiff
+                            leftLabel={`v${compareVersion.version}`}
+                            rightLabel={`v${partialDetail?.current_version || selectedPartial.current_version} (current)`}
+                            before={compareVersion.content}
+                            after={partialDetail?.content || selectedPartial.content}
+                            defaultView="split"
+                            showViewToggle
+                            maxHeightClass="max-h-[32rem]"
+                          />
                         </div>
                       ) : isDetailLoading ? (
                         <div className="flex items-center justify-center h-32">
@@ -1101,26 +1102,15 @@ export default function PromptPartials() {
                             Close comparison
                           </button>
                         </div>
-                        <div className="grid grid-cols-2 gap-4">
-                          <div>
-                            <div className="text-xs font-medium text-gray-500 mb-2 flex items-center gap-1">
-                              <span className="inline-block w-2 h-2 rounded-full bg-green-500" />
-                              Current (v{partialDetail?.current_version || selectedPartial.current_version})
-                            </div>
-                            <div className="bg-green-50 border border-green-200 rounded-lg p-4 prose prose-sm max-w-none">
-                              <ReactMarkdown>{partialDetail?.content || selectedPartial.content}</ReactMarkdown>
-                            </div>
-                          </div>
-                          <div>
-                            <div className="text-xs font-medium text-gray-500 mb-2 flex items-center gap-1">
-                              <span className="inline-block w-2 h-2 rounded-full bg-blue-500" />
-                              Version {compareVersion.version}
-                            </div>
-                            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 prose prose-sm max-w-none">
-                              <ReactMarkdown>{compareVersion.content}</ReactMarkdown>
-                            </div>
-                          </div>
-                        </div>
+                        <PromptLineDiff
+                          leftLabel={`v${compareVersion.version}`}
+                          rightLabel={`v${partialDetail?.current_version || selectedPartial.current_version} (current)`}
+                          before={compareVersion.content}
+                          after={partialDetail?.content || selectedPartial.content}
+                          defaultView="split"
+                          showViewToggle
+                          maxHeightClass="max-h-[32rem]"
+                        />
                       </div>
                     ) : isDetailLoading ? (
                       <div className="flex items-center justify-center h-32">
@@ -1177,9 +1167,16 @@ export default function PromptPartials() {
                           {version.change_summary && (
                             <p className="text-xs text-gray-500 mt-1">{version.change_summary}</p>
                           )}
-                          <div className="flex items-center gap-1 mt-1 text-xs text-gray-400">
-                            <Clock className="h-3 w-3" />
-                            {format(new Date(version.created_at), 'MMM d, yyyy HH:mm')}
+                          <div className="flex flex-col gap-0.5 mt-1 text-xs text-gray-400">
+                            <div className="flex items-center gap-1">
+                              <Clock className="h-3 w-3 shrink-0" />
+                              {format(new Date(version.created_at), 'MMM d, yyyy HH:mm')}
+                            </div>
+                            {version.created_by ? (
+                              <p className="pl-4 text-gray-500 truncate" title={version.created_by}>
+                                {version.created_by}
+                              </p>
+                            ) : null}
                           </div>
                           <div className="flex items-center gap-2 mt-2">
                             <button
@@ -1283,7 +1280,15 @@ export default function PromptPartials() {
                 {rollbackPreview.data.block_reason ? (
                   <p className="text-sm text-amber-700">{rollbackPreview.data.block_reason}</p>
                 ) : null}
-                <PromptLineDiff before={rollbackPreview.data.live_prompt} after={rollbackPreview.data.version_prompt} />
+                <PromptLineDiff
+                  leftLabel="Live provider prompt"
+                  rightLabel={`v${rollbackVersion} (rollback target)`}
+                  before={rollbackPreview.data.live_prompt}
+                  after={rollbackPreview.data.version_prompt}
+                  defaultView="split"
+                  showViewToggle
+                  maxHeightClass="max-h-[28rem]"
+                />
                 <label className="block text-sm text-gray-700">
                   Type confirm to push this prompt live
                   <input

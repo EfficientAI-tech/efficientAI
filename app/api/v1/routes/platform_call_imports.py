@@ -118,9 +118,14 @@ def _raise_for_voice_provider_http(err: requests.HTTPError) -> None:
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Voice platform rate limit reached. Try again in a few minutes.",
         ) from err
+    detail = f"Voice platform request failed (HTTP {code})."
+    if response is not None and response.text:
+        snippet = response.text.strip().replace("\n", " ")[:240]
+        if snippet:
+            detail = f"{detail} {snippet}"
     raise HTTPException(
         status_code=status.HTTP_502_BAD_GATEWAY,
-        detail=f"Voice platform request failed (HTTP {code}).",
+        detail=detail,
     ) from err
 
 

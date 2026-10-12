@@ -119,7 +119,7 @@ def prompt_improvements_state_from_raw(
         model=raw.get("model"),
         error_message=raw.get("error_message"),
         is_stale=is_stale,
-        require_review=raw.get("require_review", True) is not False,
+        require_review=True,
     )
 
 

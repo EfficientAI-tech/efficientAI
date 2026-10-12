@@ -5493,17 +5493,18 @@ class PromptImprovementReviewUpdate(BaseModel):
     edited_text: Optional[str] = None
 
 
-class PromptImprovementSettingsUpdate(BaseModel):
-    require_review: bool
-
-
 class PromptPushConfirm(BaseModel):
     confirm: str
 
 
 class PromptPushPreviewResponse(BaseModel):
     base_prompt: str
+    live_prompt: str = ""
     composed_prompt: str
+    saved_prompt_matches_live: Optional[bool] = None
+    imported_agent_name: Optional[str] = None
+    partial_current_version: int = 1
+    partial_next_version: int = 1
     accepted_count: int = 0
     rejected_count: int = 0
     pending_count: int = 0

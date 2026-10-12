@@ -88,7 +88,6 @@ from app.models.schemas import (
     EvaluationPromptImprovementsRequest,
     EvaluationPromptImprovementsState,
     PromptImprovementReviewUpdate,
-    PromptImprovementSettingsUpdate,
     PromptPushConfirm,
     PromptPushPreviewResponse,
     PromptPushResponse,
@@ -7125,29 +7124,6 @@ async def review_call_import_evaluation_prompt_improvement(
     except PromptPushError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     stamp_evaluation_actor(evaluation, principal)
-    db.commit()
-    db.refresh(evaluation)
-    return _prompt_improvements_payload(evaluation) or EvaluationPromptImprovementsState(status="idle")
-
-
-@router.patch(
-    "/{eval_id}/prompt-improvements/settings",
-    response_model=EvaluationPromptImprovementsState,
-    operation_id="updateCallImportEvaluationPromptImprovementSettings",
-)
-async def update_call_import_evaluation_prompt_improvement_settings(
-    call_import_id: UUID,
-    eval_id: UUID,
-    body: PromptImprovementSettingsUpdate,
-    api_key: str = Depends(get_api_key),
-    organization_id: UUID = Depends(get_organization_id),
-    db: Session = Depends(get_db),
-) -> EvaluationPromptImprovementsState:
-    del api_key
-    from app.services.call_import_prompt_push import set_require_review
-
-    _, evaluation = _load_evaluation_for_prompt_push(db, call_import_id, eval_id, organization_id)
-    set_require_review(evaluation, body.require_review)
     db.commit()
     db.refresh(evaluation)
     return _prompt_improvements_payload(evaluation) or EvaluationPromptImprovementsState(status="idle")

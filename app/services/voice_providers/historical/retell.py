@@ -36,6 +36,14 @@ def _paginated_rows(data: Any) -> List[Any]:
     return []
 
 
+def _retell_agent_filter(agent_id: Optional[str]) -> dict[str, list[dict[str, str]]]:
+    """Retell v3 list-calls / list-chats expect ``agent``, not legacy ``agent_id``."""
+    cleaned = (agent_id or "").strip()
+    if not cleaned:
+        return {}
+    return {"agent": [{"agent_id": cleaned}]}
+
+
 def _next_pagination_key(
     data: Any,
     cursor: Optional[str],
@@ -74,7 +82,7 @@ class RetellHistoricalAdapter:
             return self._list_chat_page(slice, cursor, page_size=page_size)
 
         if slice.agent_id:
-            body["filter_criteria"]["agent_id"] = [slice.agent_id]
+            body["filter_criteria"].update(_retell_agent_filter(slice.agent_id))
         if cursor:
             body["pagination_key"] = cursor
 
@@ -142,7 +150,7 @@ class RetellHistoricalAdapter:
             "limit": min(page_size, 1000),
         }
         if slice.agent_id:
-            body["filter_criteria"]["agent_id"] = [slice.agent_id]
+            body["filter_criteria"].update(_retell_agent_filter(slice.agent_id))
         if cursor:
             body["pagination_key"] = cursor
         response = requests.post(

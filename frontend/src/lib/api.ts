@@ -2999,18 +2999,6 @@ class ApiClient {
     return response.data
   }
 
-  async updateCallImportEvaluationPromptImprovementSettings(
-    callImportId: string,
-    evaluationId: string,
-    data: { require_review: boolean },
-  ): Promise<import('../types/api').EvaluationPromptImprovementsState> {
-    const response = await this.client.patch(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/prompt-improvements/settings`,
-      data,
-    )
-    return response.data
-  }
-
   async previewCallImportEvaluationPromptPush(
     callImportId: string,
     evaluationId: string,

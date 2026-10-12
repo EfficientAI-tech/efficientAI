@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { AlertTriangle, Check, ExternalLink, GitBranch, Loader2, Pencil, Sparkles, X } from 'lucide-react'
@@ -8,7 +9,7 @@ import type { LLMGenerationConfig } from '../../../config/llmGenerationParams'
 import { apiClient } from '../../../lib/api'
 import { getApiErrorMessage } from '../../../lib/apiErrors'
 import AgentFlowChart from '../../promptPartials/components/AgentFlowChart'
-import PromptLineDiff from './PromptLineDiff'
+import PromptLineDiff, { PromptDiffViewToggle, type PromptDiffView } from './PromptLineDiff'
 import type {
   AgentFlowGraph,
   EvaluationMetricClustersState,
@@ -70,8 +71,26 @@ export default function MetricPromptImprovementsPanel({
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draftText, setDraftText] = useState('')
   const [pushPreview, setPushPreview] = useState<PromptPushPreview | null>(null)
+  const [pushConfirmOpen, setPushConfirmOpen] = useState(false)
+  const [pushModalStep, setPushModalStep] = useState<'review' | 'confirm'>('review')
   const [confirmText, setConfirmText] = useState('')
   const [pushError, setPushError] = useState<string | null>(null)
+  const [diffView, setDiffView] = useState<PromptDiffView>('split')
+
+  useEffect(() => {
+    if (!pushConfirmOpen) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = previousOverflow
+    }
+  }, [pushConfirmOpen])
+
+  const closePushModal = () => {
+    setPushConfirmOpen(false)
+    setPushModalStep('review')
+    setConfirmText('')
+  }
 
   const { data: importedAgents = [] } = useQuery<ImportedAgent[]>({
     queryKey: ['imported-agents-picker'],
@@ -178,21 +197,14 @@ export default function MetricPromptImprovementsPanel({
     onError: (e: unknown) => setError(getApiErrorMessage(e, 'Failed to save the review.')),
   })
 
-  const settingsMutation = useMutation({
-    mutationFn: (requireReview: boolean) =>
-      apiClient.updateCallImportEvaluationPromptImprovementSettings(callImportId, evaluationId, {
-        require_review: requireReview,
-      }),
-    onSuccess: () => onGenerated(),
-    onError: (e: unknown) => setError(getApiErrorMessage(e, 'Failed to update review settings.')),
-  })
-
   const previewMutation = useMutation({
     mutationFn: () => apiClient.previewCallImportEvaluationPromptPush(callImportId, evaluationId),
     onSuccess: (preview) => {
       setPushError(null)
       setConfirmText('')
       setPushPreview(preview)
+      setPushModalStep('review')
+      setPushConfirmOpen(true)
     },
     onError: (e: unknown) => setPushError(getApiErrorMessage(e, 'Failed to prepare the prompt diff.')),
   })
@@ -201,6 +213,8 @@ export default function MetricPromptImprovementsPanel({
     mutationFn: () => apiClient.pushCallImportEvaluationPrompt(callImportId, evaluationId, 'confirm'),
     onSuccess: () => {
       setPushPreview(null)
+      setPushConfirmOpen(false)
+      setPushModalStep('review')
       setConfirmText('')
       setPushError(null)
       onGenerated()
@@ -444,19 +458,31 @@ export default function MetricPromptImprovementsPanel({
 
       {improvementsState?.suggestions?.length ? (
         <div className="space-y-3 min-w-0">
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
+            <span className="text-xs font-medium text-gray-600">Suggestion diffs</span>
+            <PromptDiffViewToggle view={diffView} onChange={setDiffView} />
+          </div>
           {improvementsState.suggestions.map((suggestion, index) => {
             const isActive = activeSuggestionId === suggestion.id
             const changeType = suggestion.change_type || 'add'
             const changeLabel = changeType === 'edit' ? 'Edit existing' : 'New addition'
+            const reviewStatus = suggestion.review_status || 'pending'
+            const isAccepted = reviewStatus === 'accepted'
+            const isRejected = reviewStatus === 'rejected'
+            const isPending = !isAccepted && !isRejected
+
+            const cardSurfaceClass = isAccepted
+              ? 'border-emerald-300 bg-emerald-50/50 ring-1 ring-emerald-200/80'
+              : isRejected
+                ? 'border-rose-200 bg-rose-50/35 ring-1 ring-rose-100'
+                : isActive
+                  ? 'border-primary-300 bg-primary-50/30'
+                  : 'border-gray-200 bg-gray-50/60'
 
             return (
               <article
                 key={suggestion.id}
-                className={`rounded-md border p-3 space-y-2 min-w-0 overflow-hidden transition-colors ${
-                  isActive
-                    ? 'border-primary-300 bg-primary-50/30'
-                    : 'border-gray-200 bg-gray-50/60'
-                }`}
+                className={`rounded-md border p-3 space-y-2 min-w-0 overflow-hidden transition-all duration-200 ${cardSurfaceClass}`}
               >
                 <div className="flex flex-wrap items-center gap-2 min-w-0">
                   <button
@@ -523,12 +549,16 @@ export default function MetricPromptImprovementsPanel({
                 ) : null}
 
                 <PromptLineDiff
+                  view={diffView}
+                  leftLabel={changeType === 'edit' ? 'Current excerpt' : '—'}
+                  rightLabel={changeType === 'edit' ? 'Suggested text' : 'New section'}
                   before={changeType === 'edit' ? suggestion.anchor_excerpt || '' : ''}
                   after={
                     suggestion.edited_text?.trim()
                       ? suggestion.edited_text
                       : suggestion.suggested_text
                   }
+                  maxHeightClass="max-h-64"
                 />
 
                 {editingId === suggestion.id ? (
@@ -564,61 +594,81 @@ export default function MetricPromptImprovementsPanel({
                     </div>
                   </div>
                 ) : (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span
-                      className={`text-[10px] uppercase tracking-wide font-semibold rounded border px-1.5 py-0.5 ${
-                        suggestion.review_status === 'accepted'
-                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                          : suggestion.review_status === 'rejected'
-                            ? 'bg-rose-50 text-rose-700 border-rose-200'
-                            : 'bg-gray-100 text-gray-600 border-gray-200'
-                      }`}
-                    >
-                      {suggestion.review_status || 'pending'}
-                    </span>
-                    <button
-                      type="button"
-                      disabled={reviewMutation.isPending}
-                      onClick={() =>
-                        reviewMutation.mutate({
-                          suggestion_id: suggestion.id,
-                          review_status: 'accepted',
-                        })
-                      }
-                      className="inline-flex items-center gap-1 rounded border border-emerald-300 bg-white px-2 py-1 text-xs font-medium text-emerald-800"
-                    >
-                      <Check className="h-3 w-3" />
-                      Accept this change
-                    </button>
-                    <button
-                      type="button"
-                      disabled={reviewMutation.isPending}
-                      onClick={() =>
-                        reviewMutation.mutate({
-                          suggestion_id: suggestion.id,
-                          review_status: 'rejected',
-                        })
-                      }
-                      className="inline-flex items-center gap-1 rounded border border-rose-300 bg-white px-2 py-1 text-xs font-medium text-rose-800"
-                    >
-                      <X className="h-3 w-3" />
-                      Reject this change
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditingId(suggestion.id)
-                        setDraftText(
-                          suggestion.edited_text?.trim()
-                            ? suggestion.edited_text
-                            : suggestion.suggested_text,
-                        )
-                      }}
-                      className="inline-flex items-center gap-1 rounded border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-700"
-                    >
-                      <Pencil className="h-3 w-3" />
-                      Edit manually
-                    </button>
+                  <div className="space-y-2">
+                    {isAccepted ? (
+                      <p className="inline-flex items-center gap-1.5 rounded-md border border-emerald-300 bg-emerald-100 px-2.5 py-1.5 text-xs font-medium text-emerald-900">
+                        <Check className="h-3.5 w-3.5 shrink-0" />
+                        Accepted — included when you push the live prompt
+                      </p>
+                    ) : null}
+                    {isRejected ? (
+                      <p className="inline-flex items-center gap-1.5 rounded-md border border-rose-200 bg-rose-100/80 px-2.5 py-1.5 text-xs font-medium text-rose-900">
+                        <X className="h-3.5 w-3.5 shrink-0" />
+                        Rejected — excluded from the composed prompt
+                      </p>
+                    ) : null}
+                    <div className="flex flex-wrap items-center gap-2">
+                      {isPending ? (
+                        <span
+                          className="text-[10px] uppercase tracking-wide font-semibold rounded border px-1.5 py-0.5 bg-gray-100 text-gray-600 border-gray-200"
+                        >
+                          pending
+                        </span>
+                      ) : null}
+                      <button
+                        type="button"
+                        disabled={reviewMutation.isPending || isAccepted}
+                        onClick={() =>
+                          reviewMutation.mutate({
+                            suggestion_id: suggestion.id,
+                            review_status: 'accepted',
+                          })
+                        }
+                        className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition ${
+                          isAccepted
+                            ? 'border border-emerald-500 bg-emerald-600 text-white cursor-default shadow-sm'
+                            : 'border border-emerald-300 bg-white text-emerald-800 hover:bg-emerald-50'
+                        }`}
+                      >
+                        <Check className="h-3 w-3" />
+                        {isAccepted ? 'Accepted' : 'Accept this change'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={reviewMutation.isPending || isRejected}
+                        onClick={() =>
+                          reviewMutation.mutate({
+                            suggestion_id: suggestion.id,
+                            review_status: 'rejected',
+                          })
+                        }
+                        className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition ${
+                          isRejected
+                            ? 'border border-rose-400 bg-rose-600 text-white cursor-default shadow-sm'
+                            : 'border border-rose-300 bg-white text-rose-800 hover:bg-rose-50'
+                        }`}
+                      >
+                        <X className="h-3 w-3" />
+                        {isRejected ? 'Rejected' : 'Reject this change'}
+                      </button>
+                      {!isRejected ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingId(suggestion.id)
+                            setDraftText(
+                              suggestion.edited_text?.trim()
+                                ? suggestion.edited_text
+                                : suggestion.suggested_text,
+                            )
+                          }}
+                          className="inline-flex items-center gap-1 rounded border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                        >
+                          <Pencil className="h-3 w-3" />
+                          Edit manually
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
                 )}
               </article>
@@ -631,18 +681,15 @@ export default function MetricPromptImprovementsPanel({
 
       {improvementsState?.suggestions?.length ? (
         <div className="rounded-md border border-gray-200 bg-white p-3 space-y-3">
-          <label className="flex items-center justify-between gap-3 text-sm text-gray-800">
-            <span>Require review before push</span>
-            <input
-              type="checkbox"
-              checked={improvementsState.require_review !== false}
-              disabled={settingsMutation.isPending}
-              onChange={(event) => settingsMutation.mutate(event.target.checked)}
-            />
-          </label>
+          <p className="text-sm text-gray-800">
+            Accept or reject every suggestion, review the full diff against the live provider prompt,
+            then type <span className="font-mono text-gray-900">confirm</span> to push. Review is
+            always required.
+          </p>
           <p className="text-xs text-gray-500">
-            Accepted changes are applied to the imported agent prompt. Rejected changes stay out.
-            The live agent is updated only after the full diff and a typed confirm.
+            Push updates the voice agent tied to this platform import (not the imported-agent copy
+            alone). We fetch the live prompt from the provider and compare it to your saved agent
+            prompt before writing.
           </p>
           <button
             type="button"
@@ -650,43 +697,228 @@ export default function MetricPromptImprovementsPanel({
             onClick={() => previewMutation.mutate()}
             className="rounded-md bg-gray-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
           >
-            {previewMutation.isPending ? 'Preparing diff…' : 'Review full prompt'}
+            {previewMutation.isPending ? 'Fetching live prompt…' : 'Review & push to live agent'}
           </button>
-          {pushError ? <p className="text-xs text-red-600">{pushError}</p> : null}
-          {pushPreview ? (
-            <div className="space-y-2">
-              <p className="text-xs text-gray-700">
-                {pushPreview.external_agent_name
-                  ? `Target: ${pushPreview.provider || 'provider'} · ${pushPreview.external_agent_name}`
-                  : 'Target agent'}
-                {pushPreview.block_reason ? ` · ${pushPreview.block_reason}` : ''}
-              </p>
-              <PromptLineDiff before={pushPreview.base_prompt} after={pushPreview.composed_prompt} />
-              <label className="block text-xs text-gray-700">
-                Type confirm to push this prompt live
-                <input
-                  value={confirmText}
-                  onChange={(event) => setConfirmText(event.target.value)}
-                  autoComplete="off"
-                  className="mt-1 w-full max-w-xs rounded border border-gray-300 px-2 py-1.5 text-sm"
-                />
-              </label>
-              <button
-                type="button"
-                disabled={
-                  pushMutation.isPending ||
-                  !pushPreview.can_push ||
-                  confirmText !== 'confirm'
-                }
-                onClick={() => pushMutation.mutate()}
-                className="rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
-              >
-                {pushMutation.isPending ? 'Pushing…' : 'Push live prompt'}
-              </button>
-            </div>
-          ) : null}
+          {pushError && !pushConfirmOpen ? <p className="text-xs text-red-600">{pushError}</p> : null}
         </div>
       ) : null}
+
+      {pushConfirmOpen && pushPreview && typeof document !== 'undefined'
+        ? createPortal(
+            <div className="fixed inset-0 z-[9999] overflow-y-auto">
+              <div className="flex min-h-full items-center justify-center p-4 sm:p-6">
+                <div
+                  className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
+                  onClick={closePushModal}
+                  aria-hidden
+                />
+                <div
+                  className="push-modal-panel relative flex w-full max-w-4xl max-h-[min(90vh,880px)] flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-xl"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="push-live-prompt-title"
+                >
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-amber-100 bg-amber-50/70 px-4 py-2.5 sm:px-5">
+              <div className="min-w-0 flex-1">
+                <h3 id="push-live-prompt-title" className="text-base font-semibold leading-tight text-gray-900">
+                  {pushModalStep === 'review' ? 'Review prompt changes' : 'Confirm live update'}
+                </h3>
+                <p className="text-sm text-gray-600 truncate">
+                  {pushPreview.provider || 'provider'} · {pushPreview.external_agent_name || 'Agent'}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+                <span
+                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium sm:text-sm sm:px-2.5 sm:py-1 ${
+                    pushModalStep === 'review'
+                      ? 'border-amber-300 bg-white text-amber-950'
+                      : 'border-transparent text-gray-500'
+                  }`}
+                >
+                  <span className="font-semibold text-amber-800">1</span>
+                  <span className="hidden sm:inline">Review</span>
+                </span>
+                <span className="text-amber-300" aria-hidden>→</span>
+                <span
+                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium sm:text-sm sm:px-2.5 sm:py-1 ${
+                    pushModalStep === 'confirm'
+                      ? 'border-amber-300 bg-white text-amber-950'
+                      : 'border-transparent text-gray-500'
+                  }`}
+                >
+                  <span className="font-semibold text-amber-800">2</span>
+                  <span className="hidden sm:inline">Confirm</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={closePushModal}
+                  className="ml-1 rounded-md p-1 text-gray-400 hover:bg-amber-100/80 hover:text-gray-700"
+                  aria-label="Close"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+
+            <div className="shrink-0 border-b border-gray-100 bg-white px-4 py-2 text-sm text-gray-700 sm:px-5">
+              <p className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                <span>
+                  <span className="font-medium text-gray-900">Live:</span>{' '}
+                  {pushPreview.external_agent_name || '—'}
+                </span>
+                <span className="hidden sm:inline text-gray-300">|</span>
+                <span>
+                  <span className="font-medium text-gray-900">Imported:</span>{' '}
+                  {pushPreview.imported_agent_name || improvementsState?.imported_agent_name || '—'}
+                </span>
+                <span className="hidden sm:inline text-gray-300">|</span>
+                <span>
+                  <span className="font-medium text-gray-900">Version</span> v
+                  {pushPreview.partial_current_version ?? 1}
+                  {(pushPreview.partial_next_version ?? 1) > (pushPreview.partial_current_version ?? 1)
+                    ? ` → v${pushPreview.partial_next_version}`
+                    : ''}
+                </span>
+                <span className="hidden sm:inline text-gray-300">|</span>
+                <span className="text-amber-900">
+                  <span className="font-medium text-gray-900">Accepted</span> {pushPreview.accepted_count}
+                </span>
+              </p>
+              {pushPreview.external_agent_id ? (
+                <p
+                  className="mt-0.5 font-mono text-xs text-gray-400 truncate"
+                  title={pushPreview.external_agent_id}
+                >
+                  {pushPreview.external_agent_id}
+                </p>
+              ) : null}
+            </div>
+
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 py-2 sm:px-5 sm:py-3">
+              {pushPreview.saved_prompt_matches_live === false ? (
+                <div className="flex gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-950">
+                  <AlertTriangle className="h-5 w-5 shrink-0" />
+                  <p>
+                    Live provider prompt does not match your saved imported-agent copy. Align them
+                    before pushing.
+                  </p>
+                </div>
+              ) : null}
+              {pushPreview.block_reason && !pushPreview.can_push ? (
+                <p className="text-sm text-rose-700">{pushPreview.block_reason}</p>
+              ) : null}
+
+              <div
+                key={pushModalStep}
+                className="push-modal-step-enter flex min-h-0 flex-1 flex-col gap-3 overflow-hidden"
+              >
+                {pushModalStep === 'confirm' ? (
+                  <div className="shrink-0 rounded-xl border-2 border-amber-300 bg-amber-50 px-4 py-3 space-y-2.5 shadow-sm">
+                    <p className="text-sm leading-relaxed text-amber-950">
+                      This updates the live prompt on{' '}
+                      <span className="font-semibold">{pushPreview.provider || 'the provider'}</span>,
+                      saves{' '}
+                      <span className="font-semibold">
+                        v{pushPreview.partial_next_version ?? (pushPreview.partial_current_version ?? 1) + 1}
+                      </span>{' '}
+                      on the imported agent, and records a live-push audit entry.
+                    </p>
+                    <label className="block text-sm font-medium text-gray-900">
+                      Type <span className="rounded bg-white px-1.5 py-0.5 font-mono text-amber-900">confirm</span>{' '}
+                      to update the live agent
+                      <input
+                        value={confirmText}
+                        onChange={(event) => setConfirmText(event.target.value)}
+                        autoComplete="off"
+                        autoFocus
+                        placeholder="confirm"
+                        className="mt-2 w-full rounded-lg border-2 border-amber-300 bg-white px-4 py-3 text-base text-gray-900 placeholder:text-gray-400 focus:border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-200"
+                      />
+                    </label>
+                    {pushError ? <p className="text-sm text-red-600">{pushError}</p> : null}
+                  </div>
+                ) : null}
+
+                <div className="flex min-h-0 flex-1 flex-col gap-1.5">
+                  <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
+                    <span className="text-sm font-medium text-gray-800">
+                      {pushModalStep === 'review' ? 'Live vs new prompt' : 'Changes you are applying'}
+                    </span>
+                    <PromptDiffViewToggle view={diffView} onChange={setDiffView} />
+                  </div>
+                  <div className="min-h-0 flex-1">
+                    <PromptLineDiff
+                      view={diffView}
+                      leftLabel="Current live (provider)"
+                      rightLabel="After accepted changes"
+                      before={pushPreview.live_prompt || pushPreview.base_prompt}
+                      after={pushPreview.composed_prompt}
+                      maxHeightClass={
+                        pushModalStep === 'confirm'
+                          ? 'max-h-[min(36vh,380px)]'
+                          : 'max-h-[min(52vh,520px)]'
+                      }
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex shrink-0 justify-between gap-3 border-t border-amber-100 bg-white px-5 py-3">
+              {pushModalStep === 'confirm' ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPushModalStep('review')
+                    setConfirmText('')
+                    setPushError(null)
+                  }}
+                  className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                >
+                  Back to diff
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={closePushModal}
+                  className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+              )}
+              {pushModalStep === 'review' ? (
+                <button
+                  type="button"
+                  disabled={!pushPreview.can_push}
+                  onClick={() => {
+                    setPushModalStep('confirm')
+                    setPushError(null)
+                  }}
+                  className="rounded-lg bg-gray-900 px-5 py-2 text-sm font-medium text-white disabled:opacity-50 hover:bg-gray-800"
+                >
+                  Continue to confirm
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={
+                    pushMutation.isPending ||
+                    !pushPreview.can_push ||
+                    confirmText !== 'confirm'
+                  }
+                  onClick={() => pushMutation.mutate()}
+                  className="rounded-lg bg-amber-700 px-5 py-2 text-sm font-medium text-white disabled:opacity-50 hover:bg-amber-800"
+                >
+                  {pushMutation.isPending ? 'Updating…' : 'Update live agent'}
+                </button>
+              )}
+            </div>
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
     </section>
   )
 }

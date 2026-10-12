@@ -3146,41 +3146,51 @@ export default function CallImportEvaluationDetail() {
               metric{displayMetrics.length === 1 ? '' : 's'}.
             </p>
           </div>
-          <div className="inline-flex border border-gray-200 rounded-lg p-1 bg-gray-50">
+          <div
+            className="inline-flex rounded-md border border-amber-300 bg-amber-50/80 p-0.5"
+            role="tablist"
+            aria-label="Row results view"
+          >
             <button
               type="button"
+              role="tab"
+              aria-selected={resultsTab === 'table'}
               onClick={() => setResultsTab('table')}
-              className={`px-3 py-1.5 text-xs font-medium rounded transition ${
+              className={`inline-flex items-center rounded px-2.5 py-1 text-[13px] font-medium transition ${
                 resultsTab === 'table'
-                  ? 'bg-white text-primary-700 shadow-sm'
+                  ? 'bg-white text-amber-950 shadow-sm'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              <Table className="h-3.5 w-3.5 inline mr-1 -mt-0.5" />
+              <Table className="mr-1 h-3.5 w-3.5 shrink-0" />
               Table
             </button>
             <button
               type="button"
+              role="tab"
+              aria-selected={resultsTab === 'visualizations'}
               onClick={() => setResultsTab('visualizations')}
-              className={`px-3 py-1.5 text-xs font-medium rounded transition ${
+              className={`inline-flex items-center rounded px-2.5 py-1 text-[13px] font-medium transition ${
                 resultsTab === 'visualizations'
-                  ? 'bg-white text-primary-700 shadow-sm'
+                  ? 'bg-white text-amber-950 shadow-sm'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              <BarChart3 className="h-3.5 w-3.5 inline mr-1 -mt-0.5" />
+              <BarChart3 className="mr-1 h-3.5 w-3.5 shrink-0" />
               Visualizations
             </button>
             <button
               type="button"
+              role="tab"
+              aria-selected={resultsTab === 'flow'}
               onClick={() => setResultsTab('flow')}
-              className={`px-3 py-1.5 text-xs font-medium rounded transition ${
+              className={`inline-flex items-center rounded px-2.5 py-1 text-[13px] font-medium transition ${
                 resultsTab === 'flow'
-                  ? 'bg-white text-primary-700 shadow-sm'
+                  ? 'bg-white text-amber-950 shadow-sm'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              <Workflow className="h-3.5 w-3.5 inline mr-1 -mt-0.5" />
+              <Workflow className="mr-1 h-3.5 w-3.5 shrink-0" />
               Flow
             </button>
           </div>
@@ -3763,13 +3773,19 @@ export default function CallImportEvaluationDetail() {
                 }
                 return (
                   <div className="space-y-6">
-                    <div className="inline-flex border border-gray-200 rounded-lg p-1 bg-gray-50 w-fit">
+                    <div
+                      className="inline-flex w-fit rounded-md border border-amber-300 bg-amber-50/80 p-0.5"
+                      role="tablist"
+                      aria-label="Visualization sections"
+                    >
                       <button
                         type="button"
+                        role="tab"
+                        aria-selected={visualizationSubtab === 'quality'}
                         onClick={() => setVisualizationSubtab('quality')}
-                        className={`px-3 py-1.5 text-xs font-medium rounded transition ${
+                        className={`rounded px-2.5 py-1 text-[13px] font-medium transition ${
                           visualizationSubtab === 'quality'
-                            ? 'bg-white text-primary-700 shadow-sm'
+                            ? 'bg-white text-amber-950 shadow-sm'
                             : 'text-gray-600 hover:text-gray-900'
                         }`}
                       >
@@ -3777,10 +3793,12 @@ export default function CallImportEvaluationDetail() {
                       </button>
                       <button
                         type="button"
+                        role="tab"
+                        aria-selected={visualizationSubtab === 'aiInsights'}
                         onClick={() => setVisualizationSubtab('aiInsights')}
-                        className={`px-3 py-1.5 text-xs font-medium rounded transition ${
+                        className={`rounded px-2.5 py-1 text-[13px] font-medium transition ${
                           visualizationSubtab === 'aiInsights'
-                            ? 'bg-white text-primary-700 shadow-sm'
+                            ? 'bg-white text-amber-950 shadow-sm'
                             : 'text-gray-600 hover:text-gray-900'
                         }`}
                       >
@@ -3788,10 +3806,12 @@ export default function CallImportEvaluationDetail() {
                       </button>
                       <button
                         type="button"
+                        role="tab"
+                        aria-selected={visualizationSubtab === 'clusters'}
                         onClick={() => setVisualizationSubtab('clusters')}
-                        className={`px-3 py-1.5 text-xs font-medium rounded transition ${
+                        className={`rounded px-2.5 py-1 text-[13px] font-medium transition ${
                           visualizationSubtab === 'clusters'
-                            ? 'bg-white text-primary-700 shadow-sm'
+                            ? 'bg-white text-amber-950 shadow-sm'
                             : 'text-gray-600 hover:text-gray-900'
                         }`}
                       >
@@ -3799,10 +3819,12 @@ export default function CallImportEvaluationDetail() {
                       </button>
                       <button
                         type="button"
+                        role="tab"
+                        aria-selected={visualizationSubtab === 'improvements'}
                         onClick={() => setVisualizationSubtab('improvements')}
-                        className={`px-3 py-1.5 text-xs font-medium rounded transition ${
+                        className={`rounded px-2.5 py-1 text-[13px] font-medium transition ${
                           visualizationSubtab === 'improvements'
-                            ? 'bg-white text-primary-700 shadow-sm'
+                            ? 'bg-white text-amber-950 shadow-sm'
                             : 'text-gray-600 hover:text-gray-900'
                         }`}
                       >

@@ -84,16 +84,8 @@ def _suggestions(evaluation: CallImportEvaluation) -> List[Any]:
     return items if isinstance(items, list) else []
 
 
-def _require_review(evaluation: CallImportEvaluation) -> bool:
-    raw = evaluation.prompt_improvements if isinstance(evaluation.prompt_improvements, dict) else {}
-    return raw.get("require_review", True) is not False
-
-
-def set_require_review(evaluation: CallImportEvaluation, require_review: bool) -> None:
-    raw = dict(evaluation.prompt_improvements or {})
-    raw["require_review"] = require_review
-    evaluation.prompt_improvements = raw
-    flag_modified(evaluation, "prompt_improvements")
+def _require_review(_evaluation: CallImportEvaluation) -> bool:
+    return True
 
 
 def set_suggestion_review(
@@ -335,6 +327,9 @@ def preview_evaluation_push(
     provider = None
     agent_id = None
     agent_name = None
+    live_prompt: Optional[str] = None
+    saved_matches_live: Optional[bool] = None
+    integration = None
     try:
         agent = single_platform_agent(call_import)
         integration = _load_integration(db, call_import.voice_integration_id, organization_id)
@@ -343,15 +338,34 @@ def preview_evaluation_push(
         agent_name = agent.get("name") or agent_id
     except PromptPushError as exc:
         block_reason = exc.detail
+    if block_reason is None and integration is not None and agent_id:
+        try:
+            live_prompt = fetch_provider_prompt(integration, agent_id) or ""
+            saved_matches_live = normalize_prompt(live_prompt) == normalize_prompt(base)
+            if not saved_matches_live:
+                block_reason = (
+                    "The live agent prompt no longer matches the saved imported agent prompt. "
+                    "Update the imported agent from the provider, then review again."
+                )
+        except Exception as exc:
+            block_reason = f"Could not read the live prompt: {exc}"
     if block_reason is None and require_review and pending:
         block_reason = "Accept or reject every suggestion before pushing."
     if block_reason is None and accepted == 0:
         block_reason = "Accept at least one change before pushing."
     if block_reason is None and normalize_prompt(composed) == normalize_prompt(base):
         block_reason = "Accepted changes do not alter the prompt."
+    content_changes = normalize_prompt(composed) != normalize_prompt(base)
+    current_version = int(getattr(partial, "current_version", None) or 1)
+    next_version = current_version + 1 if content_changes else current_version
     return {
         "base_prompt": base,
+        "live_prompt": live_prompt or "",
         "composed_prompt": composed,
+        "saved_prompt_matches_live": saved_matches_live,
+        "imported_agent_name": getattr(partial, "name", None),
+        "partial_current_version": current_version,
+        "partial_next_version": next_version,
         "accepted_count": accepted,
         "rejected_count": rejected,
         "pending_count": pending,
