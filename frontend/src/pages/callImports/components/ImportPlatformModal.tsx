@@ -91,6 +91,7 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
   const [importName, setImportName] = useState('')
   const [nameTouched, setNameTouched] = useState(false)
   const [importProviderTranscript, setImportProviderTranscript] = useState(true)
+  const [agentId, setAgentId] = useState('')
   const [preview, setPreview] = useState<{
     recordings_in_window: number
     recordings_count_complete: boolean
@@ -139,6 +140,7 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
     setNameTouched(false)
     setPreview(null)
     setStartedImportId(null)
+    setAgentId('')
     const end = new Date()
     end.setMinutes(end.getMinutes() - 15)
     const start = new Date(end)
@@ -159,11 +161,28 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
     setWindowEnd(toDatetimeLocalValue(end))
   }
 
+  const { data: agents = [], isFetching: agentsLoading, isError: agentsError } = useQuery({
+    queryKey: ['platform-import-agents', integrationId],
+    queryFn: () => apiClient.listPlatformImportAgents(integrationId),
+    enabled: open && Boolean(integrationId),
+  })
+
+  const selectedAgent = agents.find((agent) => agent.id === agentId)
+  const splitsByMedium = agents.some((agent) => agent.medium === 'voice' || agent.medium === 'chat')
+  const voiceAgents = agents.filter((agent) => agent.medium !== 'chat')
+  const chatAgents = agents.filter((agent) => agent.medium === 'chat')
+
+  const chatAgent = selectedAgent?.medium === 'chat'
   const platformFilters = useMemo(
     () => ({
-      import_provider_transcript: importProviderTranscript,
+      import_provider_transcript: chatAgent ? true : importProviderTranscript,
+      agent_ids: agentId && agentId !== 'all' ? [agentId] : [],
+      medium: chatAgent ? ('chat' as const) : selectedAgent?.medium === 'voice' ? ('voice' as const) : undefined,
+      agents: selectedAgent
+        ? [{ id: selectedAgent.id, name: selectedAgent.name, medium: selectedAgent.medium ?? null }]
+        : [],
     }),
-    [importProviderTranscript],
+    [chatAgent, importProviderTranscript, agentId, selectedAgent],
   )
 
   const previewMutation = useMutation({
@@ -211,7 +230,8 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
     windowStart &&
     windowEnd &&
     windowEnd > windowStart &&
-    importName.trim().length > 0
+    importName.trim().length > 0 &&
+    agentId.length > 0
 
   if (!open) return null
 
@@ -229,7 +249,7 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
         <div className="flex items-start justify-between px-6 py-4 border-b border-gray-100">
           <div>
             <h2 id="platform-import-title" className="text-lg font-semibold text-gray-900">
-              Import calls
+              Import data
             </h2>
           </div>
           <button
@@ -292,6 +312,7 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
                       onClick={() => {
                         setPlatform(p.id)
                         setIntegrationId('')
+                        setAgentId('')
                         setStep('configure')
                       }}
                       className={`text-left rounded-lg border-2 p-4 transition-all ${
@@ -319,29 +340,53 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
           )}
 
           {step === 'configure' && platformMeta && (
-            <>
-              <div className="flex items-center gap-3 p-3 rounded-lg bg-primary-50 border border-primary-100">
-                {getIntegrationPlatformLogo(platformMeta.platform) && (
-                  <img
-                    src={getIntegrationPlatformLogo(platformMeta.platform)!}
-                    alt=""
-                    className="h-10 w-10 object-contain"
+            <div className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block text-sm">
+                  <span className="font-medium text-gray-700">Name</span>
+                  <input
+                    className="mt-1.5 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
+                    value={importName}
+                    onChange={(e) => {
+                      setNameTouched(true)
+                      setImportName(e.target.value)
+                    }}
                   />
-                )}
-                <div>
-                  <div className="font-medium text-gray-900">
-                    {getIntegrationPlatformLabel(platformMeta.platform)}
-                  </div>
-                  <button
-                    type="button"
-                    className="text-xs text-primary-600 hover:underline"
-                    onClick={() => setStep('provider')}
-                  >
-                    Change platform
-                  </button>
-                </div>
+                </label>
+                <label className="block text-sm">
+                  <span className="font-medium text-gray-700">Dataset</span>
+                  <input
+                    className="mt-1.5 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
+                    placeholder="e.g. Q4 production calls"
+                    value={dataset}
+                    onChange={(e) => setDataset(e.target.value)}
+                  />
+                </label>
               </div>
 
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-2">
+                  {getIntegrationPlatformLogo(platformMeta.platform) && (
+                    <img
+                      src={getIntegrationPlatformLogo(platformMeta.platform)!}
+                      alt=""
+                      className="h-5 w-5 object-contain"
+                    />
+                  )}
+                  <span className="truncate text-sm font-medium text-gray-900">
+                    {getIntegrationPlatformLabel(platformMeta.platform)}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="shrink-0 text-xs text-primary-600 hover:underline"
+                  onClick={() => setStep('provider')}
+                >
+                  Change platform
+                </button>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">
                   API credential
@@ -358,19 +403,99 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
                     </Link>
                   </div>
                 ) : (
-                  <select
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-                    value={integrationId}
-                    onChange={(e) => setIntegrationId(e.target.value)}
-                  >
-                    <option value="">Select credential</option>
-                    {credentialsForPlatform.map((i) => (
-                      <option key={i.id} value={i.id}>
-                        {i.name || 'Default'} {i.is_default ? '(default)' : ''}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2.5 focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-500">
+                    {getIntegrationPlatformLogo(platformMeta.platform) && (
+                      <img
+                        src={getIntegrationPlatformLogo(platformMeta.platform)!}
+                        alt=""
+                        className="h-4 w-4 shrink-0 object-contain"
+                      />
+                    )}
+                    <select
+                      className="w-full border-0 bg-transparent p-0 text-sm focus:ring-0"
+                      value={integrationId}
+                      onChange={(e) => {
+                        setIntegrationId(e.target.value)
+                        setAgentId('')
+                      }}
+                    >
+                      <option value="">Select credential</option>
+                      {credentialsForPlatform.map((i) => (
+                        <option key={i.id} value={i.id}>
+                          {i.name || 'Default'} {i.is_default ? '(default)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 )}
+              </div>
+
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                  Agent
+                </label>
+                <div className="flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2.5 focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-500 has-[:disabled]:bg-gray-50">
+                  {getIntegrationPlatformLogo(platformMeta.platform) && (
+                    <img
+                      src={getIntegrationPlatformLogo(platformMeta.platform)!}
+                      alt=""
+                      className="h-4 w-4 shrink-0 object-contain"
+                    />
+                  )}
+                  <select
+                    className="w-full border-0 bg-transparent p-0 text-sm focus:ring-0 disabled:text-gray-400"
+                    value={agentId}
+                    disabled={!integrationId || agentsLoading}
+                    onChange={(e) => setAgentId(e.target.value)}
+                  >
+                    <option value="">
+                      {agentsLoading ? 'Loading agents…' : 'Select an agent'}
+                    </option>
+                    {integrationId && !agentsLoading && !agentsError && (
+                      <>
+                        <option value="all">All agents</option>
+                        {splitsByMedium ? (
+                          <>
+                            {voiceAgents.map((agent) => (
+                              <option key={agent.id} value={agent.id}>
+                                {agent.medium === 'voice' ? `${agent.name} · Voice` : agent.name}
+                              </option>
+                            ))}
+                            {chatAgents.map((agent) => (
+                              <option key={agent.id} value={agent.id}>
+                                {agent.name} · Chat
+                              </option>
+                            ))}
+                          </>
+                        ) : (
+                          agents.map((agent) => (
+                            <option key={agent.id} value={agent.id}>
+                              {agent.name}
+                            </option>
+                          ))
+                        )}
+                      </>
+                    )}
+                  </select>
+                </div>
+                {agentsError ? (
+                  <p className="mt-1.5 text-sm text-red-700">
+                    Could not load agents for this credential.
+                  </p>
+                ) : (
+                  <p className="mt-1.5 text-xs text-gray-500">
+                    {!integrationId
+                      ? 'Choose a credential, then select an agent.'
+                      : chatAgent
+                        ? 'Only this agent’s chats are imported, as transcripts. No recording is downloaded.'
+                        : agentId === 'all'
+                          ? 'Every recording for this credential is imported.'
+                          : agentId
+                            ? 'Only this agent’s recordings are imported.'
+                            : 'Select an agent to continue.'}
+                  </p>
+                )}
+              </div>
               </div>
 
               <div>
@@ -396,42 +521,19 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
                 />
               </div>
 
-              <div className="rounded-lg border border-gray-200 bg-gray-50/80 p-3 space-y-2">
-                <label className="flex items-start gap-3 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    className="mt-1 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                    checked={importProviderTranscript}
-                    onChange={(e) => setImportProviderTranscript(e.target.checked)}
-                  />
-                  <span className="text-sm font-medium text-gray-900">
-                    Import production transcript
-                  </span>
-                </label>
-              </div>
-
-              <label className="block text-sm">
-                <span className="font-medium text-gray-700">Name</span>
+              <label className="flex items-center gap-2 cursor-pointer">
                 <input
-                  className="mt-1.5 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
-                  value={importName}
-                  onChange={(e) => {
-                    setNameTouched(true)
-                    setImportName(e.target.value)
-                  }}
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                  checked={chatAgent || importProviderTranscript}
+                  disabled={chatAgent}
+                  onChange={(e) => setImportProviderTranscript(e.target.checked)}
                 />
+                <span className="text-sm font-medium text-gray-900">
+                  {chatAgent ? 'Import chat transcript' : 'Import production transcript'}
+                </span>
               </label>
-
-              <label className="block text-sm">
-                <span className="font-medium text-gray-700">Dataset</span>
-                <input
-                  className="mt-1.5 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
-                  placeholder="e.g. Q4 production calls"
-                  value={dataset}
-                  onChange={(e) => setDataset(e.target.value)}
-                />
-              </label>
-            </>
+            </div>
           )}
 
           {(step === 'preview' || step === 'starting') && platformMeta && preview && (
@@ -448,7 +550,12 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
                         : `${preview.recordings_in_window.toLocaleString()}+`}
                     </div>
                     <div className="text-sm text-primary-900/90 mt-1 font-medium">
-                      recordings in this window
+                      {chatAgent ? 'chats' : 'recordings'} in this window
+                      {agentId === 'all'
+                        ? ' · All agents'
+                        : selectedAgent
+                          ? ` · ${selectedAgent.name}`
+                          : ''}
                     </div>
                   </div>
                   {preview.samples.length > 0 && (

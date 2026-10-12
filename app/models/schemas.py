@@ -3636,6 +3636,14 @@ class CallImportSourceRowSkip(BaseModel):
     )
 
 
+class PlatformImportAgentRef(BaseModel):
+    """Provider agent this platform import was scoped to."""
+
+    id: str
+    name: str
+    medium: Optional[str] = None
+
+
 class CallImportResponse(BaseModel):
     """Summary of a call-import batch."""
 
@@ -3698,6 +3706,7 @@ class CallImportResponse(BaseModel):
     created_by_email: Optional[str] = None
     last_updated_by_email: Optional[str] = None
     voice_integration_id: Optional[UUID] = None
+    platform_agents: List[PlatformImportAgentRef] = Field(default_factory=list)
     window_start: Optional[datetime] = None
     window_end: Optional[datetime] = None
     discovery_status: Optional[str] = None
@@ -3730,6 +3739,7 @@ class CallImportDetailResponse(CallImportResponse):
     diarised_running_rows: int = 0
     diarised_completed_rows: int = 0
     diarised_failed_rows: int = 0
+    platform_progress: Optional[Dict[str, Any]] = None
 
 
 class CallImportListResponse(BaseModel):

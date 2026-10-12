@@ -100,8 +100,13 @@ def _should_skip_item(
     item: HistoricalListItem,
     filters: Dict[str, Any],
 ) -> Optional[SkipReason]:
+    chat = (filters.get("medium") or "").strip().lower() == "chat"
     min_duration = float(filters.get("min_duration_seconds") or 5)
-    if item.duration_seconds is not None and item.duration_seconds < min_duration:
+    if (
+        not chat
+        and item.duration_seconds is not None
+        and item.duration_seconds < min_duration
+    ):
         return SkipReason.TOO_SHORT
     status = (item.status or "").strip().lower()
     allowed = filters.get("call_statuses")
@@ -110,7 +115,14 @@ def _should_skip_item(
         if status and status not in allowed_set:
             return SkipReason.FILTERED_STATUS
     else:
-        if status in {"initiated", "in-progress", "processing", "queued", "ringing"}:
+        if status in {
+            "initiated",
+            "in-progress",
+            "processing",
+            "queued",
+            "ringing",
+            "ongoing",
+        }:
             return SkipReason.IN_PROGRESS
         if status and status not in {
             "done",
@@ -120,7 +132,7 @@ def _should_skip_item(
             "failed",
         }:
             return SkipReason.FILTERED_STATUS
-    if item.has_audio is False:
+    if not chat and item.has_audio is False:
         return SkipReason.NO_AUDIO
     return None
 
@@ -312,6 +324,7 @@ def discover_platform_slice_chunk(
         slice_start=slice_row.slice_start,
         slice_end=slice_row.slice_end,
         agent_id=agent_id,
+        medium=(filters.get("medium") or "").strip().lower() or None,
     )
 
     pages = 0
@@ -545,6 +558,11 @@ def _reserve_and_insert_rows(
                     "started_at": item.started_at.isoformat() if item.started_at else None,
                     "duration_seconds": item.duration_seconds,
                     "status": item.status,
+                    **(
+                        {"medium": "chat"}
+                        if isinstance(item.raw, dict) and item.raw.get("medium") == "chat"
+                        else {}
+                    ),
                 },
                 "status": CallImportRowStatus.PENDING.value,
             }

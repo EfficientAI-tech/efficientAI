@@ -1265,6 +1265,7 @@ export interface CallImport {
   created_by_email?: string | null
   last_updated_by_email?: string | null
   voice_integration_id?: string | null
+  platform_agents?: Array<{ id: string; name: string; medium?: string | null }>
   window_start?: string | null
   window_end?: string | null
   discovery_status?: string | null
@@ -1346,6 +1347,7 @@ export interface CallImportDetail extends CallImport {
   diarised_running_rows: number
   diarised_completed_rows: number
   diarised_failed_rows: number
+  platform_progress?: PlatformImportProgress | null
 }
 
 export interface CallImportListResponse {

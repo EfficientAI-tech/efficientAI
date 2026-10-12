@@ -30,6 +30,7 @@ class TimeSlice:
     slice_start: datetime
     slice_end: datetime
     agent_id: Optional[str] = None
+    medium: Optional[str] = None
 
 
 @dataclass

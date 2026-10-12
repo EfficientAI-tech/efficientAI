@@ -1539,6 +1539,12 @@ export default function CallImportEvaluationDetail() {
 
   const callImport = callImportQuery.data
   const evaluation = evaluationQuery.data
+  const platformAgentLabel =
+    (callImport?.source_format || '').toLowerCase() === 'platform'
+      ? (callImport?.platform_agents || []).length === 0
+        ? 'All agents'
+        : (callImport?.platform_agents || []).map((agent) => agent.name).join(', ')
+      : null
 
   const runMetricIds: string[] = evaluation?.selected_metric_ids ?? []
   const retryClassificationIds = runMetricIds.filter((mid) =>
@@ -2888,6 +2894,12 @@ export default function CallImportEvaluationDetail() {
                   ? 'Evaluated on Diarised transcript'
                   : 'Evaluated on Production transcript'}
               </span>
+              {platformAgentLabel && (
+                <span className="shrink-0">
+                  Agent:{' '}
+                  <span className="font-medium text-gray-800">{platformAgentLabel}</span>
+                </span>
+              )}
               <EvaluationAuditMeta
                 inline
                 showTimestamps={false}

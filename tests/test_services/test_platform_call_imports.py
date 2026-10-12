@@ -6,11 +6,14 @@ from uuid import uuid4
 
 from app.services.call_imports.debounced_rollup import platform_discovery_blocks_terminal_status
 from app.services.call_imports.platform_discovery import (
+    _should_skip_item,
     list_failure_disposition,
     platform_row_id,
     plan_time_slices,
 )
 from app.services.voice_providers.historical.base import (
+    HistoricalListItem,
+    SkipReason,
     build_canonical_recording_url,
     parse_canonical_recording_url,
 )
@@ -38,6 +41,23 @@ def test_plan_time_slices_splits_by_day_and_agent():
     end = datetime(2025, 1, 3, tzinfo=timezone.utc)
     slices = plan_time_slices(start, end, ["agent-a", "agent-b"])
     assert len(slices) == 4
+
+
+def test_chat_import_keeps_transcript_without_audio():
+    item = HistoricalListItem(
+        conversation_id="chat_1",
+        status="ended",
+        has_audio=False,
+        duration_seconds=1,
+    )
+    assert _should_skip_item(item, {"medium": "chat"}) is None
+    voice = HistoricalListItem(
+        conversation_id="call_1",
+        status="ended",
+        has_audio=False,
+        duration_seconds=30,
+    )
+    assert _should_skip_item(voice, {"medium": "voice"}) is SkipReason.NO_AUDIO
 
 
 def test_clear_expired_claims_drops_task_without_live_lease(monkeypatch):

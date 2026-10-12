@@ -2,8 +2,10 @@ import { useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  Blocks,
   ChevronLeft,
   ChevronRight,
+  Download,
   FileAudio,
   FileSpreadsheet,
   Layers,
@@ -29,6 +31,7 @@ import ImportPlatformModal from './components/ImportPlatformModal'
 import PlatformImportProgressDock, {
   usePinPlatformImport,
 } from './components/PlatformImportProgressDock'
+import { usePlatformImportProgressStore } from '../../store/platformImportProgressStore'
 import { platformImportLabel } from './platformImportLabel'
 import { itemsOf } from '../../lib/safeData'
 
@@ -120,14 +123,17 @@ export default function CallImports() {
     queryFn: () => apiClient.listCallImports(queryParams),
     refetchInterval: (query) => {
       const items = itemsOf<CallImport>(query.state.data)
-      const hasActive = items.some(
+      const hasDeleting = items.some((i: CallImport) => i.status === 'deleting')
+      if (hasDeleting) return 4000
+      const active = items.filter(
         (i: CallImport) => i.status === 'pending' || i.status === 'processing',
       )
-      const hasDeleting = items.some(
-        (i: CallImport) => i.status === 'deleting',
+      if (active.length === 0) return false
+      const watched = new Set(
+        usePlatformImportProgressStore.getState().watches.map((watch) => watch.id),
       )
-      if (hasDeleting) return 3000
-      return hasActive ? 5000 : false
+      const uncovered = active.filter((item) => !watched.has(item.id))
+      return uncovered.length > 0 ? 4000 : false
     },
   })
 
@@ -177,12 +183,18 @@ export default function CallImports() {
               else if (activeTab === 'platform') setShowPlatformImport(true)
               else setShowUpload(true)
             }}
-            leftIcon={<Upload className="h-5 w-5" />}
+            leftIcon={
+              activeTab === 'platform' ? (
+                <Download className="h-5 w-5" />
+              ) : (
+                <Upload className="h-5 w-5" />
+              )
+            }
           >
             {activeTab === 'audio'
               ? 'Upload recording'
               : activeTab === 'platform'
-                ? 'New platform import'
+                ? 'Import data'
                 : 'Upload CSV'}
           </Button>
           <Button
@@ -239,8 +251,8 @@ export default function CallImports() {
               : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
           }`}
         >
-          <Phone className="h-4 w-4" />
-          Platforms
+          <Blocks className="h-4 w-4" />
+          Existing platforms
         </button>
       </div>
 
@@ -364,7 +376,11 @@ export default function CallImports() {
           </div>
         ) : items.length === 0 ? (
           <div className="text-center py-12">
-            <Phone className="h-12 w-12 mx-auto mb-3 text-gray-300" />
+            {activeTab === 'platform' ? (
+              <Blocks className="h-12 w-12 mx-auto mb-3 text-gray-300" />
+            ) : (
+              <Phone className="h-12 w-12 mx-auto mb-3 text-gray-300" />
+            )}
             <p className="text-gray-500 mb-3">
               {statusFilter
                 ? 'No imports match this filter.'
@@ -383,12 +399,18 @@ export default function CallImports() {
                   else if (activeTab === 'platform') setShowPlatformImport(true)
                   else setShowUpload(true)
                 }}
-                leftIcon={<Upload className="h-4 w-4" />}
+                leftIcon={
+                  activeTab === 'platform' ? (
+                    <Download className="h-4 w-4" />
+                  ) : (
+                    <Upload className="h-4 w-4" />
+                  )
+                }
               >
                 {activeTab === 'audio'
                   ? 'Upload your first recording'
                   : activeTab === 'platform'
-                    ? 'Import from a platform'
+                    ? 'Import data'
                     : 'Upload your first CSV'}
               </Button>
             )}

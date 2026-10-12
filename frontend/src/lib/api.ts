@@ -2630,6 +2630,8 @@ class ApiClient {
       min_duration_seconds?: number
       speed?: string
       import_provider_transcript?: boolean
+      medium?: 'voice' | 'chat'
+      agents?: Array<{ id: string; name: string; medium?: string | null }>
     }
   }): Promise<{
     recordings_in_window: number
@@ -2661,6 +2663,8 @@ class ApiClient {
       min_duration_seconds?: number
       speed?: string
       import_provider_transcript?: boolean
+      medium?: 'voice' | 'chat'
+      agents?: Array<{ id: string; name: string; medium?: string | null }>
     }
   }, idempotencyKey?: string): Promise<{ id: string; status: string; discovery_status?: string }> {
     const response = await this.client.post('/api/v1/call-imports/platform', payload, {
@@ -2686,7 +2690,9 @@ class ApiClient {
     return response.data
   }
 
-  async listPlatformImportAgents(integrationId: string): Promise<Array<{ id: string; name: string }>> {
+  async listPlatformImportAgents(
+    integrationId: string,
+  ): Promise<Array<{ id: string; name: string; medium?: string | null }>> {
     const response = await this.client.get('/api/v1/call-imports/platform/agents', {
       params: { integration_id: integrationId },
     })

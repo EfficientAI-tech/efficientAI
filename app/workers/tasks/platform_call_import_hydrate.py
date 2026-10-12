@@ -202,10 +202,16 @@ def hydrate_platform_call_import_row(
         )
 
     adapter = get_historical_adapter(integration)
+    raw_columns = dict(row.raw_columns or {}) if isinstance(row.raw_columns, dict) else {}
+    transcript_only = (getattr(call_import, "content_modality", None) or "").lower() == "chat" or (
+        filters.get("medium") or ""
+    ).strip().lower() == "chat"
+    if transcript_only:
+        raw_columns["medium"] = "chat"
     item = HistoricalListItem(
         conversation_id=conversation_id,
-        agent_id=(row.raw_columns or {}).get("agent_id") if isinstance(row.raw_columns, dict) else None,
-        raw=(row.raw_columns or {}) if isinstance(row.raw_columns, dict) else {},
+        agent_id=raw_columns.get("agent_id"),
+        raw=raw_columns,
     )
 
     try:
@@ -245,7 +251,7 @@ def hydrate_platform_call_import_row(
             reason="platform_hydrate_failed",
         )
 
-    import_transcript = bool(filters.get("import_provider_transcript", True))
+    import_transcript = bool(filters.get("import_provider_transcript", True)) or transcript_only
     _apply_provider_transcript(
         row,
         call_import,
@@ -255,6 +261,42 @@ def hydrate_platform_call_import_row(
     merged_raw = dict(row.raw_columns or {})
     merged_raw.update(normalized.raw_columns or {})
     row.raw_columns = merged_raw
+
+    if transcript_only:
+        if not (row.transcript or "").strip():
+            return _mark_row_failed_for_fetch(
+                row=row,
+                db=db,
+                row_id=row_id,
+                catalog_db=catalog_db,
+                row_db=row_db,
+                call_import=call_import,
+                message="Chat transcript is empty",
+                context="platform_chat_empty",
+                reason="chat_transcript_empty",
+            )
+        previous_status = row.status
+        row.recording_s3_key = None
+        row.status = CallImportRowStatus.COMPLETED
+        row.error_message = None
+        if not _safe_commit(db, row_id=row_id, context="platform_chat_completed"):
+            return {"status": "skipped", "reason": "row_deleted"}
+        maybe_record_import_row_transition(
+            call_import.id,
+            previous_status=previous_status,
+            new_status=row.status,
+        )
+        call_import.last_progress_at = datetime.now(timezone.utc)
+        _rollup_parent_on_catalog(catalog_db, row_db, call_import)
+        _safe_commit(db, row_id=row_id, context="platform_chat_rollup")
+        from app.workers.concurrency.platform_import_limits import release_platform_import_slot
+        from app.workers.concurrency.fair_platform_import_dispatch import (
+            schedule_fair_platform_import_dispatch,
+        )
+
+        release_platform_import_slot(slot_task_id)
+        schedule_fair_platform_import_dispatch()
+        return {"status": "completed", "row_id": row_id, "transcript_only": True}
 
     if not s3_service.is_enabled():
         return _mark_row_failed_for_fetch(

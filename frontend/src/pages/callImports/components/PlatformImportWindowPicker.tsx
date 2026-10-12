@@ -97,7 +97,7 @@ export default function PlatformImportWindowPicker({
     if (!open || !rootRef.current) return
     const margin = 12
     const rect = rootRef.current.getBoundingClientRect()
-    const width = Math.min(300, window.innerWidth - margin * 2)
+    const width = Math.min(360, window.innerWidth - margin * 2)
     let left = rect.left
     if (left + width > window.innerWidth - margin) {
       left = window.innerWidth - width - margin
@@ -105,8 +105,8 @@ export default function PlatformImportWindowPicker({
     left = Math.max(margin, left)
 
     const viewportMax = window.innerHeight - margin * 2
-    let maxHeight = Math.min(340, viewportMax)
-    const popoverHeight = popoverRef.current?.offsetHeight ?? 320
+    let maxHeight = Math.min(460, viewportMax)
+    const popoverHeight = popoverRef.current?.offsetHeight ?? 440
     const spaceBelow = window.innerHeight - rect.bottom - margin
     const spaceAbove = rect.top - margin
 
@@ -225,9 +225,8 @@ export default function PlatformImportWindowPicker({
             top: popoverPos.top,
             left: popoverPos.left,
             width: popoverPos.width,
-            maxHeight: popoverPos.maxHeight,
           }}
-          className="fixed z-[10060] rounded-xl border border-[#fde047]/60 bg-white p-3 shadow-xl ring-1 ring-[#fef9c3] overflow-y-auto overscroll-contain"
+          className="fixed z-[10060] rounded-xl border border-[#fde047]/60 bg-white p-3 shadow-xl ring-1 ring-[#fef9c3]"
         >
           <div className="flex gap-1.5 mb-2">
             <button

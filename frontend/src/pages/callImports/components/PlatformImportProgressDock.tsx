@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from 'react'
 import { createPortal } from 'react-dom'
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import { useQueries, useQueryClient } from '@tanstack/react-query'
 import {
   CheckCircle2,
@@ -12,7 +12,7 @@ import {
   X,
 } from 'lucide-react'
 import { apiClient } from '../../../lib/api'
-import type { PlatformImportProgress } from '../../../types/api'
+import type { CallImport, CallImportListResponse, PlatformImportProgress } from '../../../types/api'
 import { usePlatformImportProgressStore } from '../../../store/platformImportProgressStore'
 import { useWorkspaceStore } from '../../../store/workspaceStore'
 import { platformSkipLines } from '../platformImportLabel'
@@ -215,6 +215,8 @@ function ImportProgressCard({
   )
 }
 
+const STATUS_POLL_MS = 4000
+
 export default function PlatformImportProgressDock() {
   const watches = usePlatformImportProgressStore((s) => s.watches)
   const panelOpen = usePlatformImportProgressStore((s) => s.panelOpen)
@@ -223,6 +225,8 @@ export default function PlatformImportProgressDock() {
   const setPanelMinimized = usePlatformImportProgressStore((s) => s.setPanelMinimized)
   const unpin = usePlatformImportProgressStore((s) => s.unpin)
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
+  const location = useLocation()
+  const queryClient = useQueryClient()
 
   const progressQueries = useQueries({
     queries: watches.map((w) => ({
@@ -230,11 +234,67 @@ export default function PlatformImportProgressDock() {
       queryFn: () => apiClient.getPlatformImportProgress(w.id),
       refetchInterval: (query: { state: { data?: PlatformImportProgress } }) => {
         if (typeof document !== 'undefined' && document.hidden) return false
-        return query.state.data?.is_active === false ? false : 3000
+        if (location.pathname === `/call-imports/${w.id}`) return false
+        return query.state.data?.is_active === false ? false : STATUS_POLL_MS
       },
-      enabled: Boolean(w.id && activeWorkspaceId),
+      enabled: Boolean(w.id && activeWorkspaceId) && location.pathname !== `/call-imports/${w.id}`,
     })),
   })
+
+  const progressSignature = progressQueries
+    .map((query) => {
+      const progress = query.data as PlatformImportProgress | undefined
+      if (!progress) return ''
+      return [
+        progress.call_import_id,
+        progress.status,
+        progress.discovery_status,
+        progress.recordings.total,
+        progress.recordings.completed,
+        progress.recordings.failed,
+        progress.overall_percent,
+      ].join(':')
+    })
+    .join('|')
+
+  useEffect(() => {
+    if (!activeWorkspaceId || !progressSignature) return
+    const progresses = progressQueries
+      .map((query) => query.data as PlatformImportProgress | undefined)
+      .filter((progress): progress is PlatformImportProgress => Boolean(progress))
+    queryClient.setQueriesData<CallImportListResponse>(
+      { queryKey: ['call-imports', activeWorkspaceId] },
+      (current) => {
+        if (!current?.items?.length) return current
+        let changed = false
+        const items = current.items.map((item) => {
+          const progress = progresses.find((row) => row.call_import_id === item.id)
+          if (!progress) return item
+          const status = progress.status as CallImport['status']
+          if (
+            item.status === status &&
+            item.total_rows === progress.recordings.total &&
+            item.completed_rows === progress.recordings.completed &&
+            item.failed_rows === progress.recordings.failed &&
+            (item.discovery_status ?? null) === (progress.discovery_status ?? null)
+          ) {
+            return item
+          }
+          changed = true
+          return {
+            ...item,
+            status,
+            total_rows: progress.recordings.total,
+            completed_rows: progress.recordings.completed,
+            failed_rows: progress.recordings.failed,
+            discovery_status: progress.discovery_status,
+            skip_counts: progress.skip_counts,
+          }
+        })
+        return changed ? { ...current, items } : current
+      },
+    )
+  }, [progressSignature, activeWorkspaceId, queryClient])
 
   const items = useMemo(() => {
     return watches.map((watch, i) => ({
@@ -278,7 +338,7 @@ export default function PlatformImportProgressDock() {
       ) : (
         <CheckCircle2 className="h-4 w-4 text-green-600" />
       )}
-      <span className="text-sm font-medium text-gray-900">
+        <span className="text-sm font-medium text-gray-900">
         Platform import{watches.length > 1 ? 's' : ''}
       </span>
       <span className="text-xs tabular-nums text-gray-500">{headlinePercent.toFixed(0)}%</span>
@@ -315,7 +375,9 @@ export default function PlatformImportProgressDock() {
       {panelOpen && (
         <div className="max-h-[min(70vh,28rem)] overflow-y-auto p-3 space-y-3 custom-scrollbar">
           {items.map(({ watch, progress, isLoading, isError }) => {
-            if (isLoading && !progress) {
+            const waitingOnPage =
+              location.pathname === `/call-imports/${watch.id}` && !progress && !isError
+            if ((isLoading && !progress) || waitingOnPage) {
               return (
                 <div
                   key={watch.id}

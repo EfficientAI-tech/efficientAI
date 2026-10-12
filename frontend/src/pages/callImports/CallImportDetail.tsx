@@ -928,8 +928,16 @@ export default function CallImportDetail() {
     refetchInterval: (query) => {
       const d = query.state.data
       if (!d) return false
-      if (d.status === 'deleting') return 3000
-      // Keep polling while the CSV import itself is in flight.
+      if (d.status === 'deleting') return 4000
+      const platform = (d.source_format || '').toLowerCase() === 'platform'
+      if (
+        platform &&
+        (d.status === 'pending' ||
+          d.status === 'processing' ||
+          d.platform_progress?.is_active)
+      ) {
+        return 4000
+      }
       if (d.status === 'pending' || d.status === 'processing') return 5000
       // Batch-wide diarisation counters are pagination-independent —
       // use them so off-page rows still drive polling (mirrors
@@ -963,6 +971,14 @@ export default function CallImportDetail() {
       usePlatformImportProgressStore.getState().unpin(data.id)
     }
   }, [data?.id, data?.source_format, data?.status])
+
+  useEffect(() => {
+    if (!data?.id || !data.platform_progress || !activeWorkspaceId) return
+    queryClient.setQueryData(
+      ['platform-import-progress', activeWorkspaceId, data.id],
+      data.platform_progress,
+    )
+  }, [data?.id, data?.platform_progress, activeWorkspaceId, queryClient])
 
   useEffect(() => {
     if (!pendingScrollToEvaluation || data?.status !== 'mapped') return
@@ -1485,6 +1501,10 @@ export default function CallImportDetail() {
   // bottom of the page for the stage panels while the batch is still
   // pre-import so the user has a single linear next-action.
   const isPlatformImport = (data.source_format || '').toLowerCase() === 'platform'
+  const liveProgress = isPlatformImport ? data.platform_progress : undefined
+  const recordingTotal = liveProgress?.recordings.total ?? data.total_rows
+  const recordingCompleted = liveProgress?.recordings.completed ?? data.completed_rows
+  const recordingFailed = liveProgress?.recordings.failed ?? data.failed_rows
   const needsMapping =
     !isPlatformImport &&
     (data.status === 'uploaded' || data.status === 'mapped')
@@ -1654,6 +1674,22 @@ export default function CallImportDetail() {
                   )}
                 </span>
               </span>
+              {isPlatformImport && (
+                <span className="shrink-0">
+                  Agent:{' '}
+                  <span className="font-medium text-gray-800">
+                    {(data.platform_agents || []).length === 0
+                      ? 'All agents'
+                      : (data.platform_agents || [])
+                          .map((agent) =>
+                            agent.medium
+                              ? `${agent.name} · ${agent.medium}`
+                              : agent.name,
+                          )
+                          .join(', ')}
+                  </span>
+                </span>
+              )}
               <CallImportAuditMeta
                 inline
                 createdAt={data.created_at}
@@ -1670,35 +1706,38 @@ export default function CallImportDetail() {
                 Recording import
               </h3>
               <CallImportProgressBar
-                total={data.total_rows}
-                completed={data.completed_rows}
-                failed={data.failed_rows}
+                total={recordingTotal}
+                completed={recordingCompleted}
+                failed={recordingFailed}
                 deleting={isDeleting}
               />
-              {(data.source_format || '').toLowerCase() === 'platform' &&
-                data.discovery_status && (
+              {isPlatformImport &&
+                (liveProgress?.discovery_status || data.discovery_status) && (
                   <p className="mt-2 text-xs text-gray-600">
-                    Discovery {data.discovery_status}
-                    {data.paused_at ? ' · paused' : ''}
+                    Discovery {liveProgress?.discovery_status || data.discovery_status}
+                    {liveProgress
+                      ? ` · ${liveProgress.discovery.slices_completed}/${liveProgress.discovery.slices_total} days`
+                      : ''}
+                    {data.paused_at || liveProgress?.paused ? ' · paused' : ''}
                   </p>
                 )}
-              {platformSkipLines(data.skip_counts).length > 0 && (
+              {platformSkipLines(liveProgress?.skip_counts ?? data.skip_counts).length > 0 && (
                 <p className="mt-2 text-xs text-gray-600">
-                  {platformSkipLines(data.skip_counts).join(' · ')}
+                  {platformSkipLines(liveProgress?.skip_counts ?? data.skip_counts).join(' · ')}
                 </p>
               )}
               <div className="mt-2.5 grid grid-cols-3 gap-2 text-center text-xs">
                 <div className="bg-white rounded-md border border-slate-100 p-2">
                   <div className="text-gray-500">Total</div>
-                  <div className="font-semibold text-gray-900">{data.total_rows}</div>
+                  <div className="font-semibold text-gray-900">{recordingTotal}</div>
                 </div>
                 <div className="bg-white rounded-md border border-green-100 p-2">
                   <div className="text-green-700">Completed</div>
-                  <div className="font-semibold text-green-800">{data.completed_rows}</div>
+                  <div className="font-semibold text-green-800">{recordingCompleted}</div>
                 </div>
                 <div className="bg-white rounded-md border border-red-100 p-2">
                   <div className="text-red-700">Failed</div>
-                  <div className="font-semibold text-red-800">{data.failed_rows}</div>
+                  <div className="font-semibold text-red-800">{recordingFailed}</div>
                 </div>
               </div>
             </div>

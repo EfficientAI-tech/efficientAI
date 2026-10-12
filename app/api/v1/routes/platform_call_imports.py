@@ -35,14 +35,25 @@ router = APIRouter(
 )
 
 
+class PlatformImportAgentInput(BaseModel):
+    id: str
+    name: str
+    medium: Optional[str] = None
+
+
 class PlatformImportFilters(BaseModel):
     agent_ids: List[str] = Field(default_factory=list)
+    agents: List[PlatformImportAgentInput] = Field(default_factory=list)
     min_duration_seconds: float = 5.0
     call_statuses: Optional[List[str]] = None
     speed: str = "standard"
     import_provider_transcript: bool = Field(
         default=True,
         description="Persist the voice platform's production transcript on each row (recommended for ElevenLabs).",
+    )
+    medium: Optional[str] = Field(
+        default=None,
+        description="voice or chat. Chat imports the transcript only and does not download audio.",
     )
 
 
@@ -65,6 +76,7 @@ class PlatformCallImportPreviewRequest(PlatformCallImportCreate):
 class PlatformAgentOption(BaseModel):
     id: str
     name: str
+    medium: Optional[str] = None
 
 
 def _resolve_voice_integration(
@@ -132,14 +144,50 @@ async def list_platform_agents(
             client = provider_cls(api_key, base_url=integration.api_base_url)
         else:
             client = provider_cls(api_key)
-        agents = client.list_agents()
+        agents = _list_import_agents(client, integration.platform)
     except requests.HTTPError as err:
         _raise_for_voice_provider_http(err)
-    return [
-        PlatformAgentOption(id=str(a.get("id")), name=str(a.get("name") or a.get("id")))
-        for a in agents
-        if a.get("id")
-    ]
+    except ValueError as err:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(err) or "Could not list agents for this credential.",
+        ) from err
+    return agents
+
+
+def _list_import_agents(client: Any, platform: str) -> List[PlatformAgentOption]:
+    """Voice agents, plus chat agents when the provider keeps those separate."""
+    platform_key = (platform or "").lower()
+    if platform_key == "retell":
+        voice = _agent_options(client.list_agents(), medium="voice")
+        chat: List[PlatformAgentOption] = []
+        try:
+            chat = _agent_options(client.list_chat_agents(), medium="chat")
+        except (ValueError, requests.HTTPError):
+            chat = []
+        seen = {row.id for row in voice}
+        return voice + [row for row in chat if row.id not in seen]
+    return _agent_options(client.list_agents(), medium=None)
+
+
+def _agent_options(
+    agents: List[Dict[str, Any]],
+    *,
+    medium: Optional[str],
+) -> List[PlatformAgentOption]:
+    options: List[PlatformAgentOption] = []
+    for agent in agents:
+        agent_id = str(agent.get("id") or "").strip()
+        if not agent_id:
+            continue
+        options.append(
+            PlatformAgentOption(
+                id=agent_id,
+                name=str(agent.get("name") or agent_id),
+                medium=medium,
+            )
+        )
+    return options
 
 
 @router.post("/preview")
@@ -161,6 +209,7 @@ async def preview_platform_import(
         slice_start=payload.window_start,
         slice_end=end,
         agent_id=agent,
+        medium=(payload.filters.medium or "").strip().lower() or None,
     )
     from app.services.call_imports.platform_discovery import plan_time_slices
 
@@ -273,6 +322,9 @@ async def create_platform_call_import(
         dataset=payload.dataset,
         status=CallImportStatus.PROCESSING,
         original_filename=import_name[:512],
+        content_modality=(
+            "chat" if (payload.filters.medium or "").strip().lower() == "chat" else None
+        ),
     )
     stamp_call_import_actor(call_import, principal)
     db.add(call_import)
