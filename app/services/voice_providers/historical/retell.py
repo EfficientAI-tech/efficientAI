@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Iterator, List, Optional, Tuple
+from typing import Any, Iterator, List, Optional, Tuple
 
 import requests
 
@@ -13,6 +13,39 @@ from app.services.voice_providers.historical.base import (
     integration_plain_api_key,
 )
 from app.services.voice_providers.retell import RetellVoiceProvider
+
+RETELL_API_BASE = "https://api.retellai.com"
+RETELL_LIST_CALLS_URL = f"{RETELL_API_BASE}/v3/list-calls"
+RETELL_LIST_CHATS_URL = f"{RETELL_API_BASE}/v3/list-chats"
+
+
+def _retell_request_headers(api_key: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {api_key}"}
+
+
+def _paginated_rows(data: Any) -> List[Any]:
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        return (
+            data.get("items")
+            or data.get("calls")
+            or data.get("chats")
+            or []
+        )
+    return []
+
+
+def _next_pagination_key(
+    data: Any,
+    cursor: Optional[str],
+) -> Optional[str]:
+    if not isinstance(data, dict):
+        return None
+    next_key = data.get("pagination_key")
+    if not next_key or next_key == cursor:
+        return None
+    return str(next_key)
 
 
 class RetellHistoricalAdapter:
@@ -46,14 +79,14 @@ class RetellHistoricalAdapter:
             body["pagination_key"] = cursor
 
         response = requests.post(
-            "https://api.retellai.com/v2/list-calls",
-            headers={"Authorization": f"Bearer {self._api_key}"},
+            RETELL_LIST_CALLS_URL,
+            headers=_retell_request_headers(self._api_key),
             json=body,
             timeout=60,
         )
         response.raise_for_status()
         data = response.json()
-        calls = data if isinstance(data, list) else data.get("calls") or []
+        calls = _paginated_rows(data)
         items: List[HistoricalListItem] = []
         for entry in calls:
             if not isinstance(entry, dict):
@@ -90,12 +123,7 @@ class RetellHistoricalAdapter:
             )
         if not items:
             return [], None
-        next_key = None
-        if isinstance(data, dict):
-            next_key = data.get("pagination_key")
-        if not next_key or next_key == cursor:
-            return items, None
-        return items, next_key
+        return items, _next_pagination_key(data, cursor)
 
     def _list_chat_page(
         self,
@@ -118,14 +146,14 @@ class RetellHistoricalAdapter:
         if cursor:
             body["pagination_key"] = cursor
         response = requests.post(
-            "https://api.retellai.com/list-chat",
-            headers={"Authorization": f"Bearer {self._api_key}"},
+            RETELL_LIST_CHATS_URL,
+            headers=_retell_request_headers(self._api_key),
             json=body,
             timeout=60,
         )
         response.raise_for_status()
         data = response.json()
-        chats = data if isinstance(data, list) else data.get("chats") or data.get("items") or []
+        chats = _paginated_rows(data)
         items: List[HistoricalListItem] = []
         for entry in chats:
             if not isinstance(entry, dict):
@@ -154,10 +182,7 @@ class RetellHistoricalAdapter:
             )
         if not items:
             return [], None
-        next_key = data.get("pagination_key") if isinstance(data, dict) else None
-        if not next_key or next_key == cursor:
-            return items, None
-        return items, next_key
+        return items, _next_pagination_key(data, cursor)
 
     def hydrate(self, item: HistoricalListItem) -> NormalizedCall:
         entry = item.raw if isinstance(item.raw, dict) else {}
@@ -194,8 +219,8 @@ class RetellHistoricalAdapter:
         transcript = entry.get("transcript") or ""
         if not str(transcript).strip():
             response = requests.get(
-                f"https://api.retellai.com/get-chat/{item.conversation_id}",
-                headers={"Authorization": f"Bearer {self._api_key}"},
+                f"{RETELL_API_BASE}/get-chat/{item.conversation_id}",
+                headers=_retell_request_headers(self._api_key),
                 timeout=60,
             )
             response.raise_for_status()

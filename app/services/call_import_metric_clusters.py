@@ -70,7 +70,10 @@ EXTRACTION_MAX_TOKENS = 8000
 CLUSTER_SYNTHESIS_MAX_TOKENS = 8000
 DISCOVERY_MAX_TOKENS = 6000
 CLUSTER_TOKEN_CEILING = 16000
-
+CLUSTER_CALL_TIMEOUT_SECONDS = 180
+# GLM-5.3 rejects reasoning_effort="none". A small thinking budget leaves
+# the rest of max_tokens for the JSON answer.
+CLUSTER_THINKING_BUDGET_TOKENS = 1024
 
 class ClusterOutputTruncated(RuntimeError):
     """The cluster model hit max_tokens before the JSON finished."""
@@ -136,7 +139,8 @@ _EXTRACTION_SYSTEM_PROMPT = (
     "Constraints:\n"
     "- signatures must be specific and comparable across calls.\n"
     "- quote and turns must be verbatim from the supplied transcript.\n"
-    "- No markdown, no preamble."
+    "- No markdown, no preamble.\n"
+    "- Output JSON only; do not include reasoning or commentary outside the JSON."
 )
 
 _CLUSTER_SYNTHESIS_PROMPT = (
@@ -431,6 +435,43 @@ def _build_flagged_row_payload_from_source(
     }
 
 
+def _reasoning_cluster_model(model: str) -> bool:
+    name = (model or "").lower()
+    return any(token in name for token in ("glm", "qwen", "deepseek-r", "kimi"))
+
+
+def _cluster_llm_attempts(model: str, max_tokens: int) -> List[Dict[str, Any]]:
+    """One request shape per try. GLM-style models need a thinking budget cap."""
+    timeout = CLUSTER_CALL_TIMEOUT_SECONDS
+    if _reasoning_cluster_model(model):
+        thinking_budgets = (
+            CLUSTER_THINKING_BUDGET_TOKENS,
+            min(2048, max(CLUSTER_THINKING_BUDGET_TOKENS, max_tokens // 4)),
+        )
+        attempts: List[Dict[str, Any]] = []
+        for idx, thinking_budget in enumerate(thinking_budgets):
+            token_budget = min(max_tokens, 4096) if idx == 0 else max_tokens
+            attempts.append(
+                {
+                    "max_tokens": token_budget,
+                    "llm_config": {"timeout": timeout},
+                    "completion_extra": {
+                        "thinking": {
+                            "type": "enabled",
+                            "budget_tokens": thinking_budget,
+                        },
+                    },
+                }
+            )
+        return attempts
+    retry_budget = min(CLUSTER_TOKEN_CEILING, max(max_tokens * 2, 8000))
+    budgets = [max_tokens] if retry_budget <= max_tokens else [max_tokens, retry_budget]
+    return [
+        {"max_tokens": budget, "llm_config": {"timeout": timeout}}
+        for budget in budgets
+    ]
+
+
 def _call_cluster_llm(
     db: Session,
     organization_id: UUID,
@@ -441,16 +482,24 @@ def _call_cluster_llm(
     temperature: float,
     max_tokens: int,
 ) -> str:
-    """Call the cluster model and retry once when the JSON is cut off."""
+    """Call the cluster model. Cap reasoning so the JSON is not cut off."""
     from app.services.ai.llm_service import llm_service
     from app.services.usage.context import get_usage_context, llm_usage_context
 
-    retry_budget = min(CLUSTER_TOKEN_CEILING, max(max_tokens * 2, 8000))
-    budgets = [max_tokens] if retry_budget <= max_tokens else [max_tokens, retry_budget]
+    attempts = _cluster_llm_attempts(model, max_tokens)
     effective_ctx = get_usage_context()
     text = ""
-    for attempt, budget in enumerate(budgets):
-        def _run(token_budget: int = budget) -> Dict[str, Any]:
+    last_error: Optional[str] = None
+    for attempt, spec in enumerate(attempts):
+        budget = int(spec["max_tokens"])
+        llm_config = spec["llm_config"]
+        completion_extra = spec.get("completion_extra")
+
+        def _run(
+            token_budget: int = budget,
+            config: Dict[str, Any] = llm_config,
+            extra: Optional[Dict[str, Any]] = completion_extra,
+        ) -> Dict[str, Any]:
             return llm_service.generate_response(
                 messages=messages,
                 llm_provider=provider,
@@ -459,26 +508,38 @@ def _call_cluster_llm(
                 db=db,
                 temperature=temperature,
                 max_tokens=token_budget,
+                llm_config=config,
+                completion_extra=extra,
             )
 
-        if effective_ctx is not None:
-            with llm_usage_context(effective_ctx):
+        try:
+            if effective_ctx is not None:
+                with llm_usage_context(effective_ctx):
+                    result = _run()
+            else:
                 result = _run()
-        else:
-            result = _run()
+        except Exception as exc:  # noqa: BLE001
+            last_error = str(exc)
+            logger.warning(
+                "Cluster LLM call failed at max_tokens={} (model={}, attempt={}): {}",
+                budget,
+                model,
+                attempt + 1,
+                exc,
+            )
+            continue
         text = str(result.get("text") or "")
         if not result.get("truncated"):
             return text
-        if attempt < len(budgets) - 1:
+        last_error = f"truncated at max_tokens={budget}"
+        if attempt < len(attempts) - 1:
             logger.warning(
-                "Cluster LLM output truncated at max_tokens={} (model={}); retrying at {}.",
+                "Cluster LLM output truncated at max_tokens={} (model={}); retrying with a thinking cap.",
                 budget,
                 model,
-                budgets[attempt + 1],
             )
     raise ClusterOutputTruncated(
-        f"Model output was truncated at max_tokens={budgets[-1]} ({model}). "
-        "The cluster JSON did not finish. Retry with a different model."
+        f"Model output was truncated ({model}). {last_error or 'The cluster JSON did not finish.'}"
     )
 
 

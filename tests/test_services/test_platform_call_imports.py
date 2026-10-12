@@ -140,7 +140,10 @@ def test_vapi_hydrate_fetches_call_when_list_has_no_audio():
 
 def test_retell_pagination_stops_on_repeated_cursor():
     from app.services.voice_providers.historical.base import TimeSlice
-    from app.services.voice_providers.historical.retell import RetellHistoricalAdapter
+    from app.services.voice_providers.historical.retell import (
+        RETELL_LIST_CALLS_URL,
+        RetellHistoricalAdapter,
+    )
 
     class _Resp:
         def raise_for_status(self):
@@ -148,7 +151,7 @@ def test_retell_pagination_stops_on_repeated_cursor():
 
         def json(self):
             return {
-                "calls": [{"call_id": "c1", "start_timestamp": 1}],
+                "items": [{"call_id": "c1", "start_timestamp": 1}],
                 "pagination_key": "same",
             }
 
@@ -156,16 +159,65 @@ def test_retell_pagination_stops_on_repeated_cursor():
     adapter._api_key = "k"
     import app.services.voice_providers.historical.retell as retell_mod
 
+    captured_url: list[str] = []
     original = retell_mod.requests.post
-    retell_mod.requests.post = lambda *a, **k: _Resp()
+
+    def _post(url, *args, **kwargs):
+        captured_url.append(url)
+        return _Resp()
+
+    retell_mod.requests.post = _post
     try:
         window = TimeSlice(
             slice_id=0,
             slice_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
             slice_end=datetime(2026, 1, 2, tzinfo=timezone.utc),
         )
-        _items, nxt = adapter.list_page(window, "same")
+        items, nxt = adapter.list_page(window, "same")
         assert nxt is None
+        assert len(items) == 1
+        assert items[0].conversation_id == "c1"
+        assert captured_url == [RETELL_LIST_CALLS_URL]
+    finally:
+        retell_mod.requests.post = original
+
+
+def test_retell_list_chat_uses_v3_endpoint():
+    from app.services.voice_providers.historical.base import TimeSlice
+    from app.services.voice_providers.historical.retell import (
+        RETELL_LIST_CHATS_URL,
+        RetellHistoricalAdapter,
+    )
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "items": [{"chat_id": "chat_1", "start_timestamp": 1000, "end_timestamp": 2000}],
+                "has_more": False,
+            }
+
+    adapter = RetellHistoricalAdapter.__new__(RetellHistoricalAdapter)
+    adapter._api_key = "k"
+    import app.services.voice_providers.historical.retell as retell_mod
+
+    captured_url: list[str] = []
+    original = retell_mod.requests.post
+    retell_mod.requests.post = lambda url, *a, **k: (captured_url.append(url), _Resp())[1]
+    try:
+        window = TimeSlice(
+            slice_id=0,
+            slice_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            slice_end=datetime(2026, 1, 2, tzinfo=timezone.utc),
+            medium="chat",
+        )
+        items, nxt = adapter.list_page(window, None)
+        assert nxt is None
+        assert len(items) == 1
+        assert items[0].conversation_id == "chat_1"
+        assert captured_url == [RETELL_LIST_CHATS_URL]
     finally:
         retell_mod.requests.post = original
 
