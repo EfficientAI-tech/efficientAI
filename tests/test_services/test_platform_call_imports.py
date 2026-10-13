@@ -84,6 +84,33 @@ def test_clear_expired_claims_drops_task_without_live_lease(monkeypatch):
     db.commit.assert_called_once()
 
 
+def test_clear_expired_claims_clears_when_attempts_positive(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from app.models.enums import CallImportRowStatus
+    from app.workers.concurrency.platform_import_dispatch import (
+        clear_expired_platform_row_claims,
+    )
+
+    monkeypatch.setattr(
+        "app.workers.concurrency.platform_import_dispatch.lease_is_active",
+        lambda _tid: False,
+    )
+    row = MagicMock()
+    row.id = uuid4()
+    row.celery_task_id = "task-stale"
+    row.attempts = 2
+    row.status = CallImportRowStatus.PENDING
+    db = MagicMock()
+    db.query.return_value.filter.return_value.limit.return_value.all.side_effect = [
+        [row],
+        [],
+    ]
+    count = clear_expired_platform_row_claims(db)
+    assert count == 1
+    assert row.celery_task_id is None
+
+
 def test_clear_expired_claims_keeps_live_lease(monkeypatch):
     from unittest.mock import MagicMock
 
@@ -378,6 +405,18 @@ def test_list_failure_timeout_retries():
     kind, wait = list_failure_disposition(TimeoutError("timed out"))
     assert kind == "retry"
     assert wait == 5
+
+
+def test_list_failure_unwraps_wrapped_http_error():
+    class RateLimited(Exception):
+        def __init__(self):
+            self.response = SimpleNamespace(status_code=429, headers={"Retry-After": "3"})
+
+    wrapped = ValueError("Failed to retrieve conversation")
+    wrapped.__cause__ = RateLimited()
+    kind, wait = list_failure_disposition(wrapped)
+    assert kind == "retry"
+    assert wait == 3
 
 
 def test_discovery_blocks_terminal_status_while_running():

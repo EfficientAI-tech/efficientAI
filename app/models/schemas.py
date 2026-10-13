@@ -5459,7 +5459,7 @@ class PromptImprovementSuggestion(BaseModel):
     rationale: str = ""
     flow_node_id: str = ""
     flow_node_label: str = ""
-    review_status: Literal["pending", "accepted", "rejected"] = "pending"
+    review_status: Literal["pending", "accepted", "rejected", "applied"] = "pending"
     edited_text: Optional[str] = None
 
 

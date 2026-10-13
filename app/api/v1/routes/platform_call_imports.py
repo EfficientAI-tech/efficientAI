@@ -209,6 +209,14 @@ async def preview_platform_import(
     integration = _resolve_voice_integration(db, organization_id, payload.voice_integration_id)
     adapter = get_historical_adapter(integration)
     end = _clamp_window_end(payload.window_end)
+    if end <= payload.window_start:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "window_end must be after window_start. "
+                "The import window cannot end within the last 15 minutes."
+            ),
+        )
     from app.services.voice_providers.historical.base import TimeSlice
 
     agent = payload.filters.agent_ids[0] if payload.filters.agent_ids else None
@@ -308,6 +316,14 @@ async def create_platform_call_import(
         max_calls = min(int(max_calls), hard_limit)
 
     end = _clamp_window_end(payload.window_end)
+    if end <= payload.window_start:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "window_end must be after window_start. "
+                "The import window cannot end within the last 15 minutes."
+            ),
+        )
     import_name = (payload.name or "").strip()
     if not import_name:
         import_name = (

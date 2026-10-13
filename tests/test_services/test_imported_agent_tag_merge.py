@@ -17,3 +17,12 @@ def test_merge_preserves_user_tags_from_incoming():
     existing = ["__imported_agent__", IMPORT_ID]
     merged = merge_imported_agent_tags_on_update(existing, ["__imported_agent__", "new-user"])
     assert merged == ["__imported_agent__", IMPORT_ID, "new-user"]
+
+
+def test_merge_clears_user_tags_when_client_sends_link_tags_only():
+    existing = ["__imported_agent__", PROVIDER, IMPORT_ID, "my-tag"]
+    merged = merge_imported_agent_tags_on_update(
+        existing, ["__imported_agent__", PROVIDER, IMPORT_ID]
+    )
+    assert "my-tag" not in merged
+    assert IMPORT_ID in merged

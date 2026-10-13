@@ -61,16 +61,14 @@ def _extension_for_content_type(content_type: str) -> str:
 
 
 def _retryable_status(exc: Exception) -> int | None:
-    status_code = getattr(getattr(exc, "response", None), "status_code", None)
-    if status_code is None:
-        name = type(exc).__name__.lower()
-        if "timeout" in name or "connection" in name:
-            return 503
-        return None
-    try:
-        return int(status_code)
-    except (TypeError, ValueError):
-        return None
+    from app.services.call_imports.platform_discovery import list_failure_disposition
+
+    kind, _wait = list_failure_disposition(exc)
+    if kind == "auth":
+        return 401
+    if kind == "retry":
+        return 503
+    return None
 
 
 def _hand_off(

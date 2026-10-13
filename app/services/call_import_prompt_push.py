@@ -64,8 +64,8 @@ def compose_accepted_prompt(base: str, suggestions: List[Any]) -> str:
     return text
 
 
-def review_counts(suggestions: List[Any]) -> Tuple[int, int, int]:
-    accepted = rejected = pending = 0
+def review_counts(suggestions: List[Any]) -> Tuple[int, int, int, int]:
+    accepted = rejected = pending = applied = 0
     for item in suggestions:
         if not isinstance(item, dict):
             continue
@@ -74,9 +74,11 @@ def review_counts(suggestions: List[Any]) -> Tuple[int, int, int]:
             accepted += 1
         elif status == "rejected":
             rejected += 1
+        elif status == "applied":
+            applied += 1
         else:
             pending += 1
-    return accepted, rejected, pending
+    return accepted, rejected, pending, applied
 
 
 def _suggestions(evaluation: CallImportEvaluation) -> List[Any]:
@@ -91,6 +93,25 @@ def _compose_base_prompt(evaluation: CallImportEvaluation, partial_content: str)
     if isinstance(frozen, str):
         return frozen
     return partial_content or ""
+
+
+def _compose_base_stale(
+    evaluation: CallImportEvaluation,
+    partial_content: str,
+    suggestions: List[Any],
+) -> bool:
+    raw = evaluation.prompt_improvements if isinstance(evaluation.prompt_improvements, dict) else {}
+    frozen = raw.get("compose_base_prompt")
+    if not isinstance(frozen, str):
+        return False
+    if normalize_prompt(frozen) == normalize_prompt(partial_content or ""):
+        return False
+    for item in suggestions:
+        if not isinstance(item, dict):
+            continue
+        if item.get("review_status") in ("pending", "accepted"):
+            return True
+    return False
 
 
 def mark_prompt_improvements_applied(
@@ -382,7 +403,7 @@ def preview_evaluation_push(
     workspace_id: UUID,
 ) -> Dict[str, Any]:
     suggestions = _suggestions(evaluation)
-    accepted, rejected, pending = review_counts(suggestions)
+    accepted, rejected, pending, _applied = review_counts(suggestions)
     require_review = _require_review(evaluation)
     partial, relinked = resolve_imported_partial_for_evaluation(
         db, evaluation, organization_id, workspace_id, call_import
@@ -419,7 +440,12 @@ def preview_evaluation_push(
         except Exception as exc:
             block_reason = f"Could not read the live prompt: {exc}"
     save_block_reason = None
-    if require_review and pending:
+    if _compose_base_stale(evaluation, partial.content or "", suggestions):
+        save_block_reason = (
+            "The saved partial changed since these suggestions were generated. "
+            "Regenerate suggestions before saving."
+        )
+    elif require_review and pending:
         save_block_reason = "Accept or reject every suggestion before saving."
     elif accepted == 0:
         save_block_reason = "Accept at least one change before saving."

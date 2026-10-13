@@ -32,7 +32,6 @@ def clear_expired_platform_row_claims(
     """
     query = db.query(CallImportRow).filter(
         CallImportRow.celery_task_id.isnot(None),
-        CallImportRow.attempts == 0,
         CallImportRow.status == CallImportRowStatus.PENDING,
     )
     if platform_import_ids is not None:

@@ -1851,7 +1851,7 @@ export interface PromptImprovementSuggestion {
   rationale: string
   flow_node_id?: string
   flow_node_label?: string
-  review_status?: 'pending' | 'accepted' | 'rejected'
+  review_status?: 'pending' | 'accepted' | 'rejected' | 'applied'
   edited_text?: string | null
 }
 

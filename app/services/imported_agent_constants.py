@@ -31,12 +31,19 @@ def merge_imported_agent_tags_on_update(
     incoming_list = [t for t in incoming if isinstance(t, str)]
     if IMPORTED_AGENT_TAG not in incoming_list and IMPORTED_AGENT_TAG not in existing_list:
         return incoming_list
-    preserved = [t for t in existing_list if is_preserved_imported_agent_tag(t)]
+    preserved_existing = [t for t in existing_list if is_preserved_imported_agent_tag(t)]
+    preserved_incoming = [t for t in incoming_list if is_preserved_imported_agent_tag(t)]
     user_incoming = [t for t in incoming_list if not is_preserved_imported_agent_tag(t)]
     if user_incoming:
         user = user_incoming
+    elif preserved_incoming and set(preserved_incoming) >= set(preserved_existing):
+        user = []
     else:
         user = [t for t in existing_list if not is_preserved_imported_agent_tag(t)]
+    preserved = preserved_existing
+    for tag in preserved_incoming:
+        if tag not in preserved:
+            preserved.append(tag)
     merged: list[str] = []
     seen: set[str] = set()
     for tag in preserved + user:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
-from uuid import UUID, uuid5
+from uuid import UUID, uuid4, uuid5
 
 from loguru import logger
 from sqlalchemy.exc import IntegrityError
@@ -137,32 +137,61 @@ def _should_skip_item(
     return None
 
 
+def _exception_chain(exc: BaseException) -> List[BaseException]:
+    chain: List[BaseException] = []
+    current: Optional[BaseException] = exc
+    while current is not None and current not in chain:
+        chain.append(current)
+        nxt = current.__cause__ or current.__context__
+        current = nxt if isinstance(nxt, BaseException) else None
+    return chain
+
+
 def list_failure_disposition(exc: Exception) -> Tuple[str, int]:
     """Return (retry|auth|fail, wait_seconds). Retry and auth do not consume an attempt."""
-    response = getattr(exc, "response", None)
-    status_code = getattr(response, "status_code", None)
-    try:
-        status_code = int(status_code) if status_code is not None else None
-    except (TypeError, ValueError):
-        status_code = None
-    name = type(exc).__name__.lower()
-    headers = getattr(response, "headers", None)
-    retry_after = None
-    if headers is not None and hasattr(headers, "get"):
-        retry_after = headers.get("Retry-After")
-    wait = 5
-    if retry_after:
+    for item in _exception_chain(exc):
+        response = getattr(item, "response", None)
+        status_code = getattr(response, "status_code", None)
         try:
-            wait = min(120, max(1, int(float(retry_after))))
+            status_code = int(status_code) if status_code is not None else None
         except (TypeError, ValueError):
-            wait = 5
-    if status_code in (401, 403):
-        return "auth", max(wait, 30)
-    if status_code == 429 or (status_code is not None and status_code >= 500):
-        return "retry", wait if status_code == 429 else max(1, min(wait, 15))
-    if "timeout" in name or "connection" in name:
-        return "retry", 5
+            status_code = None
+        name = type(item).__name__.lower()
+        headers = getattr(response, "headers", None)
+        retry_after = None
+        if headers is not None and hasattr(headers, "get"):
+            retry_after = headers.get("Retry-After")
+        wait = 5
+        if retry_after:
+            try:
+                wait = min(120, max(1, int(float(retry_after))))
+            except (TypeError, ValueError):
+                wait = 5
+        if status_code in (401, 403):
+            return "auth", max(wait, 30)
+        if status_code == 429 or (status_code is not None and status_code >= 500):
+            return "retry", wait if status_code == 429 else max(1, min(wait, 15))
+        if "timeout" in name or "connection" in name:
+            return "retry", 5
     return "fail", 0
+
+
+def _commit_catalog_with_pending_shards(db: Session, pending: List[Any]) -> None:
+    from app.db_sharding.row_ops import (
+        commit_pending_shard_sessions,
+        rollback_pending_shard_sessions,
+    )
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        rollback_pending_shard_sessions(pending)
+        pending.clear()
+        raise
+    if pending:
+        commit_pending_shard_sessions(pending)
+        pending.clear()
 
 
 def _increment_skip(call_import: CallImport, reason: SkipReason, sample: Dict[str, Any]) -> None:
@@ -253,6 +282,7 @@ def discover_platform_slice_chunk(
     page_budget: int,
 ) -> bool:
     """Process up to page_budget list pages for one slice."""
+    shard_pending: List[Any] = []
     call_import = (
         db.query(CallImport)
         .filter(CallImport.id == call_import_id)
@@ -303,13 +333,13 @@ def discover_platform_slice_chunk(
         call_import.pause_reason = "credential_rejected"
         if slice_row.status in {"queued", "running"}:
             slice_row.status = "pending"
-        db.commit()
+        _commit_catalog_with_pending_shards(db, shard_pending)
         return False
 
     slice_row.status = "running"
     call_import.discovery_status = "running"
     call_import.status = CallImportStatus.PROCESSING
-    db.commit()
+    _commit_catalog_with_pending_shards(db, shard_pending)
 
     agent_id = getattr(slice_row, "agent_id", None)
     list_cursor: Optional[str] = None
@@ -331,12 +361,14 @@ def discover_platform_slice_chunk(
     more = True
     while pages < page_budget and more:
         token = consume_platform_api_token(
-            integration.id, speed, member=f"discover:{call_import_id}:{slice_id}:{pages}"
+            integration.id,
+            speed,
+            member=f"discover:{call_import_id}:{slice_id}:{uuid4()}",
         )
         if not token.allowed:
             slice_row.updated_at = datetime.now(timezone.utc)
             call_import.last_progress_at = datetime.now(timezone.utc)
-            db.commit()
+            _commit_catalog_with_pending_shards(db, shard_pending)
             return {"more": True, "wait": token.wait_seconds}
 
         try:
@@ -357,14 +389,14 @@ def discover_platform_slice_chunk(
             if kind == "auth":
                 record_platform_auth_failure(integration.id)
             if kind in {"auth", "retry"}:
-                db.commit()
+                _commit_catalog_with_pending_shards(db, shard_pending)
                 return {"more": True, "wait": wait}
             slice_row.attempts = int(slice_row.attempts or 0) + 1
             if slice_row.attempts >= 5:
                 slice_row.status = "failed"
             else:
                 slice_row.status = "pending"
-            db.commit()
+            _commit_catalog_with_pending_shards(db, shard_pending)
             finalize_platform_discovery_if_complete(db, call_import_id)
             return {"more": False}
 
@@ -389,6 +421,7 @@ def discover_platform_slice_chunk(
                 integration,
                 accepted_batch,
                 include_reimport=include_reimport,
+                shard_pending=shard_pending,
             )
         if capped:
             call_import.discovery_status = "capped"
@@ -407,7 +440,7 @@ def discover_platform_slice_chunk(
         from app.workers.concurrency.platform_import_limits import renew_slice_lock
 
         renew_slice_lock(call_import_id, slice_id)
-        db.commit()
+        _commit_catalog_with_pending_shards(db, shard_pending)
 
     if call_import.discovery_status == "capped":
         slice_row.status = "completed"
@@ -418,7 +451,7 @@ def discover_platform_slice_chunk(
         more = False
     elif not more:
         slice_row.status = "completed"
-    db.commit()
+    _commit_catalog_with_pending_shards(db, shard_pending)
 
     finalize_platform_discovery_if_complete(db, call_import_id)
 
@@ -486,6 +519,7 @@ def _reserve_and_insert_rows(
     items: List[HistoricalListItem],
     *,
     include_reimport: bool,
+    shard_pending: Optional[List[Any]] = None,
 ) -> bool:
     """Insert one page. Returns True when the import has no room left."""
     from app.db_sharding.row_ops import bulk_insert_mappings_on_shards, register_shard_slices
@@ -583,7 +617,15 @@ def _reserve_and_insert_rows(
         return False
 
     if is_sharding_enabled():
-        bulk_insert_mappings_on_shards(db, call_import.id, mappings)
+        _, pending = bulk_insert_mappings_on_shards(
+            db, call_import.id, mappings, defer_commit=True
+        )
+        if shard_pending is not None:
+            shard_pending.extend(pending)
+        else:
+            from app.db_sharding.row_ops import commit_pending_shard_sessions
+
+            commit_pending_shard_sessions(pending)
         register_shard_slices(db, call_import.id, end_index)
     else:
         for mapping in mappings:

@@ -233,7 +233,7 @@ export default function MetricPromptImprovementsPanel({
   const reviewMutation = useMutation({
     mutationFn: (data: {
       suggestion_id: string
-      review_status: 'pending' | 'accepted' | 'rejected'
+      review_status: 'pending' | 'accepted' | 'rejected' | 'applied'
       edited_text?: string | null
     }) => apiClient.reviewCallImportEvaluationPromptImprovement(callImportId, evaluationId, data),
     onSuccess: () => {
@@ -558,9 +558,12 @@ export default function MetricPromptImprovementsPanel({
             const reviewStatus = suggestion.review_status || 'pending'
             const isAccepted = reviewStatus === 'accepted'
             const isRejected = reviewStatus === 'rejected'
-            const isPending = !isAccepted && !isRejected
+            const isApplied = reviewStatus === 'applied'
+            const isPending = reviewStatus === 'pending' || reviewStatus === undefined
 
-            const cardSurfaceClass = isAccepted
+            const cardSurfaceClass = isApplied
+              ? 'border-sky-300 bg-sky-50/50 ring-1 ring-sky-200/80'
+              : isAccepted
               ? 'border-emerald-300 bg-emerald-50/50 ring-1 ring-emerald-200/80'
               : isRejected
                 ? 'border-rose-200 bg-rose-50/35 ring-1 ring-rose-100'
@@ -684,6 +687,12 @@ export default function MetricPromptImprovementsPanel({
                   </div>
                 ) : (
                   <div className="space-y-2">
+                    {isApplied ? (
+                      <p className="inline-flex items-center gap-1.5 rounded-md border border-sky-300 bg-sky-100 px-2.5 py-1.5 text-xs font-medium text-sky-900">
+                        <Check className="h-3.5 w-3.5 shrink-0" />
+                        Applied — saved to the prompt partial
+                      </p>
+                    ) : null}
                     {isAccepted ? (
                       <p className="inline-flex items-center gap-1.5 rounded-md border border-emerald-300 bg-emerald-100 px-2.5 py-1.5 text-xs font-medium text-emerald-900">
                         <Check className="h-3.5 w-3.5 shrink-0" />
@@ -706,7 +715,7 @@ export default function MetricPromptImprovementsPanel({
                       ) : null}
                       <button
                         type="button"
-                        disabled={reviewMutation.isPending || isAccepted}
+                        disabled={reviewMutation.isPending || isAccepted || isApplied}
                         onClick={() =>
                           reviewMutation.mutate({
                             suggestion_id: suggestion.id,
@@ -724,7 +733,7 @@ export default function MetricPromptImprovementsPanel({
                       </button>
                       <button
                         type="button"
-                        disabled={reviewMutation.isPending || isRejected}
+                        disabled={reviewMutation.isPending || isRejected || isApplied}
                         onClick={() =>
                           reviewMutation.mutate({
                             suggestion_id: suggestion.id,

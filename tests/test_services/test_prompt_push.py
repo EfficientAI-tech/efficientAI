@@ -46,11 +46,11 @@ def test_normalize_prompt_ignores_trailing_space():
 
 
 def test_review_counts_treat_missing_status_as_pending():
-    accepted, rejected, pending = review_counts(
+    accepted, rejected, pending, applied = review_counts(
         [
             {"review_status": "accepted"},
             {"review_status": "rejected"},
             {},
         ]
     )
-    assert (accepted, rejected, pending) == (1, 1, 1)
+    assert (accepted, rejected, pending, applied) == (1, 1, 1, 0)
