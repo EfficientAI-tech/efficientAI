@@ -26,6 +26,35 @@ def _rollup_lock_key(call_import_id: UUID) -> str:
     return f"import:rollup:lock:{call_import_id}"
 
 
+def _trailing_rollup_key(call_import_id: UUID) -> str:
+    return f"import:rollup:trail:{call_import_id}"
+
+
+def _schedule_trailing_import_rollup(call_import_id: UUID) -> None:
+    """Run a forced rollup after the debounce window when the lock was held."""
+    try:
+        if not _redis().set(
+            _trailing_rollup_key(call_import_id),
+            "1",
+            nx=True,
+            ex=_ROLLUP_LOCK_TTL_SECONDS + 5,
+        ):
+            return
+    except redis.RedisError as exc:
+        logger.debug("import trailing rollup dedupe skipped: {}", exc)
+    try:
+        from app.workers.config import celery_app
+
+        celery_app.send_task(
+            "deferred_call_import_rollup",
+            args=[str(call_import_id)],
+            countdown=_ROLLUP_LOCK_TTL_SECONDS + 1,
+            queue="import-control",
+        )
+    except Exception as exc:
+        logger.debug("import trailing rollup enqueue failed: {}", exc)
+
+
 def platform_discovery_blocks_terminal_status(call_import) -> bool:
     if (getattr(call_import, "source_format", None) or "").lower() != "platform":
         return False
@@ -96,6 +125,7 @@ def schedule_debounced_import_rollup(
             should_aggregate = True
 
     if not should_aggregate:
+        _schedule_trailing_import_rollup(cid)
         return
 
     parent = db.query(CallImport).filter(CallImport.id == cid).first()

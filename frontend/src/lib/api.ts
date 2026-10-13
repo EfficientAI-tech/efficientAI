@@ -6241,12 +6241,10 @@ class ApiClient {
       description?: string | null
       content?: string
       change_summary?: string
+      tags?: string[]
     },
   ): Promise<import('../types/api').ImportedAgent> {
-    const response = await this.client.put(`/api/v1/prompt-partials/${partialId}`, {
-      ...data,
-      tags: ['__imported_agent__'],
-    })
+    const response = await this.client.put(`/api/v1/prompt-partials/${partialId}`, data)
     return response.data
   }
 

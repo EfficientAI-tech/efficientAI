@@ -365,6 +365,7 @@ def discover_platform_slice_chunk(
             else:
                 slice_row.status = "pending"
             db.commit()
+            finalize_platform_discovery_if_complete(db, call_import_id)
             return {"more": False}
 
         slice_row.listed = int(slice_row.listed or 0) + len(items)
@@ -419,42 +420,51 @@ def discover_platform_slice_chunk(
         slice_row.status = "completed"
     db.commit()
 
-    if _all_slices_terminal(db, call_import_id):
-        failed_slices = (
-            db.query(CallImportDiscoverySlice)
-            .filter(
-                CallImportDiscoverySlice.call_import_id == call_import_id,
-                CallImportDiscoverySlice.status == "failed",
-            )
-            .count()
-        )
-        if call_import.discovery_status != "capped":
-            if failed_slices and int(call_import.total_rows or 0) == 0:
-                call_import.discovery_status = "failed"
-                call_import.status = CallImportStatus.FAILED
-            elif failed_slices:
-                call_import.discovery_status = "partial"
-            else:
-                call_import.discovery_status = "completed"
-        if (
-            int(call_import.total_rows or 0) == 0
-            and call_import.discovery_status in {"completed", "capped"}
-        ):
-            call_import.status = CallImportStatus.COMPLETED
-        _bill_platform_import_once(db, call_import)
-        from app.services.call_imports.bulk_ops import rollup_call_import_batch_status
-
-        rollup_call_import_batch_status(db, call_import)
-        db.commit()
-        from app.workers.concurrency.fair_platform_import_dispatch import (
-            schedule_fair_platform_import_dispatch,
-        )
-
-        schedule_fair_platform_import_dispatch()
+    finalize_platform_discovery_if_complete(db, call_import_id)
 
     if more:
         return {"more": True, "wait": 1}
     return {"more": False}
+
+
+def finalize_platform_discovery_if_complete(db: Session, call_import_id: UUID) -> None:
+    """Mark discovery complete when every slice is terminal (including all failed)."""
+    if not _all_slices_terminal(db, call_import_id):
+        return
+    call_import = db.query(CallImport).filter(CallImport.id == call_import_id).first()
+    if call_import is None:
+        return
+    failed_slices = (
+        db.query(CallImportDiscoverySlice)
+        .filter(
+            CallImportDiscoverySlice.call_import_id == call_import_id,
+            CallImportDiscoverySlice.status == "failed",
+        )
+        .count()
+    )
+    if call_import.discovery_status != "capped":
+        if failed_slices and int(call_import.total_rows or 0) == 0:
+            call_import.discovery_status = "failed"
+            call_import.status = CallImportStatus.FAILED
+        elif failed_slices:
+            call_import.discovery_status = "partial"
+        else:
+            call_import.discovery_status = "completed"
+    if (
+        int(call_import.total_rows or 0) == 0
+        and call_import.discovery_status in {"completed", "capped"}
+    ):
+        call_import.status = CallImportStatus.COMPLETED
+    _bill_platform_import_once(db, call_import)
+    from app.services.call_imports.bulk_ops import rollup_call_import_batch_status
+
+    rollup_call_import_batch_status(db, call_import)
+    db.commit()
+    from app.workers.concurrency.fair_platform_import_dispatch import (
+        schedule_fair_platform_import_dispatch,
+    )
+
+    schedule_fair_platform_import_dispatch()
 
 
 def _all_slices_terminal(db: Session, call_import_id: UUID) -> bool:

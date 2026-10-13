@@ -105,6 +105,24 @@ const versionRowPushBtn =
 
 const PARTIALS_LIST_COLLAPSED_KEY = 'promptPartialsListCollapsed'
 
+function partialListSubtitle(partial: PromptPartial): string | null {
+  const description = partial.description?.trim()
+  if (description) return description
+  if (isPlatformImportAgentPartial(partial)) {
+    return 'Linked from platform import'
+  }
+  return null
+}
+
+function flowchartListLabel(status?: string | null): string {
+  if (!status) return 'No chart'
+  if (status === 'failed') return 'Failed'
+  if (status === 'generating') return 'Generating'
+  if (status === 'mapping') return 'Mapping'
+  if (status === 'completed') return 'Chart ready'
+  return status.replace(/_/g, ' ')
+}
+
 function readListCollapsedPreference(): boolean {
   try {
     return localStorage.getItem(PARTIALS_LIST_COLLAPSED_KEY) === 'true'
@@ -610,7 +628,10 @@ export default function PromptPartials() {
                 )}
               </div>
             ) : (
-              partials.map((partial: PromptPartial) => (
+              partials.map((partial: PromptPartial) => {
+                const listSubtitle = partialListSubtitle(partial)
+                const visibleTags = displayTags(partial.tags)
+                return (
                 <button
                   key={partial.id}
                   onClick={() => handleSelectPartial(partial)}
@@ -621,21 +642,61 @@ export default function PromptPartials() {
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium text-gray-900 truncate">{partial.name}</p>
-                      <div className="flex items-center gap-2 mt-1 text-xs text-gray-500">
+                      {listSubtitle ? (
+                        <p
+                          className="text-xs text-gray-500 mt-0.5 truncate"
+                          title={listSubtitle}
+                        >
+                          {listSubtitle}
+                        </p>
+                      ) : null}
+                      <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                         {isImportedAgent(partial) ? (
-                          <span className="text-sky-700 font-medium">
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-sky-50 text-sky-700 border border-sky-200">
+                            <Bot className="h-3 w-3" />
                             {isPlatformImportAgentPartial(partial) ? 'Import' : 'Agent'}
                           </span>
                         ) : isMetricPartial(partial) ? (
-                          <span className="text-violet-700 font-medium">Metric</span>
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-violet-50 text-violet-700 border border-violet-200">
+                            <Tags className="h-3 w-3" />
+                            Metric
+                          </span>
                         ) : null}
-                        <span className="text-gray-400">v{partial.current_version}</span>
+                        <span className="inline-flex items-center gap-1 text-xs text-gray-400">
+                          <History className="h-3 w-3" />
+                          v{partial.current_version}
+                        </span>
+                        {isImportedAgent(partial) ? (
+                          <span className="text-xs text-gray-400">
+                            {flowchartListLabel(partial.agent_flowchart_status)}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-gray-400">
+                            {formatDateSafe(partial.updated_at, 'MMM d, yyyy')}
+                          </span>
+                        )}
                       </div>
                     </div>
                     <ChevronRight className="h-4 w-4 text-gray-400 flex-shrink-0 mt-0.5" />
                   </div>
+                  {visibleTags.length > 0 ? (
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      {visibleTags.slice(0, 3).map((tag) => (
+                        <span
+                          key={tag}
+                          className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-gray-100 text-gray-600"
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                      {visibleTags.length > 3 ? (
+                        <span className="text-xs text-gray-400">+{visibleTags.length - 3}</span>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </button>
-              ))
+                )
+              })
             )}
           </div>
         </div>
@@ -1689,9 +1750,9 @@ function PromptPartialModal({
     if (isEditing) {
       updateMutation.mutate({
         name: name.trim(),
-        description: description.trim() || undefined,
+        description: description.trim() || null,
         content: content,
-        tags: tags.length > 0 ? tags : undefined,
+        tags: agentMode ? tags : tags.length > 0 ? tags : undefined,
         change_summary: changeSummary.trim() || undefined,
       })
     } else {

@@ -279,7 +279,7 @@ def dispatch_fair_platform_import_rows_task() -> dict:
                     finally:
                         shard_db.close()
         else:
-            dropped += clear_expired_platform_row_claims(db)
+            dropped += clear_expired_platform_row_claims(db, platform_import_ids=platform_ids)
 
         by_id = {item.id: item for item in imports}
         pending_ids = _rotate_import_ids(_platform_import_ids_with_pending(db, imports))
@@ -444,6 +444,11 @@ def discover_platform_slice_task(
                 existing.attempts = int(existing.attempts or 0) + 1
                 existing.status = "failed" if existing.attempts >= 5 else "pending"
                 db.commit()
+            from app.services.call_imports.platform_discovery import (
+                finalize_platform_discovery_if_complete,
+            )
+
+            finalize_platform_discovery_if_complete(db, import_uuid)
             return {"more": False, "skipped": True}
         more = chunk.get("more") if isinstance(chunk, dict) else bool(chunk)
         wait = int(chunk.get("wait") or 1) if isinstance(chunk, dict) else 1

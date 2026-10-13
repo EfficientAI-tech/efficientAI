@@ -10,7 +10,13 @@ from app.services.call_import_prompt_push import preview_evaluation_push
 def test_preview_fetches_live_prompt_and_blocks_when_saved_mismatch(monkeypatch):
     org_id = uuid4()
     ws_id = uuid4()
-    partial = SimpleNamespace(content="saved prompt", name="Ola Agent", current_version=3)
+    partial_id = uuid4()
+    partial = SimpleNamespace(
+        id=partial_id,
+        content="saved prompt",
+        name="Ola Agent",
+        current_version=3,
+    )
     call_import = SimpleNamespace(
         source_format="platform",
         voice_integration_id=uuid4(),
@@ -19,7 +25,7 @@ def test_preview_fetches_live_prompt_and_blocks_when_saved_mismatch(monkeypatch)
     )
     evaluation = SimpleNamespace(
         prompt_improvements={
-            "imported_agent_id": str(uuid4()),
+            "imported_agent_id": str(partial_id),
             "suggestions": [
                 {
                     "id": "1",
@@ -49,4 +55,4 @@ def test_preview_fetches_live_prompt_and_blocks_when_saved_mismatch(monkeypatch)
     assert preview["live_prompt"] == "live different"
     assert preview["saved_prompt_matches_live"] is False
     assert preview["can_push"] is False
-    assert "no longer matches" in (preview["block_reason"] or "")
+    assert "Saved partial differs" in (preview["block_reason"] or "")

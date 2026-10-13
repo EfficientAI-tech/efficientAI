@@ -347,14 +347,18 @@ def process_call_import_row_task(
         if call_import is None:
             return {"status": "skipped", "reason": "import_missing"}
 
-        if call_import.status == CallImportStatus.DELETING or (
-            _platform_import and call_import.paused_at is not None
-        ):
+        if call_import.status == CallImportStatus.DELETING:
             logger.info(
-                "Skipping row {} — parent import {} is {}",
+                "Skipping row {} — parent import {} is deleting",
                 row_id,
                 call_import.id,
-                "paused" if call_import.paused_at is not None else "deleting",
+            )
+            return {"status": "skipped", "reason": "import_deleting"}
+        if _platform_import and call_import.paused_at is not None:
+            logger.info(
+                "Skipping row {} — parent import {} is paused",
+                row_id,
+                call_import.id,
             )
             return {"status": "skipped", "reason": "import_inactive"}
 

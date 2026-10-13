@@ -85,6 +85,33 @@ def _suggestions(evaluation: CallImportEvaluation) -> List[Any]:
     return items if isinstance(items, list) else []
 
 
+def _compose_base_prompt(evaluation: CallImportEvaluation, partial_content: str) -> str:
+    raw = evaluation.prompt_improvements if isinstance(evaluation.prompt_improvements, dict) else {}
+    frozen = raw.get("compose_base_prompt")
+    if isinstance(frozen, str):
+        return frozen
+    return partial_content or ""
+
+
+def mark_prompt_improvements_applied(
+    evaluation: CallImportEvaluation,
+    applied_content: str,
+) -> None:
+    raw = (
+        dict(evaluation.prompt_improvements)
+        if isinstance(evaluation.prompt_improvements, dict)
+        else {}
+    )
+    suggestions = list(raw.get("suggestions") or [])
+    for item in suggestions:
+        if isinstance(item, dict) and item.get("review_status") == "accepted":
+            item["review_status"] = "applied"
+    raw["suggestions"] = suggestions
+    raw["compose_base_prompt"] = applied_content
+    evaluation.prompt_improvements = raw
+    flag_modified(evaluation, "prompt_improvements")
+
+
 def _require_review(_evaluation: CallImportEvaluation) -> bool:
     return True
 
@@ -359,7 +386,7 @@ def preview_evaluation_push(
     if relinked:
         db.commit()
         db.refresh(partial)
-    base = partial.content or ""
+    base = _compose_base_prompt(evaluation, partial.content or "")
     composed = compose_accepted_prompt(base, suggestions)
     block_reason = None
     provider = None
@@ -532,6 +559,7 @@ def save_evaluation_prompt_version(
         f"Saved from evaluation {label} (push later)",
         actor,
     )
+    mark_prompt_improvements_applied(evaluation, preview["composed_prompt"])
     db.commit()
     db.refresh(partial)
     return partial
@@ -581,7 +609,7 @@ def push_evaluation_prompt(
     agent = single_platform_agent(call_import)
     integration = _load_integration(db, call_import.voice_integration_id, organization_id)
     label = evaluation.name or str(evaluation.id)
-    return _push_text(
+    row = _push_text(
         db,
         partial=partial,
         integration=integration,
@@ -593,6 +621,9 @@ def push_evaluation_prompt(
         evaluation_id=evaluation.id,
         principal=principal,
     )
+    mark_prompt_improvements_applied(evaluation, preview["composed_prompt"])
+    db.commit()
+    return row
 
 
 def _version_row(db: Session, partial: PromptPartial, version_number: int) -> PromptPartialVersion:

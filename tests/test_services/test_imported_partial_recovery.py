@@ -25,7 +25,7 @@ def test_resolve_relinks_when_stored_partial_missing(monkeypatch):
     db.query.return_value.filter.return_value.first.return_value = None
 
     monkeypatch.setattr(
-        "app.services.call_import_prompt_push.resolve_imported_agent_for_call_import",
+        "app.services.platform_import_imported_agent.resolve_imported_agent_for_call_import",
         lambda *_args, **_kwargs: new_partial,
     )
 

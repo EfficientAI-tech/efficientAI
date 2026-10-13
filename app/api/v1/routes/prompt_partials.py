@@ -27,7 +27,11 @@ from app.models.schemas import (
     PromptPushResponse,
     PromptVersionPushPreviewResponse,
 )
-from app.services.imported_agent_constants import IMPORTED_AGENT_TAG, partial_supports_flowchart
+from app.services.imported_agent_constants import (
+    IMPORTED_AGENT_TAG,
+    merge_imported_agent_tags_on_update,
+    partial_supports_flowchart,
+)
 
 
 def _principal_label(principal: Optional[Principal]) -> Optional[str]:
@@ -454,6 +458,10 @@ async def update_prompt_partial(
             raise HTTPException(status_code=404, detail=f"Prompt partial {partial_id} not found")
 
         update_data = data.model_dump(exclude_unset=True)
+        if "tags" in update_data:
+            update_data["tags"] = merge_imported_agent_tags_on_update(
+                partial.tags, update_data["tags"]
+            )
         effective_tags = update_data.get("tags", partial.tags)
         effective_content = update_data.get("content", partial.content)
         try:

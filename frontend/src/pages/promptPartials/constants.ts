@@ -153,7 +153,15 @@ export function tagsForImportedAgentSave(
   userTagsFromInput: string[],
 ): string[] {
   const user = userTagsFromInput.map((t) => t.trim()).filter(Boolean).filter((tag) => !isSystemPartialTag(tag))
-  return ensureImportedAgentTag([...linkedSystemPartialTags(existing), ...user])
+  const links = linkedSystemPartialTags(existing)
+  const merged: string[] = []
+  const seen = new Set<string>()
+  for (const tag of [IMPORTED_AGENT_TAG, ...links, ...user]) {
+    if (seen.has(tag)) continue
+    seen.add(tag)
+    merged.push(tag)
+  }
+  return merged
 }
 
 export function ensureMetricPartialTag(tags: string[]): string[] {

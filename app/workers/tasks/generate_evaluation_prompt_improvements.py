@@ -122,7 +122,9 @@ def generate_evaluation_prompt_improvements_task(
                 credential_id=UUID(credential_id) if credential_id else None,
                 period_deltas=period_deltas,
             )
-            evaluation.prompt_improvements = prompt_improvements_state_to_db(state)
+            payload = prompt_improvements_state_to_db(state)
+            payload["compose_base_prompt"] = imported_agent.content or ""
+            evaluation.prompt_improvements = payload
             flag_modified(evaluation, "prompt_improvements")
             db.commit()
             if state.status == "completed":
