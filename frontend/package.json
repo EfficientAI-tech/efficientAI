@@ -20,6 +20,8 @@
     "@xyflow/react": "^12.3.5",
     "atoms-client-sdk": "^1.1.0",
     "axios": "^1.16.0",
+    "browserslist": "^4.29.3",
+    "caniuse-lite": "^1.0.30001816",
     "clsx": "^2.1.0",
     "country-flag-icons": "^1.6.15",
     "dagre": "^0.8.5",

@@ -86,6 +86,7 @@ from app.models.schemas import (
     CallImportTranscribeResponse,
     CallImportUpdate,
     CallImportUploadResponse,
+    PlatformImportAgentRef,
 )
 
 
@@ -139,6 +140,12 @@ def _normalize_import_display_name(raw: Optional[str]) -> Optional[str]:
     if not cleaned:
         return None
     return cleaned[:512]
+
+
+def _imported_agent_partial_id(call_import: CallImport):
+    from app.services.platform_import_imported_agent import linked_partial_id
+
+    return linked_partial_id(call_import)
 
 
 def _platform_agent_refs(call_import: CallImport) -> list:
@@ -311,7 +318,11 @@ def _serialize_call_import(
             "total_rows": total,
             "completed_rows": completed,
             "failed_rows": failed,
-            "platform_agents": _platform_agent_refs(call_import),
+            "platform_agents": [
+                PlatformImportAgentRef.model_validate(ref)
+                for ref in _platform_agent_refs(call_import)
+            ],
+            "imported_agent_partial_id": _imported_agent_partial_id(call_import),
             "latest_evaluation_status": _latest_evaluation_status(
                 db, call_import.id
             ),
@@ -3202,6 +3213,21 @@ async def get_call_import_detail(
         if call_import.status != prior_status:
             db.commit()
             db.refresh(call_import)
+
+    if (
+        (call_import.source_format or "") == "platform"
+        and _imported_agent_partial_id(call_import) is None
+    ):
+        from app.services.platform_import_imported_agent import (
+            ensure_imported_agent_for_platform_import,
+        )
+
+        try:
+            if ensure_imported_agent_for_platform_import(db, call_import, None):
+                db.commit()
+                db.refresh(call_import)
+        except Exception:
+            db.rollback()
 
     search_term = (q or "").strip()
     diarised_status_filter = (diarised_status or "").strip() or None

@@ -19,6 +19,7 @@ import {
 } from '../../../config/providers'
 import { IntegrationPlatform } from '../../../types/api'
 import Button from '../../../components/Button'
+import { InfoTooltip } from '../../../components/shared'
 import { useToast } from '../../../hooks/useToast'
 import PlatformImportWindowPicker, {
   toDatetimeLocalValue,
@@ -73,7 +74,10 @@ function formatRangeLabel(start: string, end: string): string {
   if (!start || !end) return ''
   const s = parseLocalDatetime(start)
   const e = parseLocalDatetime(end)
-  return `${s.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} → ${e.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`
+  const opts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric', year: 'numeric' }
+  const sLabel = Number.isNaN(s.getTime()) ? '—' : s.toLocaleDateString(undefined, opts)
+  const eLabel = Number.isNaN(e.getTime()) ? '—' : e.toLocaleDateString(undefined, opts)
+  return `${sLabel} → ${eLabel}`
 }
 
 export default function ImportPlatformModal({ open, onClose, onImportStarted }: Props) {
@@ -255,7 +259,7 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
           <button
             type="button"
             onClick={onClose}
-            className="p-1.5 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+            className="p-1.5 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 cursor-pointer"
             aria-label="Close"
           >
             <X className="h-5 w-5" />
@@ -315,7 +319,7 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
                         setAgentId('')
                         setStep('configure')
                       }}
-                      className={`text-left rounded-lg border-2 p-4 transition-all ${
+                      className={`text-left rounded-lg border-2 p-4 transition-all cursor-pointer ${
                         selected
                           ? 'border-primary-500 bg-primary-50/50 shadow-sm'
                           : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
@@ -379,7 +383,7 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
                 </div>
                 <button
                   type="button"
-                  className="shrink-0 text-xs text-primary-600 hover:underline"
+                  className="shrink-0 text-xs text-primary-600 hover:underline cursor-pointer"
                   onClick={() => setStep('provider')}
                 >
                   Change platform
@@ -403,16 +407,16 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
                     </Link>
                   </div>
                 ) : (
-                  <div className="flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2.5 focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-500">
+                  <div className="flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2.5 cursor-pointer focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-500">
                     {getIntegrationPlatformLogo(platformMeta.platform) && (
                       <img
                         src={getIntegrationPlatformLogo(platformMeta.platform)!}
                         alt=""
-                        className="h-4 w-4 shrink-0 object-contain"
+                        className="h-4 w-4 shrink-0 object-contain pointer-events-none"
                       />
                     )}
                     <select
-                      className="w-full border-0 bg-transparent p-0 text-sm focus:ring-0"
+                      className="w-full border-0 bg-transparent p-0 text-sm focus:ring-0 cursor-pointer"
                       value={integrationId}
                       onChange={(e) => {
                         setIntegrationId(e.target.value)
@@ -431,19 +435,37 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
               </div>
 
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                  Agent
-                </label>
-                <div className="flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2.5 focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-500 has-[:disabled]:bg-gray-50">
+                <div className="mb-1.5 flex items-center gap-1.5">
+                  <label className="text-sm font-medium text-gray-700">Agent</label>
+                  <InfoTooltip title="Agent import" placement="bottom" align="start" widthClassName="w-72">
+                    {!integrationId
+                      ? 'Choose a credential, then select an agent.'
+                      : chatAgent
+                        ? 'Only this agent’s chats are imported, as transcripts. No recording is downloaded.'
+                        : agentId === 'all'
+                          ? 'Every recording for this credential is imported.'
+                          : agentId
+                            ? (
+                              <>
+                                Only this agent’s recordings are imported. A separate agent prompt is
+                                created in{' '}
+                                <span className="font-medium text-white">Prompts → Partials → Agents</span>{' '}
+                                for this import only (evaluations and prompt improvements use that copy).
+                              </>
+                            )
+                            : 'Select an agent to continue.'}
+                  </InfoTooltip>
+                </div>
+                <div className="flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2.5 cursor-pointer focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-500 has-[:disabled]:cursor-not-allowed has-[:disabled]:bg-gray-50">
                   {getIntegrationPlatformLogo(platformMeta.platform) && (
                     <img
                       src={getIntegrationPlatformLogo(platformMeta.platform)!}
                       alt=""
-                      className="h-4 w-4 shrink-0 object-contain"
+                      className="h-4 w-4 shrink-0 object-contain pointer-events-none"
                     />
                   )}
                   <select
-                    className="w-full border-0 bg-transparent p-0 text-sm focus:ring-0 disabled:text-gray-400"
+                    className="w-full border-0 bg-transparent p-0 text-sm focus:ring-0 cursor-pointer disabled:cursor-not-allowed disabled:text-gray-400"
                     value={agentId}
                     disabled={!integrationId || agentsLoading}
                     onChange={(e) => setAgentId(e.target.value)}
@@ -482,19 +504,7 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
                   <p className="mt-1.5 text-sm text-red-700">
                     Could not load agents for this credential.
                   </p>
-                ) : (
-                  <p className="mt-1.5 text-xs text-gray-500">
-                    {!integrationId
-                      ? 'Choose a credential, then select an agent.'
-                      : chatAgent
-                        ? 'Only this agent’s chats are imported, as transcripts. No recording is downloaded.'
-                        : agentId === 'all'
-                          ? 'Every recording for this credential is imported.'
-                          : agentId
-                            ? 'Only this agent’s recordings are imported.'
-                            : 'Select an agent to continue.'}
-                  </p>
-                )}
+                ) : null}
               </div>
               </div>
 
@@ -572,7 +582,12 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
                             <span className="font-mono text-gray-700 truncate">{s.conversation_id}</span>
                             <span className="text-gray-400 shrink-0">
                               {s.started_at
-                                ? new Date(s.started_at).toLocaleDateString()
+                                ? (() => {
+                                    const d = new Date(s.started_at)
+                                    return Number.isNaN(d.getTime())
+                                      ? s.status || '—'
+                                      : d.toLocaleDateString()
+                                  })()
                                 : s.status || '—'}
                             </span>
                           </li>

@@ -3955,6 +3955,10 @@ export default function CallImportEvaluationDetail() {
                         clustersState={metricClustersQuery.data ?? null}
                         improvementsState={promptImprovementsQuery.data ?? null}
                         isLoading={promptImprovementsQuery.isLoading}
+                        linkedImportedAgentPartialId={
+                          callImport?.imported_agent_partial_id ?? null
+                        }
+                        platformAgentLabel={platformAgentLabel}
                         onGenerated={() => {
                           queryClient.invalidateQueries({
                             queryKey: [

@@ -1,10 +1,23 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, Check, ExternalLink, GitBranch, Loader2, Pencil, Sparkles, X } from 'lucide-react'
+import {
+  AlertTriangle,
+  ArrowRight,
+  Check,
+  CheckCircle2,
+  ExternalLink,
+  GitBranch,
+  Loader2,
+  Pencil,
+  Sparkles,
+  X,
+} from 'lucide-react'
 
+import Button from '../../../components/Button'
 import AIProviderModelPicker from '../../../components/AIProviderModelPicker'
+import { getIntegrationPlatformLogo } from '../../../config/providers'
 import type { LLMGenerationConfig } from '../../../config/llmGenerationParams'
 import { apiClient } from '../../../lib/api'
 import { getApiErrorMessage } from '../../../lib/apiErrors'
@@ -15,6 +28,7 @@ import type {
   EvaluationMetricClustersState,
   EvaluationPromptImprovementsState,
   ImportedAgent,
+  IntegrationPlatform,
   PromptImprovementSuggestion,
   PromptPushPreview,
 } from '../../../types/api'
@@ -37,6 +51,15 @@ const CHANGE_TYPE_STYLES: Record<string, string> = {
   add: 'bg-emerald-50 text-emerald-700 border-emerald-200',
 }
 
+function PromptPushMetaPill({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-xs">
+      <span className="font-medium text-gray-500">{label}</span>
+      <span className="text-gray-900 truncate max-w-[12rem]">{children}</span>
+    </span>
+  )
+}
+
 function formatModelLabel(provider?: string | null, model?: string | null): string | null {
   if (!provider && !model) return null
   if (provider && model) return `${provider} / ${model}`
@@ -50,6 +73,8 @@ export default function MetricPromptImprovementsPanel({
   improvementsState,
   isLoading,
   onGenerated,
+  linkedImportedAgentPartialId = null,
+  platformAgentLabel = null,
 }: {
   callImportId: string
   evaluationId: string
@@ -57,6 +82,8 @@ export default function MetricPromptImprovementsPanel({
   improvementsState: EvaluationPromptImprovementsState | null
   isLoading: boolean
   onGenerated: () => void
+  linkedImportedAgentPartialId?: string | null
+  platformAgentLabel?: string | null
 }) {
   const queryClient = useQueryClient()
   const [selectedAgentId, setSelectedAgentId] = useState('')
@@ -92,15 +119,21 @@ export default function MetricPromptImprovementsPanel({
     setConfirmText('')
   }
 
+  const effectiveAgentId =
+    selectedAgentId ||
+    linkedImportedAgentPartialId ||
+    improvementsState?.imported_agent_id ||
+    ''
+
   const { data: importedAgents = [] } = useQuery<ImportedAgent[]>({
     queryKey: ['imported-agents-picker'],
     queryFn: () => apiClient.listImportedAgents(0, 100),
   })
 
   const { data: selectedAgentDetail } = useQuery({
-    queryKey: ['prompt-partial', selectedAgentId],
-    queryFn: () => apiClient.getPromptPartial(selectedAgentId),
-    enabled: !!selectedAgentId,
+    queryKey: ['prompt-partial', effectiveAgentId],
+    queryFn: () => apiClient.getPromptPartial(effectiveAgentId),
+    enabled: !!effectiveAgentId,
     refetchOnWindowFocus: false,
     refetchInterval: (query) => {
       const status = query.state.data?.agent_flowchart_status
@@ -117,11 +150,14 @@ export default function MetricPromptImprovementsPanel({
     if (agentPickerTouched) return
     if (improvementsState?.imported_agent_id) {
       setSelectedAgentId(improvementsState.imported_agent_id)
+    } else if (linkedImportedAgentPartialId) {
+      setSelectedAgentId(linkedImportedAgentPartialId)
     } else if (!selectedAgentId && importedAgents.length === 1) {
       setSelectedAgentId(importedAgents[0].id)
     }
   }, [
     improvementsState?.imported_agent_id,
+    linkedImportedAgentPartialId,
     importedAgents,
     selectedAgentId,
     agentPickerTouched,
@@ -142,19 +178,30 @@ export default function MetricPromptImprovementsPanel({
   ])
 
   const generateMutation = useMutation({
-    mutationFn: () =>
-      apiClient.generateCallImportEvaluationPromptImprovements(
+    mutationFn: () => {
+      const payload: {
+        imported_agent_id?: string
+        regenerate?: boolean
+        force?: boolean
+        provider?: string
+        model?: string
+        credential_id?: string
+      } = {
+        regenerate: improvementsState?.status === 'completed',
+        force: improvementsState?.status === 'completed',
+        provider: pickerProvider || undefined,
+        model: pickerModel || undefined,
+        credential_id: pickerCredentialId || undefined,
+      }
+      if (!linkedImportedAgentPartialId && effectiveAgentId) {
+        payload.imported_agent_id = effectiveAgentId
+      }
+      return apiClient.generateCallImportEvaluationPromptImprovements(
         callImportId,
         evaluationId,
-        {
-          imported_agent_id: selectedAgentId,
-          regenerate: improvementsState?.status === 'completed',
-          force: improvementsState?.status === 'completed',
-          provider: pickerProvider || undefined,
-          model: pickerModel || undefined,
-          credential_id: pickerCredentialId || undefined,
-        },
-      ),
+        payload,
+      )
+    },
     onSuccess: () => {
       setError(null)
       onGenerated()
@@ -166,14 +213,14 @@ export default function MetricPromptImprovementsPanel({
 
   const generateFlowchartMutation = useMutation({
     mutationFn: () =>
-      apiClient.generateAgentFlowchart(selectedAgentId, {
+      apiClient.generateAgentFlowchart(effectiveAgentId, {
         provider: pickerProvider || undefined,
         model: pickerModel || undefined,
         credential_id: pickerCredentialId || undefined,
         regenerate: false,
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['prompt-partial', selectedAgentId] })
+      queryClient.invalidateQueries({ queryKey: ['prompt-partial', effectiveAgentId] })
     },
     onError: (e: any) => {
       setError(
@@ -210,19 +257,31 @@ export default function MetricPromptImprovementsPanel({
   })
 
   const pushMutation = useMutation({
-    mutationFn: () => apiClient.pushCallImportEvaluationPrompt(callImportId, evaluationId, 'confirm'),
-    onSuccess: () => {
+    mutationFn: (pushToLive: boolean) =>
+      apiClient.pushCallImportEvaluationPrompt(callImportId, evaluationId, 'confirm', {
+        pushToLive,
+      }),
+    onSuccess: (_data, pushToLive) => {
       setPushPreview(null)
       setPushConfirmOpen(false)
       setPushModalStep('review')
       setConfirmText('')
       setPushError(null)
       onGenerated()
-      if (selectedAgentId) {
-        queryClient.invalidateQueries({ queryKey: ['prompt-partial', selectedAgentId] })
+      if (effectiveAgentId) {
+        queryClient.invalidateQueries({ queryKey: ['prompt-partial', effectiveAgentId] })
+      }
+      if (!pushToLive) {
+        setError(null)
       }
     },
-    onError: (e: unknown) => setPushError(getApiErrorMessage(e, 'The live prompt was not updated.')),
+    onError: (e: unknown, pushToLive) =>
+      setPushError(
+        getApiErrorMessage(
+          e,
+          pushToLive ? 'The live prompt was not updated.' : 'Could not save the prompt version.',
+        ),
+      ),
   })
 
   const clustersReady = clustersState?.status === 'completed'
@@ -301,7 +360,7 @@ export default function MetricPromptImprovementsPanel({
         ) : null}
       </div>
 
-      {importedAgents.length === 0 ? (
+      {!linkedImportedAgentPartialId && importedAgents.length === 0 ? (
         <div className="rounded-md border border-dashed border-gray-200 bg-gray-50 px-3 py-3 text-sm text-gray-600">
           No imported agents yet.{' '}
           <Link
@@ -310,12 +369,29 @@ export default function MetricPromptImprovementsPanel({
           >
             Import a production prompt
           </Link>{' '}
-          under Prompts → Partials.
+          under Prompts → Partials, or use a single-agent platform import.
         </div>
       ) : (
         <div className="space-y-3">
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="min-w-[240px]">
+          {linkedImportedAgentPartialId ? (
+            <div className="rounded-md border border-amber-200 bg-amber-50/70 px-3 py-2.5 text-sm text-gray-800">
+              <p>
+                <span className="font-medium text-gray-900">Target agent:</span>{' '}
+                {platformAgentLabel || improvementsState?.imported_agent_name || 'Platform import agent'}
+              </p>
+              <p className="text-xs text-gray-600 mt-1">
+                Live prompt was imported as{' '}
+                <Link
+                  to={`/prompt-partials/${linkedImportedAgentPartialId}?kind=imported_agent`}
+                  className="text-primary-700 hover:text-primary-800 font-medium"
+                >
+                  Prompt Partial v1
+                </Link>{' '}
+                when this platform import started. Version history is append-only.
+              </p>
+            </div>
+          ) : (
+            <div className="min-w-[240px] max-w-md">
               <label className="block text-xs font-medium text-gray-700 mb-1">
                 Imported agent
               </label>
@@ -336,9 +412,11 @@ export default function MetricPromptImprovementsPanel({
                 ))}
               </select>
             </div>
+          )}
+          <div className="flex flex-wrap items-end gap-3">
             <button
               type="button"
-              disabled={!selectedAgentId || generateMutation.isPending}
+              disabled={!effectiveAgentId || generateMutation.isPending}
               onClick={() => generateMutation.mutate()}
               className="inline-flex items-center gap-2 rounded-md bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-50"
             >
@@ -381,7 +459,7 @@ export default function MetricPromptImprovementsPanel({
         </div>
       )}
 
-      {selectedAgentId && !hasFlowchart ? (
+      {effectiveAgentId && !hasFlowchart ? (
         <div className="rounded-md border border-dashed border-gray-200 bg-gray-50 px-3 py-3 text-sm text-gray-600 space-y-2">
           <p className="inline-flex items-center gap-2">
             <GitBranch className="h-4 w-4 text-gray-500" />
@@ -438,7 +516,7 @@ export default function MetricPromptImprovementsPanel({
               ) : null}
             </p>
             <Link
-              to={`/prompt-partials/${selectedAgentId}?kind=imported_agent`}
+              to={`/prompt-partials/${effectiveAgentId}?kind=imported_agent`}
               className="text-[11px] text-primary-700 hover:text-primary-800 inline-flex items-center gap-1"
             >
               Open full diagram
@@ -680,31 +758,30 @@ export default function MetricPromptImprovementsPanel({
       ) : null}
 
       {improvementsState?.suggestions?.length ? (
-        <div className="rounded-md border border-gray-200 bg-white p-3 space-y-3">
-          <p className="text-sm text-gray-800">
-            Accept or reject every suggestion, review the full diff against the live provider prompt,
-            then type <span className="font-mono text-gray-900">confirm</span> to push. Review is
-            always required.
+        <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-3">
+          <p className="text-sm text-gray-700">
+            Review the full diff, then save to your import-linked partial or update the live agent.
           </p>
-          <p className="text-xs text-gray-500">
-            Push updates the voice agent tied to this platform import (not the imported-agent copy
-            alone). We fetch the live prompt from the provider and compare it to your saved agent
-            prompt before writing.
-          </p>
-          <button
+          <Button
             type="button"
+            size="sm"
             disabled={previewMutation.isPending}
+            isLoading={previewMutation.isPending}
             onClick={() => previewMutation.mutate()}
-            className="rounded-md bg-gray-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
           >
-            {previewMutation.isPending ? 'Fetching live prompt…' : 'Review & push to live agent'}
-          </button>
+            {previewMutation.isPending ? 'Loading preview…' : 'Review changes'}
+          </Button>
           {pushError && !pushConfirmOpen ? <p className="text-xs text-red-600">{pushError}</p> : null}
         </div>
       ) : null}
 
       {pushConfirmOpen && pushPreview && typeof document !== 'undefined'
-        ? createPortal(
+        ? (() => {
+            const providerKey = (pushPreview.provider || '').toLowerCase() as IntegrationPlatform
+            const providerLogo = pushPreview.provider
+              ? getIntegrationPlatformLogo(providerKey)
+              : null
+            return createPortal(
             <div className="fixed inset-0 z-[9999] overflow-y-auto">
               <div className="flex min-h-full items-center justify-center p-4 sm:p-6">
                 <div
@@ -713,211 +790,242 @@ export default function MetricPromptImprovementsPanel({
                   aria-hidden
                 />
                 <div
-                  className="push-modal-panel relative flex w-full max-w-4xl max-h-[min(90vh,880px)] flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-xl"
+                  className="push-modal-panel relative flex w-full max-w-5xl max-h-[min(90vh,880px)] flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-xl"
                   role="dialog"
                   aria-modal="true"
                   aria-labelledby="push-live-prompt-title"
                 >
-            <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-amber-100 bg-amber-50/70 px-4 py-2.5 sm:px-5">
-              <div className="min-w-0 flex-1">
-                <h3 id="push-live-prompt-title" className="text-base font-semibold leading-tight text-gray-900">
-                  {pushModalStep === 'review' ? 'Review prompt changes' : 'Confirm live update'}
-                </h3>
-                <p className="text-sm text-gray-600 truncate">
-                  {pushPreview.provider || 'provider'} · {pushPreview.external_agent_name || 'Agent'}
-                </p>
-              </div>
-              <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
-                <span
-                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium sm:text-sm sm:px-2.5 sm:py-1 ${
-                    pushModalStep === 'review'
-                      ? 'border-amber-300 bg-white text-amber-950'
-                      : 'border-transparent text-gray-500'
-                  }`}
-                >
-                  <span className="font-semibold text-amber-800">1</span>
-                  <span className="hidden sm:inline">Review</span>
-                </span>
-                <span className="text-amber-300" aria-hidden>→</span>
-                <span
-                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium sm:text-sm sm:px-2.5 sm:py-1 ${
-                    pushModalStep === 'confirm'
-                      ? 'border-amber-300 bg-white text-amber-950'
-                      : 'border-transparent text-gray-500'
-                  }`}
-                >
-                  <span className="font-semibold text-amber-800">2</span>
-                  <span className="hidden sm:inline">Confirm</span>
-                </span>
-                <button
-                  type="button"
-                  onClick={closePushModal}
-                  className="ml-1 rounded-md p-1 text-gray-400 hover:bg-amber-100/80 hover:text-gray-700"
-                  aria-label="Close"
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
-            </div>
-
-            <div className="shrink-0 border-b border-gray-100 bg-white px-4 py-2 text-sm text-gray-700 sm:px-5">
-              <p className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                <span>
-                  <span className="font-medium text-gray-900">Live:</span>{' '}
-                  {pushPreview.external_agent_name || '—'}
-                </span>
-                <span className="hidden sm:inline text-gray-300">|</span>
-                <span>
-                  <span className="font-medium text-gray-900">Imported:</span>{' '}
-                  {pushPreview.imported_agent_name || improvementsState?.imported_agent_name || '—'}
-                </span>
-                <span className="hidden sm:inline text-gray-300">|</span>
-                <span>
-                  <span className="font-medium text-gray-900">Version</span> v
-                  {pushPreview.partial_current_version ?? 1}
-                  {(pushPreview.partial_next_version ?? 1) > (pushPreview.partial_current_version ?? 1)
-                    ? ` → v${pushPreview.partial_next_version}`
-                    : ''}
-                </span>
-                <span className="hidden sm:inline text-gray-300">|</span>
-                <span className="text-amber-900">
-                  <span className="font-medium text-gray-900">Accepted</span> {pushPreview.accepted_count}
-                </span>
-              </p>
-              {pushPreview.external_agent_id ? (
-                <p
-                  className="mt-0.5 font-mono text-xs text-gray-400 truncate"
-                  title={pushPreview.external_agent_id}
-                >
-                  {pushPreview.external_agent_id}
-                </p>
-              ) : null}
-            </div>
-
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 py-2 sm:px-5 sm:py-3">
-              {pushPreview.saved_prompt_matches_live === false ? (
-                <div className="flex gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-950">
-                  <AlertTriangle className="h-5 w-5 shrink-0" />
-                  <p>
-                    Live provider prompt does not match your saved imported-agent copy. Align them
-                    before pushing.
-                  </p>
-                </div>
-              ) : null}
-              {pushPreview.block_reason && !pushPreview.can_push ? (
-                <p className="text-sm text-rose-700">{pushPreview.block_reason}</p>
-              ) : null}
-
-              <div
-                key={pushModalStep}
-                className="push-modal-step-enter flex min-h-0 flex-1 flex-col gap-3 overflow-hidden"
-              >
-                {pushModalStep === 'confirm' ? (
-                  <div className="shrink-0 rounded-xl border-2 border-amber-300 bg-amber-50 px-4 py-3 space-y-2.5 shadow-sm">
-                    <p className="text-sm leading-relaxed text-amber-950">
-                      This updates the live prompt on{' '}
-                      <span className="font-semibold">{pushPreview.provider || 'the provider'}</span>,
-                      saves{' '}
-                      <span className="font-semibold">
-                        v{pushPreview.partial_next_version ?? (pushPreview.partial_current_version ?? 1) + 1}
-                      </span>{' '}
-                      on the imported agent, and records a live-push audit entry.
-                    </p>
-                    <label className="block text-sm font-medium text-gray-900">
-                      Type <span className="rounded bg-white px-1.5 py-0.5 font-mono text-amber-900">confirm</span>{' '}
-                      to update the live agent
-                      <input
-                        value={confirmText}
-                        onChange={(event) => setConfirmText(event.target.value)}
-                        autoComplete="off"
-                        autoFocus
-                        placeholder="confirm"
-                        className="mt-2 w-full rounded-lg border-2 border-amber-300 bg-white px-4 py-3 text-base text-gray-900 placeholder:text-gray-400 focus:border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-200"
-                      />
-                    </label>
-                    {pushError ? <p className="text-sm text-red-600">{pushError}</p> : null}
+                  <div className="flex items-start justify-between gap-3 px-6 py-4 border-b border-gray-100">
+                    <div className="flex min-w-0 items-start gap-3">
+                      {providerLogo ? (
+                        <img
+                          src={providerLogo}
+                          alt=""
+                          className="h-9 w-9 shrink-0 object-contain mt-0.5"
+                        />
+                      ) : null}
+                      <div className="min-w-0">
+                        <h3 id="push-live-prompt-title" className="text-lg font-semibold text-gray-900">
+                          Review prompt changes
+                        </h3>
+                        <p className="text-sm text-gray-500 truncate mt-0.5">
+                          {pushPreview.external_agent_name || 'Agent'}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={closePushModal}
+                      className="p-1.5 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+                      aria-label="Close"
+                    >
+                      <X className="h-5 w-5" />
+                    </button>
                   </div>
-                ) : null}
 
-                <div className="flex min-h-0 flex-1 flex-col gap-1.5">
-                  <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
-                    <span className="text-sm font-medium text-gray-800">
-                      {pushModalStep === 'review' ? 'Live vs new prompt' : 'Changes you are applying'}
-                    </span>
-                    <PromptDiffViewToggle view={diffView} onChange={setDiffView} />
+                  <div className="px-6 py-3 bg-gray-50 border-b border-gray-100 flex gap-2 text-xs font-medium">
+                    {(
+                      [
+                        { id: 'review' as const, label: 'Review diff' },
+                        { id: 'confirm' as const, label: 'Confirm' },
+                      ] as const
+                    ).map((s, i) => {
+                      const active = pushModalStep === s.id
+                      const done = s.id === 'review' && pushModalStep === 'confirm'
+                      return (
+                        <div key={s.id} className="flex items-center gap-2 flex-1 min-w-0">
+                          <span
+                            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${
+                              done
+                                ? 'bg-primary-600 text-white'
+                                : active
+                                  ? 'bg-primary-100 text-primary-700 ring-2 ring-primary-500'
+                                  : 'bg-white text-gray-400 border border-gray-200'
+                            }`}
+                          >
+                            {done ? <CheckCircle2 className="h-3.5 w-3.5" /> : i + 1}
+                          </span>
+                          <span className={active || done ? 'text-gray-900' : 'text-gray-400'}>
+                            {s.label}
+                          </span>
+                          {i < 1 ? (
+                            <ArrowRight className="h-3 w-3 text-gray-300 ml-auto hidden sm:block" />
+                          ) : null}
+                        </div>
+                      )
+                    })}
                   </div>
-                  <div className="min-h-0 flex-1">
-                    <PromptLineDiff
-                      view={diffView}
-                      leftLabel="Current live (provider)"
-                      rightLabel="After accepted changes"
-                      before={pushPreview.live_prompt || pushPreview.base_prompt}
-                      after={pushPreview.composed_prompt}
-                      maxHeightClass={
-                        pushModalStep === 'confirm'
-                          ? 'max-h-[min(36vh,380px)]'
-                          : 'max-h-[min(52vh,520px)]'
-                      }
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
 
-            <div className="flex shrink-0 justify-between gap-3 border-t border-amber-100 bg-white px-5 py-3">
-              {pushModalStep === 'confirm' ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPushModalStep('review')
-                    setConfirmText('')
-                    setPushError(null)
-                  }}
-                  className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-                >
-                  Back to diff
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={closePushModal}
-                  className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-                >
-                  Cancel
-                </button>
-              )}
-              {pushModalStep === 'review' ? (
-                <button
-                  type="button"
-                  disabled={!pushPreview.can_push}
-                  onClick={() => {
-                    setPushModalStep('confirm')
-                    setPushError(null)
-                  }}
-                  className="rounded-lg bg-gray-900 px-5 py-2 text-sm font-medium text-white disabled:opacity-50 hover:bg-gray-800"
-                >
-                  Continue to confirm
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  disabled={
-                    pushMutation.isPending ||
-                    !pushPreview.can_push ||
-                    confirmText !== 'confirm'
-                  }
-                  onClick={() => pushMutation.mutate()}
-                  className="rounded-lg bg-amber-700 px-5 py-2 text-sm font-medium text-white disabled:opacity-50 hover:bg-amber-800"
-                >
-                  {pushMutation.isPending ? 'Updating…' : 'Update live agent'}
-                </button>
-              )}
-            </div>
+                  <div className="flex flex-wrap gap-2 px-6 py-3 border-b border-gray-100 bg-white">
+                    <PromptPushMetaPill label="Partial">
+                      {pushPreview.imported_agent_name ||
+                        improvementsState?.imported_agent_name ||
+                        '—'}
+                    </PromptPushMetaPill>
+                    <PromptPushMetaPill label="Version">
+                      v{pushPreview.partial_current_version ?? 1}
+                      {(pushPreview.partial_next_version ?? 1) >
+                      (pushPreview.partial_current_version ?? 1)
+                        ? ` → v${pushPreview.partial_next_version}`
+                        : ''}
+                    </PromptPushMetaPill>
+                    <PromptPushMetaPill label="Accepted">
+                      {pushPreview.accepted_count}
+                    </PromptPushMetaPill>
+                    {pushPreview.external_agent_id ? (
+                      <span
+                        className="inline-flex items-center rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 font-mono text-[11px] text-gray-500 truncate max-w-full"
+                        title={pushPreview.external_agent_id}
+                      >
+                        {pushPreview.external_agent_id}
+                      </span>
+                    ) : null}
+                  </div>
+
+                  <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-6 py-4 gap-3 custom-scrollbar">
+                    {pushPreview.saved_prompt_matches_live === false ? (
+                      <div className="flex gap-2.5 rounded-lg border border-amber-200 bg-[#fef7e0] px-3 py-2.5 text-sm text-gray-800 shrink-0">
+                        <AlertTriangle className="h-5 w-5 shrink-0 text-[#f29900]" />
+                        <p>
+                          Saved partial differs from the provider. You can still save locally; push
+                          live from here or Prompt Partials → Agents.
+                        </p>
+                      </div>
+                    ) : null}
+                    {pushPreview.block_reason && !pushPreview.can_push && pushModalStep === 'confirm' ? (
+                      <p className="text-sm text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2 shrink-0">
+                        {pushPreview.block_reason}
+                      </p>
+                    ) : null}
+
+                    <div
+                      key={pushModalStep}
+                      className="push-modal-step-enter flex min-h-0 flex-1 flex-col gap-3 overflow-hidden"
+                    >
+                      {pushModalStep === 'confirm' ? (
+                        <div className="shrink-0 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 space-y-3">
+                          <p className="text-sm text-gray-700 leading-relaxed">
+                            Choose <span className="font-medium">Save to Partials</span> to version
+                            locally, or <span className="font-medium">Update live agent</span> to write
+                            to {pushPreview.provider || 'the provider'} (v
+                            {pushPreview.partial_next_version ??
+                              (pushPreview.partial_current_version ?? 1) + 1}
+                            ).
+                          </p>
+                          <label className="block text-sm font-medium text-gray-900">
+                            Type{' '}
+                            <span className="rounded-md bg-white border border-gray-200 px-1.5 py-0.5 font-mono text-xs">
+                              confirm
+                            </span>
+                            <input
+                              value={confirmText}
+                              onChange={(event) => setConfirmText(event.target.value)}
+                              autoComplete="off"
+                              autoFocus
+                              placeholder="confirm"
+                              className="mt-2 w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
+                            />
+                          </label>
+                          {pushError ? <p className="text-sm text-red-600">{pushError}</p> : null}
+                        </div>
+                      ) : null}
+
+                      <div className="flex min-h-0 flex-1 flex-col gap-2 rounded-xl border border-gray-200 overflow-hidden">
+                        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-gray-100 bg-gray-50 px-3 py-2">
+                          <span className="text-sm font-medium text-gray-800">
+                            {pushModalStep === 'review'
+                              ? 'Provider vs with accepted changes'
+                              : 'Diff preview'}
+                          </span>
+                          <PromptDiffViewToggle view={diffView} onChange={setDiffView} />
+                        </div>
+                        <div className="min-h-0 flex-1 p-2 bg-white">
+                          <PromptLineDiff
+                            view={diffView}
+                            leftLabel="Live (provider)"
+                            rightLabel="After changes"
+                            before={pushPreview.live_prompt || pushPreview.base_prompt}
+                            after={pushPreview.composed_prompt}
+                            maxHeightClass={
+                              pushModalStep === 'confirm'
+                                ? 'max-h-[min(32vh,340px)]'
+                                : 'max-h-[min(50vh,500px)]'
+                            }
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-gray-100 bg-gray-50/90 px-6 py-4">
+                    {pushModalStep === 'confirm' ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setPushModalStep('review')
+                          setConfirmText('')
+                          setPushError(null)
+                        }}
+                      >
+                        Back
+                      </Button>
+                    ) : (
+                      <Button type="button" variant="ghost" size="sm" onClick={closePushModal}>
+                        Cancel
+                      </Button>
+                    )}
+                    {pushModalStep === 'review' ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={!pushPreview.can_save_version && !pushPreview.can_push}
+                        onClick={() => {
+                          setPushModalStep('confirm')
+                          setPushError(null)
+                        }}
+                      >
+                        Continue
+                      </Button>
+                    ) : (
+                      <div className="flex flex-wrap justify-end gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={
+                            pushMutation.isPending ||
+                            !pushPreview.can_save_version ||
+                            confirmText !== 'confirm'
+                          }
+                          isLoading={pushMutation.isPending}
+                          onClick={() => pushMutation.mutate(false)}
+                        >
+                          Save to Partials
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={
+                            pushMutation.isPending ||
+                            !pushPreview.can_push ||
+                            confirmText !== 'confirm'
+                          }
+                          isLoading={pushMutation.isPending}
+                          onClick={() => pushMutation.mutate(true)}
+                        >
+                          Update live agent
+                        </Button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>,
             document.body,
           )
+          })()
         : null}
     </section>
   )

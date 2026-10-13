@@ -18,6 +18,7 @@ from app.models.database import (
     PromptPush,
 )
 from app.models.schemas import AgentFlowGraph
+from app.services.imported_agent_constants import AGENT_PROVIDER_PROMPT_TAG_PREFIX
 from app.services.voice_providers.prompt_sync import (
     build_voice_provider_from_integration,
     fetch_provider_prompt,
@@ -163,19 +164,51 @@ def _load_integration(db: Session, integration_id: UUID, organization_id: UUID) 
     return integration
 
 
-def _latest_push_target(db: Session, partial: PromptPartial) -> PromptPush:
+def _parse_provider_link_tag(tag: str) -> Optional[Tuple[UUID, str]]:
+    if not isinstance(tag, str) or not tag.startswith(AGENT_PROVIDER_PROMPT_TAG_PREFIX):
+        return None
+    rest = tag[len(AGENT_PROVIDER_PROMPT_TAG_PREFIX) :]
+    integration_raw, agent_id = rest.split(":", 1) if ":" in rest else ("", "")
+    agent_id = agent_id.strip()
+    if not integration_raw or not agent_id:
+        return None
+    try:
+        return UUID(integration_raw.strip()), agent_id
+    except (TypeError, ValueError):
+        return None
+
+
+def resolve_push_target(
+    db: Session,
+    partial: PromptPartial,
+) -> Tuple[Integration, str, Optional[str]]:
+    """Integration + external agent id from last live push or import link tags."""
     row = (
         db.query(PromptPush)
         .filter(
             PromptPush.prompt_partial_id == partial.id,
             PromptPush.integration_id.isnot(None),
+            PromptPush.status == "pushed",
         )
         .order_by(PromptPush.created_at.desc())
         .first()
     )
-    if row is None:
-        raise PromptPushError(400, "This agent has not been pushed yet, so there is no live target to roll back to.")
-    return row
+    if row is not None and row.integration_id:
+        integration = _load_integration(db, row.integration_id, partial.organization_id)
+        return integration, row.external_agent_id, row.external_agent_name
+
+    for tag in partial.tags or []:
+        parsed = _parse_provider_link_tag(tag)
+        if parsed is None:
+            continue
+        integration_id, external_agent_id = parsed
+        integration = _load_integration(db, integration_id, partial.organization_id)
+        return integration, external_agent_id, partial.name
+
+    raise PromptPushError(
+        400,
+        "No live agent is linked to this partial. Use a single-agent platform import.",
+    )
 
 
 def _write_version(
@@ -320,7 +353,7 @@ def preview_evaluation_push(
     suggestions = _suggestions(evaluation)
     accepted, rejected, pending = review_counts(suggestions)
     require_review = _require_review(evaluation)
-    partial = _imported_partial(db, evaluation, organization_id, workspace_id)
+    partial = _imported_partial(db, evaluation, organization_id, workspace_id, call_import)
     base = partial.content or ""
     composed = compose_accepted_prompt(base, suggestions)
     block_reason = None
@@ -344,17 +377,28 @@ def preview_evaluation_push(
             saved_matches_live = normalize_prompt(live_prompt) == normalize_prompt(base)
             if not saved_matches_live:
                 block_reason = (
-                    "The live agent prompt no longer matches the saved imported agent prompt. "
-                    "Update the imported agent from the provider, then review again."
+                    "Saved partial differs from the provider. Save to Partials still works; "
+                    "use Push live in Prompt Partials to update the agent, or refresh from the provider first."
                 )
         except Exception as exc:
             block_reason = f"Could not read the live prompt: {exc}"
-    if block_reason is None and require_review and pending:
-        block_reason = "Accept or reject every suggestion before pushing."
-    if block_reason is None and accepted == 0:
-        block_reason = "Accept at least one change before pushing."
-    if block_reason is None and normalize_prompt(composed) == normalize_prompt(base):
-        block_reason = "Accepted changes do not alter the prompt."
+    save_block_reason = None
+    if require_review and pending:
+        save_block_reason = "Accept or reject every suggestion before saving."
+    elif accepted == 0:
+        save_block_reason = "Accept at least one change before saving."
+    elif normalize_prompt(composed) == normalize_prompt(base):
+        save_block_reason = "Accepted changes do not alter the prompt."
+
+    live_block_reason = save_block_reason
+    if live_block_reason is None and block_reason:
+        live_block_reason = block_reason
+    if live_block_reason is None and saved_matches_live is False:
+        live_block_reason = (
+            "Saved partial differs from the provider. Push live from Prompt Partials after saving, "
+            "or align the saved copy from the provider before updating live from this evaluation."
+        )
+
     content_changes = normalize_prompt(composed) != normalize_prompt(base)
     current_version = int(getattr(partial, "current_version", None) or 1)
     next_version = current_version + 1 if content_changes else current_version
@@ -370,8 +414,10 @@ def preview_evaluation_push(
         "rejected_count": rejected,
         "pending_count": pending,
         "require_review": require_review,
-        "can_push": block_reason is None,
-        "block_reason": block_reason,
+        "can_save_version": save_block_reason is None,
+        "can_push": live_block_reason is None,
+        "block_reason": live_block_reason,
+        "save_block_reason": save_block_reason,
         "provider": provider,
         "external_agent_id": agent_id,
         "external_agent_name": agent_name,
@@ -383,9 +429,16 @@ def _imported_partial(
     evaluation: CallImportEvaluation,
     organization_id: UUID,
     workspace_id: UUID,
+    call_import: Optional[CallImport] = None,
 ) -> PromptPartial:
     raw = evaluation.prompt_improvements if isinstance(evaluation.prompt_improvements, dict) else {}
     partial_id = raw.get("imported_agent_id")
+    if not partial_id and call_import is not None:
+        from app.services.platform_import_imported_agent import resolve_imported_agent_for_call_import
+
+        linked = resolve_imported_agent_for_call_import(db, call_import, None)
+        if linked is not None:
+            partial_id = str(linked.id)
     if not partial_id:
         raise PromptPushError(400, "Generate prompt suggestions before pushing.")
     partial = (
@@ -402,6 +455,37 @@ def _imported_partial(
     return partial
 
 
+def save_evaluation_prompt_version(
+    db: Session,
+    evaluation: CallImportEvaluation,
+    call_import: CallImport,
+    organization_id: UUID,
+    workspace_id: UUID,
+    confirm: str,
+    principal: Optional[Principal],
+) -> PromptPartial:
+    if confirm != CONFIRM_PHRASE:
+        raise PromptPushError(400, "Type confirm to save the prompt version.")
+    preview = preview_evaluation_push(db, evaluation, call_import, organization_id, workspace_id)
+    if not preview.get("can_save_version"):
+        raise PromptPushError(
+            400, preview.get("save_block_reason") or "This prompt cannot be saved."
+        )
+    partial = _imported_partial(db, evaluation, organization_id, workspace_id, call_import)
+    label = evaluation.name or str(evaluation.id)
+    actor = _actor_label(principal)
+    _write_version(
+        db,
+        partial,
+        preview["composed_prompt"],
+        f"Saved from evaluation {label} (push later)",
+        actor,
+    )
+    db.commit()
+    db.refresh(partial)
+    return partial
+
+
 def push_evaluation_prompt(
     db: Session,
     evaluation: CallImportEvaluation,
@@ -410,13 +494,37 @@ def push_evaluation_prompt(
     workspace_id: UUID,
     confirm: str,
     principal: Optional[Principal],
+    *,
+    push_to_live: bool = True,
 ) -> PromptPush:
     if confirm != CONFIRM_PHRASE:
         raise PromptPushError(400, "Type confirm to push the live prompt.")
+    if not push_to_live:
+        partial = save_evaluation_prompt_version(
+            db, evaluation, call_import, organization_id, workspace_id, confirm, principal
+        )
+        row = PromptPush(
+            organization_id=partial.organization_id,
+            workspace_id=partial.workspace_id,
+            prompt_partial_id=partial.id,
+            prompt_version=partial.current_version,
+            provider="saved_only",
+            external_agent_id="n/a",
+            external_agent_name=None,
+            integration_id=None,
+            evaluation_id=evaluation.id,
+            pushed_by=_actor_label(principal),
+            status="saved_only",
+            error_message=None,
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return row
     preview = preview_evaluation_push(db, evaluation, call_import, organization_id, workspace_id)
     if not preview["can_push"]:
         raise PromptPushError(400, preview["block_reason"] or "This prompt cannot be pushed.")
-    partial = _imported_partial(db, evaluation, organization_id, workspace_id)
+    partial = _imported_partial(db, evaluation, organization_id, workspace_id, call_import)
     agent = single_platform_agent(call_import)
     integration = _load_integration(db, call_import.voice_integration_id, organization_id)
     label = evaluation.name or str(evaluation.id)
@@ -434,39 +542,7 @@ def push_evaluation_prompt(
     )
 
 
-def preview_version_push(
-    db: Session,
-    partial: PromptPartial,
-    version_number: int,
-    organization_id: UUID,
-) -> Dict[str, Any]:
-    version = _version(db, partial, version_number)
-    target = _latest_push_target(db, partial)
-    integration = _load_integration(db, target.integration_id, organization_id)
-    try:
-        live = fetch_provider_prompt(integration, target.external_agent_id) or ""
-    except Exception as exc:
-        raise PromptPushError(502, f"Could not read the live prompt: {exc}") from exc
-    block_reason = None
-    if normalize_prompt(live) != normalize_prompt(partial.content):
-        block_reason = "The live agent prompt no longer matches the saved prompt. Refresh the agent prompt before rolling back."
-    elif normalize_prompt(version.content) == normalize_prompt(live):
-        block_reason = "That version already matches the live prompt."
-    return {
-        "live_prompt": live,
-        "version_prompt": version.content,
-        "version": version.version,
-        "provider": _platform_key(integration),
-        "external_agent_id": target.external_agent_id,
-        "external_agent_name": target.external_agent_name,
-        "can_push": block_reason is None,
-        "block_reason": block_reason,
-    }
-
-
-def _version(db: Session, partial: PromptPartial, version_number: int) -> PromptPartialVersion:
-    if version_number == partial.current_version:
-        raise PromptPushError(400, "Pick an older version to roll back.")
+def _version_row(db: Session, partial: PromptPartial, version_number: int) -> PromptPartialVersion:
     version = (
         db.query(PromptPartialVersion)
         .filter(
@@ -475,11 +551,45 @@ def _version(db: Session, partial: PromptPartial, version_number: int) -> Prompt
         )
         .first()
     )
-    if version is None and version_number == partial.current_version:
-        raise PromptPushError(400, "The current version is already live locally. Pick an older version.")
     if version is None:
         raise PromptPushError(404, "Prompt version not found")
     return version
+
+
+def preview_version_push(
+    db: Session,
+    partial: PromptPartial,
+    version_number: int,
+    organization_id: UUID,
+) -> Dict[str, Any]:
+    version = _version_row(db, partial, version_number)
+    integration, external_agent_id, external_agent_name = resolve_push_target(db, partial)
+    try:
+        live = fetch_provider_prompt(integration, external_agent_id) or ""
+    except Exception as exc:
+        raise PromptPushError(502, f"Could not read the live prompt: {exc}") from exc
+    block_reason = None
+    drift_warning = None
+    if normalize_prompt(version.content) == normalize_prompt(live):
+        block_reason = "This version already matches the live provider prompt."
+    elif normalize_prompt(partial.content or "") != normalize_prompt(live):
+        drift_warning = (
+            f"Provider prompt differs from your current saved copy (v{partial.current_version}). "
+            "This push will replace the live agent with the selected version."
+        )
+    is_current = version_number == partial.current_version
+    return {
+        "live_prompt": live,
+        "version_prompt": version.content,
+        "version": version.version,
+        "provider": _platform_key(integration),
+        "external_agent_id": external_agent_id,
+        "external_agent_name": external_agent_name,
+        "can_push": block_reason is None,
+        "block_reason": block_reason,
+        "drift_warning": drift_warning,
+        "is_current_version": is_current,
+    }
 
 
 def push_version_rollback(
@@ -495,26 +605,31 @@ def push_version_rollback(
     preview = preview_version_push(db, partial, version_number, organization_id)
     if not preview["can_push"]:
         raise PromptPushError(400, preview["block_reason"] or "This version cannot be pushed.")
-    target = _latest_push_target(db, partial)
-    integration = _load_integration(db, target.integration_id, organization_id)
+    integration, external_agent_id, external_agent_name = resolve_push_target(db, partial)
     try:
-        live = fetch_provider_prompt(integration, target.external_agent_id)
+        live = fetch_provider_prompt(integration, external_agent_id)
     except Exception as exc:
         raise PromptPushError(502, f"Could not read the live prompt: {exc}") from exc
-    if live is None or normalize_prompt(live) != normalize_prompt(partial.content):
-        raise PromptPushError(
-            409,
-            "The live agent prompt no longer matches the saved prompt. Refresh the agent prompt before rolling back.",
-        )
+    if live is None:
+        raise PromptPushError(409, "Could not read the live prompt, so it was not overwritten.")
+    live_norm = normalize_prompt(live)
+    next_norm = normalize_prompt(preview["version_prompt"])
+    if next_norm == live_norm:
+        raise PromptPushError(400, "This version already matches the live provider prompt.")
+    summary = (
+        f"Pushed v{version_number} to live agent"
+        if preview.get("is_current_version")
+        else f"Pushed v{version_number} to live (from v{partial.current_version})"
+    )
     return _push_text(
         db,
         partial=partial,
         integration=integration,
-        external_agent_id=target.external_agent_id,
-        external_agent_name=target.external_agent_name,
-        expected_base=partial.content or "",
+        external_agent_id=external_agent_id,
+        external_agent_name=external_agent_name,
+        expected_base=live,
         next_content=preview["version_prompt"],
-        change_summary=f"Reverted to version {version_number}",
+        change_summary=summary,
         evaluation_id=None,
         principal=principal,
     )

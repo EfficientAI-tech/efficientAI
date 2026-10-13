@@ -7031,11 +7031,26 @@ async def generate_call_import_evaluation_prompt_improvements(
 
     from app.services.call_import_prompt_improvements import is_imported_agent
     from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
+    from app.services.platform_import_imported_agent import resolve_imported_agent_for_call_import
+
+    call_import = _require_import(db, call_import_id, organization_id)
+    imported_agent_id = body.imported_agent_id
+    if imported_agent_id is None:
+        linked = resolve_imported_agent_for_call_import(db, call_import, principal)
+        if linked is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No imported agent is linked to this import. Select an imported agent "
+                    "or use a single-agent platform import."
+                ),
+            )
+        imported_agent_id = linked.id
 
     imported_agent = (
         db.query(PromptPartial)
         .filter(
-            PromptPartial.id == body.imported_agent_id,
+            PromptPartial.id == imported_agent_id,
             PromptPartial.organization_id == organization_id,
             PromptPartial.workspace_id == workspace_id,
         )
@@ -7052,7 +7067,7 @@ async def generate_call_import_evaluation_prompt_improvements(
         if (
             cached is not None
             and cached.status in {"running", "completed"}
-            and cached.imported_agent_id == str(body.imported_agent_id)
+            and cached.imported_agent_id == str(imported_agent_id)
         ):
             return cached
 
@@ -7062,7 +7077,7 @@ async def generate_call_import_evaluation_prompt_improvements(
 
     _enqueue_prompt_improvements_job(
         evaluation,
-        imported_agent_id=body.imported_agent_id,
+        imported_agent_id=imported_agent_id,
         imported_agent_name=imported_agent.name,
         provider=provider_enum.value,
         model=model_str,
@@ -7075,7 +7090,7 @@ async def generate_call_import_evaluation_prompt_improvements(
     db.refresh(evaluation)
     return _prompt_improvements_payload(evaluation) or EvaluationPromptImprovementsState(
         status="running",
-        imported_agent_id=str(body.imported_agent_id),
+        imported_agent_id=str(imported_agent_id),
         imported_agent_name=imported_agent.name,
     )
 
@@ -7187,6 +7202,7 @@ async def push_call_import_evaluation_prompt(
             workspace_id,
             body.confirm,
             principal,
+            push_to_live=body.push_to_live,
         )
     except PromptPushError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc

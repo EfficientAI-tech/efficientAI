@@ -177,6 +177,13 @@ def test_retell_list_calls_uses_v3_agent_filter():
         fc = captured["json"]["filter_criteria"]
         assert fc.get("agent") == [{"agent_id": "agent_abc123"}]
         assert "agent_id" not in fc
+        ts = fc.get("start_timestamp") or {}
+        assert ts.get("type") == "range"
+        assert ts.get("op") == "bt"
+        assert ts.get("value") == [
+            int(datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp() * 1000),
+            int(datetime(2026, 1, 2, tzinfo=timezone.utc).timestamp() * 1000),
+        ]
     finally:
         retell_mod.requests.post = original
 

@@ -44,6 +44,17 @@ def _retell_agent_filter(agent_id: Optional[str]) -> dict[str, list[dict[str, st
     return {"agent": [{"agent_id": cleaned}]}
 
 
+def _retell_start_timestamp_range(slice: TimeSlice) -> dict[str, Any]:
+    """Retell v3 RangeFilter: type range, op bt (between), value [lower_ms, upper_ms]."""
+    lower = int(slice.slice_start.timestamp() * 1000)
+    upper = int(slice.slice_end.timestamp() * 1000)
+    return {
+        "type": "range",
+        "op": "bt",
+        "value": [lower, upper],
+    }
+
+
 def _next_pagination_key(
     data: Any,
     cursor: Optional[str],
@@ -71,10 +82,7 @@ class RetellHistoricalAdapter:
     ) -> Tuple[List[HistoricalListItem], Optional[str]]:
         body = {
             "filter_criteria": {
-                "start_timestamp": {
-                    "lower_threshold": int(slice.slice_start.timestamp() * 1000),
-                    "upper_threshold": int(slice.slice_end.timestamp() * 1000),
-                },
+                "start_timestamp": _retell_start_timestamp_range(slice),
             },
             "limit": min(page_size, 1000),
         }
@@ -142,10 +150,7 @@ class RetellHistoricalAdapter:
     ) -> Tuple[List[HistoricalListItem], Optional[str]]:
         body: dict = {
             "filter_criteria": {
-                "start_timestamp": {
-                    "lower_threshold": int(slice.slice_start.timestamp() * 1000),
-                    "upper_threshold": int(slice.slice_end.timestamp() * 1000),
-                },
+                "start_timestamp": _retell_start_timestamp_range(slice),
             },
             "limit": min(page_size, 1000),
         }

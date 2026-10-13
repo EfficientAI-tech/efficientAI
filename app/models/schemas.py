@@ -3733,6 +3733,10 @@ class CallImportResponse(BaseModel):
     paused_at: Optional[datetime] = None
     pause_reason: Optional[str] = None
     skip_counts: Dict[str, int] = Field(default_factory=dict)
+    imported_agent_partial_id: Optional[UUID] = Field(
+        None,
+        description="Imported-agent PromptPartial auto-linked from this platform import.",
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -5479,7 +5483,7 @@ class EvaluationPromptImprovementsState(BaseModel):
 class EvaluationPromptImprovementsRequest(BaseModel):
     """Body for ``POST /evaluations/{eval_id}/prompt-improvements``."""
 
-    imported_agent_id: UUID
+    imported_agent_id: Optional[UUID] = None
     regenerate: bool = False
     force: bool = False
     provider: Optional[str] = None
@@ -5495,6 +5499,7 @@ class PromptImprovementReviewUpdate(BaseModel):
 
 class PromptPushConfirm(BaseModel):
     confirm: str
+    push_to_live: bool = True
 
 
 class PromptPushPreviewResponse(BaseModel):
@@ -5510,7 +5515,9 @@ class PromptPushPreviewResponse(BaseModel):
     pending_count: int = 0
     require_review: bool = True
     can_push: bool = False
+    can_save_version: bool = False
     block_reason: Optional[str] = None
+    save_block_reason: Optional[str] = None
     provider: Optional[str] = None
     external_agent_id: Optional[str] = None
     external_agent_name: Optional[str] = None
@@ -5525,6 +5532,8 @@ class PromptVersionPushPreviewResponse(BaseModel):
     external_agent_name: Optional[str] = None
     can_push: bool = False
     block_reason: Optional[str] = None
+    drift_warning: Optional[str] = None
+    is_current_version: bool = False
 
 
 class EvaluationMetricClustersRequest(BaseModel):

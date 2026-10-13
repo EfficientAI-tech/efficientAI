@@ -2968,7 +2968,7 @@ class ApiClient {
     callImportId: string,
     evaluationId: string,
     data: {
-      imported_agent_id: string
+      imported_agent_id?: string
       regenerate?: boolean
       force?: boolean
       provider?: string
@@ -3013,10 +3013,11 @@ class ApiClient {
     callImportId: string,
     evaluationId: string,
     confirm: string,
+    options?: { pushToLive?: boolean },
   ): Promise<import('../types/api').PromptPushRecord> {
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/prompt-improvements/push`,
-      { confirm },
+      { confirm, push_to_live: options?.pushToLive ?? true },
     )
     return response.data
   }

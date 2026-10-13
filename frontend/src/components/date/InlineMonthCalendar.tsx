@@ -6,6 +6,7 @@ import {
   format,
   isSameDay,
   isSameMonth,
+  isValid,
   isWithinInterval,
   startOfMonth,
   startOfWeek,
@@ -59,7 +60,8 @@ export default function InlineMonthCalendar({
   maxDate,
   minDate,
 }: Props) {
-  const monthStart = startOfMonth(month)
+  const safeMonth = isValid(month) ? month : new Date()
+  const monthStart = startOfMonth(safeMonth)
   const gridStart = startOfWeek(monthStart, { weekStartsOn: 0 })
   const gridEnd = endOfWeek(endOfMonth(month), { weekStartsOn: 0 })
   const days = eachDayOfInterval({ start: gridStart, end: gridEnd })
@@ -90,16 +92,16 @@ export default function InlineMonthCalendar({
       <div className="flex items-center justify-between mb-2">
         <button
           type="button"
-          onClick={() => onMonthChange(subMonths(month, 1))}
+          onClick={() => onMonthChange(subMonths(safeMonth, 1))}
           className="p-1.5 rounded-md text-gray-500 hover:bg-gray-100"
           aria-label="Previous month"
         >
           <ChevronLeft className="h-4 w-4" />
         </button>
-        <span className="text-sm font-semibold text-gray-900">{format(month, 'MMMM yyyy')}</span>
+        <span className="text-sm font-semibold text-gray-900">{format(safeMonth, 'MMMM yyyy')}</span>
         <button
           type="button"
-          onClick={() => onMonthChange(addMonths(month, 1))}
+          onClick={() => onMonthChange(addMonths(safeMonth, 1))}
           className="p-1.5 rounded-md text-gray-500 hover:bg-gray-100"
           aria-label="Next month"
         >

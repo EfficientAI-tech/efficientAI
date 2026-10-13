@@ -23,7 +23,6 @@ import {
   FileText,
   Eye,
   Code,
-  Tag,
   Clock,
   Save,
   Sparkles,
@@ -33,7 +32,7 @@ import {
   RefreshCw,
   Tags,
 } from 'lucide-react'
-import { format } from 'date-fns'
+import { formatDateSafe } from '../../lib/formatDate'
 import { copyTextToClipboard } from '../../lib/clipboard'
 import AIProviderModelPicker from '../../components/AIProviderModelPicker'
 import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
@@ -46,10 +45,14 @@ import AgentPromptSectionView, {
 import {
   displayTags,
   ensureImportedAgentTag,
+  tagsForImportedAgentSave,
   isImportedAgent,
   isMetricPartial,
+  isPlatformImportAgentPartial,
+  versionOriginBadge,
   type PartialKind,
 } from './constants'
+import CallImportPartialLink from './components/CallImportPartialLink'
 import {
   emptyMetricPartialContent,
   metricPartialHasSaveableContent,
@@ -568,7 +571,7 @@ export default function PromptPartials() {
                   {searchQuery
                     ? 'No prompts match your search'
                     : kindFilter === 'imported_agent'
-                      ? 'No imported agents yet'
+                      ? 'No import-linked agent prompts yet'
                       : kindFilter === 'metric'
                         ? 'No metric partials yet'
                       : kindFilter === 'partial'
@@ -611,7 +614,7 @@ export default function PromptPartials() {
                         {isImportedAgent(partial) ? (
                           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-sky-50 text-sky-700 border border-sky-200">
                             <Bot className="h-3 w-3" />
-                            Agent
+                            {isPlatformImportAgentPartial(partial) ? 'Import agent' : 'Agent'}
                           </span>
                         ) : isMetricPartial(partial) ? (
                           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-violet-50 text-violet-700 border border-violet-200">
@@ -623,13 +626,15 @@ export default function PromptPartials() {
                           <History className="h-3 w-3" />
                           v{partial.current_version}
                         </span>
-                        {isImportedAgent(partial) ? (
+                        {isPlatformImportAgentPartial(partial) ? (
+                          <CallImportPartialLink tags={partial.tags} stopPropagation variant="pill" />
+                        ) : isImportedAgent(partial) ? (
                           <span className="text-xs text-gray-400 capitalize">
                             {partial.agent_flowchart_status || 'no chart'}
                           </span>
                         ) : (
                           <span className="text-xs text-gray-400">
-                            {format(new Date(partial.updated_at), 'MMM d, yyyy')}
+                            {formatDateSafe(partial.updated_at, 'MMM d, yyyy')}
                           </span>
                         )}
                       </div>
@@ -675,16 +680,62 @@ export default function PromptPartials() {
           {selectedPartial ? (
             <>
               {/* Detail Header */}
-              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+              <div className="flex items-start justify-between gap-4 px-6 py-4 border-b border-gray-200">
                 <div className="min-w-0 flex-1">
                   <h2 className="text-lg font-semibold text-gray-900 truncate">
                     {partialDetail?.name || selectedPartial.name}
                   </h2>
-                  {(partialDetail?.description || selectedPartial.description) && (
-                    <p className="text-sm text-gray-500 mt-0.5">
-                      {partialDetail?.description || selectedPartial.description}
-                    </p>
-                  )}
+                  <div className="mt-1.5 flex flex-nowrap items-center gap-2 min-w-0 overflow-hidden">
+                    {(partialDetail?.description || selectedPartial.description) ? (
+                      <span
+                        className="text-sm text-gray-500 truncate min-w-0 flex-1"
+                        title={partialDetail?.description || selectedPartial.description || undefined}
+                      >
+                        {partialDetail?.description || selectedPartial.description}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-gray-400 shrink-0">
+                        Updated{' '}
+                        {formatDateSafe(
+                          partialDetail?.updated_at || selectedPartial.updated_at,
+                          'MMM d, yyyy',
+                        )}
+                      </span>
+                    )}
+                    <span className="flex items-center gap-1.5 shrink-0">
+                    {selectedIsAgent ? (
+                      <>
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-sky-100 text-sky-800 whitespace-nowrap">
+                          <Bot className="h-3 w-3" />
+                          {isPlatformImportAgentPartial(partialDetail || selectedPartial)
+                            ? 'Platform import agent'
+                            : 'Imported agent'}
+                        </span>
+                        {isPlatformImportAgentPartial(partialDetail || selectedPartial) ? (
+                          <CallImportPartialLink
+                            tags={(partialDetail || selectedPartial).tags}
+                            variant="pill"
+                            className="whitespace-nowrap"
+                          />
+                        ) : null}
+                      </>
+                    ) : null}
+                    {selectedIsMetric ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-violet-100 text-violet-800 whitespace-nowrap">
+                        <Tags className="h-3 w-3" />
+                        Metric partial
+                      </span>
+                    ) : null}
+                    {displayTags(partialDetail?.tags || selectedPartial.tags).map((tag: string) => (
+                      <span
+                        key={tag}
+                        className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700 whitespace-nowrap"
+                      >
+                        {tag}
+                      </span>
+                    ))}
+                    </span>
+                  </div>
                 </div>
                 <div className="flex items-center gap-2 ml-4 flex-shrink-0">
                   {/* Preview / Raw toggle */}
@@ -757,35 +808,6 @@ export default function PromptPartials() {
                   </button>
                 </div>
               </div>
-
-              {/* Tags */}
-              {(selectedIsAgent || selectedIsMetric || displayTags(partialDetail?.tags || selectedPartial.tags).length > 0) && (
-                <div className="flex items-center gap-2 px-6 py-2 border-b border-gray-100 bg-gray-50/50">
-                  <Tag className="h-3.5 w-3.5 text-gray-400" />
-                  <div className="flex flex-wrap gap-1">
-                    {selectedIsAgent ? (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-sky-100 text-sky-800">
-                        <Bot className="h-3 w-3" />
-                        Imported agent
-                      </span>
-                    ) : null}
-                    {selectedIsMetric ? (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-violet-100 text-violet-800">
-                        <Tags className="h-3 w-3" />
-                        Metric partial
-                      </span>
-                    ) : null}
-                    {displayTags(partialDetail?.tags || selectedPartial.tags).map((tag: string) => (
-                      <span
-                        key={tag}
-                        className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-200 text-gray-700"
-                      >
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
 
               {/* Content Area */}
               <div className="flex-1 flex min-h-0">
@@ -1143,7 +1165,16 @@ export default function PromptPartials() {
                       <h3 className="text-sm font-semibold text-gray-900">Version History</h3>
                     </div>
                     <div className="flex-1 overflow-y-auto">
-                      {(partialDetail?.versions || []).map((version: PromptPartialVersion) => (
+                      {(partialDetail?.versions || []).map((version: PromptPartialVersion) => {
+                        const platformImport = isPlatformImportAgentPartial(
+                          partialDetail || selectedPartial,
+                        )
+                        const origin = versionOriginBadge(
+                          version.change_summary,
+                          version.version,
+                          platformImport,
+                        )
+                        return (
                         <div
                           key={version.id}
                           className={`px-4 py-3 border-b border-gray-100 hover:bg-gray-50 ${
@@ -1152,8 +1183,8 @@ export default function PromptPartials() {
                               : ''
                           }`}
                         >
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <div className="flex items-center gap-2 flex-wrap">
                               <span className="text-sm font-medium text-gray-900">
                                 v{version.version}
                               </span>
@@ -1162,15 +1193,25 @@ export default function PromptPartials() {
                                   Current
                                 </span>
                               )}
+                              {origin ? (
+                                <span
+                                  className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[11px] font-medium ${origin.className}`}
+                                  title={origin.title}
+                                >
+                                  {origin.label}
+                                </span>
+                              ) : null}
                             </div>
                           </div>
-                          {version.change_summary && (
+                          {version.change_summary && !origin ? (
                             <p className="text-xs text-gray-500 mt-1">{version.change_summary}</p>
-                          )}
+                          ) : origin?.title ? (
+                            <p className="text-xs text-gray-500 mt-1">{origin.title}</p>
+                          ) : null}
                           <div className="flex flex-col gap-0.5 mt-1 text-xs text-gray-400">
                             <div className="flex items-center gap-1">
                               <Clock className="h-3 w-3 shrink-0" />
-                              {format(new Date(version.created_at), 'MMM d, yyyy HH:mm')}
+                              {formatDateSafe(version.created_at, 'MMM d, yyyy HH:mm')}
                             </div>
                             {version.created_by ? (
                               <p className="pl-4 text-gray-500 truncate" title={version.created_by}>
@@ -1178,44 +1219,43 @@ export default function PromptPartials() {
                               </p>
                             ) : null}
                           </div>
-                          <div className="flex items-center gap-2 mt-2">
+                          <div className="flex items-center gap-2 mt-2 flex-wrap">
                             <button
                               onClick={() => startVersionCompare(version)}
                               className="text-xs text-gray-600 hover:text-gray-900 font-medium"
                             >
                               Compare
                             </button>
-                            {version.version !== (partialDetail?.current_version || selectedPartial.current_version) && (
-                              selectedIsAgent ? (
-                                <button
-                                  onClick={() => {
-                                    setRollbackError(null)
-                                    setRollbackConfirm('')
-                                    setRollbackVersion(version.version)
-                                  }}
-                                  className="inline-flex items-center gap-1 text-xs text-amber-600 hover:text-amber-800 font-medium"
-                                >
-                                  <RotateCcw className="h-3 w-3" />
-                                  Roll back
-                                </button>
-                              ) : (
-                                <button
-                                  onClick={() =>
-                                    revertMutation.mutate({
-                                      id: selectedPartial.id,
-                                      version: version.version,
-                                    })
-                                  }
-                                  className="inline-flex items-center gap-1 text-xs text-amber-600 hover:text-amber-800 font-medium"
-                                >
-                                  <RotateCcw className="h-3 w-3" />
-                                  Revert
-                                </button>
-                              )
-                            )}
+                            {version.version !== (partialDetail?.current_version || selectedPartial.current_version) ? (
+                              <button
+                                onClick={() =>
+                                  revertMutation.mutate({
+                                    id: selectedPartial.id,
+                                    version: version.version,
+                                  })
+                                }
+                                className="inline-flex items-center gap-1 text-xs text-gray-600 hover:text-gray-900 font-medium"
+                              >
+                                <RotateCcw className="h-3 w-3" />
+                                Restore locally
+                              </button>
+                            ) : null}
+                            {selectedIsAgent && origin?.label !== 'Provider snapshot' ? (
+                              <button
+                                onClick={() => {
+                                  setRollbackError(null)
+                                  setRollbackConfirm('')
+                                  setRollbackVersion(version.version)
+                                }}
+                                className="inline-flex items-center gap-1 text-xs text-amber-700 hover:text-amber-900 font-medium"
+                              >
+                                Push live
+                              </button>
+                            ) : null}
                           </div>
                         </div>
-                      ))}
+                        )
+                      })}
                       {selectedIsAgent && (partialDetail?.pushes || []).length > 0 ? (
                         <div className="px-4 py-3 border-t border-gray-200">
                           <h4 className="text-xs font-semibold text-gray-900 mb-2">Live pushes</h4>
@@ -1223,15 +1263,31 @@ export default function PromptPartials() {
                             <div key={push.id} className="mb-3 text-xs text-gray-600">
                               <div className="flex items-center justify-between gap-2">
                                 <span className="font-medium text-gray-800">v{push.prompt_version}</span>
-                                <span className={push.status === 'pushed' ? 'text-emerald-700' : 'text-rose-700'}>
-                                  {push.status}
+                                <span
+                                  className={
+                                    push.status === 'pushed'
+                                      ? 'text-emerald-700'
+                                      : push.status === 'saved_only'
+                                        ? 'text-amber-700'
+                                        : 'text-rose-700'
+                                  }
+                                >
+                                  {push.status === 'saved_only' ? 'saved (push later)' : push.status}
                                 </span>
                               </div>
                               <p>
-                                {push.provider}
-                                {push.external_agent_name ? ` · ${push.external_agent_name}` : ''}
+                                {push.status === 'saved_only'
+                                  ? 'Saved to Partials only'
+                                  : push.provider}
+                                {push.external_agent_name &&
+                                push.external_agent_name !== 'n/a'
+                                  ? ` · ${push.external_agent_name}`
+                                  : ''}
                               </p>
-                              <p>{push.pushed_by || 'Unknown'} · {format(new Date(push.created_at), 'MMM d, yyyy HH:mm')}</p>
+                              <p>
+                                {push.pushed_by || 'Unknown'} ·{' '}
+                                {formatDateSafe(push.created_at, 'MMM d, yyyy HH:mm')}
+                              </p>
                               {push.error_message ? <p className="text-rose-600">{push.error_message}</p> : null}
                             </div>
                           ))}
@@ -1259,10 +1315,13 @@ export default function PromptPartials() {
           <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-xl bg-white p-5 shadow-xl space-y-3">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <h3 className="text-base font-semibold text-gray-900">Roll back live prompt to v{rollbackVersion}</h3>
+                <h3 className="text-base font-semibold text-gray-900">
+                  Push v{rollbackVersion} to live agent
+                </h3>
                 <p className="text-xs text-gray-500 mt-1">
-                  This pushes the older text to {rollbackPreview.data?.provider || 'the provider'}
-                  {rollbackPreview.data?.external_agent_name ? ` · ${rollbackPreview.data.external_agent_name}` : ''} and saves a new version.
+                  Updates {rollbackPreview.data?.provider || 'the provider'}
+                  {rollbackPreview.data?.external_agent_name ? ` · ${rollbackPreview.data.external_agent_name}` : ''}{' '}
+                  with this version&apos;s text.
                 </p>
               </div>
               <button type="button" onClick={() => setRollbackVersion(null)} className="text-gray-400 hover:text-gray-700">
@@ -1277,12 +1336,17 @@ export default function PromptPartials() {
               <p className="text-sm text-red-600">{getApiErrorMessage(rollbackPreview.error, 'Could not load the live prompt.')}</p>
             ) : rollbackPreview.data ? (
               <>
+                {rollbackPreview.data.drift_warning ? (
+                  <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                    {rollbackPreview.data.drift_warning}
+                  </p>
+                ) : null}
                 {rollbackPreview.data.block_reason ? (
                   <p className="text-sm text-amber-700">{rollbackPreview.data.block_reason}</p>
                 ) : null}
                 <PromptLineDiff
                   leftLabel="Live provider prompt"
-                  rightLabel={`v${rollbackVersion} (rollback target)`}
+                  rightLabel={`v${rollbackVersion} (push target)`}
                   before={rollbackPreview.data.live_prompt}
                   after={rollbackPreview.data.version_prompt}
                   defaultView="split"
@@ -1319,7 +1383,7 @@ export default function PromptPartials() {
                 onClick={() => rollbackMutation.mutate()}
                 className="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
               >
-                {rollbackMutation.isPending ? 'Pushing…' : 'Push older prompt'}
+                {rollbackMutation.isPending ? 'Pushing…' : 'Push to live'}
               </button>
             </div>
           </div>
@@ -1533,7 +1597,11 @@ function PromptPartialModal({
       .split(',')
       .map((t) => t.trim())
       .filter(Boolean)
-    const tags = agentMode ? ensureImportedAgentTag(userTags) : userTags
+    const tags = agentMode
+      ? isEditing
+        ? tagsForImportedAgentSave(partial?.tags, userTags)
+        : ensureImportedAgentTag(userTags)
+      : userTags
 
     if (isEditing) {
       updateMutation.mutate({

@@ -146,7 +146,7 @@ export default function PlatformImportWindowPicker({
   }, [])
 
   const pillClass = (active: boolean) =>
-    `rounded-md px-2.5 py-1 text-xs font-medium transition-colors border ${
+    `cursor-pointer rounded-md px-2.5 py-1 text-xs font-medium transition-colors border ${
       active ? usageTheme.pillActive : usageTheme.pillInactive
     }`
 
@@ -232,7 +232,7 @@ export default function PlatformImportWindowPicker({
             <button
               type="button"
               onClick={() => setMode('absolute')}
-              className={`rounded-full px-3 py-1 text-xs font-medium border ${
+              className={`cursor-pointer rounded-full px-3 py-1 text-xs font-medium border ${
                 mode === 'absolute' ? usageTheme.pillActive : usageTheme.pillMuted
               }`}
             >
@@ -241,7 +241,7 @@ export default function PlatformImportWindowPicker({
             <button
               type="button"
               onClick={() => setMode('relative')}
-              className={`rounded-full px-3 py-1 text-xs font-medium border ${
+              className={`cursor-pointer rounded-full px-3 py-1 text-xs font-medium border ${
                 mode === 'relative' ? usageTheme.pillActive : usageTheme.pillMuted
               }`}
             >
@@ -257,7 +257,7 @@ export default function PlatformImportWindowPicker({
                     key={days}
                     type="button"
                     onClick={() => applyRelativeDays(days)}
-                    className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium hover:border-[#facc15] hover:bg-[#fefce8]"
+                    className="cursor-pointer rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium hover:border-[#facc15] hover:bg-[#fefce8]"
                   >
                     Last {days}d
                   </button>
@@ -267,7 +267,7 @@ export default function PlatformImportWindowPicker({
                     key={option.id}
                     type="button"
                     onClick={() => applyRelativeMonths(option.months)}
-                    className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium hover:border-[#facc15] hover:bg-[#fefce8]"
+                    className="cursor-pointer rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium hover:border-[#facc15] hover:bg-[#fefce8]"
                   >
                     {option.label}
                   </button>
@@ -293,11 +293,16 @@ export default function PlatformImportWindowPicker({
                 <button
                   type="button"
                   onClick={() => setOpen(false)}
-                  className="px-3 py-1.5 text-sm font-medium text-gray-600"
+                  className="cursor-pointer px-3 py-1.5 text-sm font-medium text-gray-600"
                 >
                   Cancel
                 </button>
-                <button type="button" disabled={!canApply} onClick={applyAbsolute} className={usageTheme.applyBtn}>
+                <button
+                  type="button"
+                  disabled={!canApply}
+                  onClick={applyAbsolute}
+                  className={`${usageTheme.applyBtn} cursor-pointer disabled:cursor-not-allowed`}
+                >
                   Apply
                 </button>
               </div>

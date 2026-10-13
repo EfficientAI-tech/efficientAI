@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -23,6 +24,8 @@ from app.dependencies import (
 )
 from app.models.database import CallImport, CallImportDiscoverySlice, Integration
 from app.models.enums import CallImportStatus
+
+logger = logging.getLogger(__name__)
 from app.services.call_imports.audit import stamp_call_import_actor
 from app.services.call_imports.platform_discovery import create_discovery_slices
 from app.services.call_imports.platform_import_progress import build_platform_import_progress
@@ -334,6 +337,16 @@ async def create_platform_call_import(
     stamp_call_import_actor(call_import, principal)
     db.add(call_import)
     db.flush()
+
+    from app.services.platform_import_imported_agent import ensure_imported_agent_for_platform_import
+
+    try:
+        ensure_imported_agent_for_platform_import(db, call_import, principal)
+    except Exception:
+        logger.exception(
+            "Failed to auto-link imported agent prompt for platform import %s",
+            call_import.id,
+        )
 
     agent_ids = payload.filters.agent_ids or None
     create_discovery_slices(db, call_import, agent_ids)

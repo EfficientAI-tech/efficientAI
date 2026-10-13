@@ -1266,6 +1266,7 @@ export interface CallImport {
   last_updated_by_email?: string | null
   voice_integration_id?: string | null
   platform_agents?: Array<{ id: string; name: string; medium?: string | null }>
+  imported_agent_partial_id?: string | null
   window_start?: string | null
   window_end?: string | null
   discovery_status?: string | null
@@ -1897,7 +1898,9 @@ export interface PromptPushPreview {
   pending_count: number
   require_review: boolean
   can_push: boolean
+  can_save_version?: boolean
   block_reason?: string | null
+  save_block_reason?: string | null
   provider?: string | null
   external_agent_id?: string | null
   external_agent_name?: string | null
@@ -1912,6 +1915,8 @@ export interface PromptVersionPushPreview {
   external_agent_name?: string | null
   can_push: boolean
   block_reason?: string | null
+  drift_warning?: string | null
+  is_current_version?: boolean
 }
 
 export interface MetricPeriodDelta {
