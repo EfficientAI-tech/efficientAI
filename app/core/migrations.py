@@ -163,7 +163,7 @@ class MigrationRunner:
                 )
             """))
             self.db.commit()
-            logger.info("Schema migrations table ready")
+            logger.debug("Schema migrations table ready")
         except Exception as e:
             logger.error(f"Error creating migrations table: {e}")
             self.db.rollback()

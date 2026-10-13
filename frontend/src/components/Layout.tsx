@@ -82,7 +82,7 @@ const navigationSections: NavSection[] = [
       { name: 'Evaluators', href: '/evaluate-test-agents', icon: Mic },
       { name: 'Evaluation Results', href: '/results', icon: BarChart3 },
       { name: 'Judge Alignment', href: '/judge-alignment', icon: Sparkles },
-      { name: 'Call Imports', href: '/call-imports', icon: Upload, enterpriseFeature: 'call_imports' },
+      { name: 'Imports', href: '/call-imports', icon: Upload, enterpriseFeature: 'call_imports' },
     ],
   },
   {
@@ -258,7 +258,7 @@ export default function Layout() {
 
       {/* Main content */}
       <div
-        className={`pt-16 flex flex-col flex-1 transition-[padding] duration-300 ease-in-out ${
+        className={`flex flex-col flex-1 transition-[padding] duration-300 ease-in-out ${
           desktopSidebarCollapsed ? 'lg:pl-16' : 'lg:pl-64'
         }`}
       >
@@ -388,7 +388,7 @@ export default function Layout() {
         </div>
 
         {/* Page content */}
-        <main className="flex-1 p-6 transition-all duration-300">
+        <main className="flex-1 px-6 pb-6 pt-[5.5rem] transition-all duration-300">
           {joinNotice && (
             <div
               role="status"
@@ -406,7 +406,7 @@ export default function Layout() {
               </button>
             </div>
           )}
-          <div className="min-h-[calc(100vh-7rem)] min-w-0">
+          <div className="min-w-0">
             <Outlet />
           </div>
         </main>

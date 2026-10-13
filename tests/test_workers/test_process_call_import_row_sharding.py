@@ -327,7 +327,9 @@ def test_production_eval_chain_cleanup_runs_when_eval_slot_expired(
     task_module = _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3)
 
     finish_mock = MagicMock()
-    monkeypatch.setattr(task_module, "_rollup_parent_status", lambda _db, _ci: None)
+    monkeypatch.setattr(
+        task_module, "_rollup_parent_status", lambda _db, _ci, **_kwargs: None
+    )
 
     def fake_locate_call_import_evaluation_row(_eval_row_id):
         refreshed_eval_row = (

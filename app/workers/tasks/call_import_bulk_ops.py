@@ -332,3 +332,20 @@ def bulk_delete_call_import_rows_task(
         return {"deleted": deleted}
     finally:
         db.close()
+
+
+@celery_app.task(name="deferred_call_import_rollup", queue="import-control")
+def deferred_call_import_rollup_task(call_import_id: str) -> dict:
+    """Force parent status rollup after debounced window (trailing completion)."""
+    db = SessionLocal()
+    try:
+        parent = db.query(CallImport).filter(CallImport.id == UUID(call_import_id)).first()
+        if parent is None:
+            return {"status": "missing"}
+        from app.services.call_imports.debounced_rollup import schedule_debounced_import_rollup
+
+        schedule_debounced_import_rollup(db, parent, force=True)
+        db.commit()
+        return {"status": "rolled_up"}
+    finally:
+        db.close()

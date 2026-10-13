@@ -87,6 +87,10 @@ from app.models.schemas import (
     EvaluationMetricClustersState,
     EvaluationPromptImprovementsRequest,
     EvaluationPromptImprovementsState,
+    PromptImprovementReviewUpdate,
+    PromptPushConfirm,
+    PromptPushPreviewResponse,
+    PromptPushResponse,
     MetricFailurePoliciesResponse,
     MetricFailurePoliciesSaveRequest,
     MetricFailurePolicy,
@@ -1055,9 +1059,15 @@ async def create_call_import_evaluation(
     )
 
     if use_diarised:
-        from app.api.v1.routes.call_imports import _is_manual_audio_call_import
+        from app.api.v1.routes.call_imports import (
+            _is_manual_audio_call_import,
+            _is_platform_call_import,
+            platform_import_hydration_complete,
+        )
 
-        if not _is_manual_audio_call_import(call_import):
+        if not _is_manual_audio_call_import(call_import) and not _is_platform_call_import(
+            call_import
+        ):
             if call_import.schema_id:
                 from app.api.v1.routes.call_imports import (
                     _resolve_schema,
@@ -1085,6 +1095,22 @@ async def create_call_import_evaluation(
                     )
 
     starting_from_mapped = False
+    from app.api.v1.routes.call_imports import (
+        _is_platform_call_import,
+        platform_import_hydration_complete,
+    )
+
+    if _is_platform_call_import(call_import) and not platform_import_hydration_complete(
+        call_import
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Platform import is still discovering or fetching recordings. "
+                "Wait until the batch is ready before running evaluation."
+            ),
+        )
+
     if call_import.status == CallImportStatus.MAPPED:
         if not call_import.source_s3_key or not call_import.source_format:
             raise HTTPException(
@@ -5738,13 +5764,29 @@ def _generate_and_persist_tldr_summary(
                 organization_id=organization_id,
                 db=db,
                 temperature=0.4,
-                max_tokens=1400,
+                max_tokens=4096,
             )
+            if llm_result.get("truncated"):
+                llm_result = llm_service.generate_response(
+                    messages=messages,
+                    llm_provider=provider_enum,
+                    llm_model=model_str,
+                    organization_id=organization_id,
+                    db=db,
+                    temperature=0.2,
+                    max_tokens=8192,
+                )
     except Exception as e:
         logger.error(f"[CallImportInsights] LLM call failed: {e}")
         raise HTTPException(
             status_code=502, detail=f"LLM call failed: {e}"
         ) from e
+
+    if llm_result.get("truncated"):
+        raise HTTPException(
+            status_code=502,
+            detail="Insights response was cut off before it finished. Try again.",
+        )
 
     total = int(evaluation.total_rows or 0)
     summary = _parse_insights_response(llm_result.get("text", ""))
@@ -6989,28 +7031,56 @@ async def generate_call_import_evaluation_prompt_improvements(
 
     from app.services.call_import_prompt_improvements import is_imported_agent
     from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
+    from app.services.platform_import_imported_agent import resolve_imported_agent_for_call_import
+
+    call_import = _require_import(db, call_import_id, organization_id)
+    imported_agent_id = body.imported_agent_id
+    if imported_agent_id is None:
+        linked = resolve_imported_agent_for_call_import(db, call_import, principal)
+        if linked is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No imported agent is linked to this import. Select an imported agent "
+                    "or use a single-agent platform import."
+                ),
+            )
+        imported_agent_id = linked.id
 
     imported_agent = (
         db.query(PromptPartial)
         .filter(
-            PromptPartial.id == body.imported_agent_id,
+            PromptPartial.id == imported_agent_id,
             PromptPartial.organization_id == organization_id,
             PromptPartial.workspace_id == workspace_id,
         )
         .first()
     )
     if imported_agent is None or not is_imported_agent(imported_agent):
-        raise HTTPException(
-            status_code=404,
-            detail="Imported agent not found in the active workspace",
+        from app.services.platform_import_imported_agent import (
+            relink_evaluation_imported_agent,
+            resolve_imported_agent_for_call_import,
         )
+
+        recovered = resolve_imported_agent_for_call_import(db, call_import, principal)
+        if recovered is None or not is_imported_agent(recovered):
+            raise HTTPException(
+                status_code=404,
+                detail="Imported agent not found in the active workspace",
+            )
+        imported_agent = recovered
+        imported_agent_id = recovered.id
+        if isinstance(evaluation.prompt_improvements, dict):
+            relink_evaluation_imported_agent(evaluation, recovered)
+            stamp_evaluation_actor(evaluation, principal)
+            db.commit()
 
     if not body.regenerate and not body.force:
         cached = _prompt_improvements_payload(evaluation)
         if (
             cached is not None
             and cached.status in {"running", "completed"}
-            and cached.imported_agent_id == str(body.imported_agent_id)
+            and cached.imported_agent_id == str(imported_agent_id)
         ):
             return cached
 
@@ -7020,7 +7090,7 @@ async def generate_call_import_evaluation_prompt_improvements(
 
     _enqueue_prompt_improvements_job(
         evaluation,
-        imported_agent_id=body.imported_agent_id,
+        imported_agent_id=imported_agent_id,
         imported_agent_name=imported_agent.name,
         provider=provider_enum.value,
         model=model_str,
@@ -7033,9 +7103,123 @@ async def generate_call_import_evaluation_prompt_improvements(
     db.refresh(evaluation)
     return _prompt_improvements_payload(evaluation) or EvaluationPromptImprovementsState(
         status="running",
-        imported_agent_id=str(body.imported_agent_id),
+        imported_agent_id=str(imported_agent_id),
         imported_agent_name=imported_agent.name,
     )
+
+
+def _load_evaluation_for_prompt_push(
+    db: Session,
+    call_import_id: UUID,
+    eval_id: UUID,
+    organization_id: UUID,
+) -> tuple[CallImport, CallImportEvaluation]:
+    call_import = _require_import(db, call_import_id, organization_id)
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="Call import evaluation not found")
+    return call_import, evaluation
+
+
+@router.patch(
+    "/{eval_id}/prompt-improvements/review",
+    response_model=EvaluationPromptImprovementsState,
+    operation_id="reviewCallImportEvaluationPromptImprovement",
+)
+async def review_call_import_evaluation_prompt_improvement(
+    call_import_id: UUID,
+    eval_id: UUID,
+    body: PromptImprovementReviewUpdate,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> EvaluationPromptImprovementsState:
+    del api_key
+    from app.services.call_import_prompt_push import PromptPushError, set_suggestion_review
+
+    _, evaluation = _load_evaluation_for_prompt_push(db, call_import_id, eval_id, organization_id)
+    try:
+        set_suggestion_review(evaluation, body.suggestion_id, body.review_status, body.edited_text)
+    except PromptPushError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    stamp_evaluation_actor(evaluation, principal)
+    db.commit()
+    db.refresh(evaluation)
+    return _prompt_improvements_payload(evaluation) or EvaluationPromptImprovementsState(status="idle")
+
+
+@router.get(
+    "/{eval_id}/prompt-improvements/push-preview",
+    response_model=PromptPushPreviewResponse,
+    operation_id="previewCallImportEvaluationPromptPush",
+)
+async def preview_call_import_evaluation_prompt_push(
+    call_import_id: UUID,
+    eval_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+) -> PromptPushPreviewResponse:
+    del api_key
+    from app.services.call_import_prompt_push import PromptPushError, preview_evaluation_push
+
+    call_import, evaluation = _load_evaluation_for_prompt_push(
+        db, call_import_id, eval_id, organization_id
+    )
+    try:
+        payload = preview_evaluation_push(
+            db, evaluation, call_import, organization_id, workspace_id
+        )
+    except PromptPushError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return PromptPushPreviewResponse(**payload)
+
+
+@router.post(
+    "/{eval_id}/prompt-improvements/push",
+    response_model=PromptPushResponse,
+    operation_id="pushCallImportEvaluationPrompt",
+)
+async def push_call_import_evaluation_prompt(
+    call_import_id: UUID,
+    eval_id: UUID,
+    body: PromptPushConfirm,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> PromptPushResponse:
+    del api_key
+    from app.services.call_import_prompt_push import PromptPushError, push_evaluation_prompt
+
+    call_import, evaluation = _load_evaluation_for_prompt_push(
+        db, call_import_id, eval_id, organization_id
+    )
+    try:
+        row = push_evaluation_prompt(
+            db,
+            evaluation,
+            call_import,
+            organization_id,
+            workspace_id,
+            body.confirm,
+            principal,
+            push_to_live=body.push_to_live,
+        )
+    except PromptPushError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return row
 
 
 # ---------------------------------------------------------------------------

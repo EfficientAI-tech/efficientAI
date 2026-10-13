@@ -86,6 +86,7 @@ from app.models.schemas import (
     CallImportTranscribeResponse,
     CallImportUpdate,
     CallImportUploadResponse,
+    PlatformImportAgentRef,
 )
 
 
@@ -141,6 +142,115 @@ def _normalize_import_display_name(raw: Optional[str]) -> Optional[str]:
     return cleaned[:512]
 
 
+def _imported_agent_partial_id(call_import: CallImport):
+    from app.services.platform_import_imported_agent import linked_partial_id
+
+    return linked_partial_id(call_import)
+
+
+def _platform_agent_refs(call_import: CallImport) -> list:
+    """Agent id and name saved with a platform import, for later eval and prompt work."""
+    raw = getattr(call_import, "platform_filters", None) or {}
+    if not isinstance(raw, dict):
+        return []
+    refs = []
+    for agent in raw.get("agents") or []:
+        if not isinstance(agent, dict):
+            continue
+        agent_id = str(agent.get("id") or "").strip()
+        if not agent_id:
+            continue
+        medium = agent.get("medium") or raw.get("medium")
+        refs.append(
+            {
+                "id": agent_id,
+                "name": str(agent.get("name") or agent_id),
+                "medium": str(medium).strip().lower() if medium else None,
+            }
+        )
+    if refs:
+        return refs
+    medium = raw.get("medium")
+    for agent_id in raw.get("agent_ids") or []:
+        text = str(agent_id or "").strip()
+        if not text:
+            continue
+        refs.append(
+            {
+                "id": text,
+                "name": text,
+                "medium": str(medium).strip().lower() if medium else None,
+            }
+        )
+    return refs
+
+
+_agent_name_lookup_after: Dict[str, float] = {}
+
+
+def _remember_platform_agent_names(db: Session, call_import: CallImport) -> None:
+    """Fill in display names for imports that only stored the provider agent id."""
+    import time
+
+    refs = _platform_agent_refs(call_import)
+    if not refs or not call_import.voice_integration_id:
+        return
+    if all(ref["name"] and ref["name"] != ref["id"] for ref in refs):
+        return
+    lookup_key = str(call_import.id)
+    now = time.time()
+    if _agent_name_lookup_after.get(lookup_key, 0) > now:
+        return
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.core.encryption import decrypt_api_key
+    from app.models.database import Integration
+    from app.services.voice_providers import get_voice_provider
+
+    integration = (
+        db.query(Integration)
+        .filter(Integration.id == call_import.voice_integration_id)
+        .first()
+    )
+    if integration is None or not integration.api_key:
+        return
+    try:
+        from app.api.v1.routes.platform_call_imports import _list_import_agents
+
+        api_key = decrypt_api_key(integration.api_key)
+        provider_cls = get_voice_provider(integration.platform)
+        if (integration.platform or "").lower() == "elevenlabs":
+            client = provider_cls(api_key, base_url=integration.api_base_url)
+        else:
+            client = provider_cls(api_key)
+        listed = _list_import_agents(client, integration.platform)
+    except Exception:
+        _agent_name_lookup_after[lookup_key] = time.time() + 300
+        return
+    by_id = {row.id: row for row in listed}
+    updated = []
+    changed = False
+    for ref in refs:
+        match = by_id.get(ref["id"])
+        name = ref["name"]
+        medium = ref.get("medium")
+        if match is not None and match.name and match.name != ref["id"]:
+            name = match.name
+        if match is not None and match.medium:
+            medium = match.medium
+        if name != ref["name"] or medium != ref.get("medium"):
+            changed = True
+        updated.append({"id": ref["id"], "name": name, "medium": medium})
+    if not changed:
+        _agent_name_lookup_after[lookup_key] = time.time() + 300
+        return
+    filters = dict(call_import.platform_filters or {})
+    filters["agents"] = updated
+    call_import.platform_filters = filters
+    flag_modified(call_import, "platform_filters")
+    db.commit()
+
+
 def _serialize_call_import(
     db: Session,
     call_import: CallImport,
@@ -176,6 +286,25 @@ def _serialize_call_import(
     failed = min(int(call_import.failed_rows or 0), total) if total else int(
         call_import.failed_rows or 0
     )
+    # Shard rows are the live count. The catalog counter lags during download.
+    source = (getattr(call_import, "source_format", None) or "").lower()
+    batch_status = (
+        call_import.status.value
+        if isinstance(call_import.status, CallImportStatus)
+        else str(call_import.status or "")
+    )
+    if source == "platform" and batch_status in {"pending", "processing"}:
+        from app.services.call_imports.bulk_ops import (
+            _aggregate_import_row_status_counts,
+        )
+
+        agg_total, agg_completed, agg_failed, _, _ = (
+            _aggregate_import_row_status_counts(db, call_import.id)
+        )
+        if agg_total > 0:
+            total = agg_total
+            completed = agg_completed
+            failed = agg_failed
     if user_emails is None:
         user_emails = emails_for_user_ids(
             db, user_ids_from_call_imports([call_import])
@@ -186,8 +315,14 @@ def _serialize_call_import(
     base = CallImportResponse.model_validate(call_import)
     return base.model_copy(
         update={
+            "total_rows": total,
             "completed_rows": completed,
             "failed_rows": failed,
+            "platform_agents": [
+                PlatformImportAgentRef.model_validate(ref)
+                for ref in _platform_agent_refs(call_import)
+            ],
+            "imported_agent_partial_id": _imported_agent_partial_id(call_import),
             "latest_evaluation_status": _latest_evaluation_status(
                 db, call_import.id
             ),
@@ -1406,6 +1541,29 @@ def _validate_exotel_import_ready(
 def _is_manual_audio_call_import(call_import: CallImport) -> bool:
     """True for batches created via manual audio upload (recordings already in S3)."""
     return (call_import.source_format or "").lower() == "audio"
+
+
+def _is_platform_call_import(call_import: CallImport) -> bool:
+    return (call_import.source_format or "").lower() == "platform"
+
+
+def platform_import_hydration_complete(call_import: CallImport) -> bool:
+    if not _is_platform_call_import(call_import):
+        return True
+    discovery = (call_import.discovery_status or "").lower()
+    if discovery not in {"completed", "capped", "failed", "partial"}:
+        return False
+    from sqlalchemy.orm import object_session
+
+    from app.services.call_imports.bulk_ops import _aggregate_import_row_status_counts
+
+    db = object_session(call_import)
+    if db is None:
+        return False
+    _total, _completed, _failed, pending, processing = _aggregate_import_row_status_counts(
+        db, call_import.id
+    )
+    return pending == 0 and processing == 0
 
 
 def _validate_diarised_eval_recording_ready(
@@ -2749,7 +2907,10 @@ async def list_call_imports(
     source_filter = (source_format or "").strip().lower()
     if source_filter == "__non_audio__":
         query = query.filter(
-            or_(CallImport.source_format.is_(None), CallImport.source_format != "audio")
+            or_(
+                CallImport.source_format.is_(None),
+                CallImport.source_format.notin_(["audio", "platform"]),
+            )
         )
     elif source_filter:
         query = query.filter(func.lower(CallImport.source_format) == source_filter)
@@ -3053,6 +3214,21 @@ async def get_call_import_detail(
             db.commit()
             db.refresh(call_import)
 
+    if (
+        (call_import.source_format or "") == "platform"
+        and _imported_agent_partial_id(call_import) is None
+    ):
+        from app.services.platform_import_imported_agent import (
+            ensure_imported_agent_for_platform_import,
+        )
+
+        try:
+            if ensure_imported_agent_for_platform_import(db, call_import, None):
+                db.commit()
+                db.refresh(call_import)
+        except Exception:
+            db.rollback()
+
     search_term = (q or "").strip()
     diarised_status_filter = (diarised_status or "").strip() or None
     filtered_total_rows: Optional[int] = None
@@ -3146,6 +3322,8 @@ async def get_call_import_detail(
             if isinstance(status_value, str):
                 diarised_status_counts[status_value] = int(count or 0)
 
+    if (call_import.source_format or "").lower() == "platform":
+        _remember_platform_agent_names(db, call_import)
     detail = CallImportDetailResponse.model_validate(
         _serialize_call_import(db, call_import).model_dump()
     )
@@ -3155,6 +3333,12 @@ async def get_call_import_detail(
     detail.diarised_running_rows = diarised_status_counts.get("running", 0)
     detail.diarised_completed_rows = diarised_status_counts.get("completed", 0)
     detail.diarised_failed_rows = diarised_status_counts.get("failed", 0)
+    if (call_import.source_format or "").lower() == "platform":
+        from app.services.call_imports.platform_import_progress import (
+            build_platform_import_progress,
+        )
+
+        detail.platform_progress = build_platform_import_progress(db, call_import)
     return detail
 
 

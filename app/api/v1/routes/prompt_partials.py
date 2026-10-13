@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel
 from loguru import logger
 
+from app.core.auth import Principal, get_principal
 from app.dependencies import get_db, get_organization_id, get_workspace_id, get_api_key
 from app.models.database import PromptPartial, PromptPartialVersion
 from app.models.schemas import (
@@ -22,8 +23,25 @@ from app.models.schemas import (
     PromptPartialResponse,
     PromptPartialDetailResponse,
     PromptPartialVersionResponse,
+    PromptPushConfirm,
+    PromptPushResponse,
+    PromptVersionPushPreviewResponse,
 )
-from app.services.imported_agent_constants import IMPORTED_AGENT_TAG, partial_supports_flowchart
+from app.services.imported_agent_constants import (
+    IMPORTED_AGENT_TAG,
+    merge_imported_agent_tags_on_update,
+    partial_supports_flowchart,
+)
+
+
+def _principal_label(principal: Optional[Principal]) -> Optional[str]:
+    if principal is None:
+        return None
+    if principal.email:
+        return principal.email
+    if principal.user_id is not None:
+        return str(principal.user_id)
+    return None
 from app.services.metric_partial_constants import METRIC_PARTIAL_TAG
 from app.services.metric_partial_validation import validate_metric_partial_content
 
@@ -308,6 +326,7 @@ async def create_prompt_partial(
     data: PromptPartialCreate,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ):
     """Create a prompt partial in the active workspace with its initial version."""
@@ -317,6 +336,7 @@ async def create_prompt_partial(
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
+        actor = _principal_label(principal)
         partial = PromptPartial(
             organization_id=organization_id,
             workspace_id=workspace_id,
@@ -325,6 +345,7 @@ async def create_prompt_partial(
             content=data.content,
             tags=data.tags,
             current_version=1,
+            created_by=actor,
         )
         db.add(partial)
         db.flush()
@@ -335,6 +356,7 @@ async def create_prompt_partial(
             version=1,
             content=data.content,
             change_summary="Initial version",
+            created_by=actor,
         )
         db.add(version)
         db.commit()
@@ -418,6 +440,7 @@ async def update_prompt_partial(
     data: PromptPartialUpdate,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ):
     """Update a prompt partial in the active workspace. New versions inherit the workspace."""
@@ -435,6 +458,10 @@ async def update_prompt_partial(
             raise HTTPException(status_code=404, detail=f"Prompt partial {partial_id} not found")
 
         update_data = data.model_dump(exclude_unset=True)
+        if "tags" in update_data:
+            update_data["tags"] = merge_imported_agent_tags_on_update(
+                partial.tags, update_data["tags"]
+            )
         effective_tags = update_data.get("tags", partial.tags)
         effective_content = update_data.get("content", partial.content)
         try:
@@ -449,6 +476,7 @@ async def update_prompt_partial(
             setattr(partial, field, value)
 
         if content_changed:
+            actor = _principal_label(principal)
             new_version_num = partial.current_version + 1
             version = PromptPartialVersion(
                 prompt_partial_id=partial.id,
@@ -456,6 +484,7 @@ async def update_prompt_partial(
                 version=new_version_num,
                 content=update_data["content"],
                 change_summary=change_summary or f"Updated to version {new_version_num}",
+                created_by=actor,
             )
             db.add(version)
             partial.current_version = new_version_num
@@ -578,6 +607,7 @@ async def revert_prompt_partial(
     version_number: int,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ):
     """Revert a prompt partial (in the active workspace) to a specific version."""
@@ -608,6 +638,7 @@ async def revert_prompt_partial(
         if partial.content == target_version.content:
             return partial
 
+        actor = _principal_label(principal)
         new_version_num = partial.current_version + 1
         version = PromptPartialVersion(
             prompt_partial_id=partial.id,
@@ -615,6 +646,7 @@ async def revert_prompt_partial(
             version=new_version_num,
             content=target_version.content,
             change_summary=f"Reverted to version {version_number}",
+            created_by=actor,
         )
         db.add(version)
         partial.content = target_version.content
@@ -628,6 +660,66 @@ async def revert_prompt_partial(
     except SQLAlchemyError as e:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Database error: {str(e)}")
+
+
+def _workspace_partial(db: Session, partial_id: UUID, organization_id: UUID, workspace_id: UUID) -> PromptPartial:
+    partial = (
+        db.query(PromptPartial)
+        .filter(
+            PromptPartial.id == partial_id,
+            PromptPartial.organization_id == organization_id,
+            PromptPartial.workspace_id == workspace_id,
+        )
+        .first()
+    )
+    if not partial:
+        raise HTTPException(status_code=404, detail=f"Prompt partial {partial_id} not found")
+    return partial
+
+
+@router.get(
+    "/{partial_id}/versions/{version_number}/push-preview",
+    response_model=PromptVersionPushPreviewResponse,
+)
+async def preview_prompt_version_push(
+    partial_id: UUID,
+    version_number: int,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    from app.services.call_import_prompt_push import PromptPushError, preview_version_push
+
+    partial = _workspace_partial(db, partial_id, organization_id, workspace_id)
+    try:
+        payload = preview_version_push(db, partial, version_number, organization_id)
+    except PromptPushError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return payload
+
+
+@router.post(
+    "/{partial_id}/versions/{version_number}/push",
+    response_model=PromptPushResponse,
+)
+async def push_prompt_version(
+    partial_id: UUID,
+    version_number: int,
+    body: PromptPushConfirm,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    from app.services.call_import_prompt_push import PromptPushError, push_version_rollback
+
+    partial = _workspace_partial(db, partial_id, organization_id, workspace_id)
+    try:
+        return push_version_rollback(
+            db, partial, version_number, organization_id, body.confirm, principal
+        )
+    except PromptPushError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @router.post("/{partial_id}/clone", response_model=PromptPartialResponse, status_code=status.HTTP_201_CREATED)

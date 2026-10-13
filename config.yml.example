@@ -350,4 +350,16 @@ judge_alignment:
 #   telephony_import_credit_window_seconds: 60
 #   telephony_import_backoff_base_seconds: 15
 #   telephony_import_backoff_max_seconds: 60
+#   platform_import_per_import_inflight_limit: 12
+#   platform_import_workspace_inflight_limit: 16
+#   platform_import_org_inflight_limit: 32
+#   platform_import_global_inflight_limit: 64
+#   platform_import_rpm_gentle: 30
+#   platform_import_rpm_standard: 120
+#   platform_import_rpm_fast: 300
+#   platform_import_hydrate_queue_cap: 128
+#   platform_import_discovery_queue_cap: 200
+#   platform_import_max_calls_default: 0  # 0 = import the whole confirmed window
+#   platform_import_max_calls_cap: 0       # 0 = no deployment ceiling
+#   platform_import_stall_minutes: 10
 

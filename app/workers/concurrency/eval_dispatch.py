@@ -118,7 +118,12 @@ def _needs_import_for_eval(
         return False
     if (source_row.recording_s3_key or "").strip():
         return False
-    return bool((source_row.recording_url or "").strip())
+    url = (source_row.recording_url or "").strip()
+    if not url:
+        return False
+    if "://" in url and not url.startswith(("http://", "https://")):
+        return source_row.status == CallImportRowStatus.PENDING
+    return True
 
 
 def _fail_eval_row_for_import(

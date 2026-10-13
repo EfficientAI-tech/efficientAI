@@ -70,6 +70,9 @@ import {
   isStandardJudgeModel,
 } from '../../lib/llmModelOptions'
 import CallImportProgressBar from './components/CallImportProgressBar'
+import PlatformImportProgressDock from './components/PlatformImportProgressDock'
+import { usePlatformImportProgressStore } from '../../store/platformImportProgressStore'
+import { platformImportLabel, platformSkipLines } from './platformImportLabel'
 import RetryFailedImportModal from './components/RetryFailedImportModal'
 import UploadAudioModal from './components/UploadAudioModal'
 import InsightsMetricCard, {
@@ -925,8 +928,16 @@ export default function CallImportDetail() {
     refetchInterval: (query) => {
       const d = query.state.data
       if (!d) return false
-      if (d.status === 'deleting') return 3000
-      // Keep polling while the CSV import itself is in flight.
+      if (d.status === 'deleting') return 4000
+      const platform = (d.source_format || '').toLowerCase() === 'platform'
+      if (
+        platform &&
+        (d.status === 'pending' ||
+          d.status === 'processing' ||
+          d.platform_progress?.is_active)
+      ) {
+        return 4000
+      }
       if (d.status === 'pending' || d.status === 'processing') return 5000
       // Batch-wide diarisation counters are pagination-independent —
       // use them so off-page rows still drive polling (mirrors
@@ -953,6 +964,21 @@ export default function CallImportDetail() {
     // actions on this page, which already invalidate the query.
     staleTime: 0,
   })
+
+  useEffect(() => {
+    if (!data?.id || (data.source_format || '').toLowerCase() !== 'platform') return
+    if (data.status === 'deleting') {
+      usePlatformImportProgressStore.getState().unpin(data.id)
+    }
+  }, [data?.id, data?.source_format, data?.status])
+
+  useEffect(() => {
+    if (!data?.id || !data.platform_progress || !activeWorkspaceId) return
+    queryClient.setQueryData(
+      ['platform-import-progress', activeWorkspaceId, data.id],
+      data.platform_progress,
+    )
+  }, [data?.id, data?.platform_progress, activeWorkspaceId, queryClient])
 
   useEffect(() => {
     if (!pendingScrollToEvaluation || data?.status !== 'mapped') return
@@ -1441,7 +1467,7 @@ export default function CallImportDetail() {
           className="inline-flex items-center gap-1 text-sm text-primary-600 hover:text-primary-700"
         >
           <ArrowLeft className="h-4 w-4" />
-          Back to Call Imports
+          Back to Imports
         </Link>
         <div className="bg-red-50 border border-red-200 rounded-lg p-4">
           <div className="flex items-start gap-2">
@@ -1474,7 +1500,14 @@ export default function CallImportDetail() {
   // until the user finishes the MAP + IMPORT steps. We swap out the
   // bottom of the page for the stage panels while the batch is still
   // pre-import so the user has a single linear next-action.
-  const needsMapping = data.status === 'uploaded' || data.status === 'mapped'
+  const isPlatformImport = (data.source_format || '').toLowerCase() === 'platform'
+  const liveProgress = isPlatformImport ? data.platform_progress : undefined
+  const recordingTotal = liveProgress?.recordings.total ?? data.total_rows
+  const recordingCompleted = liveProgress?.recordings.completed ?? data.completed_rows
+  const recordingFailed = liveProgress?.recordings.failed ?? data.failed_rows
+  const needsMapping =
+    !isPlatformImport &&
+    (data.status === 'uploaded' || data.status === 'mapped')
   const showWorkflowTabs = !needsMapping
   const isDeleting = data.status === 'deleting'
   const isManualAudioImport = (data.source_format || '').toLowerCase() === 'audio'
@@ -1540,7 +1573,7 @@ export default function CallImportDetail() {
           className="inline-flex items-center gap-1 text-sm text-primary-600 hover:text-primary-700"
         >
           <ArrowLeft className="h-4 w-4" />
-          Back to Call Imports
+          Back to Imports
         </Link>
         <div className="flex items-center gap-2">
           {canRunEvaluation && !isDeleting && showWorkflowTabs && (
@@ -1615,7 +1648,9 @@ export default function CallImportDetail() {
         <div className="space-y-4">
           <div className="min-w-0">
             <h1 className="text-2xl font-bold text-gray-900 truncate">
-              {data.original_filename || '(unnamed import)'}
+              {(data.source_format || '').toLowerCase() === 'platform'
+                ? platformImportLabel(data)
+                : data.original_filename || '(unnamed import)'}
             </h1>
             <div className="mt-1 text-xs text-gray-500 font-mono">{data.id}</div>
             <div className="mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 min-w-0 max-w-full text-sm text-gray-600">
@@ -1639,6 +1674,22 @@ export default function CallImportDetail() {
                   )}
                 </span>
               </span>
+              {isPlatformImport && (
+                <span className="shrink-0">
+                  Agent:{' '}
+                  <span className="font-medium text-gray-800">
+                    {(data.platform_agents || []).length === 0
+                      ? 'All agents'
+                      : (data.platform_agents || [])
+                          .map((agent) =>
+                            agent.medium
+                              ? `${agent.name} · ${agent.medium}`
+                              : agent.name,
+                          )
+                          .join(', ')}
+                  </span>
+                </span>
+              )}
               <CallImportAuditMeta
                 inline
                 createdAt={data.created_at}
@@ -1655,23 +1706,38 @@ export default function CallImportDetail() {
                 Recording import
               </h3>
               <CallImportProgressBar
-                total={data.total_rows}
-                completed={data.completed_rows}
-                failed={data.failed_rows}
+                total={recordingTotal}
+                completed={recordingCompleted}
+                failed={recordingFailed}
                 deleting={isDeleting}
               />
+              {isPlatformImport &&
+                (liveProgress?.discovery_status || data.discovery_status) && (
+                  <p className="mt-2 text-xs text-gray-600">
+                    Discovery {liveProgress?.discovery_status || data.discovery_status}
+                    {liveProgress
+                      ? ` · ${liveProgress.discovery.slices_completed}/${liveProgress.discovery.slices_total} days`
+                      : ''}
+                    {data.paused_at || liveProgress?.paused ? ' · paused' : ''}
+                  </p>
+                )}
+              {platformSkipLines(liveProgress?.skip_counts ?? data.skip_counts).length > 0 && (
+                <p className="mt-2 text-xs text-gray-600">
+                  {platformSkipLines(liveProgress?.skip_counts ?? data.skip_counts).join(' · ')}
+                </p>
+              )}
               <div className="mt-2.5 grid grid-cols-3 gap-2 text-center text-xs">
                 <div className="bg-white rounded-md border border-slate-100 p-2">
                   <div className="text-gray-500">Total</div>
-                  <div className="font-semibold text-gray-900">{data.total_rows}</div>
+                  <div className="font-semibold text-gray-900">{recordingTotal}</div>
                 </div>
                 <div className="bg-white rounded-md border border-green-100 p-2">
                   <div className="text-green-700">Completed</div>
-                  <div className="font-semibold text-green-800">{data.completed_rows}</div>
+                  <div className="font-semibold text-green-800">{recordingCompleted}</div>
                 </div>
                 <div className="bg-white rounded-md border border-red-100 p-2">
                   <div className="text-red-700">Failed</div>
-                  <div className="font-semibold text-red-800">{data.failed_rows}</div>
+                  <div className="font-semibold text-red-800">{recordingFailed}</div>
                 </div>
               </div>
             </div>
@@ -2156,6 +2222,14 @@ export default function CallImportDetail() {
                 </span>
                 .
               </p>
+            ) : (data.source_format || '').toLowerCase() === 'platform' &&
+              platformSkipLines(data.skip_counts).length > 0 ? (
+              <div className="space-y-1">
+                <p>No new calls in this window.</p>
+                <p className="text-sm text-gray-700">
+                  {platformSkipLines(data.skip_counts).join(' · ')}
+                </p>
+              </div>
             ) : (
               <p>No rows in this slice.</p>
             )}
@@ -4759,7 +4833,7 @@ export default function CallImportDetail() {
             data.status === 'processing' ||
             data.status === 'deleting'
           const lines = [
-            `“${name}” will be permanently deleted, along with all ${data.total_rows} row record${data.total_rows === 1 ? '' : 's'} and ${data.completed_rows} stored recording${data.completed_rows === 1 ? '' : 's'} in S3.`,
+            `“${name}” will be permanently deleted, along with all of its recordings.`,
             inFlight
               ? 'This batch is still processing — pending tasks will be revoked before deletion.'
               : '',
@@ -4770,6 +4844,7 @@ export default function CallImportDetail() {
         })()}
         confirmLabel="Delete"
         cancelLabel="Cancel"
+        confirmPhrase="confirm"
         variant="danger"
         isLoading={deleteImportMutation.isPending}
         onConfirm={() => deleteImportMutation.mutate(data.id)}
@@ -4819,11 +4894,11 @@ export default function CallImportDetail() {
         description={(() => {
           if (!pendingDeleteRow) return ''
           const callId = pendingDeleteRow.conversation_id
-          const hasS3 = !!pendingDeleteRow.recording_s3_key
+          const hasRecording = !!pendingDeleteRow.recording_s3_key
           const lines = [
-            `The row for CallID ${callId} will be removed from this import.`,
-            hasS3
-              ? 'The associated recording will also be deleted from S3.'
+            `The row for CallID ${callId} will be permanently deleted.`,
+            hasRecording
+              ? 'The associated recording will also be permanently deleted.'
               : 'No recording is stored for this row yet, so only the row record will be removed.',
             'This cannot be undone.',
             deleteError ? `Error: ${deleteError}` : '',
@@ -4856,8 +4931,8 @@ export default function CallImportDetail() {
         description={(() => {
           const lines = [
             selectedRowIds.size === 1
-              ? 'The selected row will be removed from this import, along with its stored recording in S3.'
-              : `${selectedRowIds.size} rows will be removed from this import, along with their stored recordings in S3.`,
+              ? 'The selected row will be permanently deleted, along with its recording.'
+              : `${selectedRowIds.size} rows will be permanently deleted, along with their recordings.`,
             'In-flight transcribe / download tasks for these rows will be revoked.',
             'This cannot be undone.',
             bulkDeleteRowsError ? `Error: ${bulkDeleteRowsError}` : '',
@@ -5077,7 +5152,7 @@ export default function CallImportDetail() {
                       <p className="text-xs text-gray-600 mt-1">
                         Permanently remove {selectedCount} selected row
                         {selectedCount === 1 ? '' : 's'} from this import,
-                        along with their stored recordings in S3. In-flight
+                        along with their recordings. In-flight
                         tasks for these rows will be revoked. This cannot
                         be undone.
                       </p>
@@ -5146,6 +5221,7 @@ export default function CallImportDetail() {
             </div>
           </div>,
         )}
+      <PlatformImportProgressDock />
     </div>
   )
 }

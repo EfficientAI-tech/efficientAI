@@ -25,6 +25,14 @@ from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
 from app.services.ai.llm_service import llm_service
 from app.services.imported_agent_constants import IMPORTED_AGENT_TAG
 
+
+def flag_evaluation_prompt_improvements_modified(evaluation: CallImportEvaluation) -> None:
+    from sqlalchemy.orm.attributes import flag_modified
+
+    if getattr(evaluation, "_sa_instance_state", None) is not None:
+        flag_modified(evaluation, "prompt_improvements")
+
+
 _IMPROVEMENTS_SYSTEM_PROMPT = (
     "You are a senior voice-agent prompt engineer. Given a production agent "
     "prompt and failure diagnostics from a call evaluation, suggest concrete "
@@ -119,6 +127,7 @@ def prompt_improvements_state_from_raw(
         model=raw.get("model"),
         error_message=raw.get("error_message"),
         is_stale=is_stale,
+        require_review=True,
     )
 
 

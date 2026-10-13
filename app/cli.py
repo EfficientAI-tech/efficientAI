@@ -1004,6 +1004,22 @@ def start_all(
         if imports_worker:
             from app.workers.config import IMPORTS_WORKER_QUEUES
 
+            try:
+                import redis as redis_lib
+
+                from app.config import settings as app_settings
+
+                legacy_q = redis_lib.from_url(app_settings.REDIS_URL, decode_responses=True)
+                backlog = int(legacy_q.llen("platform-imports") or 0)
+                if backlog > 0:
+                    click.echo(
+                        f"⚠️  {backlog} Celery task(s) still on legacy queue "
+                        f"'platform-imports' (worker consumes this list to drain them).",
+                        err=True,
+                    )
+            except Exception:
+                pass
+
             worker_imports_process = _spawn_worker(
                 [
                     "celery",

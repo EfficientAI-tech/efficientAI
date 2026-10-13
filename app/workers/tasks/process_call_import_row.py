@@ -262,19 +262,19 @@ def _extension_for_content_type(content_type: str) -> str:
     return "mp3"
 
 
-def _rollup_parent_status(db, call_import) -> None:
-    """Recompute completed_rows / failed_rows and finalize the batch status."""
+def _rollup_parent_status(db, call_import, *, force: bool = False) -> None:
+    from app.services.call_imports.debounced_rollup import schedule_debounced_import_rollup
 
-    from app.services.call_imports.bulk_ops import rollup_call_import_batch_status
-
-    rollup_call_import_batch_status(db, call_import)
+    schedule_debounced_import_rollup(db, call_import, force=force)
 
 
-def _rollup_parent_on_catalog(catalog_db, row_db, call_import) -> None:
+def _rollup_parent_on_catalog(
+    catalog_db, row_db, call_import, *, force: bool = False
+) -> None:
     from app.db_sharding.sessions import is_sharding_enabled
 
     target = catalog_db if is_sharding_enabled() and catalog_db is not row_db else row_db
-    _rollup_parent_status(target, call_import)
+    _rollup_parent_status(target, call_import, force=force)
     if target is not row_db:
         target.commit()
 
@@ -285,6 +285,7 @@ def process_call_import_row_task(
     row_id: str,
     _eval_slot_task_id: Optional[str] = None,
     run_eval_row_id: Optional[str] = None,
+    _platform_import: bool = False,
 ):
     """Fetch one call recording from the provider and store it in S3.
 
@@ -314,6 +315,7 @@ def process_call_import_row_task(
 
     slot_task_id = _eval_slot_task_id or self.request.id
     eval_chain_chained_transcribe = False
+    platform_release = bool(_platform_import)
     row_db = catalog_db = None
     from app.db_sharding.row_ops import close_row_sessions, locate_call_import_row
     from app.models.database import CallImport
@@ -342,23 +344,84 @@ def process_call_import_row_task(
 
         from app.models.enums import CallImportStatus
 
+        if call_import is None:
+            return {"status": "skipped", "reason": "import_missing"}
+
         if call_import.status == CallImportStatus.DELETING:
             logger.info(
-                "Skipping row {} — parent import {} is being deleted",
+                "Skipping row {} — parent import {} is deleting",
                 row_id,
                 call_import.id,
             )
             return {"status": "skipped", "reason": "import_deleting"}
+        if _platform_import and call_import.paused_at is not None:
+            logger.info(
+                "Skipping row {} — parent import {} is paused",
+                row_id,
+                call_import.id,
+            )
+            return {"status": "skipped", "reason": "import_inactive"}
+
+        if _platform_import and (row.celery_task_id or "") != str(self.request.id):
+            platform_release = False
+            return {"status": "superseded", "row_id": row_id}
 
         if row.status == CallImportRowStatus.COMPLETED:
             return {"status": "already_completed", "row_id": row_id}
 
-        row.status = CallImportRowStatus.PROCESSING
-        row.attempts = (row.attempts or 0) + 1
-        row.celery_task_id = self.request.id
-        row.error_message = None
-        if not _safe_commit(db, row_id=row_id, context="mark_processing"):
-            return {"status": "skipped", "reason": "row_deleted"}
+        if not _platform_import:
+            row.status = CallImportRowStatus.PROCESSING
+            row.attempts = (row.attempts or 0) + 1
+            row.celery_task_id = self.request.id
+            row.error_message = None
+            if not _safe_commit(db, row_id=row_id, context="mark_processing"):
+                return {"status": "skipped", "reason": "row_deleted"}
+
+        if (call_import.source_format or "").lower() == "platform":
+            from app.workers.tasks.platform_call_import_hydrate import (
+                hydrate_platform_call_import_row,
+            )
+
+            filters = dict(call_import.platform_filters or {})
+            slot_task_id = _eval_slot_task_id or self.request.id
+            try:
+                result = hydrate_platform_call_import_row(
+                    self,
+                    row=row,
+                    call_import=call_import,
+                    db=db,
+                    row_id=row_id,
+                    catalog_db=catalog_db,
+                    row_db=row_db,
+                    slot_task_id=slot_task_id,
+                    filters=filters,
+                )
+            except Exception as exc:
+                logger.exception("platform hydrate crashed row {}", row_id)
+                if (row.celery_task_id or "") == str(self.request.id) and not row.recording_s3_key:
+                    row.status = CallImportRowStatus.PENDING
+                    row.celery_task_id = None
+                    row.error_message = str(exc)[:500]
+                    _safe_commit(db, row_id=row_id, context="platform_hydrate_crash")
+                from app.workers.concurrency.fair_platform_import_dispatch import (
+                    schedule_fair_platform_import_dispatch,
+                )
+
+                schedule_fair_platform_import_dispatch()
+                return {"status": "failed", "reason": "hydrate_crashed"}
+            status = (result or {}).get("status")
+            if status == "rescheduled":
+                platform_release = False
+            elif status == "completed":
+                platform_release = False
+            else:
+                from app.workers.concurrency.fair_platform_import_dispatch import (
+                    schedule_fair_platform_import_dispatch,
+                )
+
+                if status not in ("skipped", "superseded", "already_completed"):
+                    schedule_fair_platform_import_dispatch()
+            return result
 
         from app.services.telephony.recording_download import download_public_recording
 
@@ -773,6 +836,12 @@ def process_call_import_row_task(
                 if not user_cancelled:
                     finish_eval_work_and_redispatch(slot_task_id)
         else:
+            if platform_release:
+                from app.workers.concurrency.platform_import_limits import (
+                    release_platform_lease,
+                )
+
+                release_platform_lease(slot_task_id)
             from app.workers.concurrency.limits import slot_registered_for_task
 
             if slot_registered_for_task(slot_task_id):

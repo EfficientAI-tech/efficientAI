@@ -177,6 +177,7 @@ def bulk_insert_mappings_on_shards(
     *,
     orm_class=CallImportRow,
     defer_commit: bool = False,
+    on_conflict_do_nothing: bool = False,
 ) -> tuple[int, List[Session]]:
     """Insert row mappings on the correct shard sessions; catalog_db unused when legacy.
 
@@ -200,7 +201,15 @@ def bulk_insert_mappings_on_shards(
         shard_db = factory()
         try:
             _shard_write_without_catalog_fks(shard_db)
-            shard_db.bulk_insert_mappings(RowModel, shard_mappings)
+            if on_conflict_do_nothing:
+                from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+                table = RowModel.__table__
+                stmt = pg_insert(table).values(shard_mappings)
+                stmt = stmt.on_conflict_do_nothing(index_elements=["id"])
+                shard_db.execute(stmt)
+            else:
+                shard_db.bulk_insert_mappings(RowModel, shard_mappings)
             if defer_commit:
                 flush_shard_row_session(shard_db)
                 pending.append(shard_db)
