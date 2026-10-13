@@ -109,7 +109,11 @@ def mark_prompt_improvements_applied(
     raw["suggestions"] = suggestions
     raw["compose_base_prompt"] = applied_content
     evaluation.prompt_improvements = raw
-    flag_modified(evaluation, "prompt_improvements")
+    from app.services.call_import_prompt_improvements import (
+        flag_evaluation_prompt_improvements_modified,
+    )
+
+    flag_evaluation_prompt_improvements_modified(evaluation)
 
 
 def _require_review(_evaluation: CallImportEvaluation) -> bool:

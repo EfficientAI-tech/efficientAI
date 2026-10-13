@@ -32,7 +32,11 @@ def merge_imported_agent_tags_on_update(
     if IMPORTED_AGENT_TAG not in incoming_list and IMPORTED_AGENT_TAG not in existing_list:
         return incoming_list
     preserved = [t for t in existing_list if is_preserved_imported_agent_tag(t)]
-    user = [t for t in incoming_list if not is_preserved_imported_agent_tag(t)]
+    user_incoming = [t for t in incoming_list if not is_preserved_imported_agent_tag(t)]
+    if user_incoming:
+        user = user_incoming
+    else:
+        user = [t for t in existing_list if not is_preserved_imported_agent_tag(t)]
     merged: list[str] = []
     seen: set[str] = set()
     for tag in preserved + user:

@@ -221,7 +221,11 @@ def relink_evaluation_imported_agent(
     if partial.name:
         raw["imported_agent_name"] = partial.name
     evaluation.prompt_improvements = raw
-    flag_modified(evaluation, "prompt_improvements")
+    from app.services.call_import_prompt_improvements import (
+        flag_evaluation_prompt_improvements_modified,
+    )
+
+    flag_evaluation_prompt_improvements_modified(evaluation)
 
 
 def resolve_imported_agent_for_call_import(
