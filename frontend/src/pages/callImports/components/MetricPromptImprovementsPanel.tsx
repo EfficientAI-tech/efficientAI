@@ -233,7 +233,7 @@ export default function MetricPromptImprovementsPanel({
   const reviewMutation = useMutation({
     mutationFn: (data: {
       suggestion_id: string
-      review_status: 'pending' | 'accepted' | 'rejected' | 'applied'
+      review_status: 'pending' | 'accepted' | 'rejected'
       edited_text?: string | null
     }) => apiClient.reviewCallImportEvaluationPromptImprovement(callImportId, evaluationId, data),
     onSuccess: () => {
