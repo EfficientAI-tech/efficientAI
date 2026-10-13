@@ -353,7 +353,12 @@ def preview_evaluation_push(
     suggestions = _suggestions(evaluation)
     accepted, rejected, pending = review_counts(suggestions)
     require_review = _require_review(evaluation)
-    partial = _imported_partial(db, evaluation, organization_id, workspace_id, call_import)
+    partial, relinked = resolve_imported_partial_for_evaluation(
+        db, evaluation, organization_id, workspace_id, call_import
+    )
+    if relinked:
+        db.commit()
+        db.refresh(partial)
     base = partial.content or ""
     composed = compose_accepted_prompt(base, suggestions)
     block_reason = None
@@ -408,6 +413,8 @@ def preview_evaluation_push(
         "composed_prompt": composed,
         "saved_prompt_matches_live": saved_matches_live,
         "imported_agent_name": getattr(partial, "name", None),
+        "imported_agent_id": str(partial.id),
+        "relinked_imported_agent": relinked,
         "partial_current_version": current_version,
         "partial_next_version": next_version,
         "accepted_count": accepted,
@@ -424,34 +431,76 @@ def preview_evaluation_push(
     }
 
 
+def resolve_imported_partial_for_evaluation(
+    db: Session,
+    evaluation: CallImportEvaluation,
+    organization_id: UUID,
+    workspace_id: UUID,
+    call_import: Optional[CallImport] = None,
+    principal: Optional[Principal] = None,
+) -> Tuple[PromptPartial, bool]:
+    """Resolve the evaluation's imported-agent partial, recreating from the import if deleted."""
+    from app.services.platform_import_imported_agent import (
+        relink_evaluation_imported_agent,
+        resolve_imported_agent_for_call_import,
+    )
+
+    raw = evaluation.prompt_improvements if isinstance(evaluation.prompt_improvements, dict) else {}
+    stored_id = raw.get("imported_agent_id")
+    partial: Optional[PromptPartial] = None
+    relinked = False
+
+    if stored_id:
+        try:
+            partial_uuid = UUID(str(stored_id))
+        except (TypeError, ValueError):
+            partial_uuid = None
+        if partial_uuid:
+            partial = (
+                db.query(PromptPartial)
+                .filter(
+                    PromptPartial.id == partial_uuid,
+                    PromptPartial.organization_id == organization_id,
+                    PromptPartial.workspace_id == workspace_id,
+                )
+                .first()
+            )
+
+    if partial is None and call_import is not None:
+        partial = resolve_imported_agent_for_call_import(db, call_import, principal)
+        if partial is not None:
+            relink_evaluation_imported_agent(evaluation, partial)
+            relinked = True
+
+    if partial is None and not stored_id:
+        raise PromptPushError(400, "Generate prompt suggestions before pushing.")
+    if partial is None:
+        raise PromptPushError(
+            404,
+            "Imported agent prompt not found and could not be recreated from this import.",
+        )
+
+    if not relinked and stored_id and str(partial.id) != str(stored_id):
+        relink_evaluation_imported_agent(evaluation, partial)
+        relinked = True
+
+    return partial, relinked
+
+
 def _imported_partial(
     db: Session,
     evaluation: CallImportEvaluation,
     organization_id: UUID,
     workspace_id: UUID,
     call_import: Optional[CallImport] = None,
+    principal: Optional[Principal] = None,
 ) -> PromptPartial:
-    raw = evaluation.prompt_improvements if isinstance(evaluation.prompt_improvements, dict) else {}
-    partial_id = raw.get("imported_agent_id")
-    if not partial_id and call_import is not None:
-        from app.services.platform_import_imported_agent import resolve_imported_agent_for_call_import
-
-        linked = resolve_imported_agent_for_call_import(db, call_import, None)
-        if linked is not None:
-            partial_id = str(linked.id)
-    if not partial_id:
-        raise PromptPushError(400, "Generate prompt suggestions before pushing.")
-    partial = (
-        db.query(PromptPartial)
-        .filter(
-            PromptPartial.id == partial_id,
-            PromptPartial.organization_id == organization_id,
-            PromptPartial.workspace_id == workspace_id,
-        )
-        .first()
+    partial, relinked = resolve_imported_partial_for_evaluation(
+        db, evaluation, organization_id, workspace_id, call_import, principal
     )
-    if partial is None:
-        raise PromptPushError(404, "Imported agent prompt not found")
+    if relinked:
+        db.commit()
+        db.refresh(partial)
     return partial
 
 
@@ -471,7 +520,9 @@ def save_evaluation_prompt_version(
         raise PromptPushError(
             400, preview.get("save_block_reason") or "This prompt cannot be saved."
         )
-    partial = _imported_partial(db, evaluation, organization_id, workspace_id, call_import)
+    partial = _imported_partial(
+        db, evaluation, organization_id, workspace_id, call_import, principal
+    )
     label = evaluation.name or str(evaluation.id)
     actor = _actor_label(principal)
     _write_version(
@@ -524,7 +575,9 @@ def push_evaluation_prompt(
     preview = preview_evaluation_push(db, evaluation, call_import, organization_id, workspace_id)
     if not preview["can_push"]:
         raise PromptPushError(400, preview["block_reason"] or "This prompt cannot be pushed.")
-    partial = _imported_partial(db, evaluation, organization_id, workspace_id, call_import)
+    partial = _imported_partial(
+        db, evaluation, organization_id, workspace_id, call_import, principal
+    )
     agent = single_platform_agent(call_import)
     integration = _load_integration(db, call_import.voice_integration_id, organization_id)
     label = evaluation.name or str(evaluation.id)

@@ -7057,10 +7057,23 @@ async def generate_call_import_evaluation_prompt_improvements(
         .first()
     )
     if imported_agent is None or not is_imported_agent(imported_agent):
-        raise HTTPException(
-            status_code=404,
-            detail="Imported agent not found in the active workspace",
+        from app.services.platform_import_imported_agent import (
+            relink_evaluation_imported_agent,
+            resolve_imported_agent_for_call_import,
         )
+
+        recovered = resolve_imported_agent_for_call_import(db, call_import, principal)
+        if recovered is None or not is_imported_agent(recovered):
+            raise HTTPException(
+                status_code=404,
+                detail="Imported agent not found in the active workspace",
+            )
+        imported_agent = recovered
+        imported_agent_id = recovered.id
+        if isinstance(evaluation.prompt_improvements, dict):
+            relink_evaluation_imported_agent(evaluation, recovered)
+            stamp_evaluation_actor(evaluation, principal)
+            db.commit()
 
     if not body.regenerate and not body.force:
         cached = _prompt_improvements_payload(evaluation)

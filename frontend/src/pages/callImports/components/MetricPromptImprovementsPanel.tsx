@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   ExternalLink,
   GitBranch,
+  Info,
   Loader2,
   Pencil,
   Sparkles,
@@ -252,6 +253,16 @@ export default function MetricPromptImprovementsPanel({
       setPushPreview(preview)
       setPushModalStep('review')
       setPushConfirmOpen(true)
+      if (preview.relinked_imported_agent) {
+        if (preview.imported_agent_id) {
+          setSelectedAgentId(preview.imported_agent_id)
+        }
+        onGenerated()
+        queryClient.invalidateQueries({ queryKey: ['prompt-partials'] })
+        if (preview.imported_agent_id) {
+          queryClient.invalidateQueries({ queryKey: ['prompt-partial', preview.imported_agent_id] })
+        }
+      }
     },
     onError: (e: unknown) => setPushError(getApiErrorMessage(e, 'Failed to prepare the prompt diff.')),
   })
@@ -883,6 +894,36 @@ export default function MetricPromptImprovementsPanel({
                   </div>
 
                   <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-6 py-4 gap-3 custom-scrollbar">
+                    {pushPreview.relinked_imported_agent ? (
+                      <div className="flex gap-2.5 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2.5 text-sm text-gray-800 shrink-0">
+                        <Info className="h-5 w-5 shrink-0 text-sky-600" />
+                        <div className="min-w-0 space-y-1">
+                          <p className="font-medium text-gray-900">
+                            Import-linked partial was missing — we re-linked it
+                          </p>
+                          <p className="text-gray-700 leading-snug">
+                            The agent partial for this import was deleted or could not be found in
+                            Prompt Partials. We fetched the current live provider prompt, created a
+                            new import-linked partial
+                            {pushPreview.imported_agent_name
+                              ? ` (${pushPreview.imported_agent_name})`
+                              : ''}
+                            , and attached it to this evaluation. The diff below uses that live
+                            prompt as the base.
+                          </p>
+                          {pushPreview.imported_agent_id ? (
+                            <Link
+                              to={`/prompt-partials/${pushPreview.imported_agent_id}?kind=imported_agent`}
+                              className="inline-flex items-center gap-1 text-xs font-medium text-sky-800 hover:text-sky-950"
+                              onClick={closePushModal}
+                            >
+                              Open new partial in Prompt Partials
+                              <ExternalLink className="h-3 w-3" />
+                            </Link>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
                     {pushPreview.saved_prompt_matches_live === false ? (
                       <div className="flex gap-2.5 rounded-lg border border-amber-200 bg-[#fef7e0] px-3 py-2.5 text-sm text-gray-800 shrink-0">
                         <AlertTriangle className="h-5 w-5 shrink-0 text-[#f29900]" />

@@ -7,9 +7,10 @@ from typing import Any, Dict, Optional, Tuple
 from uuid import UUID
 
 from sqlalchemy.orm import Session
+
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.models.database import CallImport, Integration, PromptPartial, PromptPartialVersion
+from app.models.database import CallImport, CallImportEvaluation, Integration, PromptPartial, PromptPartialVersion
 from app.services.imported_agent_constants import (
     AGENT_PROVIDER_PROMPT_TAG_PREFIX,
     IMPORTED_AGENT_TAG,
@@ -204,6 +205,23 @@ def ensure_imported_agent_for_platform_import(
     )
     _persist_import_partial_link(call_import, partial)
     return partial
+
+
+def relink_evaluation_imported_agent(
+    evaluation: CallImportEvaluation,
+    partial: PromptPartial,
+) -> None:
+    """Point evaluation prompt improvements at the current imported-agent partial."""
+    raw = (
+        dict(evaluation.prompt_improvements)
+        if isinstance(evaluation.prompt_improvements, dict)
+        else {}
+    )
+    raw["imported_agent_id"] = str(partial.id)
+    if partial.name:
+        raw["imported_agent_name"] = partial.name
+    evaluation.prompt_improvements = raw
+    flag_modified(evaluation, "prompt_improvements")
 
 
 def resolve_imported_agent_for_call_import(

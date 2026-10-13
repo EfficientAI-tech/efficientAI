@@ -1891,6 +1891,8 @@ export interface PromptPushPreview {
   composed_prompt: string
   saved_prompt_matches_live?: boolean | null
   imported_agent_name?: string | null
+  imported_agent_id?: string | null
+  relinked_imported_agent?: boolean
   partial_current_version?: number
   partial_next_version?: number
   accepted_count: number

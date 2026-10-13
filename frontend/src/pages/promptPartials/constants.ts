@@ -89,13 +89,58 @@ export function versionOriginBadge(
   if (s.includes('pushed from evaluation') || s.includes('pushed v') || s.includes('to live')) {
     return {
       label: 'Live push',
+      title: 'This snapshot was sent to the connected agent on the voice platform',
       className: 'bg-emerald-50 text-emerald-800 border border-emerald-200',
     }
   }
   if (s.includes('reverted')) {
-    return { label: 'Restored locally', className: 'bg-gray-100 text-gray-700 border border-gray-200' }
+    return {
+      label: 'Restored locally',
+      title: 'Working copy in the app was set to this snapshot; the voice platform was not changed',
+      className: 'bg-gray-100 text-gray-700 border border-gray-200',
+    }
   }
   return null
+}
+
+/** Plain-language line under each version row in the history drawer. */
+export function versionRowExplanation(
+  changeSummary: string | null | undefined,
+  versionNumber: number,
+  isPlatformImport: boolean,
+  opts: {
+    isCurrent: boolean
+    isLiveOnProvider: boolean
+  },
+): string {
+  const origin = versionOriginBadge(changeSummary, versionNumber, isPlatformImport)
+  if (opts.isCurrent && opts.isLiveOnProvider) {
+    return 'This is your working copy here and matches what is live on the voice platform.'
+  }
+  if (opts.isCurrent) {
+    if (origin?.label === 'Saved from eval') {
+      return 'This is your working copy here. Not on the voice platform yet — use Push live when ready.'
+    }
+    return 'This is your working copy in EfficientAI (preview and evaluations use this text).'
+  }
+  if (opts.isLiveOnProvider) {
+    return 'This snapshot is what is currently live on your connected voice agent.'
+  }
+  if (origin?.title) return origin.title
+  if (origin?.label === 'Live push') {
+    return 'Was pushed to the voice platform from this partial.'
+  }
+  const summary = (changeSummary || '').trim()
+  if (summary && summary.length < 200) return summary
+  return 'Older snapshot. Compare to see changes, or Restore to make it your working copy (local only).'
+}
+
+export function latestLivePromptVersion(
+  pushes: { prompt_version: number; status: string }[] | null | undefined,
+): number | null {
+  const live = (pushes || []).filter((p) => p.status === 'pushed')
+  if (!live.length) return null
+  return Math.max(...live.map((p) => p.prompt_version))
 }
 
 export function ensureImportedAgentTag(tags: string[]): string[] {

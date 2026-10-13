@@ -5508,6 +5508,8 @@ class PromptPushPreviewResponse(BaseModel):
     composed_prompt: str
     saved_prompt_matches_live: Optional[bool] = None
     imported_agent_name: Optional[str] = None
+    imported_agent_id: Optional[str] = None
+    relinked_imported_agent: bool = False
     partial_current_version: int = 1
     partial_next_version: int = 1
     accepted_count: int = 0
