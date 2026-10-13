@@ -27,10 +27,9 @@ from app.services.imported_agent_constants import IMPORTED_AGENT_TAG
 
 
 def flag_evaluation_prompt_improvements_modified(evaluation: CallImportEvaluation) -> None:
-    from sqlalchemy import inspect
     from sqlalchemy.orm.attributes import flag_modified
 
-    if inspect(evaluation, raise_=False) is not None:
+    if getattr(evaluation, "_sa_instance_state", None) is not None:
         flag_modified(evaluation, "prompt_improvements")
 
 
