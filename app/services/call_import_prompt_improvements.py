@@ -30,7 +30,7 @@ def flag_evaluation_prompt_improvements_modified(evaluation: CallImportEvaluatio
     from sqlalchemy import inspect
     from sqlalchemy.orm.attributes import flag_modified
 
-    if inspect(evaluation, raise=False) is not None:
+    if inspect(evaluation, raise_=False) is not None:
         flag_modified(evaluation, "prompt_improvements")
 
 
