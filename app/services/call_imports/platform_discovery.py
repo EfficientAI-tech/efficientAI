@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID, uuid4, uuid5
@@ -12,6 +13,32 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
+
+
+@dataclass
+class _DiscoveryShardPending:
+    sessions: List[Any] = field(default_factory=list)
+    finalizes: List[Dict[str, Any]] = field(default_factory=list)
+
+    def extend_shard_sessions(self, sessions: List[Any]) -> None:
+        self.sessions.extend(sessions)
+
+    def add_finalize(
+        self,
+        *,
+        call_import_id: UUID,
+        row_ids: List[UUID],
+        row_count: int,
+        end_index: int,
+    ) -> None:
+        self.finalizes.append(
+            {
+                "call_import_id": call_import_id,
+                "row_ids": row_ids,
+                "row_count": row_count,
+                "end_index": end_index,
+            }
+        )
 from app.models.database import (
     CallImport,
     CallImportDiscoverySlice,
@@ -176,22 +203,56 @@ def list_failure_disposition(exc: Exception) -> Tuple[str, int]:
     return "fail", 0
 
 
-def _commit_catalog_with_pending_shards(db: Session, pending: List[Any]) -> None:
+def _apply_shard_finalizes(db: Session, finalizes: List[Dict[str, Any]]) -> None:
+    from app.db_sharding.row_ops import register_shard_slices
+    from sqlalchemy import text
+
+    for fin in finalizes:
+        row_ids = fin["row_ids"]
+        if not row_ids:
+            continue
+        register_shard_slices(db, fin["call_import_id"], fin["end_index"])
+        db.query(PlatformConversationLedger).filter(
+            PlatformConversationLedger.row_id.in_(row_ids)
+        ).update({"state": "materialized"}, synchronize_session=False)
+        db.execute(
+            text(
+                """
+                UPDATE call_imports
+                SET total_rows = total_rows + :n
+                WHERE id = :id
+                """
+            ),
+            {"n": fin["row_count"], "id": fin["call_import_id"]},
+        )
+
+
+def _commit_catalog_with_pending_shards(db: Session, pending: _DiscoveryShardPending) -> None:
     from app.db_sharding.row_ops import (
         commit_pending_shard_sessions,
         rollback_pending_shard_sessions,
     )
 
+    if pending.sessions:
+        try:
+            commit_pending_shard_sessions(pending.sessions)
+        except Exception:
+            rollback_pending_shard_sessions(pending.sessions)
+            pending.sessions.clear()
+            pending.finalizes.clear()
+            db.rollback()
+            raise
+        pending.sessions.clear()
+
+    if pending.finalizes:
+        _apply_shard_finalizes(db, pending.finalizes)
+        pending.finalizes.clear()
+
     try:
         db.commit()
     except Exception:
         db.rollback()
-        rollback_pending_shard_sessions(pending)
-        pending.clear()
         raise
-    if pending:
-        commit_pending_shard_sessions(pending)
-        pending.clear()
 
 
 def _increment_skip(call_import: CallImport, reason: SkipReason, sample: Dict[str, Any]) -> None:
@@ -212,7 +273,10 @@ def _increment_skip(call_import: CallImport, reason: SkipReason, sample: Dict[st
 
 
 def rematerialize_reserved_rows(db: Session, call_import_id: UUID) -> int:
-    from app.db_sharding.row_ops import bulk_insert_mappings_on_shards, register_shard_slices
+    from app.db_sharding.row_ops import (
+        bulk_insert_mappings_on_shards,
+        commit_pending_shard_sessions,
+    )
     from app.db_sharding.sessions import is_sharding_enabled
 
     reserved = (
@@ -247,8 +311,20 @@ def rematerialize_reserved_rows(db: Session, call_import_id: UUID) -> int:
             }
         )
     if is_sharding_enabled():
-        bulk_insert_mappings_on_shards(db, call_import.id, mappings)
-        register_shard_slices(db, call_import.id, call_import.total_rows or 0)
+        _, shard_sessions = bulk_insert_mappings_on_shards(
+            db,
+            call_import.id,
+            mappings,
+            defer_commit=True,
+            on_conflict_do_nothing=True,
+        )
+        try:
+            commit_pending_shard_sessions(shard_sessions)
+        except Exception:
+            from app.db_sharding.row_ops import rollback_pending_shard_sessions
+
+            rollback_pending_shard_sessions(shard_sessions)
+            raise
     else:
         for mapping in mappings:
             db.merge(CallImportRow(**mapping))
@@ -282,7 +358,7 @@ def discover_platform_slice_chunk(
     page_budget: int,
 ) -> bool:
     """Process up to page_budget list pages for one slice."""
-    shard_pending: List[Any] = []
+    shard_pending = _DiscoveryShardPending()
     call_import = (
         db.query(CallImport)
         .filter(CallImport.id == call_import_id)
@@ -519,7 +595,7 @@ def _reserve_and_insert_rows(
     items: List[HistoricalListItem],
     *,
     include_reimport: bool,
-    shard_pending: Optional[List[Any]] = None,
+    shard_pending: Optional[_DiscoveryShardPending] = None,
 ) -> bool:
     """Insert one page. Returns True when the import has no room left."""
     from app.db_sharding.row_ops import bulk_insert_mappings_on_shards, register_shard_slices
@@ -616,35 +692,56 @@ def _reserve_and_insert_rows(
         db.expire(call_import, ["total_rows", "next_row_index"])
         return False
 
+    row_ids = [m["id"] for m in mappings]
     if is_sharding_enabled():
-        _, pending = bulk_insert_mappings_on_shards(
+        _, pending_sessions = bulk_insert_mappings_on_shards(
             db, call_import.id, mappings, defer_commit=True
         )
         if shard_pending is not None:
-            shard_pending.extend(pending)
+            shard_pending.extend_shard_sessions(pending_sessions)
+            shard_pending.add_finalize(
+                call_import_id=call_import.id,
+                row_ids=row_ids,
+                row_count=len(mappings),
+                end_index=end_index,
+            )
         else:
             from app.db_sharding.row_ops import commit_pending_shard_sessions
 
-            commit_pending_shard_sessions(pending)
-        register_shard_slices(db, call_import.id, end_index)
+            try:
+                commit_pending_shard_sessions(pending_sessions)
+            except Exception:
+                from app.db_sharding.row_ops import rollback_pending_shard_sessions
+
+                rollback_pending_shard_sessions(pending_sessions)
+                raise
+            _apply_shard_finalizes(
+                db,
+                [
+                    {
+                        "call_import_id": call_import.id,
+                        "row_ids": row_ids,
+                        "row_count": len(mappings),
+                        "end_index": end_index,
+                    }
+                ],
+            )
     else:
         for mapping in mappings:
             db.merge(CallImportRow(**mapping))
+        db.query(PlatformConversationLedger).filter(
+            PlatformConversationLedger.row_id.in_(row_ids)
+        ).update({"state": "materialized"}, synchronize_session=False)
+        db.execute(
+            text(
+                """
+                UPDATE call_imports
+                SET total_rows = total_rows + :n
+                WHERE id = :id
+                """
+            ),
+            {"n": len(mappings), "id": call_import.id},
+        )
 
-    row_ids = [m["id"] for m in mappings]
-    db.query(PlatformConversationLedger).filter(
-        PlatformConversationLedger.row_id.in_(row_ids)
-    ).update({"state": "materialized"}, synchronize_session=False)
-
-    db.execute(
-        text(
-            """
-            UPDATE call_imports
-            SET total_rows = total_rows + :n
-            WHERE id = :id
-            """
-        ),
-        {"n": len(mappings), "id": call_import.id},
-    )
     db.expire(call_import, ["total_rows", "next_row_index"])
     return room is not None and len(mappings) >= room
