@@ -6265,7 +6265,7 @@ class ApiClient {
 
   async updatePromptPartial(partialId: string, data: {
     name?: string
-    description?: string
+    description?: string | null
     content?: string
     tags?: string[]
     change_summary?: string

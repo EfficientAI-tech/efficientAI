@@ -1712,7 +1712,7 @@ function PromptPartialModal({
   const updateMutation = useMutation({
     mutationFn: (data: {
       name?: string
-      description?: string
+      description?: string | null
       content?: string
       tags?: string[]
       change_summary?: string
