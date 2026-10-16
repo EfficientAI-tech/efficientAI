@@ -241,10 +241,11 @@ def evaluate_call_import_row_task(
         )
 
         row_db = catalog_db = None
+        save_shard_id: str | None = None
         try:
             row_uuid = UUID(eval_row_id)
             try:
-                row_db, catalog_db, eval_row, source_row, _shard_id = (
+                row_db, catalog_db, eval_row, source_row, save_shard_id = (
                     locate_call_import_evaluation_row(row_uuid)
                 )
             except LookupError:
@@ -612,7 +613,10 @@ def evaluate_call_import_row_task(
 
             try:
                 row_db, catalog_db, eval_row, _source_row, _ = (
-                    locate_call_import_evaluation_row(UUID(eval_row_id))
+                    locate_call_import_evaluation_row(
+                        UUID(eval_row_id),
+                        shard_id=save_shard_id,
+                    )
                 )
             except LookupError:
                 logger.warning(

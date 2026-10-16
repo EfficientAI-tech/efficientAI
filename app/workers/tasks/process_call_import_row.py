@@ -233,6 +233,15 @@ def _use_credentialed_recording_download(call_import, client) -> bool:
     return (call_import.provider or "").lower() in _CREDENTIALED_RECORDING_IMPORT_PROVIDERS
 
 
+def _release_fetch_sessions(row_db, catalog_db) -> None:
+    """Return checked-out connections before a recording download or S3 upload."""
+    from app.database import release_read_only_session
+
+    release_read_only_session(row_db)
+    if catalog_db is not None and catalog_db is not row_db:
+        release_read_only_session(catalog_db)
+
+
 def _is_direct_url_import(call_import) -> bool:
     """True only when the batch was explicitly imported without telephony creds."""
     return (
@@ -492,10 +501,15 @@ def process_call_import_row_task(
                 "s3_key": None,
             }
 
+        fetch_org_id = row.organization_id
+        fetch_import_id = call_import.id
+        fetch_row_id = row.id
+
         # ------------------------------------------------------------------
         # Direct-URL mode — download from the CSV-supplied URL only.
         # ------------------------------------------------------------------
         if direct_url_mode:
+            _release_fetch_sessions(row_db, catalog_db)
             audio_bytes: Optional[bytes] = None
             content_type: Optional[str] = None
             direct_failure: Optional[Exception] = None
@@ -590,6 +604,7 @@ def process_call_import_row_task(
                         call_import=call_import,
                     )
 
+            _release_fetch_sessions(row_db, catalog_db)
             try:
                 if _use_credentialed_recording_download(call_import, client):
                     fetched: Tuple[bytes, str] = client.download_recording(
@@ -665,10 +680,11 @@ def process_call_import_row_task(
         ext = _extension_for_content_type(content_type or "")
         prefix = s3_service.prefix
         key = (
-            f"{prefix}organizations/{row.organization_id}/call_imports/"
-            f"{call_import.id}/{row.id}.{ext}"
+            f"{prefix}organizations/{fetch_org_id}/call_imports/"
+            f"{fetch_import_id}/{fetch_row_id}.{ext}"
         )
 
+        _release_fetch_sessions(row_db, catalog_db)
         try:
             s3_service.upload_file_by_key(audio_bytes, key, content_type=content_type)
         except Exception as exc:

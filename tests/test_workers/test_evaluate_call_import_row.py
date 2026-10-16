@@ -181,7 +181,7 @@ def _patch_eval_row_storage(monkeypatch):
 def _patch_row_location(monkeypatch, db_session):
     """Route shard-aware row lookup to the pytest session."""
 
-    def _locate(eval_row_id):
+    def _locate(eval_row_id, shard_id=None):
         eid = eval_row_id if isinstance(eval_row_id, UUID) else UUID(str(eval_row_id))
         row = (
             db_session.query(CallImportEvaluationRow, CallImportRow)
@@ -205,6 +205,12 @@ def _patch_row_location(monkeypatch, db_session):
     monkeypatch.setattr(
         "app.db_sharding.eval_rows.locate_call_import_evaluation_row",
         _locate,
+    )
+    # Importing the worker reloads config.yml and turns sharding back on.
+    # These tests keep every row in the pytest session.
+    monkeypatch.setattr(
+        "app.db_sharding.sessions.is_sharding_enabled",
+        lambda: False,
     )
 
 

@@ -428,16 +428,33 @@ def gather_retry_targets_sharded(
     return targets, skipped
 
 
+_evaluation_session_bounds: dict[int, dict] = {}
+
+
+def rebind_evaluation_row_session(origin_row_db, row_db, catalog_db) -> None:
+    """Point the open evaluation_row_session finally-block at the new sessions."""
+    bound = _evaluation_session_bounds.get(id(origin_row_db))
+    if bound is None:
+        return
+    bound["row_db"] = row_db
+    bound["catalog_db"] = catalog_db
+
+
 @contextmanager
 def evaluation_row_session(eval_row_id: UUID | str):
     """Yield (row_db, catalog_db, eval_row, source_row, shard_id)."""
     row_db, catalog_db, eval_row, source_row, shard_id = (
         locate_call_import_evaluation_row(eval_row_id)
     )
+    token = id(row_db)
+    bound = {"row_db": row_db, "catalog_db": catalog_db}
+    _evaluation_session_bounds[token] = bound
     try:
         yield row_db, catalog_db, eval_row, source_row, shard_id
     finally:
-        close_row_sessions(row_db, catalog_db)
+        _evaluation_session_bounds.pop(token, None)
+        if bound["row_db"] is not None:
+            close_row_sessions(bound["row_db"], bound["catalog_db"])
 
 
 def delete_evaluation_row_on_shards(

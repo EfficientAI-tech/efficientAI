@@ -432,12 +432,51 @@ def locate_call_import_row(
     raise LookupError(f"call_import_row {rid} not found on any shard")
 
 
+def _load_eval_row_on_shard(
+    eid: UUID,
+    shard_id: str,
+) -> Optional[
+    Tuple[Session, Optional[Session], CallImportEvaluationRow, CallImportRow, str]
+]:
+    """Open one shard. None when that shard does not hold the row."""
+    from app.models.database import CallImportEvaluationRow
+
+    router = db_pool_manager.router
+    if router is None or shard_id not in router.shard_ids:
+        return None
+    factory = db_pool_manager.shard_session_factory(shard_id)
+    shard_db = factory()
+    try:
+        row = (
+            shard_db.query(CallImportEvaluationRow, CallImportRow)
+            .join(
+                CallImportRow,
+                CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
+            )
+            .filter(CallImportEvaluationRow.id == eid)
+            .first()
+        )
+        if row is None:
+            shard_db.close()
+            return None
+        eval_row, source_row = row
+        catalog_db = open_catalog_session()
+        return shard_db, catalog_db, eval_row, source_row, shard_id
+    except Exception:
+        shard_db.close()
+        raise
+
+
 def locate_call_import_evaluation_row(
     eval_row_id: UUID | str,
+    *,
+    shard_id: str | None = None,
 ) -> Tuple[Session, Optional[Session], CallImportEvaluationRow, CallImportRow, str]:
     """
     Find eval + source rows. Returns
     (row_db, catalog_db, eval_row, source_row, shard_id).
+
+    ``shard_id`` opens that shard only. A miss falls through to the full scan.
     """
     from app.database import SessionLocal
     from app.models.database import CallImportEvaluationRow
@@ -459,6 +498,11 @@ def locate_call_import_evaluation_row(
             raise LookupError(f"call_import_evaluation_row {eid} not found")
         eval_row, source_row = row
         return db, db, eval_row, source_row, "legacy"
+
+    if shard_id and shard_id != "legacy":
+        hinted = _load_eval_row_on_shard(eid, shard_id)
+        if hinted is not None:
+            return hinted
 
     router = db_pool_manager.router
     assert router is not None

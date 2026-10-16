@@ -587,7 +587,11 @@ def rollup_parent(
             - int(evaluation.completed_rows or 0)
             - int(evaluation.failed_rows or 0)
         )
-        if expected_in_progress != _count_in_progress_rows(db, evaluation_id):
+        # Mid-run the increment is enough. A full shard scan on every
+        # finished row checks out a connection on each shard at once.
+        if expected_in_progress <= 1 and expected_in_progress != _count_in_progress_rows(
+            db, evaluation_id
+        ):
             reconcile_evaluation_counters(db, evaluation)
             db.refresh(evaluation)
 

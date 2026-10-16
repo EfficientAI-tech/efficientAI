@@ -148,26 +148,59 @@ def evaluate_call_import_row_audio_task(
                 resolve_eval_row_audio_seconds(catalog_db, eval_row, source_row)
 
             if audio_metrics and recording_s3_key:
+                from types import SimpleNamespace
+
+                from app.db_sharding.eval_rows import rebind_evaluation_row_session
+                from app.db_sharding.row_ops import (
+                    close_row_sessions,
+                    locate_call_import_evaluation_row,
+                )
                 from app.workers.tasks.helpers.audio_evaluation import (
                     evaluate_audio_metrics,
                     handle_audio_evaluation_error,
                 )
+                from app.workers.tasks.helpers.score_utils import get_metric_type_value
 
+                audio_inputs = [
+                    SimpleNamespace(
+                        id=metric.id,
+                        name=metric.name,
+                        metric_type=get_metric_type_value(metric),
+                    )
+                    for metric in audio_metrics
+                ]
+                eval_row_key = eval_row.id
+                origin_row_db = row_db
+                close_row_sessions(row_db, catalog_db)
+                rebind_evaluation_row_session(origin_row_db, None, None)
                 try:
                     audio_scores = evaluate_audio_metrics(
                         audio_s3_key=recording_s3_key,
-                        audio_metrics=audio_metrics,
+                        audio_metrics=audio_inputs,
                         result_id=result_id,
                     )
                     metric_scores.update(audio_scores)
                 except Exception as audio_err:  # noqa: BLE001
                     logger.exception(
-                        "[CallImportEval {}] Audio analysis failed", eval_row.id
+                        "[CallImportEval {}] Audio analysis failed", eval_row_key
                     )
                     metric_scores.update(
-                        handle_audio_evaluation_error(audio_metrics, audio_err)
+                        handle_audio_evaluation_error(audio_inputs, audio_err)
                     )
                     audio_failed = True
+                row_db, catalog_db, eval_row, source_row, _shard_id = (
+                    locate_call_import_evaluation_row(
+                        eval_row_key, shard_id=_shard_id
+                    )
+                )
+                rebind_evaluation_row_session(origin_row_db, row_db, catalog_db)
+                evaluation = (
+                    catalog_db.query(CallImportEvaluation)
+                    .filter(CallImportEvaluation.id == eval_row.evaluation_id)
+                    .first()
+                )
+                if evaluation is None:
+                    return {"status": "failed", "reason": "evaluation_missing"}
 
             if was_cancelled_externally(row_db, eval_row):
                 try:

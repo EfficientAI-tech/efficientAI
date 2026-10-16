@@ -323,6 +323,9 @@ def _load_task_module():
     if existing is not None and hasattr(existing, "process_call_import_row_task"):
         task = getattr(existing, "process_call_import_row_task", None)
         if isinstance(task, types.FunctionType) or getattr(task, "_bind_task_wrapped", False):
+            parent = sys.modules.get("app.workers.tasks")
+            if parent is not None:
+                setattr(parent, "process_call_import_row", existing)
             return existing
         del sys.modules[module_name]
 
@@ -344,6 +347,9 @@ def _load_task_module():
     module.process_call_import_row_task = _wrap_bind_task_for_tests(
         module.process_call_import_row_task
     )
+    parent = sys.modules.get("app.workers.tasks")
+    if parent is not None:
+        setattr(parent, "process_call_import_row", module)
     return module
 
 
@@ -396,7 +402,7 @@ def _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3):
         session = _NonClosingSession(db_session)
         return session, session, row, "legacy"
 
-    def fake_locate_call_import_evaluation_row(eval_row_id):
+    def fake_locate_call_import_evaluation_row(eval_row_id, shard_id=None):
         eid = eval_row_id if isinstance(eval_row_id, UUID) else UUID(str(eval_row_id))
         row = (
             db_session.query(CallImportEvaluationRow, CallImportRow)

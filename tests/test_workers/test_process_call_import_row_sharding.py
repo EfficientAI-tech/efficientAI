@@ -103,7 +103,7 @@ def test_eval_chain_loads_evaluation_from_catalog_session(
     )
     monkeypatch.setattr(
         "app.workers.tasks.process_call_import_row._rollup_parent_status",
-        lambda _db, _call_import: None,
+        lambda _db, _call_import, force=False: None,
     )
     monkeypatch.setattr(
         "app.workers.concurrency.eval_dispatch.enqueue_eval_chain_transcribe_after_import",
@@ -177,7 +177,7 @@ def test_production_eval_chain_skips_transcribe_and_redispatches(
     )
     monkeypatch.setattr(
         "app.workers.tasks.process_call_import_row._rollup_parent_status",
-        lambda _db, _call_import: None,
+        lambda _db, _call_import, force=False: None,
     )
 
     result = task_module.process_call_import_row_task.run(
@@ -228,7 +228,7 @@ def test_eval_chain_cleanup_clears_stale_task_ids_and_redispatches(
         )
         return db_session, catalog_session, located_row, "data-shard-01"
 
-    def fake_locate_call_import_evaluation_row(_eval_row_id):
+    def fake_locate_call_import_evaluation_row(_eval_row_id, shard_id=None):
         locate_calls["count"] += 1
         refreshed_eval_row = (
             db_session.query(CallImportEvaluationRow)
@@ -278,7 +278,7 @@ def test_eval_chain_cleanup_clears_stale_task_ids_and_redispatches(
     )
     monkeypatch.setattr(
         "app.workers.tasks.process_call_import_row._rollup_parent_status",
-        lambda _db, _call_import: None,
+        lambda _db, _call_import, force=False: None,
     )
 
     result = task_module.process_call_import_row_task.run(
@@ -331,7 +331,7 @@ def test_production_eval_chain_cleanup_runs_when_eval_slot_expired(
         task_module, "_rollup_parent_status", lambda _db, _ci, **_kwargs: None
     )
 
-    def fake_locate_call_import_evaluation_row(_eval_row_id):
+    def fake_locate_call_import_evaluation_row(_eval_row_id, shard_id=None):
         refreshed_eval_row = (
             db_session.query(CallImportEvaluationRow)
             .filter(CallImportEvaluationRow.id == eval_row.id)
