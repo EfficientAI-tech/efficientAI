@@ -47,6 +47,14 @@ def _apply_provider_transcript(
 _MIN_RECORDING_BYTES = 1024
 
 
+def _release_import_sessions(row_db, catalog_db) -> None:
+    from app.database import release_read_only_session
+
+    release_read_only_session(row_db)
+    if catalog_db is not None and catalog_db is not row_db:
+        release_read_only_session(catalog_db)
+
+
 def _extension_for_content_type(content_type: str) -> str:
     mapping = {
         "audio/mpeg": "mp3",
@@ -200,6 +208,9 @@ def hydrate_platform_call_import_row(
         )
 
     adapter = get_historical_adapter(integration)
+    organization_id = row.organization_id
+    import_id = call_import.id
+    stored_row_id = row.id
     raw_columns = dict(row.raw_columns or {}) if isinstance(row.raw_columns, dict) else {}
     transcript_only = (getattr(call_import, "content_modality", None) or "").lower() == "chat" or (
         filters.get("medium") or ""
@@ -212,6 +223,7 @@ def hydrate_platform_call_import_row(
         raw=raw_columns,
     )
 
+    _release_import_sessions(row_db, catalog_db)
     try:
         normalized = adapter.hydrate(item)
         clear_platform_auth_failures(integration.id)
@@ -324,6 +336,10 @@ def hydrate_platform_call_import_row(
             reason="rate_limited",
         )
 
+    if not _safe_commit(db, row_id=row_id, context="platform_transcript_staged"):
+        return {"status": "skipped", "reason": "row_deleted"}
+    _release_import_sessions(row_db, catalog_db)
+
     try:
         stream, content_type = adapter.open_audio_stream(normalized)
     except Exception as exc:
@@ -358,14 +374,16 @@ def hydrate_platform_call_import_row(
     ext = _extension_for_content_type(content_type)
     prefix = s3_service.prefix
     key = (
-        f"{prefix}organizations/{row.organization_id}/call_imports/"
-        f"{call_import.id}/{row.id}.{ext}"
+        f"{prefix}organizations/{organization_id}/call_imports/"
+        f"{import_id}/{stored_row_id}.{ext}"
     )
     row.status = CallImportRowStatus.PROCESSING
     row.attempts = (row.attempts or 0) + 1
     if hasattr(row, "download_started_at"):
         row.download_started_at = datetime.now(timezone.utc)
-    _safe_commit(db, row_id=row_id, context="platform_download_started")
+    if not _safe_commit(db, row_id=row_id, context="platform_download_started"):
+        return {"status": "skipped", "reason": "row_deleted"}
+    _release_import_sessions(row_db, catalog_db)
     max_bytes = settings.PLATFORM_IMPORT_RECORDING_MAX_BYTES
     total = 0
     tmp = tempfile.NamedTemporaryFile(delete=False)

@@ -32,6 +32,29 @@ SessionLocal = _SessionLocalFactory()
 Base = declarative_base()
 
 
+def release_read_only_session(db) -> None:
+    """End a read transaction so the connection returns to the pool.
+
+    Call this after credential lookups and before a provider HTTP call.
+    Sessions with pending writes are left alone.
+    """
+    if db is None:
+        return
+    new = getattr(db, "new", None)
+    dirty = getattr(db, "dirty", None)
+    deleted = getattr(db, "deleted", None)
+    if new is None and dirty is None and deleted is None:
+        return
+    try:
+        if new or dirty or deleted:
+            return
+    except Exception:
+        return
+    rollback = getattr(db, "rollback", None)
+    if callable(rollback):
+        rollback()
+
+
 def get_db():
     """
     Dependency for FastAPI to get database session.

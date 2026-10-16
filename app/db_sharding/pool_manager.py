@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine, URL, make_url
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -141,12 +141,9 @@ class DatabasePoolManager:
         catalog_url = getattr(settings, "DB_CATALOG_URL", None) or database_url
         shard_entries = _parse_shard_entries(settings, fallback_url=database_url)
         chunk_size = int(getattr(settings, "DB_SHARD_ROW_CHUNK_SIZE", 500))
-        shard_pool_size = pool_size
-        shard_max_overflow = max_overflow
-        if len(shard_entries) > 1:
-            per_shard = max(4, pool_size // len(shard_entries))
-            shard_pool_size = max(8, per_shard)
-            shard_max_overflow = max(8, max_overflow // len(shard_entries))
+        shard_pool_size, shard_max_overflow = shard_pool_limits(
+            settings, len(shard_entries)
+        )
 
         self._catalog_engine = make_engine(catalog_url)
         self._catalog_session_factory = sessionmaker(
@@ -160,6 +157,7 @@ class DatabasePoolManager:
                 **_create_engine_kwargs(shard_url, shard_pool_size, shard_max_overflow),
             )
             self._shard_engines[entry.id] = eng
+            _listen_reset_replication_role(eng)
             self._shard_session_factories[entry.id] = sessionmaker(
                 autocommit=False, autoflush=False, bind=eng
             )
@@ -169,6 +167,53 @@ class DatabasePoolManager:
         )
         self._sharding_enabled = True
         self._initialized = True
+
+
+def shard_pool_limits(settings, shard_count: int) -> tuple[int, int]:
+    """Pool size and overflow for each shard engine.
+
+    Explicit ``DB_SHARD_POOL_SIZE`` and ``DB_SHARD_MAX_OVERFLOW`` are used
+    as-is. Otherwise more than one shard keeps the historical floor of 8 + 8.
+    """
+    pool_size = int(getattr(settings, "DB_POOL_SIZE", 10))
+    max_overflow = int(getattr(settings, "DB_MAX_OVERFLOW", 20))
+    explicit_pool = getattr(settings, "DB_SHARD_POOL_SIZE", None)
+    explicit_overflow = getattr(settings, "DB_SHARD_MAX_OVERFLOW", None)
+    if explicit_pool is not None and explicit_overflow is not None:
+        return int(explicit_pool), int(explicit_overflow)
+    if shard_count > 1:
+        per_shard = max(4, pool_size // shard_count)
+        return max(8, per_shard), max(8, max_overflow // shard_count)
+    return pool_size, max_overflow
+
+
+def _reset_replication_role_on_checkin(dbapi_conn, _connection_record) -> None:
+    """Clear replica role before a shard connection re-enters the pool."""
+    if dbapi_conn is None:
+        return
+    try:
+        dbapi_conn.rollback()
+    except Exception:
+        return
+    cursor = dbapi_conn.cursor()
+    try:
+        try:
+            cursor.execute("SET session_replication_role TO DEFAULT")
+            dbapi_conn.commit()
+        except Exception:
+            try:
+                dbapi_conn.rollback()
+            except Exception:
+                pass
+            return
+    finally:
+        cursor.close()
+
+
+def _listen_reset_replication_role(engine: Engine) -> None:
+    if engine.dialect.name != "postgresql":
+        return
+    event.listen(engine, "checkin", _reset_replication_role_on_checkin)
 
 
 def postgresql_engine_url(url: str | URL) -> URL:

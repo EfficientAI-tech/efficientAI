@@ -687,8 +687,14 @@ def categorize_row_metrics(
     list[Metric],
     dict[str, dict[str, Any]],
 ]:
-    production_transcript = (source_row.transcript or "").strip()
-    diarised_transcript = (source_row.diarised_transcript or "").strip()
+    from app.db_sharding.scatter_gather import row_text_present
+
+    production_transcript = row_text_present(
+        source_row, "transcript", "transcript_char_length"
+    )
+    diarised_transcript = row_text_present(
+        source_row, "diarised_transcript", "diarised_transcript_char_length"
+    )
     recording_s3_key = (source_row.recording_s3_key or "").strip() or None
     has_audio = recording_s3_key is not None
     return categorize_metrics(

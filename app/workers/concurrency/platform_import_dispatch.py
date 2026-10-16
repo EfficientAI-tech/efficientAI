@@ -7,7 +7,7 @@ from uuid import UUID
 from celery.utils import uuid as celery_uuid
 from loguru import logger
 from sqlalchemy import text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from app.models.database import CallImport, CallImportRow
 from app.models.enums import CallImportRowStatus, CallImportStatus
@@ -30,7 +30,12 @@ def clear_expired_platform_row_claims(
     The old message still in the broker exits as superseded because the row
     owner no longer matches. A live lease is left alone.
     """
-    query = db.query(CallImportRow).filter(
+    claim_columns = load_only(
+        CallImportRow.id,
+        CallImportRow.celery_task_id,
+        CallImportRow.status,
+    )
+    query = db.query(CallImportRow).options(claim_columns).filter(
         CallImportRow.celery_task_id.isnot(None),
         CallImportRow.status == CallImportRowStatus.PENDING,
     )
@@ -38,7 +43,7 @@ def clear_expired_platform_row_claims(
         if not platform_import_ids:
             return 0
         query = query.filter(CallImportRow.call_import_id.in_(platform_import_ids))
-    stuck = db.query(CallImportRow).filter(
+    stuck = db.query(CallImportRow).options(claim_columns).filter(
         CallImportRow.celery_task_id.isnot(None),
         CallImportRow.status == CallImportRowStatus.PROCESSING,
         CallImportRow.recording_s3_key.is_(None),

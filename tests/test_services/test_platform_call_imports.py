@@ -77,7 +77,7 @@ def test_clear_expired_claims_drops_task_without_live_lease(monkeypatch):
     row.attempts = 0
     row.status = CallImportRowStatus.PENDING
     db = MagicMock()
-    db.query.return_value.filter.return_value.limit.return_value.all.return_value = [row]
+    db.query.return_value.options.return_value.filter.return_value.limit.return_value.all.return_value = [row]
     count = clear_expired_platform_row_claims(db)
     assert count == 1
     assert row.celery_task_id is None
@@ -102,7 +102,7 @@ def test_clear_expired_claims_clears_when_attempts_positive(monkeypatch):
     row.attempts = 2
     row.status = CallImportRowStatus.PENDING
     db = MagicMock()
-    db.query.return_value.filter.return_value.limit.return_value.all.side_effect = [
+    db.query.return_value.options.return_value.filter.return_value.limit.return_value.all.side_effect = [
         [row],
         [],
     ]
@@ -125,7 +125,7 @@ def test_clear_expired_claims_keeps_live_lease(monkeypatch):
     row = MagicMock()
     row.celery_task_id = "task-live"
     db = MagicMock()
-    db.query.return_value.filter.return_value.limit.return_value.all.return_value = [row]
+    db.query.return_value.options.return_value.filter.return_value.limit.return_value.all.return_value = [row]
     count = clear_expired_platform_row_claims(db)
     assert count == 0
     assert row.celery_task_id == "task-live"

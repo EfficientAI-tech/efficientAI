@@ -3294,8 +3294,11 @@ async def get_call_import_detail(
             rows_query = rows_query.filter(
                 CallImportRow.diarised_transcript_status == diarised_status_filter
             )
+        from app.db_sharding.scatter_gather import defer_call_import_row_text
+
         rows = (
-            rows_query.order_by(CallImportRow.row_index)
+            rows_query.options(*defer_call_import_row_text())
+            .order_by(CallImportRow.row_index)
             .offset(row_offset)
             .limit(row_limit)
             .all()
@@ -3327,7 +3330,7 @@ async def get_call_import_detail(
     detail = CallImportDetailResponse.model_validate(
         _serialize_call_import(db, call_import).model_dump()
     )
-    detail.rows = [CallImportRowResponse.model_validate(r) for r in rows]
+    detail.rows = [_call_import_row_list_response(r) for r in rows]
     detail.filtered_total_rows = filtered_total_rows
     detail.diarised_pending_rows = diarised_status_counts.get("pending", 0)
     detail.diarised_running_rows = diarised_status_counts.get("running", 0)
@@ -3570,6 +3573,44 @@ async def delete_call_import(
     )
 
 
+def _call_import_row_list_response(row: CallImportRow) -> CallImportRowResponse:
+    """List payload. Transcript text is loaded by the single-row GET."""
+    return CallImportRowResponse(
+        id=row.id,
+        row_index=row.row_index,
+        conversation_id=row.conversation_id,
+        recording_url=row.recording_url,
+        recording_date=row.recording_date,
+        transcript=None,
+        transcript_source=row.transcript_source,
+        transcript_provider=row.transcript_provider,
+        transcript_model=row.transcript_model,
+        transcript_status=row.transcript_status,
+        transcript_error=row.transcript_error,
+        transcribed_at=row.transcribed_at,
+        diarised_transcript=None,
+        diarised_transcript_provider=row.diarised_transcript_provider,
+        diarised_transcript_model=row.diarised_transcript_model,
+        diarised_transcript_status=row.diarised_transcript_status,
+        diarised_transcript_error=row.diarised_transcript_error,
+        diarised_at=row.diarised_at,
+        diarised_llm_provider=row.diarised_llm_provider,
+        diarised_llm_model=row.diarised_llm_model,
+        diarised_prompt=None,
+        diarised_segments=None,
+        diarised_speaker_swap=bool(row.diarised_speaker_swap),
+        status=row.status,
+        recording_s3_key=row.recording_s3_key,
+        recording_content_type=row.recording_content_type,
+        recording_size_bytes=row.recording_size_bytes,
+        error_message=row.error_message,
+        attempts=row.attempts,
+        raw_columns=None,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
 def _locate_call_import_row_or_404(
     catalog_db: Session,
     *,
@@ -3608,6 +3649,53 @@ def _locate_call_import_row_or_404(
         )
     extra_catalog = located_catalog if located_catalog is not row_db else None
     return row_db, row, extra_catalog
+
+
+@router.get(
+    "/{call_import_id}/rows/{row_id}",
+    response_model=CallImportRowResponse,
+    operation_id="getCallImportRow",
+)
+async def get_call_import_row(
+    call_import_id: UUID,
+    row_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportRowResponse:
+    """One import row, including transcript text omitted from the list."""
+    del api_key
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    if not is_sharding_enabled():
+        row = (
+            db.query(CallImportRow)
+            .filter(
+                CallImportRow.id == row_id,
+                CallImportRow.call_import_id == call_import_id,
+                CallImportRow.organization_id == organization_id,
+            )
+            .first()
+        )
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Call import row not found",
+            )
+        return CallImportRowResponse.model_validate(row)
+
+    from app.db_sharding.row_ops import close_row_sessions
+
+    row_db, row, extra_catalog = _locate_call_import_row_or_404(
+        db,
+        call_import_id=call_import_id,
+        row_id=row_id,
+        organization_id=organization_id,
+    )
+    try:
+        return CallImportRowResponse.model_validate(row)
+    finally:
+        close_row_sessions(row_db, extra_catalog)
 
 
 @router.delete(
@@ -4430,11 +4518,7 @@ async def get_call_import_insights(
 
     del api_key
 
-    from app.models.database import (
-        CallImportEvaluation,
-        CallImportEvaluationRow,
-        Metric,
-    )
+    from app.models.database import CallImportEvaluation, Metric
 
     call_import = (
         db.query(CallImport)
@@ -4450,31 +4534,17 @@ async def get_call_import_insights(
             detail="Call import not found",
         )
 
-    rows = (
-        db.query(CallImportRow)
-        .filter(CallImportRow.call_import_id == call_import_id)
-        .all()
+    from app.db_sharding.scatter_gather import (
+        aggregate_transcript_coverage,
+        load_evaluation_score_rows,
     )
-    # A row "has a transcript" if EITHER the production (CSV) or the
-    # diarised (worker) column is populated — the insights tile reports
-    # the union so users see total coverage regardless of which source
-    # produced the value.
-    rows_with_transcript = sum(
-        1
-        for r in rows
-        if (r.transcript or "").strip()
-        or (r.diarised_transcript or "").strip()
-    )
-    rows_without_transcript = len(rows) - rows_with_transcript
-    source_counts: Dict[str, int] = {}
-    for r in rows:
-        has_production = bool((r.transcript or "").strip())
-        has_diarised = bool((r.diarised_transcript or "").strip())
-        if has_production:
-            key = r.transcript_source or "csv"
-            source_counts[key] = source_counts.get(key, 0) + 1
-        if has_diarised:
-            source_counts["diarised"] = source_counts.get("diarised", 0) + 1
+
+    (
+        total_rows,
+        rows_with_transcript,
+        rows_without_transcript,
+        source_counts,
+    ) = aggregate_transcript_coverage(db, call_import_id)
 
     evaluations = (
         db.query(CallImportEvaluation)
@@ -4499,11 +4569,7 @@ async def get_call_import_insights(
     metric_latest: Dict[str, CallImportMetricAggregate] = {}
 
     for evaluation in evaluations:
-        eval_rows = (
-            db.query(CallImportEvaluationRow)
-            .filter(CallImportEvaluationRow.evaluation_id == evaluation.id)
-            .all()
-        )
+        eval_rows = load_evaluation_score_rows(db, evaluation.id)
         aggregates = _compute_metric_aggregates(db, evaluation, eval_rows)
         for agg in aggregates:
             if agg.metric_id not in metric_meta:
@@ -4557,7 +4623,7 @@ async def get_call_import_insights(
 
     return CallImportInsightsResponse(
         call_import_id=call_import_id,
-        total_rows=len(rows),
+        total_rows=total_rows,
         rows_with_transcript=rows_with_transcript,
         rows_without_transcript=rows_without_transcript,
         transcript_source_counts=source_counts,

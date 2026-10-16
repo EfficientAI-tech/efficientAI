@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     DB_SHARD_ROW_CHUNK_SIZE: int = 500
     DB_POOL_SIZE: int = 10
     DB_MAX_OVERFLOW: int = 20
+    DB_SHARD_POOL_SIZE: Optional[int] = None
+    DB_SHARD_MAX_OVERFLOW: Optional[int] = None
     DB_SHARD_ENTRIES: List[dict] = []
 
     # Redis
@@ -676,6 +678,10 @@ def load_config_from_file(config_path: str) -> None:
                 settings.DB_SHARDING_ENABLED = bool(sharding_cfg["enabled"])
             if "row_chunk_size" in sharding_cfg:
                 settings.DB_SHARD_ROW_CHUNK_SIZE = int(sharding_cfg["row_chunk_size"])
+            if "pool_size" in sharding_cfg:
+                settings.DB_SHARD_POOL_SIZE = int(sharding_cfg["pool_size"])
+            if "max_overflow" in sharding_cfg:
+                settings.DB_SHARD_MAX_OVERFLOW = int(sharding_cfg["max_overflow"])
         if "shards" in db_config and isinstance(db_config["shards"], list):
             settings.DB_SHARD_ENTRIES = list(db_config["shards"])
 

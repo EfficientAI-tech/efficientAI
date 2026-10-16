@@ -8,7 +8,7 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
   AlertCircle,
@@ -921,10 +921,17 @@ export default function CallImportDetail() {
     [rowOffset, rowSearchQuery, diarisedStatusFilter],
   )
 
-  const { data, isLoading, isFetching, refetch, error } = useQuery({
-    queryKey: ['call-import', activeWorkspaceId, id, queryParams],
-    queryFn: () => apiClient.getCallImport(id!, queryParams),
+  const {
+    data,
+    isLoading,
+    isFetching: headerFetching,
+    refetch: refetchHeader,
+    error,
+  } = useQuery({
+    queryKey: ['call-import', activeWorkspaceId, id],
+    queryFn: () => apiClient.getCallImport(id!, { row_limit: 0, row_offset: 0 }),
     enabled: !!id,
+    staleTime: 60_000,
     refetchInterval: (query) => {
       const d = query.state.data
       if (!d) return false
@@ -939,31 +946,30 @@ export default function CallImportDetail() {
         return 4000
       }
       if (d.status === 'pending' || d.status === 'processing') return 5000
-      // Batch-wide diarisation counters are pagination-independent —
-      // use them so off-page rows still drive polling (mirrors
-      // CallImportEvaluationDetail).
       const diariseInFlight =
         (d.diarised_pending_rows ?? 0) + (d.diarised_running_rows ?? 0)
-      if (diariseInFlight > 0) return 4000
-      // Fallback: legacy transcript_status on the current page slice.
-      const rows = d.rows ?? []
-      const hasActiveTranscript = rows.some(
-        (r: {
-          transcript_status?: string | null
-          diarised_transcript_status?: string | null
-        }) =>
-          r.transcript_status === 'pending' ||
-          r.transcript_status === 'running' ||
-          r.diarised_transcript_status === 'pending' ||
-          r.diarised_transcript_status === 'running',
-      )
-      return hasActiveTranscript ? 4000 : false
+      return diariseInFlight > 0 ? 4000 : false
     },
-    // Pre-import staged batches don't have a meaningful "still working"
-    // signal that needs polling — they only change in response to user
-    // actions on this page, which already invalidate the query.
-    staleTime: 0,
   })
+
+  const {
+    data: rowsPage,
+    isLoading: rowsLoading,
+    isFetching: rowsFetching,
+    refetch: refetchRows,
+  } = useQuery({
+    queryKey: ['call-import', activeWorkspaceId, id, 'rows', queryParams],
+    queryFn: () => apiClient.getCallImport(id!, queryParams),
+    enabled: !!id,
+    staleTime: 60_000,
+    placeholderData: keepPreviousData,
+  })
+
+  const isFetching = headerFetching || rowsFetching
+  const refetch = () => {
+    void refetchHeader()
+    void refetchRows()
+  }
 
   useEffect(() => {
     if (!data?.id || (data.source_format || '').toLowerCase() !== 'platform') return
@@ -1028,6 +1034,7 @@ export default function CallImportDetail() {
     queryKey: ['call-import-insights', activeWorkspaceId, id],
     queryFn: () => apiClient.getCallImportInsights(id!),
     enabled: !!id && activeTab === 'insights',
+    staleTime: 60_000,
     refetchInterval: () => {
       const rows = itemsOf<CallImportEvaluation>(evaluationsData)
       if (rows.some((row) => row.bulk_operation)) {
@@ -1350,7 +1357,7 @@ export default function CallImportDetail() {
   const hasActiveFilter =
     !!rowSearchQuery || diarisedStatusFilter !== 'all'
   const filteredTotalRows = hasActiveFilter
-    ? data?.filtered_total_rows ?? 0
+    ? rowsPage?.filtered_total_rows ?? 0
     : totalRows
   const rowPage = Math.floor(rowOffset / ROW_PAGE_SIZE) + 1
   const rowTotalPages = Math.max(1, Math.ceil(filteredTotalRows / ROW_PAGE_SIZE))
@@ -1439,17 +1446,44 @@ export default function CallImportDetail() {
 
   useEffect(() => {
     if (!selectedRowId || !data) return
-    const visibleRows = data.rows ?? []
+    const visibleRows = rowsPage?.rows ?? []
     if (!visibleRows.some((r) => r.id === selectedRowId)) {
       setSelectedRowId(null)
     }
-  }, [data, selectedRowId])
+  }, [rowsPage, selectedRowId])
+
+  const { data: selectedRowDetail } = useQuery({
+    queryKey: ['call-import', activeWorkspaceId, id, 'row', selectedRowId],
+    queryFn: () => apiClient.getCallImportRow(id!, selectedRowId!),
+    enabled: !!id && !!selectedRowId,
+    staleTime: 60_000,
+  })
+
+  useEffect(() => {
+    if (!id || !rowsPage) return
+    const nextOffset = rowOffset + ROW_PAGE_SIZE
+    if (nextOffset >= filteredTotalRows) return
+    const nextParams = { ...queryParams, row_offset: nextOffset }
+    void queryClient.prefetchQuery({
+      queryKey: ['call-import', activeWorkspaceId, id, 'rows', nextParams],
+      queryFn: () => apiClient.getCallImport(id, nextParams),
+      staleTime: 60_000,
+    })
+  }, [
+    id,
+    rowOffset,
+    filteredTotalRows,
+    queryParams,
+    activeWorkspaceId,
+    queryClient,
+    rowsPage,
+  ])
 
   if (!id) {
     return <div className="text-sm text-red-600">Missing import id.</div>
   }
 
-  if (isLoading) {
+  if (isLoading || (rowsLoading && !rowsPage)) {
     return (
       <div className="text-center py-12 text-gray-500">
         <RefreshCw className="h-8 w-8 mx-auto mb-2 animate-spin" />
@@ -1483,9 +1517,10 @@ export default function CallImportDetail() {
     )
   }
 
-  const rows = data.rows ?? []
-  const selectedRow =
+  const rows = rowsPage?.rows ?? []
+  const selectedListRow =
     rows.find((r) => r.id === selectedRowId) ?? null
+  const selectedRow = selectedRowDetail ?? selectedListRow
 
   const pendingCredentialErrorCount = rows.filter(
     (row) =>
@@ -2655,21 +2690,25 @@ export default function CallImportDetail() {
                   setRowPanelTab(tabId as CallImportRowSidePanelTabId)
                 }
               >
-                <CallImportRowSidePanelContent
-                  row={selectedRow}
-                  activeTab={rowPanelTab}
-                  rawColumnEntries={getRawColumnEntries(selectedRow)}
-                  hasRecording={!!selectedRow.recording_s3_key}
-                  copiedTranscriptField={copiedTranscriptField}
-                  onCopyTranscript={handleCopyTranscript}
-                  onDiarise={() => openTranscribeModal([selectedRow])}
-                  onSwapSpeakers={() =>
-                    swapSpeakersMutation.mutate({ rowId: selectedRow.id })
-                  }
-                  swappingRowId={swappingRowId}
-                  swapError={swapError}
-                  onDismissSwapError={() => setSwapError(null)}
-                />
+                {selectedRowDetail ? (
+                  <CallImportRowSidePanelContent
+                    row={selectedRowDetail}
+                    activeTab={rowPanelTab}
+                    rawColumnEntries={getRawColumnEntries(selectedRowDetail)}
+                    hasRecording={!!selectedRowDetail.recording_s3_key}
+                    copiedTranscriptField={copiedTranscriptField}
+                    onCopyTranscript={handleCopyTranscript}
+                    onDiarise={() => openTranscribeModal([selectedRowDetail])}
+                    onSwapSpeakers={() =>
+                      swapSpeakersMutation.mutate({ rowId: selectedRowDetail.id })
+                    }
+                    swappingRowId={swappingRowId}
+                    swapError={swapError}
+                    onDismissSwapError={() => setSwapError(null)}
+                  />
+                ) : (
+                  <p className="text-sm text-gray-500">Loading row…</p>
+                )}
               </CallRowSidePanel>
               ) : null
             }

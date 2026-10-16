@@ -273,10 +273,7 @@ def _increment_skip(call_import: CallImport, reason: SkipReason, sample: Dict[st
 
 
 def rematerialize_reserved_rows(db: Session, call_import_id: UUID) -> int:
-    from app.db_sharding.row_ops import (
-        bulk_insert_mappings_on_shards,
-        commit_pending_shard_sessions,
-    )
+    from app.db_sharding.row_ops import bulk_insert_mappings_on_shards
     from app.db_sharding.sessions import is_sharding_enabled
 
     reserved = (
@@ -311,20 +308,12 @@ def rematerialize_reserved_rows(db: Session, call_import_id: UUID) -> int:
             }
         )
     if is_sharding_enabled():
-        _, shard_sessions = bulk_insert_mappings_on_shards(
+        bulk_insert_mappings_on_shards(
             db,
             call_import.id,
             mappings,
-            defer_commit=True,
             on_conflict_do_nothing=True,
         )
-        try:
-            commit_pending_shard_sessions(shard_sessions)
-        except Exception:
-            from app.db_sharding.row_ops import rollback_pending_shard_sessions
-
-            rollback_pending_shard_sessions(shard_sessions)
-            raise
     else:
         for mapping in mappings:
             db.merge(CallImportRow(**mapping))
@@ -694,11 +683,8 @@ def _reserve_and_insert_rows(
 
     row_ids = [m["id"] for m in mappings]
     if is_sharding_enabled():
-        _, pending_sessions = bulk_insert_mappings_on_shards(
-            db, call_import.id, mappings, defer_commit=True
-        )
+        bulk_insert_mappings_on_shards(db, call_import.id, mappings)
         if shard_pending is not None:
-            shard_pending.extend_shard_sessions(pending_sessions)
             shard_pending.add_finalize(
                 call_import_id=call_import.id,
                 row_ids=row_ids,
@@ -706,15 +692,6 @@ def _reserve_and_insert_rows(
                 end_index=end_index,
             )
         else:
-            from app.db_sharding.row_ops import commit_pending_shard_sessions
-
-            try:
-                commit_pending_shard_sessions(pending_sessions)
-            except Exception:
-                from app.db_sharding.row_ops import rollback_pending_shard_sessions
-
-                rollback_pending_shard_sessions(pending_sessions)
-                raise
             _apply_shard_finalizes(
                 db,
                 [

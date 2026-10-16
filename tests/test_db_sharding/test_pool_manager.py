@@ -1,7 +1,15 @@
-import pytest
-from sqlalchemy import create_engine, text
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
-from app.db_sharding.pool_manager import DatabasePoolManager, postgresql_engine_url
+import pytest
+from sqlalchemy import event, text
+
+from app.db_sharding.pool_manager import (
+    DatabasePoolManager,
+    _reset_replication_role_on_checkin,
+    postgresql_engine_url,
+    shard_pool_limits,
+)
 
 
 @pytest.fixture
@@ -76,6 +84,71 @@ def test_sharding_two_shards_dedupe_migrations(manager, monkeypatch):
         assert shard_id in ("data-shard-01", "data-shard-02")
     finally:
         session.close()
+
+
+def _settings(**overrides):
+    values = {
+        "DATABASE_URL": "postgresql+psycopg2://efficientai:password@localhost:5432/efficientai",
+        "DB_SHARDING_ENABLED": True,
+        "DB_CATALOG_URL": "postgresql+psycopg2://efficientai:password@localhost:5432/efficientai",
+        "DB_POOL_SIZE": 10,
+        "DB_MAX_OVERFLOW": 15,
+        "DB_SHARD_ROW_CHUNK_SIZE": 500,
+        "DB_SHARD_POOL_SIZE": None,
+        "DB_SHARD_MAX_OVERFLOW": None,
+        "DB_SHARD_ENTRIES": [
+            {
+                "id": "data-shard-01",
+                "url": "postgresql+psycopg2://efficientai:password@localhost:5432/efficientai_data_01",
+            },
+            {
+                "id": "data-shard-02",
+                "url": "postgresql+psycopg2://efficientai:password@localhost:5432/efficientai_data_02",
+            },
+        ],
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def test_shard_pool_keeps_floor_when_explicit_sizes_unset():
+    limits = shard_pool_limits(_settings(), 2)
+    assert limits == (8, 8)
+
+
+def test_explicit_shard_pool_sizes_bypass_floor(manager, monkeypatch):
+    monkeypatch.setattr(
+        "app.config.settings",
+        _settings(DB_SHARD_POOL_SIZE=20, DB_SHARD_MAX_OVERFLOW=4),
+    )
+    assert manager.sharding_enabled
+    for engine in manager._shard_engines.values():
+        assert engine.pool.size() == 20
+        assert engine.pool._max_overflow == 4
+        assert event.contains(engine, "checkin", _reset_replication_role_on_checkin)
+    assert manager.catalog_engine.pool.size() == 10
+
+
+def test_checkin_resets_replication_role():
+    conn = MagicMock()
+    _reset_replication_role_on_checkin(conn, None)
+    conn.cursor.return_value.execute.assert_called_once_with(
+        "SET session_replication_role TO DEFAULT"
+    )
+
+
+def test_checkin_noop_when_connection_is_none():
+    _reset_replication_role_on_checkin(None, None)
+
+
+def test_checkin_rolls_back_before_reset():
+    conn = MagicMock()
+    _reset_replication_role_on_checkin(conn, None)
+    conn.rollback.assert_called_once()
+    conn.cursor.return_value.execute.assert_called_once_with(
+        "SET session_replication_role TO DEFAULT"
+    )
+    conn.commit.assert_called_once()
 
 
 def test_postgresql_engine_url_uses_psycopg2_and_keeps_password():

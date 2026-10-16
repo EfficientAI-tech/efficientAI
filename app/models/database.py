@@ -21,7 +21,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import query_expression, relationship
 from sqlalchemy.sql import func
 import uuid
 import enum
@@ -2534,6 +2534,8 @@ class CallImportRow(Base):
     # Evaluations can be configured to score against either column
     # (see ``CallImportEvaluation.transcript_source``).
     diarised_transcript = Column(Text, nullable=True)
+    transcript_char_length = query_expression()
+    diarised_transcript_char_length = query_expression()
     # Provider/model the diarisation worker used. Surfaced in the UI
     # as "Diarised via deepgram/nova-2" next to the diarised
     # transcript section.

@@ -13,6 +13,8 @@ database:
   sharding:
     enabled: true
     row_chunk_size: 500
+    # pool_size: 20
+    # max_overflow: 4
   shards:
     - id: data-shard-01
       url: "postgresql://efficientai:password@db:5432/efficientai_data_01"

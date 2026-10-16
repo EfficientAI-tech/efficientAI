@@ -337,22 +337,34 @@ def _to_evaluation_row_response(
     eval_row_obj: CallImportEvaluationRow,
     source_row: Optional[CallImportRow],
     evaluation: Optional[CallImportEvaluation] = None,
+    *,
+    include_text: bool = True,
 ) -> CallImportEvaluationRowResponse:
-    """Serialize one evaluation row plus joined source-row metadata."""
+    """Serialize one evaluation row plus joined source-row metadata.
+
+    List pages pass ``include_text=False`` so transcript bodies stay off
+    the page. The single-row read passes ``True``.
+    """
+    if include_text and source_row is not None:
+        transcript = _pick_evaluation_row_transcript(source_row, evaluation)
+        production_transcript = (source_row.transcript or "").strip() or None
+        diarised_transcript = (source_row.diarised_transcript or "").strip() or None
+        raw_columns = source_row.raw_columns
+    else:
+        transcript = None
+        production_transcript = None
+        diarised_transcript = None
+        raw_columns = None
     return CallImportEvaluationRowResponse(
         id=eval_row_obj.id,
         evaluation_id=eval_row_obj.evaluation_id,
         call_import_row_id=eval_row_obj.call_import_row_id,
         row_index=source_row.row_index if source_row else None,
         conversation_id=source_row.conversation_id if source_row else None,
-        transcript=_pick_evaluation_row_transcript(source_row, evaluation),
-        production_transcript=(
-            (source_row.transcript or "").strip() or None if source_row else None
-        ),
-        diarised_transcript=(
-            (source_row.diarised_transcript or "").strip() or None if source_row else None
-        ),
-        raw_columns=source_row.raw_columns if source_row else None,
+        transcript=transcript,
+        production_transcript=production_transcript,
+        diarised_transcript=diarised_transcript,
+        raw_columns=raw_columns,
         recording_url=source_row.recording_url if source_row else None,
         recording_date=source_row.recording_date if source_row else None,
         recording_s3_key=source_row.recording_s3_key if source_row else None,
@@ -1971,14 +1983,29 @@ async def list_call_import_evaluation_rows(
             bounded_shard_fetch=(
                 not sort_recognized or sort_by_clean == "row_index"
             ),
+            row_index_desc=bool(
+                sort_recognized and sort_by_clean == "row_index" and direction_desc
+            ),
+            sort_reads_scores=sort_by_clean.startswith("metric:"),
         )
     else:
-        total = query.count()
-        rows = query.offset((page - 1) * page_size).limit(page_size).all()
+        from app.db_sharding.scatter_gather import defer_call_import_row_text
 
-    # Row detail shows the transcript for this run's chosen source.
+        total = query.count()
+        rows = (
+            query.options(*defer_call_import_row_text())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
+
     items: List[CallImportEvaluationRowResponse] = [
-        _to_evaluation_row_response(eval_row_obj, source_row, eval_row)
+        _to_evaluation_row_response(
+            eval_row_obj,
+            source_row,
+            eval_row,
+            include_text=False,
+        )
         for eval_row_obj, source_row in rows
     ]
 
@@ -1988,6 +2015,93 @@ async def list_call_import_evaluation_rows(
         page=page,
         page_size=page_size,
     )
+
+
+@router.get(
+    "/{eval_id}/rows/{row_id}",
+    response_model=CallImportEvaluationRowResponse,
+    operation_id="getCallImportEvaluationRow",
+)
+async def get_call_import_evaluation_row(
+    call_import_id: UUID,
+    eval_id: UUID,
+    row_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportEvaluationRowResponse:
+    """One evaluation row, including the transcript the list leaves off."""
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if evaluation is None:
+        raise HTTPException(status_code=404, detail="Call import evaluation not found")
+
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    if not is_sharding_enabled():
+        pair = (
+            db.query(CallImportEvaluationRow, CallImportRow)
+            .join(
+                CallImportRow,
+                CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
+            )
+            .filter(
+                CallImportEvaluationRow.id == row_id,
+                CallImportEvaluationRow.evaluation_id == eval_id,
+                CallImportRow.call_import_id == call_import_id,
+            )
+            .first()
+        )
+        if pair is None:
+            raise HTTPException(
+                status_code=404, detail="Call import evaluation row not found"
+            )
+        eval_row, source_row = pair
+        return _to_evaluation_row_response(
+            eval_row,
+            source_row,
+            evaluation,
+            include_text=True,
+        )
+
+    from app.db_sharding.row_ops import (
+        close_row_sessions,
+        locate_call_import_evaluation_row,
+    )
+
+    try:
+        row_db, catalog_db, eval_row, source_row, _shard_id = (
+            locate_call_import_evaluation_row(row_id)
+        )
+    except LookupError:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation row not found"
+        ) from None
+    try:
+        if (
+            eval_row.evaluation_id != eval_id
+            or source_row.call_import_id != call_import_id
+        ):
+            raise HTTPException(
+                status_code=404, detail="Call import evaluation row not found"
+            )
+        return _to_evaluation_row_response(
+            eval_row,
+            source_row,
+            evaluation,
+            include_text=True,
+        )
+    finally:
+        close_row_sessions(row_db, catalog_db)
 
 
 @router.get(
@@ -6276,9 +6390,9 @@ def _enqueue_prompt_improvements_job(
 
 
 def _load_eval_rows(db: Session, evaluation_id: UUID) -> List[CallImportEvaluationRow]:
-    from app.db_sharding.eval_rows import load_evaluation_rows_for_run
+    from app.db_sharding.scatter_gather import load_evaluation_score_rows
 
-    return load_evaluation_rows_for_run(db, evaluation_id)
+    return load_evaluation_score_rows(db, evaluation_id)
 
 
 def _count_completed_eval_rows(db: Session, evaluation_id: UUID) -> int:

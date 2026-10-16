@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 from uuid import UUID
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from app.db_sharding.pool_manager import db_pool_manager
 from app.db_sharding.sessions import is_sharding_enabled
@@ -126,6 +126,24 @@ def call_imports_with_pending_rows(
     return sorted(filter_unlocked_call_import_ids(pending))
 
 
+def _import_dispatch_row_options():
+    return load_only(
+        CallImportRow.id,
+        CallImportRow.call_import_id,
+        CallImportRow.status,
+        CallImportRow.celery_task_id,
+    )
+
+
+def _diarization_dispatch_row_options():
+    return load_only(
+        CallImportRow.id,
+        CallImportRow.call_import_id,
+        CallImportRow.diarised_transcript_status,
+        CallImportRow.celery_task_id,
+    )
+
+
 def pending_import_row_for_call_import(
     catalog_db: Session,
     call_import_id: UUID,
@@ -146,6 +164,7 @@ def pending_import_row_for_call_import(
     if not is_sharding_enabled():
         row = (
             catalog_db.query(CallImportRow)
+            .options(_import_dispatch_row_options())
             .filter(
                 CallImportRow.call_import_id == call_import_id,
                 CallImportRow.status == CallImportRowStatus.PENDING,
@@ -164,6 +183,7 @@ def pending_import_row_for_call_import(
         try:
             row = (
                 shard_db.query(CallImportRow)
+                .options(_import_dispatch_row_options())
                 .filter(
                     CallImportRow.call_import_id == call_import_id,
                     CallImportRow.status == CallImportRowStatus.PENDING,
@@ -292,6 +312,7 @@ def pending_diarization_row_for_call_import(
     if not is_sharding_enabled():
         row = (
             catalog_db.query(CallImportRow)
+            .options(_diarization_dispatch_row_options())
             .filter(
                 CallImportRow.call_import_id == call_import_id,
                 CallImportRow.diarised_transcript_status == "pending",
@@ -310,6 +331,7 @@ def pending_diarization_row_for_call_import(
         try:
             row = (
                 shard_db.query(CallImportRow)
+                .options(_diarization_dispatch_row_options())
                 .filter(
                     CallImportRow.call_import_id == call_import_id,
                     CallImportRow.diarised_transcript_status == "pending",

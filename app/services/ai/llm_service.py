@@ -684,6 +684,10 @@ class LLMService:
             )
             model_str = str(call_kwargs.get("model") or model_str)
 
+        from app.database import release_read_only_session
+
+        release_read_only_session(db)
+
         if is_openrouter_jev_model(provider_value, llm_model):
             jev_payload = extract_jev_payload(messages, completion_extra)
             if jev_payload is None:

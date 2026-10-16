@@ -1,7 +1,7 @@
 import { type ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
   AlertTriangle,
@@ -287,8 +287,6 @@ const ROWS_PAGE_SIZE = 50
 const EVAL_PROGRESS_POLL_MS = 3000
 const EVAL_PROGRESS_POLL_LARGE_MS = 10000
 const EVAL_LARGE_ROW_THRESHOLD = 5000
-const ROWS_REFETCH_WHILE_RUNNING_MS = 20000
-
 const USER_INSIGHTS_SAMPLE_SIZE_OPTIONS = [50, 100, 150, 200, 300, 500] as const
 const DEFAULT_USER_INSIGHTS_SAMPLE_SIZE = 200
 
@@ -960,16 +958,95 @@ export default function CallImportEvaluationDetail() {
         evaluationQuery.data?.status === 'completed' ||
         evaluationQuery.data?.status === 'partial' ||
         evaluationQuery.data?.status === 'failed'),
-    refetchInterval: () => {
-      if (evaluationQuery.data?.bulk_operation) {
-        return EVALUATION_BULK_OPERATION_POLL_MS
-      }
-      if (evaluationQuery.data?.status === 'running') {
-        return ROWS_REFETCH_WHILE_RUNNING_MS
-      }
-      return false
-    },
+    staleTime: 60_000,
+    placeholderData: keepPreviousData,
   })
+
+  const { data: detailRowFull } = useQuery({
+    queryKey: [
+      'call-import-evaluation-rows',
+      activeWorkspaceId,
+      id,
+      evalId,
+      'row',
+      detailRow?.id,
+    ],
+    queryFn: () =>
+      apiClient.getCallImportEvaluationRow(id!, evalId!, detailRow!.id),
+    enabled: !!id && !!evalId && !!detailRow?.id,
+    staleTime: 60_000,
+  })
+
+  useEffect(() => {
+    if (!id || !evalId || !rowsQuery.data) return
+    if (page * ROWS_PAGE_SIZE >= rowsQuery.data.total) return
+    const nextPage = page + 1
+    void queryClient.prefetchQuery({
+      queryKey: [
+        'call-import-evaluation-rows',
+        activeWorkspaceId,
+        id,
+        evalId,
+        nextPage,
+        searchQuery,
+        statusFilter,
+        metricFilter?.metricId,
+        metricFilter?.value,
+        classificationMetricFilter?.metricId,
+        classificationMetricFilter?.yesNo,
+        classificationMetricFilter?.choice,
+        classificationMetricFilter?.level,
+        flowFilter?.parentId,
+        flowFilter?.nodeId,
+        flowFilter?.targetNodeId,
+        discoveredFilter?.parentId,
+        discoveredFilter?.labelKey,
+        discoveredFilter?.anyDiscovered,
+        sortBy,
+        sortDir,
+      ],
+      queryFn: () =>
+        apiClient.listCallImportEvaluationRows(id, evalId, {
+          page: nextPage,
+          page_size: ROWS_PAGE_SIZE,
+          q: searchQuery || undefined,
+          status: statusFilter || undefined,
+          metric_id:
+            classificationMetricFilter?.metricId || metricFilter?.metricId,
+          metric_value: classificationMetricFilter
+            ? undefined
+            : metricFilter?.value,
+          classification_yes_no: classificationMetricFilter?.yesNo || undefined,
+          classification_choice:
+            classificationMetricFilter?.choice || undefined,
+          classification_level: classificationMetricFilter?.level || undefined,
+          flow_parent_id: flowFilter?.parentId,
+          flow_node: flowFilter?.nodeId,
+          flow_edge_target: flowFilter?.targetNodeId || undefined,
+          discovered_parent_id: discoveredFilter?.parentId,
+          discovered_label_key: discoveredFilter?.labelKey,
+          has_discovered: discoveredFilter?.anyDiscovered || undefined,
+          sort_by: sortBy || undefined,
+          sort_dir: sortBy ? sortDir : undefined,
+        }),
+      staleTime: 60_000,
+    })
+  }, [
+    id,
+    evalId,
+    page,
+    rowsQuery.data,
+    searchQuery,
+    statusFilter,
+    metricFilter,
+    classificationMetricFilter,
+    flowFilter,
+    discoveredFilter,
+    sortBy,
+    sortDir,
+    activeWorkspaceId,
+    queryClient,
+  ])
 
   useEffect(() => {
     if (!detailRow) return
@@ -1026,6 +1103,7 @@ export default function CallImportEvaluationDetail() {
         vizBaselineEvaluationId,
       ),
     enabled: !!id && !!evalId && resultsTab === 'visualizations',
+    staleTime: 60_000,
     refetchInterval: () => {
       const status = evaluationQuery.data?.status
       return status === 'pending' || status === 'running' ? 5000 : false
@@ -4535,12 +4613,16 @@ export default function CallImportEvaluationDetail() {
                   setEvalPanelTab(tabId as CallImportEvaluationRowSidePanelTabId)
                 }
               >
-                <CallImportEvaluationRowSidePanelContent
-                  row={detailRow}
-                  activeTab={evalPanelTab}
-                  displayMetrics={displayMetrics}
-                  parentMetrics={parentMetrics}
-                />
+                {detailRowFull ? (
+                  <CallImportEvaluationRowSidePanelContent
+                    row={detailRowFull}
+                    activeTab={evalPanelTab}
+                    displayMetrics={displayMetrics}
+                    parentMetrics={parentMetrics}
+                  />
+                ) : (
+                  <p className="text-sm text-gray-500">Loading row…</p>
+                )}
               </CallRowSidePanel>
               ) : null
             }

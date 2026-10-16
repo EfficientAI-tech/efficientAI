@@ -425,4 +425,10 @@ def test_evaluation_rows_transcript_falls_back_to_csv_when_not_diarised(
     )
     assert response.status_code == 200, response.text
     item = response.json()["items"][0]
-    assert item["transcript"] == "csv production transcript"
+    assert item["transcript"] is None
+    assert item["production_transcript"] is None
+    detail = authenticated_client.get(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/rows/{item['id']}"
+    )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["transcript"] == "csv production transcript"

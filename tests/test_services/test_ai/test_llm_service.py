@@ -122,6 +122,84 @@ def test_generate_response_raises_when_provider_not_configured(monkeypatch):
         )
 
 
+def test_generate_response_releases_read_session_before_http(monkeypatch):
+    service = LLMService()
+    monkeypatch.setattr(service, "_get_ai_provider", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_module, "resolve_integration", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(service, "_resolve_api_key", lambda *_args, **_kwargs: "decrypted-key")
+
+    events = []
+
+    def _rollback():
+        events.append("rollback")
+
+    def _completion(**_kwargs):
+        events.append("http")
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="ok"),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+
+    monkeypatch.setattr(llm_module.litellm, "completion", _completion)
+    db = SimpleNamespace(
+        new=[],
+        dirty=[],
+        deleted=[],
+        rollback=_rollback,
+        query=_mock_org_db().query,
+    )
+    result = service.generate_response(
+        messages=[{"role": "user", "content": "hello"}],
+        llm_provider=ModelProvider.OPENAI,
+        llm_model="gpt-4o-mini",
+        organization_id=uuid4(),
+        db=db,
+    )
+    assert result["text"] == "ok"
+    assert events == ["rollback", "http"]
+
+
+def test_generate_response_keeps_session_with_pending_writes(monkeypatch):
+    service = LLMService()
+    monkeypatch.setattr(service, "_get_ai_provider", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_module, "resolve_integration", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(service, "_resolve_api_key", lambda *_args, **_kwargs: "decrypted-key")
+    rolled_back = []
+    monkeypatch.setattr(
+        llm_module.litellm,
+        "completion",
+        lambda **_kwargs: SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="ok"),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        ),
+    )
+    db = SimpleNamespace(
+        new=["pending-row"],
+        dirty=[],
+        deleted=[],
+        rollback=lambda: rolled_back.append(True),
+        query=_mock_org_db().query,
+    )
+    service.generate_response(
+        messages=[{"role": "user", "content": "hello"}],
+        llm_provider=ModelProvider.OPENAI,
+        llm_model="gpt-4o-mini",
+        organization_id=uuid4(),
+        db=db,
+    )
+    assert rolled_back == []
+
+
 def test_generate_response_success_with_normalized_usage(monkeypatch):
     service = LLMService()
     monkeypatch.setattr(service, "_get_ai_provider", lambda *_args, **_kwargs: None)

@@ -2752,6 +2752,13 @@ class ApiClient {
     return response.data
   }
 
+  async getCallImportRow(id: string, rowId: string): Promise<CallImportRow> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${id}/rows/${rowId}`,
+    )
+    return response.data
+  }
+
   async listCallImportRowIds(
     id: string,
     params: {
@@ -3736,6 +3743,17 @@ class ApiClient {
     const response = await this.client.get(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/rows`,
       { params: cleaned },
+    )
+    return response.data
+  }
+
+  async getCallImportEvaluationRow(
+    callImportId: string,
+    evaluationId: string,
+    rowId: string,
+  ): Promise<CallImportEvaluationRow> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/rows/${rowId}`,
     )
     return response.data
   }
