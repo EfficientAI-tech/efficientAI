@@ -997,9 +997,9 @@ def _apply_schema_mapping(
                 (p for p in parameters if p.name == rec_url_param_name),
                 None,
             )
-            if rec_param is not None and _parameter_is_required(rec_param):
+            if rec_param is not None:
                 rec_raw = (row.get(rec_canonical) or "").strip()
-                if not rec_raw:
+                if _parameter_is_required(rec_param) and not rec_raw:
                     skipped.append(
                         CallImportParseSkip(
                             source_row=source_row,
@@ -1011,7 +1011,7 @@ def _apply_schema_mapping(
                         )
                     )
                     continue
-                if not _recording_url_cell_is_valid_http(rec_raw):
+                if rec_raw and not _recording_url_cell_is_valid_http(rec_raw):
                     skipped.append(
                         CallImportParseSkip(
                             source_row=source_row,
@@ -1038,8 +1038,26 @@ def _apply_schema_mapping(
                 param_type = CallImportParameterType(param.type)
             except ValueError:
                 param_type = CallImportParameterType.TEXT
+            raw_cell = row.get(canonical) or ""
+            if (
+                param_type == CallImportParameterType.RECORDING_URL
+                and (raw_cell or "").strip()
+                and not _recording_url_cell_is_valid_http(raw_cell)
+            ):
+                skipped.append(
+                    CallImportParseSkip(
+                        source_row=source_row,
+                        reason="invalid_recording_url",
+                        message=(
+                            f"Row {source_row}: value for '{param.name}' is not a "
+                            "valid recording URL (must start with http:// or https://)."
+                        ),
+                    )
+                )
+                row_skipped = True
+                break
             coerced = _coerce_parameter_value(
-                row.get(canonical) or "",
+                raw_cell,
                 param_type,
                 row_idx=idx,
                 param_name=param.name,
