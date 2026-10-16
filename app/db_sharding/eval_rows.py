@@ -185,11 +185,12 @@ def _page_pairs_by_ids(
     if not eval_row_ids:
         return []
     wanted = list(eval_row_ids)
+    wanted_set = set(wanted)
     found: dict[UUID, Tuple[CallImportEvaluationRow, CallImportRow]] = {}
     router = db_pool_manager.router
     assert router is not None
     for shard_id in router.shard_ids:
-        if len(found) == len(wanted):
+        if len(found) == len(wanted_set):
             break
         factory = db_pool_manager.shard_session_factory(shard_id)
         shard_db = factory()
@@ -203,7 +204,9 @@ def _page_pairs_by_ids(
         finally:
             shard_db.close()
         for pair in rows:
-            found[pair[0].id] = pair
+            row_id = pair[0].id
+            if row_id in wanted_set:
+                found[row_id] = pair
     return [found[row_id] for row_id in wanted if row_id in found]
 
 
