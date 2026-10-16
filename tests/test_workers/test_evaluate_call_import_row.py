@@ -1452,6 +1452,28 @@ def test_counter_deltas_for_status_transition():
     assert counter_deltas_for_status_transition("running", "running") == (0, 0)
 
 
+def test_confirm_eval_finished_when_this_task_is_the_only_one_left(monkeypatch):
+    """A drifted counter still closes the run when no other task is in flight."""
+    from uuid import uuid4
+
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        _should_confirm_eval_finished,
+    )
+
+    evaluation_id = uuid4()
+    inflight = {"value": 1}
+
+    monkeypatch.setattr(
+        "app.workers.concurrency.limits.read_job_inflight",
+        lambda _evaluation_id: inflight["value"],
+    )
+
+    assert _should_confirm_eval_finished(evaluation_id, 4) is True
+    inflight["value"] = 8
+    assert _should_confirm_eval_finished(evaluation_id, 4) is False
+    assert _should_confirm_eval_finished(evaluation_id, 0) is True
+
+
 def test_rollup_parent_incremental_without_row_scan(db_session, monkeypatch):
     from app.workers.tasks.evaluate_call_import_row import _rollup_parent
 

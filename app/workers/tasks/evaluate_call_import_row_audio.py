@@ -140,12 +140,15 @@ def evaluate_call_import_row_audio_task(
             result_id = f"call-import-eval:{eval_row.id}"
             audio_failed = False
 
+            audio_seconds_for_billing = 0
             if recording_s3_key:
                 from app.workers.tasks.evaluate_call_import_row_core import (
+                    get_cached_eval_row_audio_seconds,
                     resolve_eval_row_audio_seconds,
                 )
 
                 resolve_eval_row_audio_seconds(catalog_db, eval_row, source_row)
+                audio_seconds_for_billing = get_cached_eval_row_audio_seconds(eval_row)
 
             if audio_metrics and recording_s3_key:
                 from types import SimpleNamespace
@@ -222,6 +225,12 @@ def evaluate_call_import_row_audio_task(
             for key, value in as_json_dict(metric_scores).items():
                 merged[key] = value
             eval_row.metric_scores = merged
+            if audio_seconds_for_billing > 0:
+                from app.workers.tasks.evaluate_call_import_row_core import (
+                    cache_eval_row_audio_seconds,
+                )
+
+                cache_eval_row_audio_seconds(eval_row, audio_seconds_for_billing)
             row_db.commit()
 
             needs_llm = row_needs_llm_phase(

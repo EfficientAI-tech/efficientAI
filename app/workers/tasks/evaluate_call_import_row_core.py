@@ -446,6 +446,26 @@ def reconcile_evaluation_counters(
     clear_eval_progress_redis(evaluation.id)
 
 
+def _should_confirm_eval_finished(
+    evaluation_id: UUID,
+    expected_in_progress: int,
+) -> bool:
+    """Whether to compare parent counters with the live row count.
+
+    Mid-run the increment is enough. Confirm when the counter says the run
+    is down to the last row, and when this task is the only one still in
+    flight. A lost parent commit can leave the counter above 1 after every
+    row is already terminal; that last task still has to close and bill.
+    An inflight of 0 means this caller has no tracked slot, so it is not
+    treated as the closer.
+    """
+    if expected_in_progress <= 1:
+        return True
+    from app.workers.concurrency.limits import read_job_inflight
+
+    return read_job_inflight(evaluation_id) == 1
+
+
 def _count_in_progress_rows(db: Session, evaluation_id: UUID) -> int:
     """Count rows still pending or running (cheap indexed query)."""
     from app.db_sharding.sessions import is_sharding_enabled
@@ -587,11 +607,9 @@ def rollup_parent(
             - int(evaluation.completed_rows or 0)
             - int(evaluation.failed_rows or 0)
         )
-        # Mid-run the increment is enough. A full shard scan on every
-        # finished row checks out a connection on each shard at once.
-        if expected_in_progress <= 1 and expected_in_progress != _count_in_progress_rows(
-            db, evaluation_id
-        ):
+        if _should_confirm_eval_finished(
+            evaluation_id, expected_in_progress
+        ) and expected_in_progress != _count_in_progress_rows(db, evaluation_id):
             reconcile_evaluation_counters(db, evaluation)
             db.refresh(evaluation)
 

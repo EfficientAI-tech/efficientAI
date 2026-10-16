@@ -588,8 +588,11 @@ def process_call_import_row_task(
             content_type: Optional[str] = None
             download_failure: Optional[Exception] = None
             download_was_transient = False
+            use_credentialed_download = _use_credentialed_recording_download(
+                call_import, client
+            )
 
-            if _use_credentialed_recording_download(call_import, client):
+            if use_credentialed_download:
                 throttle_exc = _consume_authenticated_import_credit(client)
                 if throttle_exc is not None:
                     return _schedule_transient_retry(
@@ -606,7 +609,7 @@ def process_call_import_row_task(
 
             _release_fetch_sessions(row_db, catalog_db)
             try:
-                if _use_credentialed_recording_download(call_import, client):
+                if use_credentialed_download:
                     fetched: Tuple[bytes, str] = client.download_recording(
                         original_csv_url
                     )
