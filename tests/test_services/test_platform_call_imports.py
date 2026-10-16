@@ -419,6 +419,95 @@ def test_list_failure_unwraps_wrapped_http_error():
     assert wait == 3
 
 
+def test_naive_window_bounds_compare_as_utc():
+    from app.api.v1.routes.platform_call_imports import _as_utc, _clamp_window_end
+
+    start = _as_utc(datetime(2026, 1, 1, 0, 0, 0))
+    end = _clamp_window_end(datetime(2026, 1, 2, 0, 0, 0))
+    assert start.tzinfo is not None
+    assert end.tzinfo is not None
+    assert end > start
+
+
+def test_missing_max_calls_uses_configured_cap(monkeypatch):
+    from app.api.v1.routes import platform_call_imports as routes
+
+    monkeypatch.setattr(routes.settings, "PLATFORM_IMPORT_MAX_CALLS_DEFAULT", 0)
+    monkeypatch.setattr(routes.settings, "PLATFORM_IMPORT_MAX_CALLS_CAP", 250)
+    assert routes._resolve_platform_max_calls(None) == 250
+    assert routes._resolve_platform_max_calls(0) == 250
+    assert routes._resolve_platform_max_calls(-3) == 250
+    assert routes._resolve_platform_max_calls(1000) == 250
+    assert routes._resolve_platform_max_calls(40) == 40
+
+
+def test_sharded_dispatcher_skips_platform_imports(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from app.db_sharding import import_dispatch
+
+    import_id = uuid4()
+    workspace_id = uuid4()
+    catalog_filters = []
+
+    class _Query:
+        def filter(self, *args):
+            catalog_filters.extend(args)
+            return self
+
+        def distinct(self):
+            return self
+
+        def all(self):
+            return [(workspace_id,)]
+
+    class _ShardQuery:
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def distinct(self):
+            return self
+
+        def all(self):
+            return [(import_id,)]
+
+    class _ShardSession:
+        def query(self, *_args, **_kwargs):
+            return _ShardQuery()
+
+        def close(self):
+            return None
+
+    catalog = MagicMock()
+    catalog.query.return_value = _Query()
+    router = MagicMock()
+    router.shard_ids = ["shard-a"]
+    pool = MagicMock()
+    pool.router = router
+    pool.shard_session_factory.return_value = lambda: _ShardSession()
+
+    monkeypatch.setattr(import_dispatch, "is_sharding_enabled", lambda: True)
+    monkeypatch.setattr(import_dispatch, "db_pool_manager", pool)
+    monkeypatch.setattr(
+        "app.db_sharding.rebalance.filter_unlocked_call_import_ids",
+        lambda ids: set(ids),
+    )
+
+    found = import_dispatch.pending_import_workspaces(catalog)
+    assert found == [workspace_id]
+    rendered = " ".join(
+        str(clause.compile(compile_kwargs={"literal_binds": True}))
+        for clause in catalog_filters
+    )
+    assert "IS DISTINCT FROM 'platform'" in rendered
+
+    call_import = MagicMock()
+    call_import.source_format = "platform"
+    row_catalog = MagicMock()
+    row_catalog.query.return_value.filter.return_value.first.return_value = call_import
+    assert import_dispatch.pending_import_row_for_call_import(row_catalog, import_id) is None
+
+
 def test_discovery_blocks_terminal_status_while_running():
     batch = SimpleNamespace(source_format="platform", discovery_status="running")
     assert platform_discovery_blocks_terminal_status(batch) is True

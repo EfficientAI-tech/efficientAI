@@ -212,9 +212,19 @@ def _apply_shard_finalizes(db: Session, finalizes: List[Dict[str, Any]]) -> None
         if not row_ids:
             continue
         register_shard_slices(db, fin["call_import_id"], fin["end_index"])
-        db.query(PlatformConversationLedger).filter(
-            PlatformConversationLedger.row_id.in_(row_ids)
-        ).update({"state": "materialized"}, synchronize_session=False)
+        materialized = (
+            db.query(PlatformConversationLedger)
+            .filter(
+                PlatformConversationLedger.row_id.in_(row_ids),
+                PlatformConversationLedger.state == "reserved",
+            )
+            .update({"state": "materialized"}, synchronize_session=False)
+        )
+        counted = int(materialized or 0)
+        if counted < 0:
+            counted = int(fin["row_count"])
+        if counted <= 0:
+            continue
         db.execute(
             text(
                 """
@@ -223,7 +233,7 @@ def _apply_shard_finalizes(db: Session, finalizes: List[Dict[str, Any]]) -> None
                 WHERE id = :id
                 """
             ),
-            {"n": fin["row_count"], "id": fin["call_import_id"]},
+            {"n": counted, "id": fin["call_import_id"]},
         )
 
 
@@ -275,6 +285,7 @@ def _increment_skip(call_import: CallImport, reason: SkipReason, sample: Dict[st
 def rematerialize_reserved_rows(db: Session, call_import_id: UUID) -> int:
     from app.db_sharding.row_ops import bulk_insert_mappings_on_shards
     from app.db_sharding.sessions import is_sharding_enabled
+    from sqlalchemy import text
 
     reserved = (
         db.query(PlatformConversationLedger)
@@ -283,6 +294,7 @@ def rematerialize_reserved_rows(db: Session, call_import_id: UUID) -> int:
             PlatformConversationLedger.state == "reserved",
         )
         .order_by(PlatformConversationLedger.row_index.asc())
+        .with_for_update(skip_locked=True)
         .all()
     )
     if not reserved:
@@ -314,11 +326,25 @@ def rematerialize_reserved_rows(db: Session, call_import_id: UUID) -> int:
             mappings,
             on_conflict_do_nothing=True,
         )
+        from app.db_sharding.row_ops import register_shard_slices
+
+        end_index = max(int(entry.row_index or 0) for entry in reserved) + 1
+        register_shard_slices(db, call_import.id, end_index)
     else:
         for mapping in mappings:
             db.merge(CallImportRow(**mapping))
     for entry in reserved:
         entry.state = "materialized"
+    db.execute(
+        text(
+            """
+            UPDATE call_imports
+            SET total_rows = total_rows + :n
+            WHERE id = :id
+            """
+        ),
+        {"n": len(reserved), "id": call_import.id},
+    )
     db.flush()
     return len(reserved)
 
@@ -683,7 +709,13 @@ def _reserve_and_insert_rows(
 
     row_ids = [m["id"] for m in mappings]
     if is_sharding_enabled():
-        bulk_insert_mappings_on_shards(db, call_import.id, mappings)
+        db.commit()
+        bulk_insert_mappings_on_shards(
+            db,
+            call_import.id,
+            mappings,
+            on_conflict_do_nothing=True,
+        )
         if shard_pending is not None:
             shard_pending.add_finalize(
                 call_import_id=call_import.id,

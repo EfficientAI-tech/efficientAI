@@ -50,16 +50,35 @@ def applied_suggestion_text(item: Dict[str, Any]) -> str:
 
 def compose_accepted_prompt(base: str, suggestions: List[Any]) -> str:
     text = base or ""
+    edits: List[Tuple[int, int, str]] = []
+    additions: List[str] = []
     for item in suggestions:
         if not isinstance(item, dict) or item.get("review_status") != "accepted":
             continue
         replacement = applied_suggestion_text(item).strip()
         if not replacement:
             continue
-        anchor = item.get("anchor_excerpt") or ""
-        if item.get("change_type") == "edit" and isinstance(anchor, str) and anchor and anchor in text:
-            text = text.replace(anchor, replacement, 1)
+        if item.get("change_type") != "edit":
+            additions.append(replacement)
             continue
+        anchor = item.get("anchor_excerpt") or ""
+        if not isinstance(anchor, str) or not anchor or anchor not in text:
+            raise PromptPushError(
+                400,
+                "An accepted edit no longer matches the prompt. Reject it or update the suggestion before saving.",
+            )
+        start = text.find(anchor)
+        edits.append((start, start + len(anchor), replacement))
+    edits.sort()
+    for previous, current in zip(edits, edits[1:]):
+        if current[0] < previous[1]:
+            raise PromptPushError(
+                400,
+                "Accepted edits overlap in the prompt. Keep only one of the overlapping edits.",
+            )
+    for start, end, replacement in reversed(edits):
+        text = text[:start] + replacement + text[end:]
+    for replacement in additions:
         text = text.rstrip() + "\n\n" + replacement + "\n"
     return text
 

@@ -105,6 +105,8 @@ def test_page_insert_commits_shards_immediately_and_only_queues_finalize(monkeyp
 
     def _insert(_catalog_db, _call_import_id, mappings, **kwargs):
         captured["defer_commit"] = kwargs.get("defer_commit", False)
+        captured["on_conflict_do_nothing"] = kwargs.get("on_conflict_do_nothing", False)
+        captured["committed_before_insert"] = db.commit.called
         captured["count"] = len(mappings)
         return len(mappings), [MagicMock(name="should_not_be_kept")]
 
@@ -128,6 +130,8 @@ def test_page_insert_commits_shards_immediately_and_only_queues_finalize(monkeyp
 
     assert capped is False
     assert captured["defer_commit"] is False
+    assert captured["on_conflict_do_nothing"] is True
+    assert captured["committed_before_insert"] is True
     assert captured["count"] == 1
     assert pending.sessions == []
     assert len(pending.finalizes) == 1

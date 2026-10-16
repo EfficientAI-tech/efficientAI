@@ -99,6 +99,47 @@ import {
   type BulkEvaluationOperation,
 } from './evaluationBulkOperation'
 
+function importRowsPollMs(
+  header:
+    | {
+        status?: string
+        source_format?: string | null
+        platform_progress?: { is_active?: boolean } | null
+        diarised_pending_rows?: number
+        diarised_running_rows?: number
+      }
+    | undefined,
+  evaluations: unknown,
+): number | false {
+  if (!header) return false
+  if (header.status === 'deleting') return 4000
+  const platform = (header.source_format || '').toLowerCase() === 'platform'
+  if (
+    platform &&
+    (header.status === 'pending' ||
+      header.status === 'processing' ||
+      header.platform_progress?.is_active)
+  ) {
+    return 4000
+  }
+  if (header.status === 'pending' || header.status === 'processing') return 5000
+  const diariseInFlight =
+    (header.diarised_pending_rows ?? 0) + (header.diarised_running_rows ?? 0)
+  if (diariseInFlight > 0) return 4000
+  const evaluationsInFlight = itemsOf<CallImportEvaluation>(evaluations)
+  if (evaluationsInFlight.some((row) => row.bulk_operation)) {
+    return EVALUATION_BULK_OPERATION_POLL_MS
+  }
+  if (
+    evaluationsInFlight.some(
+      (row) => row.status === 'pending' || row.status === 'running',
+    )
+  ) {
+    return 4000
+  }
+  return false
+}
+
 // Providers we know `TranscriptionService.transcribe()` already supports
 // for the full diarization-enabled path. Local Whisper is omitted since
 // it's an unconditional fallback inside the service rather than
@@ -963,6 +1004,11 @@ export default function CallImportDetail() {
     enabled: !!id,
     staleTime: 60_000,
     placeholderData: keepPreviousData,
+    refetchInterval: () =>
+      importRowsPollMs(
+        queryClient.getQueryData(['call-import', activeWorkspaceId, id]),
+        queryClient.getQueryData(evaluationsQueryKey),
+      ),
   })
 
   const isFetching = headerFetching || rowsFetching
@@ -1047,6 +1093,24 @@ export default function CallImportDetail() {
         : false
     },
   })
+
+  const importRowsLive =
+    importRowsPollMs(data, evaluationsData) !== false
+  const importRowsWereLive = useRef(false)
+  useEffect(() => {
+    if (importRowsLive) {
+      importRowsWereLive.current = true
+      return
+    }
+    if (!importRowsWereLive.current || !id) return
+    importRowsWereLive.current = false
+    void queryClient.invalidateQueries({
+      queryKey: ['call-import', activeWorkspaceId, id, 'rows'],
+    })
+    void queryClient.invalidateQueries({
+      queryKey: ['call-import', activeWorkspaceId, id, 'row'],
+    })
+  }, [importRowsLive, id, activeWorkspaceId, queryClient])
 
   const runEvaluationMutation = useMutation({
     mutationFn: (payload: Parameters<typeof apiClient.createCallImportEvaluation>[1]) =>
@@ -1457,6 +1521,7 @@ export default function CallImportDetail() {
     queryFn: () => apiClient.getCallImportRow(id!, selectedRowId!),
     enabled: !!id && !!selectedRowId,
     staleTime: 60_000,
+    refetchInterval: () => importRowsPollMs(data, evaluationsData),
   })
 
   useEffect(() => {

@@ -101,11 +101,29 @@ def _resolve_voice_integration(
     return row
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _clamp_window_end(window_end: datetime) -> datetime:
     latest = datetime.now(timezone.utc) - timedelta(minutes=15)
-    if window_end.tzinfo is None:
-        window_end = window_end.replace(tzinfo=timezone.utc)
-    return min(window_end, latest)
+    return min(_as_utc(window_end), latest)
+
+
+def _resolve_platform_max_calls(requested: Optional[int]) -> Optional[int]:
+    default_limit = int(settings.PLATFORM_IMPORT_MAX_CALLS_DEFAULT or 0)
+    hard_limit = int(settings.PLATFORM_IMPORT_MAX_CALLS_CAP or 0)
+    max_calls = requested
+    if max_calls is None and default_limit > 0:
+        max_calls = default_limit
+    if hard_limit > 0:
+        if max_calls is None or int(max_calls) <= 0:
+            max_calls = hard_limit
+        else:
+            max_calls = min(int(max_calls), hard_limit)
+    return max_calls
 
 
 def _raise_for_voice_provider_http(err: requests.HTTPError) -> None:
@@ -208,8 +226,9 @@ async def preview_platform_import(
     del api_key
     integration = _resolve_voice_integration(db, organization_id, payload.voice_integration_id)
     adapter = get_historical_adapter(integration)
+    start = _as_utc(payload.window_start)
     end = _clamp_window_end(payload.window_end)
-    if end <= payload.window_start:
+    if end <= start:
         raise HTTPException(
             status_code=400,
             detail=(
@@ -222,7 +241,7 @@ async def preview_platform_import(
     agent = payload.filters.agent_ids[0] if payload.filters.agent_ids else None
     slice = TimeSlice(
         slice_id=0,
-        slice_start=payload.window_start,
+        slice_start=start,
         slice_end=end,
         agent_id=agent,
         medium=(payload.filters.medium or "").strip().lower() or None,
@@ -231,7 +250,7 @@ async def preview_platform_import(
 
     agent_ids = payload.filters.agent_ids or None
     discovery_slices = len(
-        plan_time_slices(payload.window_start, end, agent_ids)
+        plan_time_slices(start, end, agent_ids)
     )
     max_pages = settings.PLATFORM_IMPORT_PREVIEW_COUNT_MAX_PAGES
     sample_cap = settings.PLATFORM_IMPORT_PREVIEW_SAMPLE_SIZE
@@ -299,24 +318,16 @@ async def create_platform_call_import(
     if not settings.PLATFORM_IMPORT_FEATURE_ENABLED:
         raise HTTPException(status_code=404, detail="Platform imports are not enabled")
 
-    if payload.window_end <= payload.window_start:
-        raise HTTPException(status_code=400, detail="window_end must be after window_start")
-
+    start = _as_utc(payload.window_start)
+    end = _clamp_window_end(payload.window_end)
     integration = _resolve_voice_integration(db, organization_id, payload.voice_integration_id)
     platform = (integration.platform or "").lower()
     if platform not in {"elevenlabs", "vapi", "retell"}:
         raise HTTPException(status_code=400, detail="Unsupported platform for historical import")
 
-    max_calls = payload.max_calls
-    default_limit = int(settings.PLATFORM_IMPORT_MAX_CALLS_DEFAULT or 0)
-    hard_limit = int(settings.PLATFORM_IMPORT_MAX_CALLS_CAP or 0)
-    if max_calls is None and default_limit > 0:
-        max_calls = default_limit
-    if max_calls is not None and hard_limit > 0:
-        max_calls = min(int(max_calls), hard_limit)
+    max_calls = _resolve_platform_max_calls(payload.max_calls)
 
-    end = _clamp_window_end(payload.window_end)
-    if end <= payload.window_start:
+    if end <= start:
         raise HTTPException(
             status_code=400,
             detail=(
@@ -338,7 +349,7 @@ async def create_platform_call_import(
         source_format="platform",
         voice_integration_id=integration.id,
         platform_filters=payload.filters.model_dump(),
-        window_start=payload.window_start,
+        window_start=start,
         window_end=end,
         window_timezone=payload.window_timezone,
         discovery_status="queued",
@@ -351,6 +362,9 @@ async def create_platform_call_import(
         ),
     )
     stamp_call_import_actor(call_import, principal)
+    from app.api.v1.routes.call_imports import _resolve_tags
+
+    call_import.tags = _resolve_tags(db, organization_id, payload.tag_ids)
     db.add(call_import)
     db.flush()
 

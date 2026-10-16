@@ -287,6 +287,20 @@ const ROWS_PAGE_SIZE = 50
 const EVAL_PROGRESS_POLL_MS = 3000
 const EVAL_PROGRESS_POLL_LARGE_MS = 10000
 const EVAL_LARGE_ROW_THRESHOLD = 5000
+
+function evaluationRowsPollMs(
+  evaluation:
+    | { status?: string; total_rows?: number; bulk_operation?: unknown }
+    | undefined,
+): number | false {
+  if (!evaluation) return false
+  if (evaluation.bulk_operation) return EVALUATION_BULK_OPERATION_POLL_MS
+  if (evaluation.status !== 'pending' && evaluation.status !== 'running') return false
+  const totalRows = evaluation.total_rows ?? 0
+  return totalRows > EVAL_LARGE_ROW_THRESHOLD
+    ? EVAL_PROGRESS_POLL_LARGE_MS
+    : EVAL_PROGRESS_POLL_MS
+}
 const USER_INSIGHTS_SAMPLE_SIZE_OPTIONS = [50, 100, 150, 200, 300, 500] as const
 const DEFAULT_USER_INSIGHTS_SAMPLE_SIZE = 200
 
@@ -960,6 +974,7 @@ export default function CallImportEvaluationDetail() {
         evaluationQuery.data?.status === 'failed'),
     staleTime: 60_000,
     placeholderData: keepPreviousData,
+    refetchInterval: () => evaluationRowsPollMs(evaluationQuery.data),
   })
 
   const { data: detailRowFull } = useQuery({
@@ -975,6 +990,7 @@ export default function CallImportEvaluationDetail() {
       apiClient.getCallImportEvaluationRow(id!, evalId!, detailRow!.id),
     enabled: !!id && !!evalId && !!detailRow?.id,
     staleTime: 60_000,
+    refetchInterval: () => evaluationRowsPollMs(evaluationQuery.data),
   })
 
   useEffect(() => {
@@ -1055,6 +1071,20 @@ export default function CallImportEvaluationDetail() {
       setDetailRow(null)
     }
   }, [rowsQuery.data?.items, detailRow])
+
+  const evaluationRowsLive = evaluationRowsPollMs(evaluationQuery.data) !== false
+  const evaluationRowsWereLive = useRef(false)
+  useEffect(() => {
+    if (evaluationRowsLive) {
+      evaluationRowsWereLive.current = true
+      return
+    }
+    if (!evaluationRowsWereLive.current || !id || !evalId) return
+    evaluationRowsWereLive.current = false
+    void queryClient.invalidateQueries({
+      queryKey: ['call-import-evaluation-rows', activeWorkspaceId, id, evalId],
+    })
+  }, [evaluationRowsLive, id, evalId, activeWorkspaceId, queryClient])
 
   const pdfReportsQuery = useQuery({
     queryKey: ['call-import-evaluation-pdf-reports', activeWorkspaceId, id, evalId],

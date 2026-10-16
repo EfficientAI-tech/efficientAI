@@ -26,6 +26,7 @@ def pending_import_workspaces(catalog_db: Session) -> List[UUID]:
             .join(CallImportRow, CallImportRow.call_import_id == CallImport.id)
             .filter(
                 CallImport.status != CallImportStatus.DELETING,
+                CallImport.source_format.is_distinct_from("platform"),
                 CallImportRow.status == CallImportRowStatus.PENDING,
                 CallImportRow.celery_task_id.is_(None),
             )
@@ -65,6 +66,7 @@ def pending_import_workspaces(catalog_db: Session) -> List[UUID]:
         .filter(
             CallImport.id.in_(import_ids),
             CallImport.status != CallImportStatus.DELETING,
+            CallImport.source_format.is_distinct_from("platform"),
         )
         .distinct()
         .all()
@@ -83,6 +85,7 @@ def call_imports_with_pending_rows(
             .filter(
                 CallImport.workspace_id == workspace_id,
                 CallImport.status != CallImportStatus.DELETING,
+                CallImport.source_format.is_distinct_from("platform"),
                 CallImportRow.status == CallImportRowStatus.PENDING,
                 CallImportRow.celery_task_id.is_(None),
             )
@@ -97,6 +100,7 @@ def call_imports_with_pending_rows(
         .filter(
             CallImport.workspace_id == workspace_id,
             CallImport.status != CallImportStatus.DELETING,
+            CallImport.source_format.is_distinct_from("platform"),
         )
         .all()
         if row[0] is not None
@@ -157,6 +161,8 @@ def pending_import_row_for_call_import(
         .first()
     )
     if call_import is None:
+        return None
+    if (call_import.source_format or "").lower() == "platform":
         return None
     if _import_blocked_by_rebalance(call_import_id):
         return None
