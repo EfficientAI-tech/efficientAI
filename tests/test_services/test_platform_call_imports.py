@@ -72,6 +72,10 @@ def test_clear_expired_claims_drops_task_without_live_lease(monkeypatch):
         "app.workers.concurrency.platform_import_dispatch.lease_is_active",
         lambda _tid: False,
     )
+    monkeypatch.setattr(
+        "app.workers.concurrency.dispatch_reconcile._celery_task_is_finished",
+        lambda _tid: True,
+    )
     row = MagicMock()
     row.celery_task_id = "task-stale"
     row.attempts = 0
@@ -96,6 +100,10 @@ def test_clear_expired_claims_clears_when_attempts_positive(monkeypatch):
         "app.workers.concurrency.platform_import_dispatch.lease_is_active",
         lambda _tid: False,
     )
+    monkeypatch.setattr(
+        "app.workers.concurrency.dispatch_reconcile._celery_task_is_finished",
+        lambda _tid: True,
+    )
     row = MagicMock()
     row.id = uuid4()
     row.celery_task_id = "task-stale"
@@ -109,6 +117,32 @@ def test_clear_expired_claims_clears_when_attempts_positive(monkeypatch):
     count = clear_expired_platform_row_claims(db)
     assert count == 1
     assert row.celery_task_id is None
+
+
+def test_clear_expired_claims_keeps_queued_task(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from app.models.enums import CallImportRowStatus
+    from app.workers.concurrency.platform_import_dispatch import (
+        clear_expired_platform_row_claims,
+    )
+
+    monkeypatch.setattr(
+        "app.workers.concurrency.platform_import_dispatch.lease_is_active",
+        lambda _tid: False,
+    )
+    monkeypatch.setattr(
+        "app.workers.concurrency.dispatch_reconcile._celery_task_is_finished",
+        lambda _tid: False,
+    )
+    row = MagicMock()
+    row.celery_task_id = "task-queued"
+    row.status = CallImportRowStatus.PENDING
+    db = MagicMock()
+    db.query.return_value.options.return_value.filter.return_value.limit.return_value.all.return_value = [row]
+    count = clear_expired_platform_row_claims(db)
+    assert count == 0
+    assert row.celery_task_id == "task-queued"
 
 
 def test_clear_expired_claims_keeps_live_lease(monkeypatch):

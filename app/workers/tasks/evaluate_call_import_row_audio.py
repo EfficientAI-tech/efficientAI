@@ -21,6 +21,7 @@ from app.workers.tasks.evaluate_call_import_row_core import (
     now_utc,
     parse_restricted_metric_uuids,
     rollup_parent,
+    claim_eval_row_for_task,
     commit_terminal_row_and_rollup,
     row_needs_llm_phase,
     was_cancelled_externally,
@@ -81,16 +82,18 @@ def evaluate_call_import_row_audio_task(
                 row_db.commit()
                 return {"status": "failed", "reason": "evaluation_missing"}
 
-            previous_row_status = eval_row.status
-            eval_row.status = "running"
-            eval_row.celery_task_id = self.request.id
-            eval_row.error_message = None
-            eval_row.started_at = eval_row.started_at or now_utc()
+            if not claim_eval_row_for_task(row_db, eval_row, self.request.id):
+                logger.info(
+                    "Skipping audio eval row {} already claimed or finished",
+                    eval_row_id,
+                )
+                return {"status": "skipped", "reason": "already_claimed"}
+
+            previous_row_status = "running"
             if evaluation.status == "pending":
                 evaluation.status = "running"
                 evaluation.started_at = evaluation.started_at or now_utc()
-            _persist_sessions(row_db, catalog_db)
-            previous_row_status = "running"
+                catalog_db.commit()
 
             restricted_uuids = parse_restricted_metric_uuids(restricted_metric_ids)
             if restricted_metric_ids is not None and restricted_uuids is not None:
@@ -251,11 +254,17 @@ def evaluate_call_import_row_audio_task(
                 }
                 if restricted_metric_ids:
                     chain_kwargs["restricted_metric_ids"] = restricted_metric_ids
+                from uuid import uuid4
+
+                chained_task_id = str(uuid4())
+                eval_row.celery_task_id = chained_task_id
+                row_db.commit()
                 try:
                     evaluate_call_import_row_task.apply_async(
                         args=(str(eval_row.id),),
                         kwargs=chain_kwargs,
                         queue=EVALUATIONS_QUEUE,
+                        task_id=chained_task_id,
                     )
                 except Exception:
                     logger.exception(

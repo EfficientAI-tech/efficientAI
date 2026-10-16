@@ -280,17 +280,22 @@ def evaluate_call_import_row_task(
                 )
             )
 
-            previous_row_status = eval_row.status
+            from app.workers.tasks.evaluate_call_import_row_core import (
+                claim_eval_row_for_task,
+            )
 
-            eval_row.status = "running"
-            eval_row.celery_task_id = self.request.id
-            eval_row.error_message = None
-            eval_row.started_at = eval_row.started_at or _now()
+            if not claim_eval_row_for_task(row_db, eval_row, self.request.id):
+                logger.info(
+                    "Skipping eval row {} already claimed or finished",
+                    eval_row_id,
+                )
+                return {"status": "skipped", "reason": "already_claimed"}
+
+            previous_row_status = "running"
             if evaluation.status == "pending":
                 evaluation.status = "running"
                 evaluation.started_at = evaluation.started_at or _now()
-            _persist_eval_sessions(row_db, catalog_db)
-            previous_row_status = "running"
+                catalog_db.commit()
 
             production_transcript = (source_row.transcript or "").strip()
             diarised_transcript = (source_row.diarised_transcript or "").strip()

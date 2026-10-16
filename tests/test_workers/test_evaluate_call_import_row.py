@@ -1669,3 +1669,240 @@ def test_build_llm_config_buckets_splits_on_metric_overrides(db_session):
         run_credential_id=None,
     )
     assert len(buckets) == 2
+
+
+def test_second_task_does_not_claim_a_row_already_owned(db_session):
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        claim_eval_row_for_task,
+    )
+
+    _, _, _, _, _, eval_rows = _seed(db_session)
+    eval_row = eval_rows[0]
+    eval_row.celery_task_id = "task-a"
+    db_session.commit()
+
+    assert claim_eval_row_for_task(db_session, eval_row, "task-a") is True
+    assert eval_row.status == "running"
+    assert eval_row.celery_task_id == "task-a"
+
+    assert claim_eval_row_for_task(db_session, eval_row, "task-b") is False
+    db_session.refresh(eval_row)
+    assert eval_row.status == "running"
+    assert eval_row.celery_task_id == "task-a"
+
+    eval_row.celery_task_id = None
+    db_session.commit()
+    assert claim_eval_row_for_task(db_session, eval_row, "task-b") is False
+    db_session.refresh(eval_row)
+    assert eval_row.status == "running"
+    assert eval_row.celery_task_id is None
+
+
+def test_evaluate_call_import_row_skips_when_another_task_owns_it(
+    db_session, monkeypatch
+):
+    _, _, _, _, _, eval_rows = _seed(db_session)
+    eval_rows[0].celery_task_id = "task-a"
+    db_session.commit()
+    called = []
+
+    def _capture(*_args, **_kwargs):
+        called.append(1)
+        return ({}, 0.1)
+
+    task_module = _patch_dependencies(
+        monkeypatch, db_session, evaluate_with_llm=_capture
+    )
+    task = task_module.evaluate_call_import_row_task
+    task.push_request(id="task-b")
+    try:
+        result = task.run(str(eval_rows[0].id))
+    finally:
+        task.pop_request()
+
+    assert result == {"status": "skipped", "reason": "already_claimed"}
+    assert called == []
+    db_session.refresh(eval_rows[0])
+    assert eval_rows[0].status == "pending"
+    assert eval_rows[0].celery_task_id == "task-a"
+
+
+def _install_fake_celery_result(monkeypatch, state: str) -> None:
+    import sys
+    import types
+
+    class _Result:
+        def __init__(self):
+            self.state = state
+
+    class _App:
+        @staticmethod
+        def AsyncResult(_task_id):
+            return _Result()
+
+    fake = types.ModuleType("app.workers.celery_app")
+    fake.celery_app = _App()
+    monkeypatch.setitem(sys.modules, "app.workers.celery_app", fake)
+
+
+def test_queued_task_id_stays_active_while_the_row_is_fresh(monkeypatch):
+    from app.workers.concurrency.dispatch_reconcile import _celery_task_is_finished
+
+    _install_fake_celery_result(monkeypatch, "PENDING")
+    assert _celery_task_is_finished("task-a") is False
+
+
+def test_pending_task_id_is_kept_no_matter_how_old(monkeypatch):
+    from app.workers.concurrency.dispatch_reconcile import (
+        _celery_task_is_finished,
+    )
+
+    _install_fake_celery_result(monkeypatch, "PENDING")
+    assert _celery_task_is_finished("task-a") is False
+
+
+def test_finished_task_id_is_not_active(monkeypatch):
+    from app.workers.concurrency.dispatch_reconcile import _celery_task_is_finished
+
+    _install_fake_celery_result(monkeypatch, "SUCCESS")
+    assert _celery_task_is_finished("task-a") is True
+
+
+def test_duplicate_task_scores_and_bills_the_row_once(db_session, monkeypatch):
+    """Two workers on one row must make one LLM call and one usage record."""
+    _, _, _, _, evaluation, eval_rows = _seed(db_session)
+    eval_row = eval_rows[0]
+    eval_row.celery_task_id = "task-a"
+    db_session.commit()
+
+    llm_calls = []
+    usage_calls = []
+
+    def _record_usage(*_args, **_kwargs):
+        usage_calls.append(1)
+        return True
+
+    monkeypatch.setattr(
+        "app.services.usage.llm_usage.record_llm_usage",
+        _record_usage,
+    )
+
+    task_module = None
+
+    def _llm(*_args, **kwargs):
+        from app.services.usage.llm_usage import record_llm_usage
+        from app.services.usage.normalize import UsageSnapshot
+
+        llm_calls.append(1)
+        record_llm_usage(
+            "typesafe/jev-1.13",
+            UsageSnapshot(prompt_tokens=10, completion_tokens=2),
+            organization_id=evaluation.organization_id,
+        )
+        if len(llm_calls) == 1:
+            duplicate = task_module.evaluate_call_import_row_task
+            duplicate.push_request(id="task-b")
+            try:
+                second = duplicate.run(str(eval_row.id))
+            finally:
+                duplicate.pop_request()
+            assert second == {"status": "skipped", "reason": "already_claimed"}
+        metrics = kwargs.get("llm_metrics") or []
+        return (
+            {
+                str(metric.id): {
+                    "value": 4,
+                    "type": "rating",
+                    "metric_name": metric.name,
+                }
+                for metric in metrics
+            },
+            0.1,
+        )
+
+    task_module = _patch_dependencies(
+        monkeypatch, db_session, evaluate_with_llm=_llm
+    )
+    task = task_module.evaluate_call_import_row_task
+    task.push_request(id="task-a")
+    try:
+        result = task.run(str(eval_row.id))
+    finally:
+        task.pop_request()
+
+    assert result["status"] == "completed"
+    assert llm_calls == [1]
+    assert usage_calls == [1]
+    db_session.refresh(eval_row)
+    db_session.refresh(evaluation)
+    assert eval_row.status == "completed"
+    assert evaluation.completed_rows == 1
+
+    task.push_request(id="task-c")
+    try:
+        again = task.run(str(eval_row.id))
+    finally:
+        task.pop_request()
+    assert again == {"status": "skipped", "reason": "already_claimed"}
+    assert llm_calls == [1]
+    assert usage_calls == [1]
+    db_session.refresh(evaluation)
+    assert evaluation.completed_rows == 1
+
+
+def test_second_terminal_write_does_not_advance_progress(db_session):
+    from datetime import datetime, timezone
+
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        commit_terminal_row_and_rollup,
+    )
+
+    _, _, _, _, evaluation, eval_rows = _seed(db_session)
+    evaluation.total_rows = 1
+    evaluation.status = "running"
+    eval_row = eval_rows[0]
+    eval_row.status = "running"
+    db_session.commit()
+
+    eval_row.status = "completed"
+    eval_row.finished_at = datetime.now(timezone.utc)
+    commit_terminal_row_and_rollup(
+        db_session,
+        evaluation,
+        eval_row,
+        previous_row_status="running",
+    )
+    db_session.refresh(evaluation)
+    assert evaluation.completed_rows == 1
+
+    eval_row.status = "completed"
+    commit_terminal_row_and_rollup(
+        db_session,
+        evaluation,
+        eval_row,
+        previous_row_status="running",
+    )
+    db_session.refresh(evaluation)
+    db_session.refresh(eval_row)
+    assert evaluation.completed_rows == 1
+    assert eval_row.status == "completed"
+
+
+def test_queued_eval_row_is_not_cleared_for_a_second_dispatch(
+    db_session, monkeypatch
+):
+    from app.workers.concurrency.dispatch_reconcile import (
+        _reconcile_eval_rows_on_session,
+    )
+
+    _install_fake_celery_result(monkeypatch, "PENDING")
+    _, _, _, _, _, eval_rows = _seed(db_session)
+    eval_row = eval_rows[0]
+    eval_row.status = "pending"
+    eval_row.celery_task_id = "task-a"
+    db_session.commit()
+
+    assert _reconcile_eval_rows_on_session(db_session) == 0
+    db_session.refresh(eval_row)
+    assert eval_row.status == "pending"
+    assert eval_row.celery_task_id == "task-a"

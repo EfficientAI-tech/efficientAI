@@ -379,12 +379,16 @@ def process_call_import_row_task(
             return {"status": "already_completed", "row_id": row_id}
 
         if not _platform_import:
-            row.status = CallImportRowStatus.PROCESSING
-            row.attempts = (row.attempts or 0) + 1
-            row.celery_task_id = self.request.id
-            row.error_message = None
-            if not _safe_commit(db, row_id=row_id, context="mark_processing"):
-                return {"status": "skipped", "reason": "row_deleted"}
+            from app.workers.concurrency.dispatch_reconcile import (
+                claim_import_row_for_task,
+            )
+
+            if not claim_import_row_for_task(db, row, self.request.id):
+                logger.info(
+                    "Skipping import row {} already claimed or finished",
+                    row_id,
+                )
+                return {"status": "skipped", "reason": "already_claimed"}
 
         if (call_import.source_format or "").lower() == "platform":
             from app.workers.tasks.platform_call_import_hydrate import (

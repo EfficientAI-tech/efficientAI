@@ -1319,3 +1319,17 @@ def test_process_row_skips_when_row_deleted_during_upload(db_session, monkeypatc
     result = task_module.process_call_import_row_task.run(str(row.id))
 
     assert result == {"status": "skipped", "reason": "row_deleted"}
+
+
+def test_second_import_task_does_not_claim_the_recording(db_session):
+    from app.workers.concurrency.dispatch_reconcile import claim_import_row_for_task
+
+    _, _, rows = _seed(db_session, row_count=1)
+    row = rows[0]
+    row.celery_task_id = "task-a"
+    db_session.commit()
+
+    assert claim_import_row_for_task(db_session, row, "task-a") is True
+    assert claim_import_row_for_task(db_session, row, "task-b") is False
+    db_session.refresh(row)
+    assert row.celery_task_id == "task-a"

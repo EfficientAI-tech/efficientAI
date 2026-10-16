@@ -60,6 +60,12 @@ def clear_expired_platform_row_claims(
         task_id = (row.celery_task_id or "").strip()
         if not task_id or lease_is_active(task_id):
             continue
+        from app.workers.concurrency.dispatch_reconcile import (
+            _celery_task_is_finished,
+        )
+
+        if not _celery_task_is_finished(task_id):
+            continue
         row.celery_task_id = None
         if row.status == CallImportRowStatus.PROCESSING:
             row.status = CallImportRowStatus.PENDING

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, List, Optional
 from uuid import UUID
 
-from sqlalchemy import case, func, or_, update
+from sqlalchemy import and_, case, func, or_, update
 from sqlalchemy.orm import Session
 
 from app.models.database import (
@@ -44,6 +44,53 @@ _PROD_KEYWORDS: tuple[str, ...] = (
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def claim_eval_row_for_task(
+    row_db: Session,
+    eval_row: CallImportEvaluationRow,
+    task_id: str | None,
+) -> bool:
+    """Mark the row running for this task.
+
+    A second Celery task for the same row loses the update and must not
+    call the model. The dispatcher writes ``celery_task_id`` while the
+    row is still pending, so the match is on that id.
+    """
+    cleaned = (task_id or "").strip()
+    filters = [
+        CallImportEvaluationRow.id == eval_row.id,
+        CallImportEvaluationRow.status.in_(("pending", "running")),
+    ]
+    if cleaned:
+        # Pending with no id can be taken once. Running only matches its task id.
+        filters.append(
+            or_(
+                and_(
+                    CallImportEvaluationRow.status == "pending",
+                    CallImportEvaluationRow.celery_task_id.is_(None),
+                ),
+                CallImportEvaluationRow.celery_task_id == cleaned,
+            )
+        )
+    else:
+        filters.append(CallImportEvaluationRow.status == "pending")
+    values: dict[str, Any] = {
+        "status": "running",
+        "error_message": None,
+        "started_at": func.coalesce(CallImportEvaluationRow.started_at, now_utc()),
+    }
+    if cleaned:
+        values["celery_task_id"] = cleaned
+    result = row_db.execute(
+        update(CallImportEvaluationRow).where(*filters).values(**values)
+    )
+    if result.rowcount != 1:
+        row_db.rollback()
+        return False
+    row_db.commit()
+    row_db.refresh(eval_row)
+    return True
 
 
 def as_json_dict(value: Any) -> dict:
@@ -532,6 +579,17 @@ def commit_terminal_row_and_rollup(
     catalog_db: Session | None = None,
 ) -> None:
     parent_db = catalog_db if catalog_db is not None and catalog_db is not row_db else row_db
+    transition = row_db.execute(
+        update(CallImportEvaluationRow)
+        .where(
+            CallImportEvaluationRow.id == eval_row.id,
+            CallImportEvaluationRow.status.in_(("pending", "running")),
+        )
+        .values(status=eval_row.status)
+    )
+    if transition.rowcount != 1:
+        row_db.rollback()
+        return
     if (eval_row.status or "").lower() == "completed":
         source_row = (
             row_db.query(CallImportRow)
