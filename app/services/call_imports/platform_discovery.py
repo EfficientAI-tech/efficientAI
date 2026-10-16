@@ -302,23 +302,18 @@ def rematerialize_reserved_rows(db: Session, call_import_id: UUID) -> int:
     call_import = db.query(CallImport).filter(CallImport.id == call_import_id).first()
     if call_import is None:
         return 0
-    mappings = []
-    for entry in reserved:
-        mappings.append(
-            {
-                "id": entry.row_id,
-                "call_import_id": call_import.id,
-                "organization_id": call_import.organization_id,
-                "workspace_id": call_import.workspace_id,
-                "row_index": entry.row_index,
-                "conversation_id": entry.conversation_id,
-                "recording_url": build_canonical_recording_url(
-                    call_import.provider or "",
-                    entry.conversation_id,
-                ),
-                "status": CallImportRowStatus.PENDING.value,
-            }
+    mappings = [
+        _platform_import_row_mapping(
+            call_import,
+            row_id=entry.row_id,
+            row_index=int(entry.row_index or 0),
+            conversation_id=entry.conversation_id,
+            provider=call_import.provider or "",
+            recording_date=entry.recording_date,
+            raw_columns=entry.raw_columns if isinstance(entry.raw_columns, dict) else None,
         )
+        for entry in reserved
+    ]
     if is_sharding_enabled():
         bulk_insert_mappings_on_shards(
             db,
@@ -603,6 +598,55 @@ def _all_slices_terminal(db: Session, call_import_id: UUID) -> bool:
     return pending == 0
 
 
+def _remaining_call_capacity(
+    total_rows: int,
+    reserved_rows: int,
+    limit: Optional[int],
+) -> Optional[int]:
+    """How many new calls still fit. None means the import is unlimited."""
+    if limit is None or int(limit) <= 0:
+        return None
+    occupied = int(total_rows or 0) + int(reserved_rows or 0)
+    return max(0, int(limit) - occupied)
+
+
+def _platform_list_metadata(item: HistoricalListItem) -> Tuple[Optional[Any], Dict[str, Any]]:
+    recording_date = item.started_at.date() if item.started_at is not None else None
+    raw_columns: Dict[str, Any] = {
+        "agent_id": item.agent_id,
+        "started_at": item.started_at.isoformat() if item.started_at else None,
+        "duration_seconds": item.duration_seconds,
+        "status": item.status,
+    }
+    if isinstance(item.raw, dict) and item.raw.get("medium") == "chat":
+        raw_columns["medium"] = "chat"
+    return recording_date, raw_columns
+
+
+def _platform_import_row_mapping(
+    call_import: CallImport,
+    *,
+    row_id: UUID,
+    row_index: int,
+    conversation_id: str,
+    provider: str,
+    recording_date: Any,
+    raw_columns: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    return {
+        "id": row_id,
+        "call_import_id": call_import.id,
+        "organization_id": call_import.organization_id,
+        "workspace_id": call_import.workspace_id,
+        "row_index": row_index,
+        "conversation_id": conversation_id,
+        "recording_url": build_canonical_recording_url(provider, conversation_id),
+        "recording_date": recording_date,
+        "raw_columns": raw_columns,
+        "status": CallImportRowStatus.PENDING.value,
+    }
+
+
 def _reserve_and_insert_rows(
     db: Session,
     call_import: CallImport,
@@ -613,7 +657,7 @@ def _reserve_and_insert_rows(
     shard_pending: Optional[_DiscoveryShardPending] = None,
 ) -> bool:
     """Insert one page. Returns True when the import has no room left."""
-    from app.db_sharding.row_ops import bulk_insert_mappings_on_shards, register_shard_slices
+    from app.db_sharding.row_ops import bulk_insert_mappings_on_shards
     from app.db_sharding.sessions import is_sharding_enabled
 
     from sqlalchemy import text
@@ -625,15 +669,29 @@ def _reserve_and_insert_rows(
     ).one()
     total_rows = int(locked.total_rows or 0)
     limit = call_import.max_calls
-    room: Optional[int] = None
+    reserved_rows = 0
     if limit is not None and int(limit) > 0:
-        room = max(0, int(limit) - total_rows)
-        if room <= 0:
-            db.expire(call_import, ["total_rows", "next_row_index"])
-            return True
-        items = list(items)[:room]
-    else:
+        reserved_rows = int(
+            db.execute(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM platform_conversation_ledger
+                    WHERE call_import_id = :id AND state = 'reserved'
+                    """
+                ),
+                {"id": call_import.id},
+            ).scalar()
+            or 0
+        )
+    room = _remaining_call_capacity(total_rows, reserved_rows, limit)
+    if room is None:
         items = list(items)
+    elif room <= 0:
+        db.expire(call_import, ["total_rows", "next_row_index"])
+        return True
+    else:
+        items = list(items)[:room]
     n = len(items)
     allocated = db.execute(
         text(
@@ -652,6 +710,7 @@ def _reserve_and_insert_rows(
     mappings = []
     for offset, item in enumerate(items):
         row_id = platform_row_id(call_import.id, item.conversation_id)
+        recording_date, raw_columns = _platform_list_metadata(item)
         ledger = PlatformConversationLedger(
             workspace_id=call_import.workspace_id,
             provider=provider,
@@ -660,6 +719,8 @@ def _reserve_and_insert_rows(
             row_id=row_id,
             row_index=start_index + offset,
             state="reserved",
+            recording_date=recording_date,
+            raw_columns=raw_columns,
         )
         try:
             with db.begin_nested():
@@ -674,33 +735,16 @@ def _reserve_and_insert_rows(
                 )
             continue
 
-        recording_date = None
-        if item.started_at is not None:
-            recording_date = item.started_at.date()
-
         mappings.append(
-            {
-                "id": row_id,
-                "call_import_id": call_import.id,
-                "organization_id": call_import.organization_id,
-                "workspace_id": call_import.workspace_id,
-                "row_index": start_index + offset,
-                "conversation_id": item.conversation_id,
-                "recording_url": build_canonical_recording_url(provider, item.conversation_id),
-                "recording_date": recording_date,
-                "raw_columns": {
-                    "agent_id": item.agent_id,
-                    "started_at": item.started_at.isoformat() if item.started_at else None,
-                    "duration_seconds": item.duration_seconds,
-                    "status": item.status,
-                    **(
-                        {"medium": "chat"}
-                        if isinstance(item.raw, dict) and item.raw.get("medium") == "chat"
-                        else {}
-                    ),
-                },
-                "status": CallImportRowStatus.PENDING.value,
-            }
+            _platform_import_row_mapping(
+                call_import,
+                row_id=row_id,
+                row_index=start_index + offset,
+                conversation_id=item.conversation_id,
+                provider=provider,
+                recording_date=recording_date,
+                raw_columns=raw_columns,
+            )
         )
 
     if not mappings:

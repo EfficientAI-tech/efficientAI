@@ -2437,6 +2437,8 @@ class PlatformConversationLedger(Base):
     row_id = Column(UUID(as_uuid=True), nullable=False)
     row_index = Column(Integer, nullable=False)
     state = Column(String(32), nullable=False, default="reserved")
+    recording_date = Column(Date, nullable=True)
+    raw_columns = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
