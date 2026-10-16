@@ -141,6 +141,6 @@ export function connectionTypeLabel(type?: string | null): string {
     case 'messaging_channels':
       return 'Messaging'
     default:
-      return 'LLM'
+      return 'Hosted on EfficientAI'
   }
 }

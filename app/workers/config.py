@@ -78,6 +78,7 @@ EVAL_CONTROL_QUEUE = "eval-control"
 USAGE_WORKER_QUEUE = "usage"
 PLATFORM_WORKER_QUEUE = "platform"
 TRACES_WORKER_QUEUE = "traces"
+HARBOR_WORKER_QUEUE = "harbor-sim"
 
 
 def _usage_flush_beat_seconds() -> float:
@@ -199,6 +200,8 @@ celery_app.conf.task_routes = {
     "generate_evaluator_result_metric_clusters": {"queue": "evaluations"},
     "generate_evaluation_prompt_improvements": {"queue": "evaluations"},
     "evaluate_studio_run_item": {"queue": "evaluations"},
+    # Harbor jobs need Python 3.12 + the harbor extra (worker-harbor service).
+    "run_harbor_simulation": {"queue": HARBOR_WORKER_QUEUE},
     "generate_agent_flowchart": {"queue": "celery"},
     "map_agent_flowchart_prompt_sections": {"queue": "celery"},
     "flush_usage_counters": {"queue": USAGE_WORKER_QUEUE},

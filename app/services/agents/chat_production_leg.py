@@ -13,7 +13,7 @@ from app.services.agents.chat_connection import (
     chat_connection_config,
     normalized_chat_connection_type,
 )
-from app.services.agents.chat_llm_config import resolve_simulation_llm
+from app.services.agents.chat_llm_config import ResolvedSimulationLlm, resolve_simulation_llm
 from app.services.agents.chat_outbound_urls import assert_chat_connection_urls_safe
 from app.services.agents.customer_api_chat import call_customer_chat_api
 from app.services.agents.provider_platform_chat import ProviderChatState, generate_provider_platform_reply
@@ -101,8 +101,13 @@ def generate_production_chat_reply(
     transcript: list[dict[str, str]],
     provider_state: ProviderChatState,
     evaluator_result: Optional[Any] = None,
+    llm_override: Optional[ResolvedSimulationLlm] = None,
 ) -> tuple[str, dict[str, Any]]:
-    """Return assistant text and metadata to merge into evaluator call_data."""
+    """Return assistant text and metadata to merge into evaluator call_data.
+
+    ``llm_override`` replaces the agent's main LLM on the internal-LLM leg only
+    (live connections always use the customer's own endpoint).
+    """
     conn = normalized_chat_connection_type(agent)
     mode = normalized_chat_eval_mode(agent)
     meta: dict[str, Any] = {
@@ -246,27 +251,53 @@ def generate_production_chat_reply(
             "Check agent connection settings and platform credentials."
         )
 
-    main_llm = resolve_simulation_llm(db, agent=agent, organization_id=organization_id, leg="main")
+    main_llm = llm_override or resolve_simulation_llm(
+        db, agent=agent, organization_id=organization_id, leg="main"
+    )
     agent_system = build_agent_system_prompt(agent)
     messages = _agent_messages(agent_system, transcript)
+    kb_tool_calls: list[dict] = []
     try:
-        result = llm_service.generate_response(
-            messages=messages,
-            llm_provider=main_llm.provider,
-            llm_model=main_llm.model,
-            organization_id=organization_id,
-            db=db,
-            llm_config=main_llm.llm_config,
-            credential_id=main_llm.credential_id,
-            task_defaults={"temperature": 0.7, "max_tokens": 400},
+        from app.services.knowledge_bases.retrieval import agent_has_ready_knowledge
+        from app.services.knowledge_bases.chat_tools import (
+            generate_production_reply_with_knowledge_tools,
         )
+
+        workspace_id = agent.workspace_id
+        if workspace_id and agent_has_ready_knowledge(db, agent_id=agent.id):
+            text, kb_tool_calls = generate_production_reply_with_knowledge_tools(
+                db,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                agent_id=agent.id,
+                messages=messages,
+                llm_provider=main_llm.provider,
+                llm_model=main_llm.model,
+                llm_config=main_llm.llm_config,
+                credential_id=main_llm.credential_id,
+                task_defaults={"temperature": 0.7, "max_tokens": 400},
+            )
+        else:
+            result = llm_service.generate_response(
+                messages=messages,
+                llm_provider=main_llm.provider,
+                llm_model=main_llm.model,
+                organization_id=organization_id,
+                db=db,
+                llm_config=main_llm.llm_config,
+                credential_id=main_llm.credential_id,
+                task_defaults={"temperature": 0.7, "max_tokens": 400},
+            )
+            text = (result.get("text") or "").strip()
     except RuntimeError as exc:
         raise RuntimeError(
             f"Production-side LLM simulation failed ({main_llm.source}): {exc}"
         ) from exc
-    text = (result.get("text") or "").strip()
+    text = (text or "").strip()
     if not text:
         raise ValueError("Production LLM returned an empty message")
     meta["production_leg"] = "internal_llm_sim"
     meta["main_llm_source"] = main_llm.source
+    if kb_tool_calls:
+        meta["knowledge_base_tool_calls"] = kb_tool_calls
     return text, meta

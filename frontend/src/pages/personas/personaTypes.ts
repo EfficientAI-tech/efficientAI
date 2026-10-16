@@ -72,6 +72,15 @@ export const PERSONA_TILE_TABS: { id: PersonaTileTab; label: string }[] = [
   { id: 'environment', label: 'Environment' },
 ]
 
+/** Chat (text) personas have no voice, TTS or background noise. */
+export const CHAT_PERSONA_TILE_TABS: { id: PersonaTileTab; label: string }[] = PERSONA_TILE_TABS.filter(
+  (tab) => tab.id === 'prompt' || tab.id === 'behavior',
+)
+
+export function personaTilesTabsFor(medium: 'voice' | 'text') {
+  return medium === 'text' ? CHAT_PERSONA_TILE_TABS : PERSONA_TILE_TABS
+}
+
 export function emptyPersonaFormData(): PersonaFormData {
   return {
     name: '',
@@ -143,8 +152,12 @@ export function personaPayload(data: PersonaFormData, simulationMedium: 'voice' 
   }
 }
 
-export function personaUpdatePayload(data: PersonaFormData, lockProvider: boolean) {
-  const payload = personaPayload(data)
+export function personaUpdatePayload(
+  data: PersonaFormData,
+  lockProvider: boolean,
+  simulationMedium: 'voice' | 'text' = 'voice',
+) {
+  const payload = personaPayload(data, simulationMedium)
   if (lockProvider && data.tts_provider) {
     const { tts_provider: _ignored, ...rest } = payload
     if (payload.tts_config !== undefined) {

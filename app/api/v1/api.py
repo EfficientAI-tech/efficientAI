@@ -9,6 +9,8 @@ from app.api.v1.routes import (
     agents,
     personas,
     scenarios,
+    knowledge_bases,
+    simulation_runs,
     iam,
     profile,
     integrations,
@@ -69,6 +71,8 @@ api_router.include_router(results.router)
 api_router.include_router(agents.router)
 api_router.include_router(personas.router)
 api_router.include_router(scenarios.router)
+api_router.include_router(knowledge_bases.router)
+api_router.include_router(simulation_runs.router)
 api_router.include_router(iam.router)
 api_router.include_router(profile.router)
 api_router.include_router(integrations.router)

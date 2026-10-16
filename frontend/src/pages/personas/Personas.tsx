@@ -1,5 +1,5 @@
 import { useState, useMemo, type ReactNode } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createPortal } from 'react-dom'
 import {
@@ -34,10 +34,15 @@ import {
   type Persona,
   type PersonaFormData,
   type ProviderOption,
-  PERSONA_TILE_TABS,
+  personaTilesTabsFor,
   type PersonaTileTab,
 } from './personaTypes'
-import { filterPersonasByMedium } from '../../lib/personaMedium'
+import {
+  filterPersonasByMedium,
+  personaSimulationMedium,
+  simulationMediumForFilter,
+  type PersonaMediumFilter,
+} from '../../lib/personaMedium'
 
 export default function Personas() {
   const queryClient = useQueryClient()
@@ -45,6 +50,17 @@ export default function Personas() {
 
   // Tab state
   const [activeTab, setActiveTab] = useState<'personas' | 'custom-voices' | 'ambient-noises'>('personas')
+  // Voice personas are callers (TTS + environment); chat personas are text customers.
+  // ``?medium=chat`` deep-links straight to chat personas.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const personaMedium: PersonaMediumFilter = searchParams.get('medium') === 'chat' ? 'chat' : 'voice'
+  const setPersonaMedium = (medium: PersonaMediumFilter) => {
+    const next = new URLSearchParams(searchParams)
+    if (medium === 'chat') next.set('medium', 'chat')
+    else next.delete('medium')
+    setSearchParams(next, { replace: true })
+  }
+  const isChatMedium = personaMedium === 'chat'
 
   // Modal state
   const [showCreateModal, setShowCreateModal] = useState(false)
@@ -111,13 +127,14 @@ export default function Personas() {
 
   const userPersonas = useMemo(() => personas as Persona[], [personas])
   const displayedPersonas = useMemo(
-    () => filterPersonasByMedium(userPersonas, 'voice'),
-    [userPersonas],
+    () => filterPersonasByMedium(userPersonas, personaMedium),
+    [userPersonas, personaMedium],
   )
 
   // Mutations
   const createMutation = useMutation({
-    mutationFn: (data: PersonaFormData) => apiClient.createPersona(personaPayload(data, 'voice')),
+    mutationFn: (data: PersonaFormData) =>
+      apiClient.createPersona(personaPayload(data, simulationMediumForFilter(personaMedium))),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['personas'] })
       showToast('Persona created successfully!', 'success')
@@ -269,7 +286,8 @@ export default function Personas() {
   const handleSavePersonaTile = (id: string, data: PersonaFormData) => {
     const existing = userPersonas.find((p) => p.id === id)
     const lockProvider = Boolean(existing?.tts_provider)
-    updateMutation.mutate({ id, payload: personaUpdatePayload(data, lockProvider) })
+    const medium = existing ? personaSimulationMedium(existing) : 'voice'
+    updateMutation.mutate({ id, payload: personaUpdatePayload(data, lockProvider, medium) })
   }
 
   const handleCreate = (e: React.FormEvent) => {
@@ -302,6 +320,7 @@ export default function Personas() {
       providers={providers}
       lockProvider={false}
       voiceFieldSize="md"
+      medium={simulationMediumForFilter(personaMedium)}
     />
   )
 
@@ -341,7 +360,9 @@ export default function Personas() {
           <div className="min-w-0">
             <h1 className="text-3xl font-bold text-gray-900">Personas</h1>
             <p className="text-gray-600 mt-1">
-              Caller personas for voice simulation — prompt, voice, TTS, behavior, and environment.
+              {isChatMedium
+                ? 'Customer personas for chat agents — prompt and behavior of the simulated texter.'
+                : 'Caller personas for voice simulation — prompt, voice, TTS, behavior, and environment.'}
             </p>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2 pr-2">
@@ -351,7 +372,7 @@ export default function Personas() {
                 onClick={openCreateModal}
                 leftIcon={<Plus className="h-5 w-5" />}
               >
-                Create Persona
+                {isChatMedium ? 'Create Chat Persona' : 'Create Persona'}
               </Button>
             ) : activeTab === 'custom-voices' ? (
               <Button
@@ -436,11 +457,42 @@ export default function Personas() {
         {/* ===================== PERSONAS TAB ===================== */}
         {activeTab === 'personas' && (
           <>
+            <div
+              className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5"
+              role="tablist"
+              aria-label="Persona medium"
+            >
+              {(
+                [
+                  { id: 'voice', label: 'Voice agents' },
+                  { id: 'chat', label: 'Chat agents' },
+                ] as const
+              ).map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={personaMedium === option.id}
+                  onClick={() => setPersonaMedium(option.id)}
+                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                    personaMedium === option.id
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
             {displayedPersonas.length === 0 ? (
               <div className="bg-white rounded-lg shadow p-12 text-center">
                 <Users className="w-12 h-12 text-gray-400 mx-auto mb-4" />
                 <h3 className="text-lg font-medium text-gray-900 mb-2">No personas yet</h3>
-                <p className="text-gray-500 mb-4">Create your first voice persona to get started.</p>
+                <p className="text-gray-500 mb-4">
+                  {isChatMedium
+                    ? 'Create a chat persona to simulate customers texting your chat agents.'
+                    : 'Create your first voice persona to get started.'}
+                </p>
                 <Button variant="ghost" onClick={openCreateModal}>
                   Create Persona
                 </Button>
@@ -566,7 +618,9 @@ export default function Personas() {
           <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">
             <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-hidden flex flex-col">
               <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-                <h3 className="text-lg font-semibold">Create Persona</h3>
+                <h3 className="text-lg font-semibold">
+                  {isChatMedium ? 'Create Chat Persona' : 'Create Persona'}
+                </h3>
                 <button onClick={handleCloseCreateModal} className="text-gray-400 hover:text-gray-600">
                   <X className="h-5 w-5" />
                 </button>
@@ -585,7 +639,7 @@ export default function Personas() {
                 </div>
                 <div className="px-6 pt-4 border-b border-gray-100">
                   <nav className="flex gap-1 overflow-x-auto" aria-label="Create persona sections">
-                    {PERSONA_TILE_TABS.map((tab) => (
+                    {personaTilesTabsFor(simulationMediumForFilter(personaMedium)).map((tab) => (
                       <button
                         key={tab.id}
                         type="button"

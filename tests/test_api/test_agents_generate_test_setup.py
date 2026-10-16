@@ -27,6 +27,38 @@ def _sample_generation_payload():
     }
 
 
+def test_generate_production_prompt(authenticated_client, monkeypatch, make_ai_provider):
+    from importlib import import_module
+
+    llm_service_module = import_module("app.services.ai.llm_service")
+    make_ai_provider(provider="openai")
+
+    llm_response = (
+        "You are a billing support chat agent. Greet the user warmly. "
+        "Verify account details before discussing charges. Explain fees clearly. "
+        "Offer refunds when policy allows. Stay concise and professional."
+    )
+
+    monkeypatch.setattr(
+        llm_service_module.llm_service,
+        "generate_response",
+        lambda **_kwargs: {"text": llm_response},
+    )
+
+    response = authenticated_client.post(
+        "/api/v1/agents/generate-production-prompt",
+        json={
+            "agent_name": "Billing Bot",
+            "brief": "Chat agent for billing questions and refunds",
+            "language": "en",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert "billing support chat agent" in body["production_prompt"]
+    assert body["provider"] == "openai"
+
+
 def test_generate_test_prompt(authenticated_client, monkeypatch, make_ai_provider):
     from importlib import import_module
 

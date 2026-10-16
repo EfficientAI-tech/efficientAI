@@ -8,7 +8,7 @@
 
 services:
   db:
-    image: postgres:15
+    image: pgvector/pgvector:pg15
     container_name: efficientai_db
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-efficientai}
@@ -306,6 +306,39 @@ services:
       - ./.data:/app/.data
       - ./config.docker.yml:/app/config.yml:ro
     command: eai worker --config /app/config.yml --loglevel info --queues traces --pool threads --concurrency 8
+
+  # Harbor simulation runs (test agent ↔ production agent). Harbor needs Python 3.12,
+  # so this worker builds its own image. Each task runs one Harbor job subprocess that
+  # fans out trials itself (SimulationRun.n_concurrent), hence the low concurrency.
+  # Exported tasks + job dirs land in ./.data/harbor (shared with the api for trajectories).
+  worker-harbor:
+    image: efficientai-worker-harbor:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+      args:
+        PYTHON_VERSION: "3.12"
+        INSTALL_EXTRAS: "harbor"
+        TORCH_CPU_ONLY: "false"
+    container_name: efficientai_worker_harbor
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./uploads:/app/uploads
+      - ./.data:/app/.data
+      - ./config.docker.yml:/app/config.yml:ro
+    command: eai worker --config /app/config.yml --loglevel info --queues harbor-sim --concurrency 2
 
 volumes:
   postgres_data:

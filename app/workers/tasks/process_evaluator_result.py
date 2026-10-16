@@ -280,6 +280,113 @@ def _evaluate_llm_metrics_grouped(
     return scores, eval_time
 
 
+def select_metrics_for_evaluation(db, *, organization_id, agent, metric_ids=None) -> list:
+    """Active, surface-enabled org metrics, narrowed to ``metric_ids`` when given.
+
+    Include metrics that have the agent's surface in their enabled_surfaces so users can
+    restrict metrics to specific surfaces from the metrics page. Legacy rows (created
+    before the surfaces column existed, or via fixtures that don't set the field) keep
+    the original behavior: an enabled=True metric with an empty enabled_surfaces list is
+    treated as agent-enabled. Categorization parents in ``metric_ids`` are stored as a
+    single ID and expanded to child labels.
+    """
+    from app.models.database import Metric
+    from app.services.evaluators.evaluator_helpers import expand_metric_ids_for_evaluation
+    from app.services.metrics.surfaces import (
+        metric_enabled_for_eval_surface,
+        metric_eval_surface_for_call_medium,
+    )
+
+    enabled_metrics = db.query(Metric).filter(
+        Metric.organization_id == organization_id,
+        Metric.enabled == True,
+        or_(Metric.lifecycle.is_(None), Metric.lifecycle == "active"),
+    ).all()
+    eval_surface = metric_eval_surface_for_call_medium(agent.call_medium if agent else None)
+    enabled_metrics = [
+        m for m in enabled_metrics
+        if (m.name or "").strip().lower() not in REMOVED_EVALUATION_METRIC_NAMES
+        and metric_enabled_for_eval_surface(m.enabled_surfaces, eval_surface)
+    ]
+
+    selected_metric_ids = {str(mid) for mid in (metric_ids or [])}
+    if selected_metric_ids:
+        expanded_ids = expand_metric_ids_for_evaluation(
+            db,
+            organization_id,
+            list(selected_metric_ids),
+        ) or set()
+        enabled_metrics = [m for m in enabled_metrics if str(m.id) in expanded_ids]
+    return enabled_metrics
+
+
+def evaluate_transcript_metrics(
+    db,
+    *,
+    result,
+    agent,
+    persona,
+    scenario,
+    metric_ids=None,
+) -> tuple[dict, list]:
+    """Score a text-only result's transcript; returns ``(metric_scores, metrics)``.
+
+    Used by Harbor simulation trials, which have no audio and no Evaluator row.
+    Also attaches call analysis to ``result.call_data``. The caller persists.
+    """
+    from app.models.database import AIProvider
+
+    ai_providers = db.query(AIProvider).filter(
+        AIProvider.organization_id == result.organization_id,
+        AIProvider.is_active == True,
+    ).all()
+    metrics = select_metrics_for_evaluation(
+        db,
+        organization_id=result.organization_id,
+        agent=agent,
+        metric_ids=metric_ids,
+    )
+    llm_metrics, _audio_metrics, metric_scores = _categorize_metrics(metrics, has_audio=False)
+    transcription = result.transcription or ""
+    if llm_metrics and transcription:
+        try:
+            llm_scores, _ = _evaluate_llm_metrics_grouped(
+                transcription=transcription,
+                llm_metrics=llm_metrics,
+                ai_providers=ai_providers,
+                organization_id=result.organization_id,
+                result_id=result.result_id,
+                db=db,
+                evaluator=None,
+                agent=agent,
+                persona=persona,
+                scenario=scenario,
+            )
+            metric_scores.update(llm_scores)
+        except Exception as llm_err:
+            logger.error(
+                f"[EvaluatorResult {result.result_id}] LLM evaluation failed: {llm_err}",
+                exc_info=True,
+            )
+            metric_scores.update(handle_llm_evaluation_error(llm_metrics, llm_err))
+
+    if transcription:
+        call_analysis = _generate_call_analysis(
+            transcription=transcription,
+            ai_providers=ai_providers,
+            organization_id=result.organization_id,
+            result_id=result.result_id,
+            db=db,
+            agent=agent,
+            scenario=scenario,
+        )
+        if call_analysis:
+            call_data = dict(result.call_data) if isinstance(result.call_data, dict) else {}
+            call_data["call_analysis"] = call_analysis
+            result.call_data = call_data
+    return _make_json_serializable(metric_scores), metrics
+
+
 _PERMANENT_VAPI_ENDED_REASONS = frozenset(
     {
         "call.in-progress.error-assistant-did-not-receive-customer-audio",
@@ -733,46 +840,12 @@ def process_evaluator_result_task(self, result_id: str):
                     db.commit()
 
                 # Step 2: Load and categorize metrics
-                # Include metrics that have "agent" in their enabled_surfaces so users can
-                # restrict metrics to specific surfaces from the metrics page. Legacy rows
-                # (created before the surfaces column existed, or via fixtures that don't
-                # set the field) keep the original behavior: an enabled=True metric with
-                # an empty enabled_surfaces list is treated as agent-enabled.
-                enabled_metrics = db.query(Metric).filter(
-                    Metric.organization_id == result.organization_id,
-                    Metric.enabled == True,
-                    or_(Metric.lifecycle.is_(None), Metric.lifecycle == "active"),
-                ).all()
-                from app.services.metrics.surfaces import (
-                    metric_enabled_for_eval_surface,
-                    metric_eval_surface_for_call_medium,
+                enabled_metrics = select_metrics_for_evaluation(
+                    db,
+                    organization_id=result.organization_id,
+                    agent=agent,
+                    metric_ids=getattr(evaluator, "metric_ids", None),
                 )
-
-                eval_surface = metric_eval_surface_for_call_medium(
-                    agent.call_medium if agent else None
-                )
-                enabled_metrics = [
-                    m for m in enabled_metrics
-                    if (m.name or "").strip().lower() not in REMOVED_EVALUATION_METRIC_NAMES
-                    and metric_enabled_for_eval_surface(m.enabled_surfaces, eval_surface)
-                ]
-
-                # Explicit metric selection on the evaluator/suite. Categorization
-                # parents are stored as a single ID and expanded to child labels here.
-                from app.services.evaluators.evaluator_helpers import expand_metric_ids_for_evaluation
-
-                selected_metric_ids = {
-                    str(mid) for mid in (getattr(evaluator, "metric_ids", None) or [])
-                }
-                if selected_metric_ids:
-                    expanded_ids = expand_metric_ids_for_evaluation(
-                        db,
-                        result.organization_id,
-                        list(selected_metric_ids),
-                    ) or set()
-                    enabled_metrics = [
-                        m for m in enabled_metrics if str(m.id) in expanded_ids
-                    ]
 
                 has_audio = bool(result.audio_s3_key)
                 llm_metrics, audio_metrics, metric_scores = _categorize_metrics(enabled_metrics, has_audio)

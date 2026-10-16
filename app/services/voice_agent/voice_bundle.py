@@ -539,11 +539,17 @@ async def run_voice_bundle_fastapi(
     call_direction: str = "outbound",
     persona_speaks_via_tts: bool = False,
     tracing_task_kwargs: dict | None = None,
+    enable_knowledge_base_tools: bool = False,
+    enable_production_knowledge_tools: bool = False,
 ):
     """
     Run the STT+LLM+TTS voice bundle pipeline over a FastAPI WebSocket.
     Records dual-track WAV via AudioRecorder and merges/uploads after the call.
     """
+    use_kb_tools = False
+    kb_tool_calls_log: list[dict] = []
+    kb_notifier = None
+
     # Lazy load all efficientai dependencies
     imports = _get_imports()
     STT_PROVIDERS = _get_stt_providers()
@@ -763,6 +769,45 @@ async def run_voice_bundle_fastapi(
             if system_instruction
             else "You are a helpful voice assistant. Keep responses concise and speakable."
         )
+        kb_tools_enabled = enable_knowledge_base_tools or enable_production_knowledge_tools
+        if kb_tools_enabled and agent_id and organization_id and workspace_id:
+            from uuid import UUID
+
+            from app.database import SessionLocal
+            from app.services.knowledge_bases.prompt import append_knowledge_base_instructions
+            from app.services.knowledge_bases.retrieval import agent_has_ready_knowledge
+
+            kb_db = SessionLocal()
+            try:
+                use_kb_tools = agent_has_ready_knowledge(
+                    kb_db, agent_id=UUID(agent_id)
+                )
+            finally:
+                kb_db.close()
+            if use_kb_tools:
+                base_instruction = append_knowledge_base_instructions(
+                    base_instruction,
+                    simulated_caller=not telephony_mode,
+                )
+                from app.services.knowledge_bases.tool_call_logging import KnowledgeBaseVoiceNotifier
+
+                kb_notifier = KnowledgeBaseVoiceNotifier(
+                    agent_id=str(agent_id),
+                    llm_model=llm_model,
+                    tool_calls_log=kb_tool_calls_log,
+                )
+                logger.info(
+                    "[KnowledgeBase] voice_bundle tools enabled agent_id={} llm={}/{}",
+                    agent_id,
+                    llm_provider_value,
+                    llm_model,
+                )
+            elif kb_tools_enabled:
+                logger.info(
+                    "[KnowledgeBase] voice_bundle KB tools requested but no ready documents "
+                    "for agent_id={}",
+                    agent_id,
+                )
 
         # Sarvam TTS rejects text containing emojis / non-language characters,
         # so we inject a guardrail into the system instructions.
@@ -786,6 +831,30 @@ async def run_voice_bundle_fastapi(
 
         context = imports["LLMContext"](messages)
         context_aggregator = imports["LLMContextAggregatorPair"](context)
+
+        kb_inject_processor = None
+        if use_kb_tools and agent_id and organization_id and workspace_id:
+            from app.services.knowledge_bases.voice_tools import register_voice_bundle_knowledge_tools
+            from app.services.voice_agent.knowledge_base_inject_processor import (
+                create_knowledge_base_inject_processor,
+            )
+
+            register_voice_bundle_knowledge_tools(
+                llm,
+                context,
+                organization_id=str(organization_id),
+                workspace_id=str(workspace_id),
+                agent_id=str(agent_id),
+                kb_notifier=kb_notifier,
+            )
+            kb_inject_processor = create_knowledge_base_inject_processor(
+                context,
+                organization_id=str(organization_id),
+                workspace_id=str(workspace_id),
+                agent_id=str(agent_id),
+                kb_notifier=kb_notifier,
+            )
+            logger.info("[KnowledgeBase] voice_bundle auto-inject processor enabled")
 
         from app.services.voice_agent.audio_recorder import get_audio_recorder_class
         from app.services.voice_agent.telephony_recording_paths import telephony_recording_temp_path
@@ -844,6 +913,8 @@ async def run_voice_bundle_fastapi(
         if silence_hangup_processor:
             pipeline_processors.append(silence_hangup_processor)
         pipeline_processors.extend([user_recorder, stt])
+        if kb_inject_processor is not None:
+            pipeline_processors.append(kb_inject_processor)
         if telephony_mode and call_short_id:
             from app.services.voice_agent.live_transcript_processor import create_live_transcript_processor
 
@@ -913,6 +984,8 @@ async def run_voice_bundle_fastapi(
                 await task.cancel()
         else:
             rtvi = imports["RTVIProcessor"](config=imports["RTVIConfig"](config=[]))
+            if kb_notifier is not None:
+                kb_notifier.bind_rtvi(rtvi)
 
             rtvi_processors = [ws_transport.input()]
             if ambient_input_processor:
@@ -923,6 +996,10 @@ async def run_voice_bundle_fastapi(
                 user_recorder,
                 rtvi,
                 stt,
+            ])
+            if kb_inject_processor is not None:
+                rtvi_processors.append(kb_inject_processor)
+            rtvi_processors.extend([
                 context_aggregator.user(),
                 llm,
                 tts,
@@ -1128,7 +1205,10 @@ async def run_voice_bundle_fastapi(
         "scenario_id": scenario_id,
         "transcription": transcript_text,
         "speaker_segments": conversation_turns if conversation_turns else None,
+        "knowledge_base_tools_enabled": bool(use_kb_tools),
     }
+    if kb_tool_calls_log:
+        metadata["knowledge_base_tool_calls"] = kb_tool_calls_log
     if not s3_key_result and not transcript_text:
         metadata["error"] = "No audio file was uploaded and no transcript captured"
     return metadata

@@ -16,6 +16,7 @@ export interface MetricRow {
   metric_type?: string
   metric_origin?: string
   custom_data_type?: string | null
+  custom_config?: Record<string, unknown> | null
   tags?: string[] | null
   children?: MetricRow[]
 }

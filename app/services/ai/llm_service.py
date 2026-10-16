@@ -793,6 +793,126 @@ class LLMService:
         )
         return result
 
+    def generate_response_with_tools(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        llm_provider: ModelProvider,
+        llm_model: str,
+        organization_id: UUID,
+        db: Session,
+        temperature: Optional[float] = 0.7,
+        max_tokens: Optional[int] = None,
+        llm_config: Optional[Dict[str, Any]] = None,
+        credential_id: Optional[UUID] = None,
+        task_defaults: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Single LiteLLM completion with optional function tools."""
+        gen_kwargs = build_litellm_kwargs(
+            llm_config=llm_config,
+            override_llm_config=None,
+            legacy_temperature=temperature,
+            legacy_max_tokens=max_tokens,
+            task_defaults=task_defaults,
+        )
+        temperature = gen_kwargs["temperature"]
+        max_tokens = gen_kwargs["max_tokens"]
+        config = gen_kwargs["config"]
+
+        ai_provider, credential_ctx = self._resolve_credential_context(
+            llm_provider, db, organization_id, credential_id=credential_id
+        )
+        if ai_provider:
+            api_key = resolve_litellm_api_key(
+                organization_id,
+                db,
+                ai_provider,
+                credential=credential_ctx,
+            )
+        else:
+            api_key = self._resolve_api_key(
+                llm_provider, db, organization_id, credential_id=credential_id
+            )
+
+        provider_value = (
+            llm_provider.value if hasattr(llm_provider, "value") else str(llm_provider)
+        ).lower()
+        workload_model_str = self._litellm_model_name(llm_provider, llm_model)
+        _, effective_routing = resolve_effective_routing(
+            organization_id, db, credential_ctx
+        )
+        model_str = canonical_litellm_model_id(
+            resolve_litellm_model(
+                workload_model_str=workload_model_str,
+                gateway_active=effective_routing != "direct",
+                credential=credential_ctx,
+            )
+        )
+
+        call_kwargs: Dict[str, Any] = {
+            "model": model_str,
+            "messages": messages,
+            "temperature": temperature,
+            "tools": tools,
+            "tool_choice": "auto",
+        }
+        if api_key is not None:
+            call_kwargs["api_key"] = api_key
+        if max_tokens:
+            call_kwargs["max_tokens"] = max_tokens
+        if config:
+            call_kwargs.update(config)
+
+        call_kwargs = apply_llm_gateway(
+            call_kwargs,
+            organization_id=organization_id,
+            db=db,
+            model=model_str,
+            credential=credential_ctx,
+        )
+
+        try:
+            response = litellm.completion(**call_kwargs)
+        except Exception as e:
+            logger.exception("[LLMService] LiteLLM tool call failed (%s)", model_str)
+            raise RuntimeError(f"LLM tool generation failed for {model_str}: {e}") from e
+
+        message = response.choices[0].message if response.choices else None
+        text = getattr(message, "content", None) if message else ""
+        raw_tool_calls = getattr(message, "tool_calls", None) if message else None
+        tool_calls = None
+        if raw_tool_calls:
+            tool_calls = []
+            for tc in raw_tool_calls:
+                fn = getattr(tc, "function", None)
+                tool_calls.append(
+                    {
+                        "id": getattr(tc, "id", None),
+                        "type": getattr(tc, "type", "function"),
+                        "function": {
+                            "name": getattr(fn, "name", None) if fn else None,
+                            "arguments": getattr(fn, "arguments", "{}") if fn else "{}",
+                        },
+                    }
+                )
+            names = [
+                (tc.get("function") or {}).get("name")
+                for tc in tool_calls
+                if isinstance(tc, dict)
+            ]
+            logger.info(
+                "[LLMService] model={} LLM requested tool call(s): {}",
+                model_str,
+                names,
+            )
+
+        return {
+            "text": text or "",
+            "tool_calls": tool_calls,
+            "model": llm_model,
+            "raw_response": response,
+        }
+
 
 def _stream_completion(
     call_kwargs: Dict[str, Any],

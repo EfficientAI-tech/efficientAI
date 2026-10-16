@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     MAX_FILE_SIZE_MB: int = 500
     ALLOWED_AUDIO_FORMATS: Annotated[List[str], NoDecode] = ["wav", "mp3", "flac", "m4a"]
     BLOB_STORAGE_PROVIDER: str = "s3"  # "s3", "gcs", or "azure"
+    # Harbor simulation runs: exported tasks + job dirs (one subdir per run)
+    HARBOR_WORK_DIR: str = "./.data/harbor"
 
     # S3 Configuration
     S3_ENABLED: bool = False

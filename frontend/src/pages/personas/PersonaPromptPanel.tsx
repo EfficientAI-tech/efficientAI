@@ -12,6 +12,8 @@ interface PersonaPromptPanelProps {
   personaName?: string
   personaGender?: string
   embedded?: boolean
+  /** Chat personas generate from chat agents; voice personas from voice agents. */
+  medium?: 'voice' | 'text'
 }
 
 export default function PersonaPromptPanel({
@@ -20,7 +22,9 @@ export default function PersonaPromptPanel({
   personaName,
   personaGender,
   embedded = false,
+  medium = 'voice',
 }: PersonaPromptPanelProps) {
+  const isChat = medium === 'text'
   const [selectedAgentId, setSelectedAgentId] = useState('')
   const [showAiPanel, setShowAiPanel] = useState(false)
 
@@ -46,13 +50,13 @@ export default function PersonaPromptPanel({
     ? 'w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-none'
     : 'w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent text-sm'
 
-  const voiceAgents = useMemo(
+  const mediumAgents = useMemo(
     () =>
       filterAgentsByMedium(
         agents as { id: string; name: string; call_medium?: string | null }[],
-        'voice',
+        isChat ? 'chat' : 'voice',
       ),
-    [agents],
+    [agents, isChat],
   )
 
   const handleAgentChange = (agentId: string) => {
@@ -76,7 +80,7 @@ export default function PersonaPromptPanel({
           className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white"
         >
           <option value="">Select an agent…</option>
-          {voiceAgents.map((agent: { id: string; name: string }) => (
+          {mediumAgents.map((agent: { id: string; name: string }) => (
             <option key={agent.id} value={agent.id}>
               {agent.name}
             </option>
@@ -112,7 +116,11 @@ export default function PersonaPromptPanel({
       {showAiPanel && canGenerateFromTestAgent ? (
         <AIGeneratePanel
           title="Generate persona from test agent prompt"
-          placeholder="Optional: describe caller personality, tone, or scenario context…"
+          placeholder={
+            isChat
+              ? 'Optional: describe customer personality, texting style, or scenario context…'
+              : 'Optional: describe caller personality, tone, or scenario context…'
+          }
           showToneAndFormat={false}
           requireDescription={false}
           onCancel={() => setShowAiPanel(false)}
@@ -147,11 +155,17 @@ export default function PersonaPromptPanel({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           rows={embedded ? 6 : 5}
-          placeholder="Describe how this caller speaks and behaves during test calls..."
+          placeholder={
+            isChat
+              ? 'Describe how this customer writes and behaves when chatting...'
+              : 'Describe how this caller speaks and behaves during test calls...'
+          }
           className={textareaClass}
         />
         <p className="text-xs text-gray-500 mt-1">
-          Appended to the test caller system prompt during synthetic evaluation calls.
+          {isChat
+            ? 'Appended to the simulated customer system prompt during chat evaluations.'
+            : 'Appended to the test caller system prompt during synthetic evaluation calls.'}
         </p>
       </div>
     </div>

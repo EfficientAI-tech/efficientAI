@@ -31,6 +31,8 @@ from app.models.schemas import (
     AgentPhoneAssignmentCheckResponse,
     AgentPhoneAssignmentConflict,
     CallMediumEnum as CallMediumEnumSchema,
+    GenerateProductionPromptRequest,
+    GenerateProductionPromptResponse,
     GenerateTestPromptRequest,
     GenerateTestPromptResponse,
     GenerateScenariosFromPromptRequest,
@@ -335,6 +337,73 @@ def _scenario_draft_responses(scenarios) -> list[GeneratedScenarioDraftResponse]
         GeneratedScenarioDraftResponse(name=s.name, description=s.description, goal=s.goal)
         for s in scenarios
     ]
+
+
+@router.post("/generate-production-prompt", response_model=GenerateProductionPromptResponse)
+async def generate_production_prompt(
+    data: GenerateProductionPromptRequest,
+    background_tasks: BackgroundTasks,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Generate a production system prompt from an agent brief (hosted agents)."""
+    from app.services.testing.agent_test_setup_generation import (
+        generate_production_prompt_from_brief,
+    )
+    from app.services.usage.context import (
+        LLMUsageContext,
+        LLMUsageProductSection,
+        llm_usage_context,
+    )
+
+    if not data.brief.strip():
+        raise HTTPException(400, "Agent brief is required")
+
+    provider_enum, model_str = _get_llm_provider_and_model(
+        organization_id, db, data.provider, data.model, data.credential_id
+    )
+
+    try:
+        with llm_usage_context(
+            LLMUsageContext(
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                product_section=LLMUsageProductSection.AGENTS,
+            )
+        ):
+            result = generate_production_prompt_from_brief(
+                data.brief,
+                agent_name=data.agent_name,
+                language=data.language,
+                call_type=data.call_type,
+                additional_context=data.additional_context,
+                llm_provider=provider_enum,
+                llm_model=model_str,
+                organization_id=organization_id,
+                db=db,
+                llm_config=data.llm_config,
+                credential_id=data.credential_id,
+            )
+        background_tasks.add_task(
+            record_agent_test_setup_generated,
+            organization_id,
+            uuid4(),
+            workspace_id=workspace_id,
+            purpose="production_prompt",
+            model=model_str,
+        )
+        return GenerateProductionPromptResponse(
+            production_prompt=result.production_prompt,
+            provider=result.provider,
+            model=result.model,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as e:
+        logger.error(f"[Agents] Production prompt generation failed: {repr(e)}")
+        raise HTTPException(500, f"AI generation failed: {str(e)}") from e
 
 
 @router.post("/generate-test-prompt", response_model=GenerateTestPromptResponse)
@@ -842,7 +911,25 @@ async def create_agent(
         except Exception as e:
             logger.warning(f"[Agents] Best-effort provider prompt sync failed on create: {e}")
 
-    return db_agent
+    if agent.knowledge_base_ids:
+        from app.services.knowledge_bases.agent_links import replace_agent_knowledge_bases
+
+        try:
+            replace_agent_knowledge_bases(
+                db,
+                agent=db_agent,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                knowledge_base_ids=agent.knowledge_base_ids,
+            )
+            db.commit()
+            db.refresh(db_agent)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    from app.services.agents.agent_serializers import agent_to_response
+
+    return agent_to_response(db, db_agent)
 
 
 @router.get("", response_model=List[AgentResponse])
@@ -862,7 +949,9 @@ async def list_agents(
         Agent.organization_id == organization_id,
         Agent.workspace_id == workspace_id,
     ).offset(skip).limit(limit).all()
-    return agents
+    from app.services.agents.agent_serializers import agents_to_responses
+
+    return agents_to_responses(db, agents)
 
 
 @router.get("/check-phone-assignment", response_model=AgentPhoneAssignmentCheckResponse)
@@ -949,7 +1038,9 @@ async def get_agent(
     
     if not agent:
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
-    return agent
+    from app.services.agents.agent_serializers import agent_to_response
+
+    return agent_to_response(db, agent)
 
 
 @router.put("/{agent_id}", response_model=AgentResponse)
@@ -1040,6 +1131,7 @@ async def update_agent(
             )
 
     update_data = agent_update.model_dump(exclude_unset=True, exclude_none=False)
+    kb_ids_update = update_data.pop("knowledge_base_ids", None)
 
     if "chat_connection_config" in update_data:
         conn_for_storage = update_data.get("chat_connection_type") or db_agent.chat_connection_type
@@ -1151,6 +1243,20 @@ async def update_agent(
         if chat_err:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=chat_err)
     
+    if kb_ids_update is not None:
+        from app.services.knowledge_bases.agent_links import replace_agent_knowledge_bases
+
+        try:
+            replace_agent_knowledge_bases(
+                db,
+                agent=db_agent,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                knowledge_base_ids=kb_ids_update,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     db.commit()
     db.refresh(db_agent)
 
@@ -1173,7 +1279,9 @@ async def update_agent(
             except Exception as e:
                 logger.warning(f"[Agents] Best-effort provider prompt sync failed on update: {e}")
 
-    return db_agent
+    from app.services.agents.agent_serializers import agent_to_response
+
+    return agent_to_response(db, db_agent)
 
 
 @router.post("/{agent_id}/sync-provider-prompt")
