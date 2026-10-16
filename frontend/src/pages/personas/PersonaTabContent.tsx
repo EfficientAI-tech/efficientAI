@@ -13,6 +13,7 @@ interface PersonaTabContentProps {
   lockProvider: boolean
   voiceFieldSize?: 'sm' | 'md'
   promptEmbedded?: boolean
+  medium?: 'voice' | 'text'
 }
 
 export default function PersonaTabContent({
@@ -23,6 +24,7 @@ export default function PersonaTabContent({
   lockProvider,
   voiceFieldSize = 'md',
   promptEmbedded = false,
+  medium = 'voice',
 }: PersonaTabContentProps) {
   if (tab === 'prompt') {
     return (
@@ -32,6 +34,7 @@ export default function PersonaTabContent({
         personaName={draft.name}
         personaGender={draft.gender}
         embedded={promptEmbedded}
+        medium={medium}
       />
     )
   }

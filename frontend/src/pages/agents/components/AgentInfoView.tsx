@@ -40,6 +40,11 @@ import AgentPromptVisualization from './AgentPromptVisualization'
 import Button from '../../../components/Button'
 import { agentProviderPromptTag } from './agentFlowchartUtils'
 import TestAgentSubTabNav, { type TestAgentSubTab } from './TestAgentSubTabNav'
+import ProductionAgentSubTabNav, {
+  type ProductionAgentSubTab,
+} from './ProductionAgentSubTabNav'
+import AgentKnowledgeBasesPanel from './AgentKnowledgeBasesPanel'
+import type { KnowledgeBaseSummary } from '../../knowledgeBases/knowledgeBaseTypes'
 import {
   PRODUCTION_FIRST_MESSAGE_OPTIONS,
   callerFirstMessageHelperText,
@@ -69,6 +74,7 @@ interface AgentInfoViewProps {
   /** Live web call to production voice platform (Retell/Vapi) — voice agents only. */
   onTalkToProduction?: () => void
   onEditVoiceBundle?: (bundleId: string) => void
+  knowledgeBases?: KnowledgeBaseSummary[]
 }
 
 const PROSE =
@@ -116,11 +122,15 @@ export default function AgentInfoView({
   isSyncingPrompt,
   onTalkToProduction,
   onEditVoiceBundle,
+  knowledgeBases = [],
 }: AgentInfoViewProps) {
   const navigate = useNavigate()
   const [testPromptView, setTestPromptView] = useState<'text' | 'visualization'>('text')
   const [voiceAiPromptView, setVoiceAiPromptView] = useState<'text' | 'visualization'>('text')
   const [testAgentSubTab, setTestAgentSubTab] = useState<TestAgentSubTab>('prompt')
+  const [productionAgentSubTab, setProductionAgentSubTab] =
+    useState<ProductionAgentSubTab>('prompt')
+  const attachedKnowledgeBaseIds = agent.knowledge_base_ids ?? []
 
   const linkedBundle = agent.voice_bundle_id
     ? voiceBundles.find((v) => v.id === agent.voice_bundle_id)
@@ -360,7 +370,11 @@ export default function AgentInfoView({
               title={agentProductionTabLabel(agent.call_medium)}
               description={
                 isChatAgent
-                  ? 'Production agent under evaluation.'
+                  ? chatConn === 'internal_llm'
+                    ? agent.main_llm_model
+                      ? `Production replies use ${agent.main_llm_model} with your production prompt.`
+                      : 'Set a production model and prompt for hosted simulation.'
+                    : 'Production agent under evaluation.'
                   : 'Provider agent under evaluation.'
               }
             >
@@ -478,6 +492,14 @@ export default function AgentInfoView({
               )}
             </div>
           )}
+
+          {testAgentSubTab === 'knowledge_bases' && (
+            <AgentKnowledgeBasesPanel
+              mode="view"
+              attachedIds={attachedKnowledgeBaseIds}
+              knowledgeBases={knowledgeBases}
+            />
+          )}
         </div>
       )
     }
@@ -589,6 +611,14 @@ export default function AgentInfoView({
             )}
           </div>
         )}
+
+        {testAgentSubTab === 'knowledge_bases' && (
+          <AgentKnowledgeBasesPanel
+            mode="view"
+            attachedIds={attachedKnowledgeBaseIds}
+            knowledgeBases={knowledgeBases}
+          />
+        )}
       </div>
     )
   }
@@ -603,6 +633,21 @@ export default function AgentInfoView({
     : null
 
   return (
+    <div className="space-y-6">
+      <ProductionAgentSubTabNav
+        value={productionAgentSubTab}
+        onChange={setProductionAgentSubTab}
+      />
+
+      {productionAgentSubTab === 'knowledge_bases' && (
+        <AgentKnowledgeBasesPanel
+          mode="view"
+          attachedIds={attachedKnowledgeBaseIds}
+          knowledgeBases={knowledgeBases}
+        />
+      )}
+
+      {productionAgentSubTab === 'prompt' && (
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-4">
         <div>
@@ -728,6 +773,8 @@ export default function AgentInfoView({
           />
         )}
       </div>
+    </div>
+      )}
     </div>
   )
 }

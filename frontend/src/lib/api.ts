@@ -78,6 +78,10 @@ import type {
   Workspace,
   LLMGenerationConfig,
   TestAgent,
+  SimulationRun,
+  SimulationRunCreate,
+  SimulationTrial,
+  SimulationTrialDetail,
 } from '../types/api'
 
 export interface EnterpriseFeatureMeta {
@@ -1498,6 +1502,20 @@ class ApiClient {
     return response.data
   }
 
+  async generateProductionPromptFromBrief(data: {
+    agent_name: string
+    brief: string
+    language?: string
+    call_type?: string
+    provider?: string
+    model?: string
+    credential_id?: string
+    additional_context?: string
+  }): Promise<{ production_prompt: string; provider: string; model: string }> {
+    const response = await this.client.post('/api/v1/agents/generate-production-prompt', data)
+    return response.data
+  }
+
   async generateTestPromptFromProduction(
     data: GenerateTestPromptParams,
   ): Promise<{
@@ -1802,6 +1820,177 @@ class ApiClient {
       params: force ? { force: true } : undefined,
     })
     return response.data
+  }
+
+  // Harbor simulation runs
+  async listSimulationRuns(agentId?: string): Promise<SimulationRun[]> {
+    const response = await this.client.get('/api/v1/simulation-runs', {
+      params: agentId ? { agent_id: agentId } : undefined,
+    })
+    return response.data
+  }
+
+  async getSimulationRun(runId: string): Promise<SimulationRun> {
+    const response = await this.client.get(`/api/v1/simulation-runs/${runId}`)
+    return response.data
+  }
+
+  async createSimulationRun(data: SimulationRunCreate): Promise<SimulationRun> {
+    const response = await this.client.post('/api/v1/simulation-runs', data)
+    return response.data
+  }
+
+  async listSimulationTrials(runId: string): Promise<SimulationTrial[]> {
+    const response = await this.client.get(`/api/v1/simulation-runs/${runId}/trials`)
+    return response.data
+  }
+
+  async getSimulationTrial(runId: string, trialId: string): Promise<SimulationTrialDetail> {
+    const response = await this.client.get(`/api/v1/simulation-runs/${runId}/trials/${trialId}`)
+    return response.data
+  }
+
+  async cancelSimulationRun(runId: string): Promise<SimulationRun> {
+    const response = await this.client.post(`/api/v1/simulation-runs/${runId}/cancel`)
+    return response.data
+  }
+
+  async rerunSimulationRun(runId: string, onlyFailed = false): Promise<SimulationRun> {
+    const response = await this.client.post(`/api/v1/simulation-runs/${runId}/rerun`, null, {
+      params: { only_failed: onlyFailed },
+    })
+    return response.data
+  }
+
+  async downloadSimulationArtifacts(runId: string): Promise<Blob> {
+    const response = await this.client.get(`/api/v1/simulation-runs/${runId}/artifacts`, {
+      responseType: 'blob',
+    })
+    return response.data
+  }
+
+  // Knowledge bases
+  async listKnowledgeBases(skip = 0, limit = 100): Promise<any[]> {
+    const response = await this.client.get('/api/v1/knowledge-bases', { params: { skip, limit } })
+    return response.data
+  }
+
+  async getKnowledgeBase(knowledgeBaseId: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/knowledge-bases/${knowledgeBaseId}`)
+    return response.data
+  }
+
+  async listKnowledgeBaseEmbeddingModels(): Promise<Array<{ id: string; label: string }>> {
+    const response = await this.client.get('/api/v1/knowledge-bases/embedding-models')
+    return response.data
+  }
+
+  async getKnowledgeBaseEmbeddingConfig(): Promise<{
+    default_provider: string
+    default_model: string
+    required_dimensions: number
+    providers: Array<{
+      id: string
+      label: string
+      suggested_models: Array<{ id: string; label: string }>
+    }>
+  }> {
+    const response = await this.client.get('/api/v1/knowledge-bases/embedding-config')
+    return response.data
+  }
+
+  async createKnowledgeBase(data: {
+    name: string
+    description?: string
+    embedding_provider?: string
+    embedding_model?: string
+    embedding_credential_id?: string | null
+  }): Promise<any> {
+    const response = await this.client.post('/api/v1/knowledge-bases', data)
+    return response.data
+  }
+
+  async updateKnowledgeBase(
+    knowledgeBaseId: string,
+    data: {
+      name?: string
+      description?: string
+      status?: string
+      embedding_provider?: string
+      embedding_model?: string
+      embedding_credential_id?: string | null
+    },
+  ): Promise<any> {
+    const response = await this.client.patch(`/api/v1/knowledge-bases/${knowledgeBaseId}`, data)
+    return response.data
+  }
+
+  async deleteKnowledgeBase(knowledgeBaseId: string): Promise<void> {
+    await this.client.delete(`/api/v1/knowledge-bases/${knowledgeBaseId}`)
+  }
+
+  async uploadKnowledgeDocument(knowledgeBaseId: string, file: File): Promise<any> {
+    const form = new FormData()
+    form.append('file', file)
+    const response = await this.client.post(
+      `/api/v1/knowledge-bases/${knowledgeBaseId}/documents`,
+      form,
+      { headers: { 'Content-Type': 'multipart/form-data' } },
+    )
+    return response.data
+  }
+
+  async uploadKnowledgeDocuments(
+    knowledgeBaseId: string,
+    files: File[],
+    options?: {
+      onProgress?: (progress: { uploaded: number; total: number; fileName: string }) => void
+    },
+  ): Promise<{ uploaded: number; failed: Array<{ fileName: string; error: string }> }> {
+    const failed: Array<{ fileName: string; error: string }> = []
+    let uploaded = 0
+    const total = files.length
+    for (const file of files) {
+      options?.onProgress?.({ uploaded, total, fileName: file.name })
+      try {
+        await this.uploadKnowledgeDocument(knowledgeBaseId, file)
+        uploaded += 1
+      } catch (err: unknown) {
+        const ax = err as { response?: { data?: { detail?: string } }; message?: string }
+        const detail = ax?.response?.data?.detail
+        failed.push({
+          fileName: file.name,
+          error: typeof detail === 'string' ? detail : ax?.message || 'Upload failed',
+        })
+      }
+    }
+    options?.onProgress?.({ uploaded, total, fileName: '' })
+    return { uploaded, failed }
+  }
+
+  async retryKnowledgeDocument(knowledgeBaseId: string, documentId: string): Promise<any> {
+    const response = await this.client.post(
+      `/api/v1/knowledge-bases/${knowledgeBaseId}/documents/${documentId}/retry`,
+    )
+    return response.data
+  }
+
+  async deleteKnowledgeDocument(knowledgeBaseId: string, documentId: string): Promise<void> {
+    await this.client.delete(
+      `/api/v1/knowledge-bases/${knowledgeBaseId}/documents/${documentId}`,
+    )
+  }
+
+  async getKnowledgeDocumentView(knowledgeBaseId: string, documentId: string): Promise<any> {
+    const response = await this.client.get(
+      `/api/v1/knowledge-bases/${knowledgeBaseId}/documents/${documentId}/view`,
+    )
+    return response.data
+  }
+
+  knowledgeDocumentDownloadUrl(knowledgeBaseId: string, documentId: string): string {
+    const base = this.client.defaults.baseURL || ''
+    return `${base}/api/v1/knowledge-bases/${knowledgeBaseId}/documents/${documentId}/download`
   }
 
   // Chat/Inference endpoints

@@ -2,9 +2,9 @@ import type { TestAgentTemplateDraft } from '../agentTestSetupConstants'
 import { defaultTestAgentTemplate } from '../agentTestSetupConstants'
 import type { ChatIntegrationOptionId } from './ChatIntegrationTypeStep'
 
-export type CreateAgentPath = 'telephony' | 'platform' | 'chat'
+export type CreateAgentPath = 'telephony' | 'platform' | 'chat' | 'hosted'
 
-export type AgentMedium = 'voice' | 'chat'
+export type AgentMedium = 'voice' | 'chat' | 'hosted'
 
 export type CreateWizardPhase = 'entry_medium' | 'entry_integration' | 'steps'
 
@@ -21,6 +21,7 @@ export interface CreateAgentFormData {
   voice_ai_integration_id: string
   voice_ai_agent_id: string
   silence_hangup_secs: number
+  knowledge_base_ids: string[]
 }
 
 export const DEFAULT_CREATE_AGENT_FORM: CreateAgentFormData = {
@@ -36,6 +37,7 @@ export const DEFAULT_CREATE_AGENT_FORM: CreateAgentFormData = {
   voice_ai_integration_id: '',
   voice_ai_agent_id: '',
   silence_hangup_secs: 15,
+  knowledge_base_ids: [],
 }
 
 export const TELEPHONY_STEPS = [
@@ -53,6 +55,15 @@ export const PLATFORM_STEPS = [
 export const CHAT_STEPS_LLM = [
   { id: 1, title: 'Setup', description: 'Name and prompts' },
   { id: 2, title: 'Production LLM', description: 'API credential and model' },
+  { id: 3, title: 'Test agent', description: 'LLM for simulated customer' },
+] as const
+
+/** Platform-hosted production agent (chat simulations today; voice later). */
+export const HOSTED_STEPS = [
+  { id: 1, title: 'Production agent', description: 'Brief and system prompt' },
+  { id: 2, title: 'Test agent', description: 'Customer role from production' },
+  { id: 3, title: 'Production LLM', description: 'Model that answers as production' },
+  { id: 4, title: 'Test LLM', description: 'Model for simulated customer' },
 ] as const
 
 /** Retell / Vapi / platform-linked chat agents */
@@ -79,12 +90,13 @@ export function chatWizardSteps(integration: ChatIntegrationOptionId) {
   return CHAT_STEPS_CONNECT
 }
 
-export function chatWizardMaxStep(integration: ChatIntegrationOptionId): CreateStepId {
-  return integration === 'internal_llm' ? 2 : 3
-}
-
-export function createWizardMaxStep(_path: CreateAgentPath): CreateStepId {
+export function chatWizardMaxStep(_integration: ChatIntegrationOptionId): CreateStepId {
   return 3
 }
 
-export type CreateStepId = 1 | 2 | 3
+export function createWizardMaxStep(path: CreateAgentPath): CreateStepId {
+  if (path === 'hosted') return 4
+  return 3
+}
+
+export type CreateStepId = 1 | 2 | 3 | 4

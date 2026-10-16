@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Any, Optional
+from dataclasses import dataclass, field
+from typing import Any, Callable, Optional
 from uuid import UUID
 
 from loguru import logger
@@ -12,8 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.models.database import Agent, Evaluator, EvaluatorResult, Persona, Scenario
 from app.services.agents.chat_connection import normalized_chat_connection_type
-from app.services.agents.chat_llm_config import resolve_simulation_llm
-from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
+from app.services.agents.chat_llm_config import ResolvedSimulationLlm, resolve_simulation_llm
 from app.services.agents.chat_production_leg import (
     generate_production_chat_reply,
     uses_live_production_leg,
@@ -169,6 +169,60 @@ def _agent_messages(system_prompt: str, transcript: list[dict[str, str]]) -> lis
     return messages
 
 
+def _generate_test_customer_turn(
+    *,
+    messages: list[dict[str, str]],
+    agent: Agent,
+    organization_id: UUID,
+    db: Session,
+    llm_provider: ModelProvider,
+    llm_model: str,
+    llm_config: Optional[dict],
+    credential_id: Optional[UUID],
+) -> tuple[str, list[dict[str, Any]]]:
+    """Simulated customer turn; uses knowledge-base tools when the agent has ready docs."""
+    leg_label = "Simulated customer (test agent LLM)"
+    kb_tool_calls: list[dict[str, Any]] = []
+    workspace_id = agent.workspace_id
+    if workspace_id:
+        from app.services.knowledge_bases.chat_tools import (
+            generate_production_reply_with_knowledge_tools,
+        )
+        from app.services.knowledge_bases.retrieval import agent_has_ready_knowledge
+
+        if agent_has_ready_knowledge(db, agent_id=agent.id):
+            try:
+                text, kb_tool_calls = generate_production_reply_with_knowledge_tools(
+                    db,
+                    organization_id=organization_id,
+                    workspace_id=workspace_id,
+                    agent_id=agent.id,
+                    messages=messages,
+                    llm_provider=llm_provider,
+                    llm_model=llm_model,
+                    llm_config=llm_config,
+                    credential_id=credential_id,
+                    task_defaults=_SIMULATION_TASK_DEFAULTS,
+                )
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    f"{leg_label} failed ({llm_provider.value}/{llm_model}): {exc}"
+                ) from exc
+            if (text or "").strip():
+                return text.strip(), kb_tool_calls
+    text = _generate_turn(
+        messages=messages,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        organization_id=organization_id,
+        db=db,
+        llm_config=llm_config,
+        credential_id=credential_id,
+        leg_label=leg_label,
+    )
+    return text, kb_tool_calls
+
+
 def _generate_turn(
     *,
     messages: list[dict[str, str]],
@@ -243,6 +297,200 @@ def _generate_turn(
     )
 
 
+@dataclass
+class TextConversation:
+    """Mutable conversation state; stays readable when ``run_text_conversation`` raises."""
+
+    transcript: list[dict[str, str]] = field(default_factory=list)
+    exchanges: int = 0
+    max_turns: int = 0
+    production_leg_meta: dict[str, Any] = field(default_factory=dict)
+    test_kb_tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    test_llm_source: str = ""
+
+
+# Called after every appended turn with the transcript entry and LLM/endpoint latency in seconds.
+OnTurn = Callable[[dict[str, str], float], None]
+
+
+def run_text_conversation(
+    *,
+    agent: Agent,
+    persona: Persona,
+    scenario: Scenario,
+    organization_id: UUID,
+    db: Session,
+    conversation: TextConversation,
+    caller_ctx: LLMUsageContext,
+    agent_ctx: LLMUsageContext,
+    evaluator_result: Optional[EvaluatorResult] = None,
+    test_llm_override: Optional[ResolvedSimulationLlm] = None,
+    production_llm_override: Optional[ResolvedSimulationLlm] = None,
+    on_turn: Optional[OnTurn] = None,
+) -> TextConversation:
+    """Alternate test-agent and production-agent turns until goodbye or ``max_turns``."""
+    test_llm = test_llm_override or resolve_simulation_llm(
+        db, agent=agent, organization_id=organization_id, leg="test"
+    )
+    conversation.test_llm_source = test_llm.source
+    provider_chat_state = ProviderChatState()
+    conversation.max_turns = resolve_persona_max_turns(persona)
+    caller_system = build_test_agent_system_prompt(
+        agent,
+        persona,
+        scenario,
+        persona_description=build_persona_description_for_bridge(persona),
+        max_turns=conversation.max_turns,
+    )
+    transcript = conversation.transcript
+    first_message_config = resolve_first_message_from_agent(agent)
+    scenario_first_message = None
+    if isinstance(scenario.required_info, dict):
+        scenario_first_message = scenario.required_info.get("first_message")
+    conn_type = normalized_chat_connection_type(agent)
+
+    def _append(speaker: str, text: str, started: float) -> None:
+        entry = {"speaker": speaker, "text": text}
+        transcript.append(entry)
+        if on_turn is not None:
+            on_turn(entry, time.monotonic() - started)
+
+    try:
+        while conversation.exchanges < conversation.max_turns:
+            if uses_live_production_leg(agent) and _production_turn_needs_user_seed(transcript):
+                _append(
+                    "Speaker 1",
+                    _build_eval_user_opener(
+                        agent=agent,
+                        persona=persona,
+                        first_message_config=first_message_config,
+                        scenario_first_message=scenario_first_message,
+                    ),
+                    time.monotonic(),
+                )
+            elif (
+                not uses_live_production_leg(agent)
+                and not transcript
+                and should_caller_speak_first(first_message_config)
+            ):
+                opener = _build_eval_user_opener(
+                    agent=agent,
+                    persona=persona,
+                    first_message_config=first_message_config,
+                    scenario_first_message=scenario_first_message,
+                )
+                _append("Speaker 1", opener, time.monotonic())
+
+            started = time.monotonic()
+            try:
+                with llm_usage_context(agent_ctx):
+                    agent_text, leg_meta = generate_production_chat_reply(
+                        db,
+                        agent=agent,
+                        organization_id=organization_id,
+                        transcript=transcript,
+                        provider_state=provider_chat_state,
+                        evaluator_result=evaluator_result,
+                        llm_override=production_llm_override,
+                    )
+            except Exception as exc:
+                leg = (
+                    provider_chat_state.extra.get("production_leg")
+                    or provider_chat_state.platform
+                    or conn_type
+                )
+                raise ProductionChatLegError(
+                    str(leg),
+                    f"Production chat leg failed ({leg}): {exc}",
+                ) from exc
+            conversation.production_leg_meta.update(leg_meta)
+            _append("Speaker 2", agent_text, started)
+            conversation.exchanges += 1
+            if _should_end_conversation(agent_text, turn_index=conversation.exchanges):
+                break
+
+            started = time.monotonic()
+            try:
+                with llm_usage_context(caller_ctx):
+                    caller_text, turn_kb_calls = _generate_test_customer_turn(
+                        messages=_caller_messages(
+                            caller_system, transcript, chat=is_chat_agent(agent)
+                        ),
+                        agent=agent,
+                        organization_id=organization_id,
+                        db=db,
+                        llm_provider=test_llm.provider,
+                        llm_model=test_llm.model,
+                        llm_config=test_llm.llm_config,
+                        credential_id=test_llm.credential_id,
+                    )
+                    if turn_kb_calls:
+                        conversation.test_kb_tool_calls.extend(turn_kb_calls)
+            except Exception as exc:
+                raise TestAgentLlmLegError(f"Test agent LLM failed: {exc}") from exc
+            _append("Speaker 1", caller_text, started)
+            conversation.exchanges += 1
+            if _should_end_conversation(caller_text, turn_index=conversation.exchanges):
+                break
+    finally:
+        try:
+            close_provider_chat_session(
+                db,
+                agent=agent,
+                organization_id=organization_id,
+                state=provider_chat_state,
+            )
+        except Exception:
+            logger.warning(
+                "[LLM simulation] Provider chat session teardown failed for agent {}",
+                agent.id,
+            )
+    return conversation
+
+
+def write_conversation_to_result(
+    result: EvaluatorResult,
+    conversation: TextConversation,
+    *,
+    agent: Agent,
+    extra_call_data: Optional[dict[str, Any]] = None,
+) -> None:
+    """Store transcript, speaker segments and call_data on an evaluator result."""
+    transcript = conversation.transcript
+    result.transcription = "\n".join(
+        f"{entry['speaker']}: {entry['text']}"
+        for entry in transcript
+        if entry.get("text")
+    )
+    result.speaker_segments = [
+        {
+            "speaker": entry["speaker"],
+            "text": entry["text"],
+            "start": float(idx),
+            "end": float(idx) + 1.0,
+        }
+        for idx, entry in enumerate(transcript)
+    ]
+    result.provider_platform = "internal"
+    call_data: dict[str, Any] = {
+        "source": "llm_to_llm_simulation",
+        "simulation": "llm_to_llm",
+        "modality": "chat" if is_chat_agent(agent) else "voice",
+        "chat_connection_type": normalized_chat_connection_type(agent),
+        **conversation.production_leg_meta,
+        "test_llm_source": conversation.test_llm_source,
+        "exchanges": conversation.exchanges,
+        "messages": transcript,
+        "partial": conversation.exchanges < conversation.max_turns,
+    }
+    if conversation.test_kb_tool_calls:
+        call_data["test_agent_knowledge_base_tool_calls"] = conversation.test_kb_tool_calls
+    if extra_call_data:
+        call_data.update(extra_call_data)
+    result.call_data = call_data
+    result.duration_seconds = float(max(1, len(transcript)))
+
+
 def run_llm_to_llm_evaluator_simulation(
     *,
     evaluator: Evaluator,
@@ -254,23 +502,6 @@ def run_llm_to_llm_evaluator_simulation(
     db: Session,
 ) -> dict[str, Any]:
     """Run a text simulation and populate the evaluator result transcript."""
-    conn_type = normalized_chat_connection_type(agent)
-
-    test_llm = resolve_simulation_llm(
-        db, agent=agent, organization_id=organization_id, leg="test"
-    )
-    provider_chat_state = ProviderChatState()
-    production_leg_meta: dict[str, Any] = {}
-
-    max_turns = resolve_persona_max_turns(persona)
-    persona_description = build_persona_description_for_bridge(persona)
-    caller_system = build_test_agent_system_prompt(
-        agent,
-        persona,
-        scenario,
-        persona_description=persona_description,
-        max_turns=max_turns,
-    )
     caller_ctx = usage_context_for_test_agent_simulation(
         organization_id=organization_id,
         workspace_id=evaluator.workspace_id,
@@ -299,136 +530,25 @@ def run_llm_to_llm_evaluator_simulation(
         },
     )
 
-    transcript: list[dict[str, str]] = []
-    chat_mode = is_chat_agent(agent)
-    first_message_config = resolve_first_message_from_agent(agent)
-    scenario_first_message = None
-    if isinstance(scenario.required_info, dict):
-        scenario_first_message = scenario.required_info.get("first_message")
-    exchanges = 0
-
-    def _write_transcript_to_result() -> None:
-        result.transcription = "\n".join(
-            f"{entry['speaker']}: {entry['text']}"
-            for entry in transcript
-            if entry.get("text")
-        )
-        result.speaker_segments = [
-            {
-                "speaker": entry["speaker"],
-                "text": entry["text"],
-                "start": float(idx),
-                "end": float(idx) + 1.0,
-            }
-            for idx, entry in enumerate(transcript)
-        ]
-        result.provider_platform = "internal"
-        result.call_data = {
-            "source": "llm_to_llm_simulation",
-            "simulation": "llm_to_llm",
-            "modality": "chat" if chat_mode else "voice",
-            "chat_connection_type": conn_type,
-            **production_leg_meta,
-            "test_llm_source": test_llm.source,
-            "exchanges": exchanges,
-            "messages": transcript,
-            "partial": exchanges < max_turns,
-        }
-        result.duration_seconds = float(max(1, len(transcript)))
-
+    conversation = TextConversation()
     try:
-        while exchanges < max_turns:
-            if (
-                uses_live_production_leg(agent)
-                and _production_turn_needs_user_seed(transcript)
-            ):
-                transcript.append(
-                    {
-                        "speaker": "Speaker 1",
-                        "text": _build_eval_user_opener(
-                            agent=agent,
-                            persona=persona,
-                            first_message_config=first_message_config,
-                            scenario_first_message=scenario_first_message,
-                        ),
-                    }
-                )
-            elif (
-                not uses_live_production_leg(agent)
-                and not transcript
-                and should_caller_speak_first(first_message_config)
-            ):
-                opener = _build_eval_user_opener(
-                    agent=agent,
-                    persona=persona,
-                    first_message_config=first_message_config,
-                    scenario_first_message=scenario_first_message,
-                )
-                transcript.append({"speaker": "Speaker 1", "text": opener})
-
-            try:
-                with llm_usage_context(agent_ctx):
-                    agent_text, leg_meta = generate_production_chat_reply(
-                        db,
-                        agent=agent,
-                        organization_id=organization_id,
-                        transcript=transcript,
-                        provider_state=provider_chat_state,
-                        evaluator_result=result,
-                    )
-            except Exception as exc:
-                leg = (
-                    provider_chat_state.extra.get("production_leg")
-                    or provider_chat_state.platform
-                    or conn_type
-                )
-                raise ProductionChatLegError(
-                    str(leg),
-                    f"Production chat leg failed ({leg}): {exc}",
-                ) from exc
-            production_leg_meta.update(leg_meta)
-            transcript.append({"speaker": "Speaker 2", "text": agent_text})
-            exchanges += 1
-            if _should_end_conversation(agent_text, turn_index=exchanges):
-                break
-
-            try:
-                with llm_usage_context(caller_ctx):
-                    caller_text = _generate_turn(
-                        messages=_caller_messages(caller_system, transcript, chat=chat_mode),
-                        llm_provider=test_llm.provider,
-                        llm_model=test_llm.model,
-                        organization_id=organization_id,
-                        db=db,
-                        llm_config=test_llm.llm_config,
-                        credential_id=test_llm.credential_id,
-                        leg_label="Simulated customer (test agent LLM)",
-                    )
-            except Exception as exc:
-                raise TestAgentLlmLegError(f"Test agent LLM failed: {exc}") from exc
-            transcript.append({"speaker": "Speaker 1", "text": caller_text})
-            exchanges += 1
-            if _should_end_conversation(caller_text, turn_index=exchanges):
-                break
+        run_text_conversation(
+            agent=agent,
+            persona=persona,
+            scenario=scenario,
+            organization_id=organization_id,
+            db=db,
+            conversation=conversation,
+            caller_ctx=caller_ctx,
+            agent_ctx=agent_ctx,
+            evaluator_result=result,
+        )
     except Exception:
-        if transcript:
-            _write_transcript_to_result()
+        if conversation.transcript:
+            write_conversation_to_result(result, conversation, agent=agent)
         raise
-    finally:
-        try:
-            close_provider_chat_session(
-                db,
-                agent=agent,
-                organization_id=organization_id,
-                state=provider_chat_state,
-            )
-        except Exception:
-            logger.warning(
-                "[LLM simulation] Provider chat session teardown failed for evaluator {}",
-                evaluator.evaluator_id,
-            )
 
-    _write_transcript_to_result()
+    write_conversation_to_result(result, conversation, agent=agent)
     if isinstance(result.call_data, dict):
         result.call_data["partial"] = False
 
@@ -436,10 +556,10 @@ def run_llm_to_llm_evaluator_simulation(
         "[LLM simulation] Completed evaluator {} result {} with {} transcript lines",
         evaluator.evaluator_id,
         result.result_id,
-        len(transcript),
+        len(conversation.transcript),
     )
     return {
-        "transcript_lines": len(transcript),
-        "exchanges": exchanges,
+        "transcript_lines": len(conversation.transcript),
+        "exchanges": conversation.exchanges,
         "provider_platform": "internal",
     }

@@ -36,6 +36,7 @@ import {
   Github,
   Sparkles,
   Upload,
+  BookOpen,
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { Info, X } from 'lucide-react'
@@ -65,6 +66,7 @@ const navigationSections: NavSection[] = [
       { name: 'Agents', href: '/agents', icon: Bot },
       { name: 'Personas', href: '/personas', icon: Users },
       { name: 'Scenarios', href: '/scenarios', icon: FileText },
+      { name: 'Knowledge Bases', href: '/knowledge-bases', icon: BookOpen },
     ],
   },
   {

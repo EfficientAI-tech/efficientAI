@@ -31,7 +31,7 @@ from app.models.enums import (
     IntegrationPlatform, ModelProvider, VoiceBundleType, TestAgentConversationStatus,
     MetricType, MetricCategory, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
     AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus, CronJobStatus,
-    PromptOptimizationStatus, CallImportStatus, CallImportRowStatus,
+    PromptOptimizationStatus, CallImportStatus, CallImportRowStatus, SimulationRunStatus,
 )
 
 def get_enum_values(enum_class):
@@ -675,6 +675,98 @@ class Scenario(Base):
     created_by = Column(String)
 
 
+class KnowledgeBase(Base):
+    """Workspace document library for agent retrieval in simulation."""
+    __tablename__ = "knowledge_bases"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    embedding_provider = Column(String(64), nullable=False, default="openai")
+    embedding_model = Column(String(512), nullable=False, default="text-embedding-3-small")
+    embedding_credential_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("aiproviders.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    status = Column(String(32), nullable=False, default="active")
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_by = Column(String)
+
+
+class KnowledgeDocument(Base):
+    __tablename__ = "knowledge_documents"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    knowledge_base_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_bases.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    source_type = Column(String(32), nullable=False, default="file")
+    original_filename = Column(String(512), nullable=True)
+    blob_key = Column(String(1024), nullable=False)
+    content_type = Column(String(255), nullable=True)
+    byte_size = Column(BigInteger, nullable=True)
+    status = Column(String(32), nullable=False, default="pending")
+    error_text = Column(Text, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class KnowledgeChunk(Base):
+    __tablename__ = "knowledge_chunks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_documents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    chunk_index = Column(Integer, nullable=False)
+    text = Column(Text, nullable=False)
+    page_number = Column(Integer, nullable=True)
+    embedding_model = Column(String(512), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class AgentKnowledgeBase(Base):
+    __tablename__ = "agent_knowledge_bases"
+
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), primary_key=True)
+    knowledge_base_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_bases.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    created_at = Column(DateTime, server_default=func.now())
+
+
 # Enums moved to enums.py
 
 
@@ -1196,8 +1288,72 @@ class EvaluatorResult(Base):
         nullable=True,
         index=True,
     )
-    
+
+    # Harbor simulation run trial (NULL for regular evaluator runs).
+    simulation_run_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("simulation_runs.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    harbor_trial_name = Column(String(255), nullable=True)
+    attempt_index = Column(Integer, nullable=True)
+    # Aggregate normalized [0, 1] reward reported to Harbor and pass/fail vs run threshold.
+    reward = Column(Float, nullable=True)
+    passed = Column(Boolean, nullable=True)
+
     # Metadata
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_by = Column(String, nullable=True)
+
+
+class SimulationRun(Base):
+    """Harbor job: every scenario × persona × attempt simulated against one production agent."""
+
+    __tablename__ = "simulation_runs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    run_id = Column(String(6), unique=True, nullable=False, index=True)  # 6-digit ID
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String, nullable=True)
+
+    scenario_ids = Column(JSON, nullable=False, default=list)
+    persona_ids = Column(JSON, nullable=False, default=list)
+    metric_ids = Column(JSON, nullable=True)  # NULL = all enabled agent metrics
+    metric_success_criteria = Column(JSON, nullable=True)  # per-metric pass rules for this run
+
+    n_attempts = Column(Integer, nullable=False, default=1)
+    n_concurrent = Column(Integer, nullable=False, default=4)
+    pass_threshold = Column(Float, nullable=False, default=0.7)
+
+    # Optional LLM overrides; NULL = agent's main / test LLM.
+    production_llm_provider = Column(String(64), nullable=True)
+    production_llm_model = Column(String(255), nullable=True)
+    test_llm_provider = Column(String(64), nullable=True)
+    test_llm_model = Column(String(255), nullable=True)
+
+    status = Column(String(20), nullable=False, default=SimulationRunStatus.QUEUED.value, index=True)
+    expected_trials = Column(Integer, nullable=False, default=0)
+    completed_trials = Column(Integer, nullable=False, default=0)
+    failed_trials = Column(Integer, nullable=False, default=0)
+    summary = Column(JSON, nullable=True)
+    error_message = Column(Text, nullable=True)
+
+    harbor_job_name = Column(String(255), nullable=True)
+    artifacts_s3_key = Column(String, nullable=True)
+    celery_task_id = Column(String, nullable=True)
+    cancel_requested = Column(Boolean, nullable=False, default=False, server_default="false")
+
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     created_by = Column(String, nullable=True)

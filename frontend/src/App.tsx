@@ -30,6 +30,9 @@ import Personas from './pages/personas/Personas'
 // Scenarios
 import Scenarios from './pages/scenarios/Scenarios'
 
+// Knowledge bases
+import { KnowledgeBases, KnowledgeBaseDetail } from './pages/knowledgeBases'
+
 // Metrics
 import MetricsLayout from './pages/metrics/MetricsLayout'
 import MetricsManagement from './pages/metrics/MetricsManagement'
@@ -59,6 +62,7 @@ import ResultsUnassigned from './pages/evaluators/results/ResultsUnassigned'
 import EvaluatorResultDetail from './pages/evaluators/results/EvaluatorResultDetail'
 import EvaluationDetail from './pages/evaluators/results/EvaluationDetail'
 import EvaluationsList from './pages/evaluators/results/EvaluationsList'
+import SimulationRunDetail from './pages/simulations/SimulationRunDetail'
 
 // Observability
 import Observability from './pages/observability/Observability'
@@ -194,6 +198,8 @@ function App() {
           <Route path="personas" element={<Personas />} />
           <Route path="customer-prompts" element={<Navigate to="/personas" replace />} />
           <Route path="scenarios" element={<Scenarios />} />
+          <Route path="knowledge-bases" element={<KnowledgeBases />} />
+          <Route path="knowledge-bases/:id" element={<KnowledgeBaseDetail />} />
           <Route path="metrics" element={<Navigate to="/metrics-management" replace />} />
           <Route path="integrations" element={<Integrations />} />
           <Route path="telephony-numbers" element={<TelephonyNumbers />} />
@@ -218,6 +224,7 @@ function App() {
             element={<RedirectAgentScenarioToWorkspace />}
           />
           <Route path="results/:id" element={<EvaluatorResultDetail />} />
+          <Route path="simulations/:runId" element={<SimulationRunDetail />} />
           <Route path="observability" element={<Observability />} />
           <Route path="observability/calls" element={<TestInsights />} />
           <Route path="observability/calls/:callShortId" element={<ObservabilityCallDetail />} />

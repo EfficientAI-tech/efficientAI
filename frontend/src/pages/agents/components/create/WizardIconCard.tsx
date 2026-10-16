@@ -27,7 +27,7 @@ export default function WizardIconCard({
   compact = false,
 }: WizardIconCardProps) {
   const sizeClass = compact
-    ? 'min-h-[8rem] px-4 py-5 gap-3'
+    ? 'min-h-[10.5rem] px-4 py-5 gap-2.5'
     : large
       ? 'min-h-[9.5rem] px-5 py-7 gap-3'
       : medium
@@ -72,8 +72,10 @@ export default function WizardIconCard({
       </span>
       {subtitle ? (
         <span
-          className={`text-center text-gray-500 px-2 line-clamp-2 ${
-            compact ? 'text-[11px] sm:text-xs leading-snug' : 'text-[11px] leading-tight'
+          className={`text-center text-gray-500 px-1.5 ${
+            compact
+              ? 'text-xs leading-relaxed line-clamp-4'
+              : 'text-[11px] leading-tight line-clamp-2'
           }`}
         >
           {subtitle}

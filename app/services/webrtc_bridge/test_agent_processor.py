@@ -552,6 +552,50 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
         )
         if on_text_delta is not None:
             kwargs["on_text_delta"] = on_text_delta
+        if (
+            on_text_delta is None
+            and self.config.db
+            and self.config.agent_id
+            and self.config.workspace_id
+            and self.config.organization_id
+        ):
+            from uuid import UUID
+
+            from app.services.knowledge_bases.chat_tools import (
+                generate_production_reply_with_knowledge_tools,
+            )
+            from app.services.knowledge_bases.retrieval import agent_has_ready_knowledge
+
+            agent_uuid = UUID(str(self.config.agent_id))
+            org_uuid = UUID(str(self.config.organization_id))
+            workspace_uuid = UUID(str(self.config.workspace_id))
+            if agent_has_ready_knowledge(self.config.db, agent_id=agent_uuid):
+
+                def _kb_call() -> Dict[str, Any]:
+                    text, _kb_log = generate_production_reply_with_knowledge_tools(
+                        self.config.db,
+                        organization_id=org_uuid,
+                        workspace_id=workspace_uuid,
+                        agent_id=agent_uuid,
+                        messages=messages,
+                        llm_provider=self._llm_provider_enum(),
+                        llm_model=self.config.llm_model,
+                        llm_config=self._effective_llm_config(
+                            allow_reasoning_override=allow_reasoning_override
+                        ),
+                        credential_id=UUID(str(credential_id)) if credential_id else None,
+                        task_defaults={
+                            "temperature": kwargs.get("temperature", 0.7),
+                            "max_tokens": kwargs.get("max_tokens"),
+                        },
+                    )
+                    return {"text": text}
+
+                if ctx is not None:
+                    with llm_usage_context(ctx):
+                        return _kb_call()
+                return _kb_call()
+
         if ctx is not None:
             with llm_usage_context(ctx):
                 return llm_service.generate_response(**kwargs)

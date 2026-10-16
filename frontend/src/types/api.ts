@@ -615,6 +615,7 @@ export interface TestAgent {
   test_llm_credential_id?: string | null
   chat_connection_config?: Record<string, unknown> | null
   chat_eval_mode?: string | null
+  knowledge_base_ids?: string[]
   created_at: string
   updated_at: string
 }
@@ -2440,4 +2441,174 @@ export interface ObservabilityCall {
   call_data?: ObservabilityCallData | null
   live_transcript?: Array<{ role: string; content: string; timestamp?: string }>
   display_name?: string | null
+}
+
+// Harbor simulation runs (test agent ↔ production agent)
+export type SimulationRunStatus =
+  | 'queued'
+  | 'preparing'
+  | 'running'
+  | 'ingesting'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+
+export interface SimulationRunMetricSummary {
+  metric_id: string
+  name: string
+  mean: number
+  n: number
+  pass_rate?: number
+}
+
+export interface SimulationRunComboSummary {
+  scenario_id: string
+  scenario_name?: string | null
+  persona_id: string
+  persona_name?: string | null
+  attempts: number
+  passed: number
+  mean_reward?: number | null
+}
+
+export interface SimulationRunSummary {
+  n_trials: number
+  n_completed: number
+  n_failed: number
+  n_passed: number
+  uses_success_criteria?: boolean
+  pass_rate?: number | null
+  mean_reward?: number | null
+  pass_all_rate?: number | null
+  pass_any_rate?: number | null
+  avg_turns?: number | null
+  metrics: SimulationRunMetricSummary[]
+  combos: SimulationRunComboSummary[]
+  harbor?: {
+    n_errored_trials?: number | null
+    n_retries?: number | null
+    exception_stats?: Record<string, string[]>
+  } | null
+}
+
+export interface SimulationRun {
+  id: string
+  run_id: string
+  agent_id: string
+  name?: string | null
+  scenario_ids: string[]
+  persona_ids: string[]
+  metric_ids?: string[] | null
+  metric_success_criteria?: MetricSuccessCriterion[] | null
+  n_attempts: number
+  n_concurrent: number
+  pass_threshold: number
+  production_llm_provider?: string | null
+  production_llm_model?: string | null
+  test_llm_provider?: string | null
+  test_llm_model?: string | null
+  status: SimulationRunStatus
+  expected_trials: number
+  completed_trials: number
+  failed_trials: number
+  summary?: SimulationRunSummary | null
+  error_message?: string | null
+  harbor_job_name?: string | null
+  has_artifacts: boolean
+  cancel_requested: boolean
+  started_at?: string | null
+  finished_at?: string | null
+  created_at?: string | null
+}
+
+export type SimulationSuccessCriteriaKind =
+  | 'boolean'
+  | 'rating'
+  | 'number'
+  | 'enum'
+  | 'category_single'
+  | 'category_multi'
+  | 'classification'
+  | 'text'
+
+export interface MetricSuccessCriterionLabelRule {
+  child_id: string
+  expect: 'yes' | 'no'
+}
+
+export interface MetricSuccessCriterionClassificationQuestions {
+  noul?: { success_when: 'yes' | 'no' }
+  choice?: { success_values: string[] }
+  score?: { success_values: string[] }
+}
+
+export interface MetricSuccessCriterion {
+  metric_id: string
+  kind: SimulationSuccessCriteriaKind
+  success_when?: 'yes' | 'no'
+  op?: 'lt' | 'lte' | 'gt' | 'gte'
+  threshold?: number
+  success_values?: string[]
+  label_rules?: MetricSuccessCriterionLabelRule[]
+  questions?: MetricSuccessCriterionClassificationQuestions
+}
+
+export interface SimulationRunCreate {
+  agent_id: string
+  name?: string
+  scenario_ids: string[]
+  persona_ids: string[]
+  metric_ids: string[]
+  metric_success_criteria: MetricSuccessCriterion[]
+  n_attempts: number
+  n_concurrent: number
+  pass_threshold?: number
+  production_llm_provider?: string | null
+  production_llm_model?: string | null
+  test_llm_provider?: string | null
+  test_llm_model?: string | null
+}
+
+export interface SimulationTrialMetricScore {
+  value: number | boolean | string | null
+  type?: string
+  metric_name?: string
+  rationale?: string
+  error?: string
+  skipped?: string
+  passed?: boolean
+}
+
+export interface SimulationTrial {
+  id: string
+  result_id: string
+  harbor_trial_name?: string | null
+  scenario_id?: string | null
+  scenario_name?: string | null
+  persona_id?: string | null
+  persona_name?: string | null
+  attempt_index?: number | null
+  status: string
+  reward?: number | null
+  passed?: boolean | null
+  turns: number
+  metric_scores?: Record<string, SimulationTrialMetricScore> | null
+  error_message?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface SimulationTrajectoryStep {
+  step_id: number
+  source: 'system' | 'user' | 'agent'
+  message: string
+  timestamp?: string
+  model_name?: string
+  extra?: { latency_ms?: number } & Record<string, unknown>
+}
+
+export interface SimulationTrialDetail extends SimulationTrial {
+  speaker_segments?: Array<{ speaker: string; text: string }> | null
+  call_analysis?: { call_summary?: string; user_sentiment?: string; call_successful?: boolean } | null
+  trajectory?: { steps: SimulationTrajectoryStep[] } | null
 }
