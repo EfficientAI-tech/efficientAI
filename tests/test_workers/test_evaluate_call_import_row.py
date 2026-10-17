@@ -1698,6 +1698,36 @@ def test_second_task_does_not_claim_a_row_already_owned(db_session):
     assert eval_row.celery_task_id is None
 
 
+def test_chained_llm_task_takes_the_row_from_its_audio_predecessor(db_session):
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        claim_eval_row_for_task,
+    )
+
+    _, _, _, _, _, eval_rows = _seed(db_session)
+    eval_row = eval_rows[0]
+    eval_row.status = "running"
+    eval_row.celery_task_id = "audio-task"
+    db_session.commit()
+
+    assert (
+        claim_eval_row_for_task(
+            db_session,
+            eval_row,
+            "llm-task",
+            predecessor_task_id="audio-task",
+        )
+        is True
+    )
+    assert eval_row.celery_task_id == "llm-task"
+
+    eval_row.status = "running"
+    eval_row.celery_task_id = "audio-task"
+    db_session.commit()
+    assert claim_eval_row_for_task(db_session, eval_row, "other-task") is False
+    db_session.refresh(eval_row)
+    assert eval_row.celery_task_id == "audio-task"
+
+
 def test_evaluate_call_import_row_skips_when_another_task_owns_it(
     db_session, monkeypatch
 ):

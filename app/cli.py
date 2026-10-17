@@ -710,8 +710,9 @@ def start_worker_all(config: str, loglevel: str, media_port: Optional[int]):
     type=int,
     help=(
         "Concurrency for the imports+diarization+evaluations worker "
-        "(default: 12; thread pool). Use lower values (8–12) when DB sharding "
-        "is enabled; 32 threads can exhaust per-shard SQLAlchemy pools."
+        "(default: 12; thread pool). Each shard basket follows this number, "
+        "plus a little spare, unless database.sharding pool_size and "
+        "max_overflow are both set."
     ),
 )
 @click.option(

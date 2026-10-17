@@ -50,29 +50,39 @@ def claim_eval_row_for_task(
     row_db: Session,
     eval_row: CallImportEvaluationRow,
     task_id: str | None,
+    predecessor_task_id: str | None = None,
 ) -> bool:
     """Mark the row running for this task.
 
     A second Celery task for the same row loses the update and must not
     call the model. The dispatcher writes ``celery_task_id`` while the
-    row is still pending, so the match is on that id.
+    row is still pending, so the match is on that id. The audio phase may
+    hand a running row to the LLM task it just queued; that successor
+    matches ``predecessor_task_id`` until the new id is stored.
     """
     cleaned = (task_id or "").strip()
+    predecessor = (predecessor_task_id or "").strip()
     filters = [
         CallImportEvaluationRow.id == eval_row.id,
         CallImportEvaluationRow.status.in_(("pending", "running")),
     ]
     if cleaned:
         # Pending with no id can be taken once. Running only matches its task id.
-        filters.append(
-            or_(
+        owner_match = [
+            and_(
+                CallImportEvaluationRow.status == "pending",
+                CallImportEvaluationRow.celery_task_id.is_(None),
+            ),
+            CallImportEvaluationRow.celery_task_id == cleaned,
+        ]
+        if predecessor and predecessor != cleaned:
+            owner_match.append(
                 and_(
-                    CallImportEvaluationRow.status == "pending",
-                    CallImportEvaluationRow.celery_task_id.is_(None),
-                ),
-                CallImportEvaluationRow.celery_task_id == cleaned,
+                    CallImportEvaluationRow.status == "running",
+                    CallImportEvaluationRow.celery_task_id == predecessor,
+                )
             )
-        )
+        filters.append(or_(*owner_match))
     else:
         filters.append(CallImportEvaluationRow.status == "pending")
     values: dict[str, Any] = {

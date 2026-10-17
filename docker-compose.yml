@@ -246,8 +246,8 @@ services:
       - ./config.docker.yml:/app/config.yml:ro
       # Optional: mount GCP service account for GCS auth
       # - ./secrets/gcp-sa.json:/app/secrets/gcp-sa.json:ro
-    # Thread pool: keep concurrency near Redis inflight caps + headroom when sharding
-    # (each task may hold catalog + shard connections for tens of seconds).
+    # Thread pool. Each shard basket follows this --concurrency plus 4 spare
+    # (12 → steady 8 + overflow 8) unless config sets both sharding pool numbers.
     command: eai worker --config /app/config.yml --loglevel info --queues platform-imports,import-control,imports,diarization,eval-control,evaluations --pool threads --concurrency 12
 
   # Low-priority usage pricing: Redis flush + cost recompute/backfill.

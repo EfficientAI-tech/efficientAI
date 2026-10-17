@@ -45,6 +45,78 @@ def _persist_sessions(row_db, catalog_db) -> None:
         catalog_db.commit()
 
 
+_CHAIN_TTL_SECONDS = 7200
+
+
+def _chain_key(eval_row_id: str) -> str:
+    return f"eval:audio-chain:{eval_row_id}"
+
+
+def _read_audio_chain(eval_row_id: str) -> tuple[str, str] | None:
+    try:
+        from app.workers.concurrency.limits import _get_redis
+
+        raw = _get_redis().get(_chain_key(eval_row_id))
+    except Exception:
+        return None
+    text = raw.decode() if isinstance(raw, bytes) else str(raw or "")
+    state, sep, task_id = text.partition(":")
+    if sep != ":" or state not in {"reserved", "published"} or not task_id:
+        return None
+    return state, task_id
+
+
+def _write_audio_chain(eval_row_id: str, state: str, task_id: str) -> None:
+    try:
+        from app.workers.concurrency.limits import _get_redis
+
+        _get_redis().set(
+            _chain_key(eval_row_id),
+            f"{state}:{task_id}",
+            ex=_CHAIN_TTL_SECONDS,
+        )
+    except Exception:
+        logger.warning("audio chain marker write failed for {}", eval_row_id)
+
+
+def _clear_audio_chain(eval_row_id: str) -> None:
+    try:
+        from app.workers.concurrency.limits import _get_redis
+
+        _get_redis().delete(_chain_key(eval_row_id))
+    except Exception:
+        return
+
+
+def _publish_chained_llm(
+    *,
+    eval_row_id: str,
+    chained_task_id: str,
+    predecessor_task_id: str,
+    slot_task_id: str | None,
+    restricted_metric_ids: Optional[List[str]],
+) -> None:
+    """Queue the LLM task, then record that the broker accepted it."""
+    from app.workers.tasks.evaluate_call_import_row import (
+        evaluate_call_import_row_task,
+    )
+
+    chain_kwargs: dict = {
+        "_skip_audio": True,
+        "_eval_slot_task_id": slot_task_id,
+        "_predecessor_task_id": predecessor_task_id,
+    }
+    if restricted_metric_ids:
+        chain_kwargs["restricted_metric_ids"] = restricted_metric_ids
+    evaluate_call_import_row_task.apply_async(
+        args=(str(eval_row_id),),
+        kwargs=chain_kwargs,
+        queue=EVALUATIONS_QUEUE,
+        task_id=chained_task_id,
+    )
+    _write_audio_chain(eval_row_id, "published", chained_task_id)
+
+
 @celery_app.task(
     name="evaluate_call_import_row_audio",
     bind=True,
@@ -81,6 +153,66 @@ def evaluate_call_import_row_audio_task(
                 eval_row.error_message = "Evaluation parent not found"
                 row_db.commit()
                 return {"status": "failed", "reason": "evaluation_missing"}
+
+            chain_state = _read_audio_chain(eval_row_id)
+            owner = (eval_row.celery_task_id or "").strip()
+            mine = str(self.request.id or "")
+            if chain_state and chain_state[0] == "published":
+                if owner != chain_state[1] and (eval_row.status or "") in {
+                    "pending",
+                    "running",
+                }:
+                    eval_row.celery_task_id = chain_state[1]
+                    row_db.commit()
+                chain_llm = True
+                return {
+                    "status": "chained",
+                    "eval_row_id": eval_row_id,
+                    "next": "llm_phase",
+                }
+            if (
+                chain_state
+                and chain_state[0] == "reserved"
+                and (eval_row.status or "") in {"pending", "running"}
+                and owner in {"", mine, chain_state[1]}
+            ):
+                try:
+                    _publish_chained_llm(
+                        eval_row_id=eval_row_id,
+                        chained_task_id=chain_state[1],
+                        predecessor_task_id=mine,
+                        slot_task_id=slot_task_id,
+                        restricted_metric_ids=restricted_metric_ids,
+                    )
+                except Exception:
+                    logger.exception(
+                        "[CallImportEval {}] Failed to enqueue LLM phase",
+                        eval_row.id,
+                    )
+                    _clear_audio_chain(eval_row_id)
+                    eval_row.status = "failed"
+                    eval_row.error_message = "Failed to enqueue LLM evaluation phase"
+                    eval_row.finished_at = now_utc()
+                    _rollup_terminal(
+                        row_db,
+                        catalog_db,
+                        evaluation,
+                        eval_row,
+                        previous_row_status="running",
+                    )
+                    return {
+                        "status": "failed",
+                        "eval_row_id": eval_row_id,
+                        "reason": "chain_enqueue_failed",
+                    }
+                eval_row.celery_task_id = chain_state[1]
+                chain_llm = True
+                row_db.commit()
+                return {
+                    "status": "chained",
+                    "eval_row_id": eval_row_id,
+                    "next": "llm_phase",
+                }
 
             if not claim_eval_row_for_task(row_db, eval_row, self.request.id):
                 logger.info(
@@ -244,49 +376,47 @@ def evaluate_call_import_row_audio_task(
             )
 
             if needs_llm:
-                from app.workers.tasks.evaluate_call_import_row import (
-                    evaluate_call_import_row_task,
-                )
-
-                chain_kwargs: dict = {
-                    "_skip_audio": True,
-                    "_eval_slot_task_id": slot_task_id,
-                }
-                if restricted_metric_ids:
-                    chain_kwargs["restricted_metric_ids"] = restricted_metric_ids
                 from uuid import uuid4
 
-                chained_task_id = str(uuid4())
+                chain_state = _read_audio_chain(eval_row_id)
+                if chain_state:
+                    chained_task_id = chain_state[1]
+                else:
+                    chained_task_id = str(uuid4())
+                    _write_audio_chain(eval_row_id, "reserved", chained_task_id)
+                if not chain_state or chain_state[0] == "reserved":
+                    try:
+                        _publish_chained_llm(
+                            eval_row_id=str(eval_row.id),
+                            chained_task_id=chained_task_id,
+                            predecessor_task_id=str(self.request.id or ""),
+                            slot_task_id=slot_task_id,
+                            restricted_metric_ids=restricted_metric_ids,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "[CallImportEval {}] Failed to enqueue LLM phase",
+                            eval_row.id,
+                        )
+                        _clear_audio_chain(eval_row_id)
+                        eval_row.status = "failed"
+                        eval_row.error_message = "Failed to enqueue LLM evaluation phase"
+                        eval_row.finished_at = now_utc()
+                        _rollup_terminal(
+                            row_db,
+                            catalog_db,
+                            evaluation,
+                            eval_row,
+                            previous_row_status=previous_row_status,
+                        )
+                        return {
+                            "status": "failed",
+                            "eval_row_id": eval_row_id,
+                            "reason": "chain_enqueue_failed",
+                        }
                 eval_row.celery_task_id = chained_task_id
-                row_db.commit()
-                try:
-                    evaluate_call_import_row_task.apply_async(
-                        args=(str(eval_row.id),),
-                        kwargs=chain_kwargs,
-                        queue=EVALUATIONS_QUEUE,
-                        task_id=chained_task_id,
-                    )
-                except Exception:
-                    logger.exception(
-                        "[CallImportEval {}] Failed to enqueue LLM phase",
-                        eval_row.id,
-                    )
-                    eval_row.status = "failed"
-                    eval_row.error_message = "Failed to enqueue LLM evaluation phase"
-                    eval_row.finished_at = now_utc()
-                    _rollup_terminal(
-                        row_db,
-                        catalog_db,
-                        evaluation,
-                        eval_row,
-                        previous_row_status=previous_row_status,
-                    )
-                    return {
-                        "status": "failed",
-                        "eval_row_id": eval_row_id,
-                        "reason": "chain_enqueue_failed",
-                    }
                 chain_llm = True
+                row_db.commit()
                 return {
                     "status": "chained",
                     "eval_row_id": eval_row_id,

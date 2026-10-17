@@ -69,7 +69,7 @@ database:
   # port: 5432
   # db: "efficientai"
 
-  # Connection pool (per process; use smaller values when many data shards)
+  # Catalogue connection pool for this process. Shard baskets are separate.
   pool_size: 10
   max_overflow: 20
 
@@ -86,6 +86,24 @@ database:
   sharding:
     enabled: false
     row_chunk_size: 500
+    # Each shard has its own basket inside this process. Set BOTH numbers to
+    # choose it. Leave both unset and a worker sizes each shard from its own
+    # --concurrency, plus 4 spare. Steady connections stay at 8; overflow
+    # opens only while threads are busy. Every thread can land on one shard,
+    # so the basket is not split across shards.
+    #
+    #   worker --concurrency | unset fallback (steady + overflow) | or set both
+    #   12                    | 8 + 8                             | pool_size: 8
+    #                         |                                   | max_overflow: 8
+    #   16                    | 8 + 12                            | pool_size: 8
+    #                         |                                   | max_overflow: 12
+    #   28                    | 8 + 24                            | pool_size: 8
+    #                         |                                   | max_overflow: 24
+    #
+    # The API and other processes have no --concurrency, so they share
+    # database.pool_size and max_overflow across the shards instead.
+    # pool_size: 8
+    # max_overflow: 12
   # shards:
   #   - id: data-shard-01
   #     url: "postgresql://efficientai:password@localhost:5432/efficientai_data_01"

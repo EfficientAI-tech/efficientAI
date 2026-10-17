@@ -8,6 +8,7 @@ from app.db_sharding.pool_manager import (
     DatabasePoolManager,
     _reset_replication_role_on_checkin,
     postgresql_engine_url,
+    process_worker_concurrency,
     shard_pool_limits,
 )
 
@@ -111,9 +112,31 @@ def _settings(**overrides):
     return SimpleNamespace(**values)
 
 
-def test_shard_pool_keeps_floor_when_explicit_sizes_unset():
+def test_shard_pool_shares_catalog_pool_when_concurrency_unknown():
     limits = shard_pool_limits(_settings(), 2)
-    assert limits == (8, 8)
+    assert limits == (5, 7)
+
+
+def test_shard_pool_fallback_covers_worker_concurrency():
+    assert shard_pool_limits(_settings(), 3, concurrency=12) == (8, 8)
+    assert shard_pool_limits(_settings(), 3, concurrency=16) == (8, 12)
+    assert shard_pool_limits(_settings(), 3, concurrency=28) == (8, 24)
+
+
+def test_explicit_shard_pool_ignores_concurrency():
+    limits = shard_pool_limits(
+        _settings(DB_SHARD_POOL_SIZE=20, DB_SHARD_MAX_OVERFLOW=4),
+        3,
+        concurrency=28,
+    )
+    assert limits == (20, 4)
+
+
+def test_process_worker_concurrency_reads_celery_flags():
+    assert process_worker_concurrency(["celery", "worker", "--concurrency=16"]) == 16
+    assert process_worker_concurrency(["celery", "worker", "-c", "28"]) == 28
+    assert process_worker_concurrency(["celery", "worker", "--concurrency", "12"]) == 12
+    assert process_worker_concurrency(["eai", "beat", "-c", "config.yml"]) is None
 
 
 def test_explicit_shard_pool_sizes_bypass_floor(manager, monkeypatch):

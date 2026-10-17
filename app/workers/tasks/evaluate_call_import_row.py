@@ -220,6 +220,7 @@ def evaluate_call_import_row_task(
     restricted_metric_ids: Optional[List[str]] = None,
     _eval_slot_task_id: Optional[str] = None,
     _skip_audio: bool = False,
+    _predecessor_task_id: Optional[str] = None,
 ):
     """Evaluate one row using the appropriate library per metric type.
 
@@ -284,7 +285,12 @@ def evaluate_call_import_row_task(
                 claim_eval_row_for_task,
             )
 
-            if not claim_eval_row_for_task(row_db, eval_row, self.request.id):
+            if not claim_eval_row_for_task(
+                row_db,
+                eval_row,
+                self.request.id,
+                predecessor_task_id=_predecessor_task_id,
+            ):
                 logger.info(
                     "Skipping eval row {} already claimed or finished",
                     eval_row_id,

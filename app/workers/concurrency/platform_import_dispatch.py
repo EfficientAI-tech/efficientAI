@@ -16,6 +16,8 @@ from app.workers.concurrency.platform_import_limits import (
     acquire_platform_lease,
     hydrate_enqueue_blocked,
     lease_is_active,
+    mark_platform_task_published,
+    platform_task_was_published,
     release_platform_lease,
 )
 
@@ -25,10 +27,10 @@ def clear_expired_platform_row_claims(
     *,
     platform_import_ids: set | None = None,
 ) -> int:
-    """Drop task ids whose lease has already expired.
+    """Drop task ids whose lease expired and that were never queued.
 
-    The old message still in the broker exits as superseded because the row
-    owner no longer matches. A live lease is left alone.
+    A live lease is left alone. A task that reached the broker keeps its id
+    until Celery says it has finished, so a deep queue is not fetched again.
     """
     claim_columns = load_only(
         CallImportRow.id,
@@ -65,7 +67,9 @@ def clear_expired_platform_row_claims(
         )
 
         if not _celery_task_is_finished(task_id):
-            continue
+            published = platform_task_was_published(task_id)
+            if published is None or published:
+                continue
         row.celery_task_id = None
         if row.status == CallImportRowStatus.PROCESSING:
             row.status = CallImportRowStatus.PENDING
@@ -147,6 +151,7 @@ def try_dispatch_platform_import_row(
             queue=PLATFORM_IMPORTS_QUEUE,
             task_id=reserved_task_id,
         )
+        mark_platform_task_published(reserved_task_id)
     except Exception:
         db.execute(
             text(

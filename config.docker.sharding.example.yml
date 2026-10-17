@@ -13,8 +13,12 @@ database:
   sharding:
     enabled: true
     row_chunk_size: 500
-    # pool_size: 20
-    # max_overflow: 4
+    # Each shard has its own basket. Leave both unset and worker-imports
+    # follows its --concurrency, plus 4 spare (steady stays at 8).
+    # Compose default concurrency is 12 → 8 + 8. Local 16 → 8 + 12.
+    # A 28-thread imports worker → 8 + 24. Set both only to override.
+    # pool_size: 8
+    # max_overflow: 8
   shards:
     - id: data-shard-01
       url: "postgresql://efficientai:password@db:5432/efficientai_data_01"

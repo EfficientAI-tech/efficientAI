@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -142,7 +144,7 @@ class DatabasePoolManager:
         shard_entries = _parse_shard_entries(settings, fallback_url=database_url)
         chunk_size = int(getattr(settings, "DB_SHARD_ROW_CHUNK_SIZE", 500))
         shard_pool_size, shard_max_overflow = shard_pool_limits(
-            settings, len(shard_entries)
+            settings, len(shard_entries), detect_concurrency=True
         )
 
         self._catalog_engine = make_engine(catalog_url)
@@ -169,11 +171,51 @@ class DatabasePoolManager:
         self._initialized = True
 
 
-def shard_pool_limits(settings, shard_count: int) -> tuple[int, int]:
+# Steady connections stay open. Overflow opens only while threads are busy.
+_SHARD_POOL_STEADY_CAP = 8
+_SHARD_POOL_SPARE = 4
+
+
+def process_worker_concurrency(argv: list[str] | None = None) -> int | None:
+    """Concurrency of this process, from the Celery worker command."""
+    args = sys.argv if argv is None else argv
+    for index, arg in enumerate(args):
+        if arg.startswith("--concurrency="):
+            found = _positive_int(arg.split("=", 1)[1])
+            if found:
+                return found
+        if arg == "--concurrency" and index + 1 < len(args):
+            found = _positive_int(args[index + 1])
+            if found:
+                return found
+        if arg == "-c" and index + 1 < len(args):
+            found = _positive_int(args[index + 1])
+            if found:
+                return found
+    return _positive_int(os.environ.get("CELERY_WORKER_CONCURRENCY"))
+
+
+def _positive_int(raw: str | None) -> int | None:
+    text = (raw or "").strip()
+    if not text.isdigit():
+        return None
+    value = int(text)
+    return value if value > 0 else None
+
+
+def shard_pool_limits(
+    settings,
+    shard_count: int,
+    concurrency: int | None = None,
+    *,
+    detect_concurrency: bool = False,
+) -> tuple[int, int]:
     """Pool size and overflow for each shard engine.
 
-    Explicit ``DB_SHARD_POOL_SIZE`` and ``DB_SHARD_MAX_OVERFLOW`` are used
-    as-is. Otherwise more than one shard keeps the historical floor of 8 + 8.
+    Both ``DB_SHARD_POOL_SIZE`` and ``DB_SHARD_MAX_OVERFLOW`` win when set.
+    Otherwise a worker with more than one shard gets a basket of its own
+    concurrency plus a little spare. Steady connections stay at 8; the rest
+    is overflow so idle workers do not hold one connection per thread.
     """
     pool_size = int(getattr(settings, "DB_POOL_SIZE", 10))
     max_overflow = int(getattr(settings, "DB_MAX_OVERFLOW", 20))
@@ -181,10 +223,14 @@ def shard_pool_limits(settings, shard_count: int) -> tuple[int, int]:
     explicit_overflow = getattr(settings, "DB_SHARD_MAX_OVERFLOW", None)
     if explicit_pool is not None and explicit_overflow is not None:
         return int(explicit_pool), int(explicit_overflow)
-    if shard_count > 1:
-        per_shard = max(4, pool_size // shard_count)
-        return max(8, per_shard), max(8, max_overflow // shard_count)
-    return pool_size, max_overflow
+    if shard_count <= 1:
+        return pool_size, max_overflow
+    if detect_concurrency and concurrency is None:
+        concurrency = process_worker_concurrency()
+    if concurrency and concurrency > 0:
+        steady = min(_SHARD_POOL_STEADY_CAP, concurrency)
+        return steady, concurrency + _SHARD_POOL_SPARE - steady
+    return max(1, pool_size // shard_count), max(1, max_overflow // shard_count)
 
 
 def _reset_replication_role_on_checkin(dbapi_conn, _connection_record) -> None:

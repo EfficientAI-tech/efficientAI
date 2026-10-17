@@ -116,6 +116,11 @@ def _hand_off(
             queue=PLATFORM_IMPORTS_QUEUE,
             task_id=next_id,
         )
+        from app.workers.concurrency.platform_import_limits import (
+            mark_platform_task_published,
+        )
+
+        mark_platform_task_published(next_id)
     except Exception:
         logger.exception("platform import handoff publish failed row {}", row_id)
         row.celery_task_id = None

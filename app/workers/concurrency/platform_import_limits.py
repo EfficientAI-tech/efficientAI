@@ -325,6 +325,34 @@ def transfer_platform_lease(old_task_id: str, new_task_id: str) -> bool:
         return False
 
 
+_PUBLISHED_TTL_SECONDS = 7200
+
+
+def mark_platform_task_published(celery_task_id: str) -> None:
+    """Remember that this task id was accepted by the broker."""
+    if not celery_task_id:
+        return
+    try:
+        _client().set(
+            f"platform_import:published:{celery_task_id}",
+            "1",
+            ex=_PUBLISHED_TTL_SECONDS,
+        )
+    except redis.RedisError as exc:
+        logger.warning("platform import publish marker failed: {}", exc)
+
+
+def platform_task_was_published(celery_task_id: str) -> bool | None:
+    """True when publish was recorded, False when it was not, None if Redis cannot say."""
+    if not celery_task_id:
+        return False
+    try:
+        return bool(_client().exists(f"platform_import:published:{celery_task_id}"))
+    except redis.RedisError as exc:
+        logger.warning("platform import publish marker read failed: {}", exc)
+        return None
+
+
 def lease_is_active(celery_task_id: str) -> bool:
     if not celery_task_id:
         return False
