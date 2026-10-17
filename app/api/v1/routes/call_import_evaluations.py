@@ -9174,6 +9174,11 @@ def _reset_eval_row_for_retry(
     eval_row.started_at = None
     eval_row.finished_at = None
     eval_row.celery_task_id = None
+    from app.workers.tasks.evaluate_call_import_row_audio import (
+        clear_eval_audio_chain,
+    )
+
+    clear_eval_audio_chain(str(eval_row.id))
 
 
 def _enqueue_eval_rows_with_optional_transcribe(

@@ -1728,6 +1728,93 @@ def test_chained_llm_task_takes_the_row_from_its_audio_predecessor(db_session):
     assert eval_row.celery_task_id == "audio-task"
 
 
+class _ChainRedis:
+    def __init__(self):
+        self.store = {}
+
+    def get(self, key):
+        return self.store.get(key)
+
+    def set(self, key, value, ex=None, nx=False):
+        if nx and key in self.store:
+            return None
+        self.store[key] = value
+        return True
+
+    def delete(self, key):
+        self.store.pop(key, None)
+
+
+def test_audio_chain_marker_belongs_to_one_audio_task(monkeypatch):
+    fake = _ChainRedis()
+    monkeypatch.setattr(
+        "app.workers.concurrency.limits._get_redis",
+        lambda: fake,
+    )
+    from app.workers.tasks.evaluate_call_import_row_audio import (
+        _read_audio_chain,
+        _write_audio_chain,
+        clear_eval_audio_chain,
+    )
+
+    _write_audio_chain("row-1", "published", "audio-a", "llm-1")
+    assert _read_audio_chain("row-1", "audio-a") == ("published", "llm-1")
+    assert _read_audio_chain("row-1", "audio-b") is None
+    clear_eval_audio_chain("row-1")
+    assert _read_audio_chain("row-1", "audio-a") is None
+    assert "eval:audio-chain-publish:llm-1" not in fake.store
+
+
+def test_chained_llm_is_published_once(monkeypatch):
+    fake = _ChainRedis()
+    monkeypatch.setattr(
+        "app.workers.concurrency.limits._get_redis",
+        lambda: fake,
+    )
+    calls = []
+    monkeypatch.setattr(
+        "app.workers.tasks.evaluate_call_import_row.evaluate_call_import_row_task.apply_async",
+        lambda *args, **kwargs: calls.append(kwargs.get("task_id")),
+    )
+    from app.workers.tasks.evaluate_call_import_row_audio import _publish_chained_llm
+
+    kwargs = dict(
+        eval_row_id="row-1",
+        audio_task_id="audio-a",
+        chained_task_id="llm-1",
+        predecessor_task_id="audio-a",
+        slot_task_id="slot",
+        restricted_metric_ids=None,
+        allow_without_lock=False,
+    )
+    assert _publish_chained_llm(**kwargs) is True
+    assert _publish_chained_llm(**kwargs) is False
+    assert calls == ["llm-1"]
+
+
+def test_retry_clears_audio_chain_marker(monkeypatch):
+    cleared = []
+    monkeypatch.setattr(
+        "app.workers.tasks.evaluate_call_import_row_audio.clear_eval_audio_chain",
+        lambda row_id: cleared.append(row_id),
+    )
+    from app.api.v1.routes.call_import_evaluations import _reset_eval_row_for_retry
+
+    row = type("Row", (), {})()
+    row.id = "row-1"
+    row.status = "failed"
+    row.celery_task_id = None
+    row.metric_scores = {"keep": 1}
+    row.error_message = "old"
+    row.started_at = 1
+    row.finished_at = 1
+    _reset_eval_row_for_retry(row)
+    assert cleared == ["row-1"]
+    assert row.status == "pending"
+    assert row.celery_task_id is None
+    assert row.metric_scores == {}
+
+
 def test_evaluate_call_import_row_skips_when_another_task_owns_it(
     db_session, monkeypatch
 ):

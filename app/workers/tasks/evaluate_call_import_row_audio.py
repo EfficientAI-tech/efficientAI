@@ -52,7 +52,12 @@ def _chain_key(eval_row_id: str) -> str:
     return f"eval:audio-chain:{eval_row_id}"
 
 
-def _read_audio_chain(eval_row_id: str) -> tuple[str, str] | None:
+def _publish_lock_key(chained_task_id: str) -> str:
+    return f"eval:audio-chain-publish:{chained_task_id}"
+
+
+def _read_audio_chain(eval_row_id: str, audio_task_id: str) -> tuple[str, str] | None:
+    """Handoff for this audio task only. A later retry has a different task id."""
     try:
         from app.workers.concurrency.limits import _get_redis
 
@@ -60,30 +65,73 @@ def _read_audio_chain(eval_row_id: str) -> tuple[str, str] | None:
     except Exception:
         return None
     text = raw.decode() if isinstance(raw, bytes) else str(raw or "")
-    state, sep, task_id = text.partition(":")
-    if sep != ":" or state not in {"reserved", "published"} or not task_id:
+    state, sep, rest = text.partition(":")
+    owner, sep2, chained_task_id = rest.partition(":")
+    if (
+        sep != ":"
+        or sep2 != ":"
+        or state not in {"reserved", "published"}
+        or owner != (audio_task_id or "").strip()
+        or not chained_task_id
+    ):
         return None
-    return state, task_id
+    return state, chained_task_id
 
 
-def _write_audio_chain(eval_row_id: str, state: str, task_id: str) -> None:
+def _write_audio_chain(
+    eval_row_id: str, state: str, audio_task_id: str, chained_task_id: str
+) -> None:
     try:
         from app.workers.concurrency.limits import _get_redis
 
         _get_redis().set(
             _chain_key(eval_row_id),
-            f"{state}:{task_id}",
+            f"{state}:{audio_task_id}:{chained_task_id}",
             ex=_CHAIN_TTL_SECONDS,
         )
     except Exception:
         logger.warning("audio chain marker write failed for {}", eval_row_id)
 
 
-def _clear_audio_chain(eval_row_id: str) -> None:
+def clear_eval_audio_chain(eval_row_id: str) -> None:
+    """Drop a handoff so a new attempt cannot reuse it."""
     try:
         from app.workers.concurrency.limits import _get_redis
 
-        _get_redis().delete(_chain_key(eval_row_id))
+        client = _get_redis()
+        raw = client.get(_chain_key(eval_row_id))
+        text = raw.decode() if isinstance(raw, bytes) else str(raw or "")
+        _state, _sep, rest = text.partition(":")
+        _owner, _sep2, chained_task_id = rest.partition(":")
+        if chained_task_id:
+            client.delete(_publish_lock_key(chained_task_id))
+        client.delete(_chain_key(eval_row_id))
+    except Exception:
+        return
+
+
+def _claim_chain_publish(chained_task_id: str) -> bool | None:
+    """True if this caller may publish, False if another already did, None if unknown."""
+    try:
+        from app.workers.concurrency.limits import _get_redis
+
+        acquired = _get_redis().set(
+            _publish_lock_key(chained_task_id),
+            "1",
+            nx=True,
+            ex=_CHAIN_TTL_SECONDS,
+        )
+    except Exception:
+        logger.warning("audio chain publish lock failed for {}", chained_task_id)
+        return None
+    return bool(acquired)
+
+
+def _release_chain_publish(chained_task_id: str) -> None:
+    try:
+        from app.workers.concurrency.limits import _get_redis
+
+        _get_redis().delete(_publish_lock_key(chained_task_id))
     except Exception:
         return
 
@@ -91,16 +139,23 @@ def _clear_audio_chain(eval_row_id: str) -> None:
 def _publish_chained_llm(
     *,
     eval_row_id: str,
+    audio_task_id: str,
     chained_task_id: str,
     predecessor_task_id: str,
     slot_task_id: str | None,
     restricted_metric_ids: Optional[List[str]],
-) -> None:
-    """Queue the LLM task, then record that the broker accepted it."""
+    allow_without_lock: bool,
+) -> bool:
+    """Queue the LLM task once. A second caller does not send it again."""
     from app.workers.tasks.evaluate_call_import_row import (
         evaluate_call_import_row_task,
     )
 
+    acquired = _claim_chain_publish(chained_task_id)
+    if acquired is False:
+        return False
+    if acquired is None and not allow_without_lock:
+        return False
     chain_kwargs: dict = {
         "_skip_audio": True,
         "_eval_slot_task_id": slot_task_id,
@@ -108,13 +163,18 @@ def _publish_chained_llm(
     }
     if restricted_metric_ids:
         chain_kwargs["restricted_metric_ids"] = restricted_metric_ids
-    evaluate_call_import_row_task.apply_async(
-        args=(str(eval_row_id),),
-        kwargs=chain_kwargs,
-        queue=EVALUATIONS_QUEUE,
-        task_id=chained_task_id,
-    )
-    _write_audio_chain(eval_row_id, "published", chained_task_id)
+    try:
+        evaluate_call_import_row_task.apply_async(
+            args=(str(eval_row_id),),
+            kwargs=chain_kwargs,
+            queue=EVALUATIONS_QUEUE,
+            task_id=chained_task_id,
+        )
+    except Exception:
+        _release_chain_publish(chained_task_id)
+        raise
+    _write_audio_chain(eval_row_id, "published", audio_task_id, chained_task_id)
+    return True
 
 
 @celery_app.task(
@@ -154,9 +214,9 @@ def evaluate_call_import_row_audio_task(
                 row_db.commit()
                 return {"status": "failed", "reason": "evaluation_missing"}
 
-            chain_state = _read_audio_chain(eval_row_id)
-            owner = (eval_row.celery_task_id or "").strip()
             mine = str(self.request.id or "")
+            chain_state = _read_audio_chain(eval_row_id, mine)
+            owner = (eval_row.celery_task_id or "").strip()
             if chain_state and chain_state[0] == "published":
                 if owner != chain_state[1] and (eval_row.status or "") in {
                     "pending",
@@ -179,17 +239,19 @@ def evaluate_call_import_row_audio_task(
                 try:
                     _publish_chained_llm(
                         eval_row_id=eval_row_id,
+                        audio_task_id=mine,
                         chained_task_id=chain_state[1],
                         predecessor_task_id=mine,
                         slot_task_id=slot_task_id,
                         restricted_metric_ids=restricted_metric_ids,
+                        allow_without_lock=False,
                     )
                 except Exception:
                     logger.exception(
                         "[CallImportEval {}] Failed to enqueue LLM phase",
                         eval_row.id,
                     )
-                    _clear_audio_chain(eval_row_id)
+                    clear_eval_audio_chain(eval_row_id)
                     eval_row.status = "failed"
                     eval_row.error_message = "Failed to enqueue LLM evaluation phase"
                     eval_row.finished_at = now_utc()
@@ -378,27 +440,34 @@ def evaluate_call_import_row_audio_task(
             if needs_llm:
                 from uuid import uuid4
 
-                chain_state = _read_audio_chain(eval_row_id)
+                mine = str(self.request.id or "")
+                chain_state = _read_audio_chain(eval_row_id, mine)
                 if chain_state:
                     chained_task_id = chain_state[1]
+                    already_reserved = True
                 else:
                     chained_task_id = str(uuid4())
-                    _write_audio_chain(eval_row_id, "reserved", chained_task_id)
+                    _write_audio_chain(
+                        eval_row_id, "reserved", mine, chained_task_id
+                    )
+                    already_reserved = False
                 if not chain_state or chain_state[0] == "reserved":
                     try:
                         _publish_chained_llm(
                             eval_row_id=str(eval_row.id),
+                            audio_task_id=mine,
                             chained_task_id=chained_task_id,
-                            predecessor_task_id=str(self.request.id or ""),
+                            predecessor_task_id=mine,
                             slot_task_id=slot_task_id,
                             restricted_metric_ids=restricted_metric_ids,
+                            allow_without_lock=not already_reserved,
                         )
                     except Exception:
                         logger.exception(
                             "[CallImportEval {}] Failed to enqueue LLM phase",
                             eval_row.id,
                         )
-                        _clear_audio_chain(eval_row_id)
+                        clear_eval_audio_chain(eval_row_id)
                         eval_row.status = "failed"
                         eval_row.error_message = "Failed to enqueue LLM evaluation phase"
                         eval_row.finished_at = now_utc()
