@@ -8,7 +8,7 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
   AlertCircle,
@@ -70,6 +70,9 @@ import {
   isStandardJudgeModel,
 } from '../../lib/llmModelOptions'
 import CallImportProgressBar from './components/CallImportProgressBar'
+import PlatformImportProgressDock from './components/PlatformImportProgressDock'
+import { usePlatformImportProgressStore } from '../../store/platformImportProgressStore'
+import { platformImportLabel, platformSkipLines } from './platformImportLabel'
 import RetryFailedImportModal from './components/RetryFailedImportModal'
 import UploadAudioModal from './components/UploadAudioModal'
 import InsightsMetricCard, {
@@ -95,6 +98,47 @@ import {
   evaluationHasActiveBulkOperation,
   type BulkEvaluationOperation,
 } from './evaluationBulkOperation'
+
+function importRowsPollMs(
+  header:
+    | {
+        status?: string
+        source_format?: string | null
+        platform_progress?: { is_active?: boolean } | null
+        diarised_pending_rows?: number
+        diarised_running_rows?: number
+      }
+    | undefined,
+  evaluations: unknown,
+): number | false {
+  if (!header) return false
+  if (header.status === 'deleting') return 4000
+  const platform = (header.source_format || '').toLowerCase() === 'platform'
+  if (
+    platform &&
+    (header.status === 'pending' ||
+      header.status === 'processing' ||
+      header.platform_progress?.is_active)
+  ) {
+    return 4000
+  }
+  if (header.status === 'pending' || header.status === 'processing') return 5000
+  const diariseInFlight =
+    (header.diarised_pending_rows ?? 0) + (header.diarised_running_rows ?? 0)
+  if (diariseInFlight > 0) return 4000
+  const evaluationsInFlight = itemsOf<CallImportEvaluation>(evaluations)
+  if (evaluationsInFlight.some((row) => row.bulk_operation)) {
+    return EVALUATION_BULK_OPERATION_POLL_MS
+  }
+  if (
+    evaluationsInFlight.some(
+      (row) => row.status === 'pending' || row.status === 'running',
+    )
+  ) {
+    return 4000
+  }
+  return false
+}
 
 // Providers we know `TranscriptionService.transcribe()` already supports
 // for the full diarization-enabled path. Local Whisper is omitted since
@@ -918,41 +962,75 @@ export default function CallImportDetail() {
     [rowOffset, rowSearchQuery, diarisedStatusFilter],
   )
 
-  const { data, isLoading, isFetching, refetch, error } = useQuery({
-    queryKey: ['call-import', activeWorkspaceId, id, queryParams],
-    queryFn: () => apiClient.getCallImport(id!, queryParams),
+  const {
+    data,
+    isLoading,
+    isFetching: headerFetching,
+    refetch: refetchHeader,
+    error,
+  } = useQuery({
+    queryKey: ['call-import', activeWorkspaceId, id],
+    queryFn: () => apiClient.getCallImport(id!, { row_limit: 0, row_offset: 0 }),
     enabled: !!id,
+    staleTime: 60_000,
     refetchInterval: (query) => {
       const d = query.state.data
       if (!d) return false
-      if (d.status === 'deleting') return 3000
-      // Keep polling while the CSV import itself is in flight.
+      if (d.status === 'deleting') return 4000
+      const platform = (d.source_format || '').toLowerCase() === 'platform'
+      if (
+        platform &&
+        (d.status === 'pending' ||
+          d.status === 'processing' ||
+          d.platform_progress?.is_active)
+      ) {
+        return 4000
+      }
       if (d.status === 'pending' || d.status === 'processing') return 5000
-      // Batch-wide diarisation counters are pagination-independent —
-      // use them so off-page rows still drive polling (mirrors
-      // CallImportEvaluationDetail).
       const diariseInFlight =
         (d.diarised_pending_rows ?? 0) + (d.diarised_running_rows ?? 0)
-      if (diariseInFlight > 0) return 4000
-      // Fallback: legacy transcript_status on the current page slice.
-      const rows = d.rows ?? []
-      const hasActiveTranscript = rows.some(
-        (r: {
-          transcript_status?: string | null
-          diarised_transcript_status?: string | null
-        }) =>
-          r.transcript_status === 'pending' ||
-          r.transcript_status === 'running' ||
-          r.diarised_transcript_status === 'pending' ||
-          r.diarised_transcript_status === 'running',
-      )
-      return hasActiveTranscript ? 4000 : false
+      return diariseInFlight > 0 ? 4000 : false
     },
-    // Pre-import staged batches don't have a meaningful "still working"
-    // signal that needs polling — they only change in response to user
-    // actions on this page, which already invalidate the query.
-    staleTime: 0,
   })
+
+  const {
+    data: rowsPage,
+    isLoading: rowsLoading,
+    isFetching: rowsFetching,
+    refetch: refetchRows,
+  } = useQuery({
+    queryKey: ['call-import', activeWorkspaceId, id, 'rows', queryParams],
+    queryFn: () => apiClient.getCallImport(id!, queryParams),
+    enabled: !!id,
+    staleTime: 60_000,
+    placeholderData: keepPreviousData,
+    refetchInterval: () =>
+      importRowsPollMs(
+        queryClient.getQueryData(['call-import', activeWorkspaceId, id]),
+        queryClient.getQueryData(evaluationsQueryKey),
+      ),
+  })
+
+  const isFetching = headerFetching || rowsFetching
+  const refetch = () => {
+    void refetchHeader()
+    void refetchRows()
+  }
+
+  useEffect(() => {
+    if (!data?.id || (data.source_format || '').toLowerCase() !== 'platform') return
+    if (data.status === 'deleting') {
+      usePlatformImportProgressStore.getState().unpin(data.id)
+    }
+  }, [data?.id, data?.source_format, data?.status])
+
+  useEffect(() => {
+    if (!data?.id || !data.platform_progress || !activeWorkspaceId) return
+    queryClient.setQueryData(
+      ['platform-import-progress', activeWorkspaceId, data.id],
+      data.platform_progress,
+    )
+  }, [data?.id, data?.platform_progress, activeWorkspaceId, queryClient])
 
   useEffect(() => {
     if (!pendingScrollToEvaluation || data?.status !== 'mapped') return
@@ -1002,6 +1080,7 @@ export default function CallImportDetail() {
     queryKey: ['call-import-insights', activeWorkspaceId, id],
     queryFn: () => apiClient.getCallImportInsights(id!),
     enabled: !!id && activeTab === 'insights',
+    staleTime: 60_000,
     refetchInterval: () => {
       const rows = itemsOf<CallImportEvaluation>(evaluationsData)
       if (rows.some((row) => row.bulk_operation)) {
@@ -1014,6 +1093,24 @@ export default function CallImportDetail() {
         : false
     },
   })
+
+  const importRowsLive =
+    importRowsPollMs(data, evaluationsData) !== false
+  const importRowsWereLive = useRef(false)
+  useEffect(() => {
+    if (importRowsLive) {
+      importRowsWereLive.current = true
+      return
+    }
+    if (!importRowsWereLive.current || !id) return
+    importRowsWereLive.current = false
+    void queryClient.invalidateQueries({
+      queryKey: ['call-import', activeWorkspaceId, id, 'rows'],
+    })
+    void queryClient.invalidateQueries({
+      queryKey: ['call-import', activeWorkspaceId, id, 'row'],
+    })
+  }, [importRowsLive, id, activeWorkspaceId, queryClient])
 
   const runEvaluationMutation = useMutation({
     mutationFn: (payload: Parameters<typeof apiClient.createCallImportEvaluation>[1]) =>
@@ -1324,7 +1421,7 @@ export default function CallImportDetail() {
   const hasActiveFilter =
     !!rowSearchQuery || diarisedStatusFilter !== 'all'
   const filteredTotalRows = hasActiveFilter
-    ? data?.filtered_total_rows ?? 0
+    ? rowsPage?.filtered_total_rows ?? 0
     : totalRows
   const rowPage = Math.floor(rowOffset / ROW_PAGE_SIZE) + 1
   const rowTotalPages = Math.max(1, Math.ceil(filteredTotalRows / ROW_PAGE_SIZE))
@@ -1413,17 +1510,45 @@ export default function CallImportDetail() {
 
   useEffect(() => {
     if (!selectedRowId || !data) return
-    const visibleRows = data.rows ?? []
+    const visibleRows = rowsPage?.rows ?? []
     if (!visibleRows.some((r) => r.id === selectedRowId)) {
       setSelectedRowId(null)
     }
-  }, [data, selectedRowId])
+  }, [rowsPage, selectedRowId])
+
+  const { data: selectedRowDetail } = useQuery({
+    queryKey: ['call-import', activeWorkspaceId, id, 'row', selectedRowId],
+    queryFn: () => apiClient.getCallImportRow(id!, selectedRowId!),
+    enabled: !!id && !!selectedRowId,
+    staleTime: 60_000,
+    refetchInterval: () => importRowsPollMs(data, evaluationsData),
+  })
+
+  useEffect(() => {
+    if (!id || !rowsPage) return
+    const nextOffset = rowOffset + ROW_PAGE_SIZE
+    if (nextOffset >= filteredTotalRows) return
+    const nextParams = { ...queryParams, row_offset: nextOffset }
+    void queryClient.prefetchQuery({
+      queryKey: ['call-import', activeWorkspaceId, id, 'rows', nextParams],
+      queryFn: () => apiClient.getCallImport(id, nextParams),
+      staleTime: 60_000,
+    })
+  }, [
+    id,
+    rowOffset,
+    filteredTotalRows,
+    queryParams,
+    activeWorkspaceId,
+    queryClient,
+    rowsPage,
+  ])
 
   if (!id) {
     return <div className="text-sm text-red-600">Missing import id.</div>
   }
 
-  if (isLoading) {
+  if (isLoading || (rowsLoading && !rowsPage)) {
     return (
       <div className="text-center py-12 text-gray-500">
         <RefreshCw className="h-8 w-8 mx-auto mb-2 animate-spin" />
@@ -1441,7 +1566,7 @@ export default function CallImportDetail() {
           className="inline-flex items-center gap-1 text-sm text-primary-600 hover:text-primary-700"
         >
           <ArrowLeft className="h-4 w-4" />
-          Back to Call Imports
+          Back to Imports
         </Link>
         <div className="bg-red-50 border border-red-200 rounded-lg p-4">
           <div className="flex items-start gap-2">
@@ -1457,9 +1582,10 @@ export default function CallImportDetail() {
     )
   }
 
-  const rows = data.rows ?? []
-  const selectedRow =
+  const rows = rowsPage?.rows ?? []
+  const selectedListRow =
     rows.find((r) => r.id === selectedRowId) ?? null
+  const selectedRow = selectedRowDetail ?? selectedListRow
 
   const pendingCredentialErrorCount = rows.filter(
     (row) =>
@@ -1474,7 +1600,14 @@ export default function CallImportDetail() {
   // until the user finishes the MAP + IMPORT steps. We swap out the
   // bottom of the page for the stage panels while the batch is still
   // pre-import so the user has a single linear next-action.
-  const needsMapping = data.status === 'uploaded' || data.status === 'mapped'
+  const isPlatformImport = (data.source_format || '').toLowerCase() === 'platform'
+  const liveProgress = isPlatformImport ? data.platform_progress : undefined
+  const recordingTotal = liveProgress?.recordings.total ?? data.total_rows
+  const recordingCompleted = liveProgress?.recordings.completed ?? data.completed_rows
+  const recordingFailed = liveProgress?.recordings.failed ?? data.failed_rows
+  const needsMapping =
+    !isPlatformImport &&
+    (data.status === 'uploaded' || data.status === 'mapped')
   const showWorkflowTabs = !needsMapping
   const isDeleting = data.status === 'deleting'
   const isManualAudioImport = (data.source_format || '').toLowerCase() === 'audio'
@@ -1540,7 +1673,7 @@ export default function CallImportDetail() {
           className="inline-flex items-center gap-1 text-sm text-primary-600 hover:text-primary-700"
         >
           <ArrowLeft className="h-4 w-4" />
-          Back to Call Imports
+          Back to Imports
         </Link>
         <div className="flex items-center gap-2">
           {canRunEvaluation && !isDeleting && showWorkflowTabs && (
@@ -1615,7 +1748,9 @@ export default function CallImportDetail() {
         <div className="space-y-4">
           <div className="min-w-0">
             <h1 className="text-2xl font-bold text-gray-900 truncate">
-              {data.original_filename || '(unnamed import)'}
+              {(data.source_format || '').toLowerCase() === 'platform'
+                ? platformImportLabel(data)
+                : data.original_filename || '(unnamed import)'}
             </h1>
             <div className="mt-1 text-xs text-gray-500 font-mono">{data.id}</div>
             <div className="mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 min-w-0 max-w-full text-sm text-gray-600">
@@ -1639,6 +1774,22 @@ export default function CallImportDetail() {
                   )}
                 </span>
               </span>
+              {isPlatformImport && (
+                <span className="shrink-0">
+                  Agent:{' '}
+                  <span className="font-medium text-gray-800">
+                    {(data.platform_agents || []).length === 0
+                      ? 'All agents'
+                      : (data.platform_agents || [])
+                          .map((agent) =>
+                            agent.medium
+                              ? `${agent.name} · ${agent.medium}`
+                              : agent.name,
+                          )
+                          .join(', ')}
+                  </span>
+                </span>
+              )}
               <CallImportAuditMeta
                 inline
                 createdAt={data.created_at}
@@ -1655,23 +1806,38 @@ export default function CallImportDetail() {
                 Recording import
               </h3>
               <CallImportProgressBar
-                total={data.total_rows}
-                completed={data.completed_rows}
-                failed={data.failed_rows}
+                total={recordingTotal}
+                completed={recordingCompleted}
+                failed={recordingFailed}
                 deleting={isDeleting}
               />
+              {isPlatformImport &&
+                (liveProgress?.discovery_status || data.discovery_status) && (
+                  <p className="mt-2 text-xs text-gray-600">
+                    Discovery {liveProgress?.discovery_status || data.discovery_status}
+                    {liveProgress
+                      ? ` · ${liveProgress.discovery.slices_completed}/${liveProgress.discovery.slices_total} days`
+                      : ''}
+                    {data.paused_at || liveProgress?.paused ? ' · paused' : ''}
+                  </p>
+                )}
+              {platformSkipLines(liveProgress?.skip_counts ?? data.skip_counts).length > 0 && (
+                <p className="mt-2 text-xs text-gray-600">
+                  {platformSkipLines(liveProgress?.skip_counts ?? data.skip_counts).join(' · ')}
+                </p>
+              )}
               <div className="mt-2.5 grid grid-cols-3 gap-2 text-center text-xs">
                 <div className="bg-white rounded-md border border-slate-100 p-2">
                   <div className="text-gray-500">Total</div>
-                  <div className="font-semibold text-gray-900">{data.total_rows}</div>
+                  <div className="font-semibold text-gray-900">{recordingTotal}</div>
                 </div>
                 <div className="bg-white rounded-md border border-green-100 p-2">
                   <div className="text-green-700">Completed</div>
-                  <div className="font-semibold text-green-800">{data.completed_rows}</div>
+                  <div className="font-semibold text-green-800">{recordingCompleted}</div>
                 </div>
                 <div className="bg-white rounded-md border border-red-100 p-2">
                   <div className="text-red-700">Failed</div>
-                  <div className="font-semibold text-red-800">{data.failed_rows}</div>
+                  <div className="font-semibold text-red-800">{recordingFailed}</div>
                 </div>
               </div>
             </div>
@@ -2156,6 +2322,14 @@ export default function CallImportDetail() {
                 </span>
                 .
               </p>
+            ) : (data.source_format || '').toLowerCase() === 'platform' &&
+              platformSkipLines(data.skip_counts).length > 0 ? (
+              <div className="space-y-1">
+                <p>No new calls in this window.</p>
+                <p className="text-sm text-gray-700">
+                  {platformSkipLines(data.skip_counts).join(' · ')}
+                </p>
+              </div>
             ) : (
               <p>No rows in this slice.</p>
             )}
@@ -2581,21 +2755,25 @@ export default function CallImportDetail() {
                   setRowPanelTab(tabId as CallImportRowSidePanelTabId)
                 }
               >
-                <CallImportRowSidePanelContent
-                  row={selectedRow}
-                  activeTab={rowPanelTab}
-                  rawColumnEntries={getRawColumnEntries(selectedRow)}
-                  hasRecording={!!selectedRow.recording_s3_key}
-                  copiedTranscriptField={copiedTranscriptField}
-                  onCopyTranscript={handleCopyTranscript}
-                  onDiarise={() => openTranscribeModal([selectedRow])}
-                  onSwapSpeakers={() =>
-                    swapSpeakersMutation.mutate({ rowId: selectedRow.id })
-                  }
-                  swappingRowId={swappingRowId}
-                  swapError={swapError}
-                  onDismissSwapError={() => setSwapError(null)}
-                />
+                {selectedRowDetail ? (
+                  <CallImportRowSidePanelContent
+                    row={selectedRowDetail}
+                    activeTab={rowPanelTab}
+                    rawColumnEntries={getRawColumnEntries(selectedRowDetail)}
+                    hasRecording={!!selectedRowDetail.recording_s3_key}
+                    copiedTranscriptField={copiedTranscriptField}
+                    onCopyTranscript={handleCopyTranscript}
+                    onDiarise={() => openTranscribeModal([selectedRowDetail])}
+                    onSwapSpeakers={() =>
+                      swapSpeakersMutation.mutate({ rowId: selectedRowDetail.id })
+                    }
+                    swappingRowId={swappingRowId}
+                    swapError={swapError}
+                    onDismissSwapError={() => setSwapError(null)}
+                  />
+                ) : (
+                  <p className="text-sm text-gray-500">Loading row…</p>
+                )}
               </CallRowSidePanel>
               ) : null
             }
@@ -4759,7 +4937,7 @@ export default function CallImportDetail() {
             data.status === 'processing' ||
             data.status === 'deleting'
           const lines = [
-            `“${name}” will be permanently deleted, along with all ${data.total_rows} row record${data.total_rows === 1 ? '' : 's'} and ${data.completed_rows} stored recording${data.completed_rows === 1 ? '' : 's'} in S3.`,
+            `“${name}” will be permanently deleted, along with all of its recordings.`,
             inFlight
               ? 'This batch is still processing — pending tasks will be revoked before deletion.'
               : '',
@@ -4770,6 +4948,7 @@ export default function CallImportDetail() {
         })()}
         confirmLabel="Delete"
         cancelLabel="Cancel"
+        confirmPhrase="confirm"
         variant="danger"
         isLoading={deleteImportMutation.isPending}
         onConfirm={() => deleteImportMutation.mutate(data.id)}
@@ -4819,11 +4998,11 @@ export default function CallImportDetail() {
         description={(() => {
           if (!pendingDeleteRow) return ''
           const callId = pendingDeleteRow.conversation_id
-          const hasS3 = !!pendingDeleteRow.recording_s3_key
+          const hasRecording = !!pendingDeleteRow.recording_s3_key
           const lines = [
-            `The row for CallID ${callId} will be removed from this import.`,
-            hasS3
-              ? 'The associated recording will also be deleted from S3.'
+            `The row for CallID ${callId} will be permanently deleted.`,
+            hasRecording
+              ? 'The associated recording will also be permanently deleted.'
               : 'No recording is stored for this row yet, so only the row record will be removed.',
             'This cannot be undone.',
             deleteError ? `Error: ${deleteError}` : '',
@@ -4856,8 +5035,8 @@ export default function CallImportDetail() {
         description={(() => {
           const lines = [
             selectedRowIds.size === 1
-              ? 'The selected row will be removed from this import, along with its stored recording in S3.'
-              : `${selectedRowIds.size} rows will be removed from this import, along with their stored recordings in S3.`,
+              ? 'The selected row will be permanently deleted, along with its recording.'
+              : `${selectedRowIds.size} rows will be permanently deleted, along with their recordings.`,
             'In-flight transcribe / download tasks for these rows will be revoked.',
             'This cannot be undone.',
             bulkDeleteRowsError ? `Error: ${bulkDeleteRowsError}` : '',
@@ -5077,7 +5256,7 @@ export default function CallImportDetail() {
                       <p className="text-xs text-gray-600 mt-1">
                         Permanently remove {selectedCount} selected row
                         {selectedCount === 1 ? '' : 's'} from this import,
-                        along with their stored recordings in S3. In-flight
+                        along with their recordings. In-flight
                         tasks for these rows will be revoked. This cannot
                         be undone.
                       </p>
@@ -5146,6 +5325,7 @@ export default function CallImportDetail() {
             </div>
           </div>,
         )}
+      <PlatformImportProgressDock />
     </div>
   )
 }

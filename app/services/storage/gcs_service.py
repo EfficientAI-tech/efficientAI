@@ -299,6 +299,23 @@ class GcsService:
         except Exception as e:
             raise StorageError(f"Unexpected error uploading file to GCS: {str(e)}")
 
+    def upload_file_by_key_from_path(
+        self, path: str, key: str, content_type: str = "audio/mpeg"
+    ) -> str:
+        self._ensure_initialized()
+        if not self.is_enabled():
+            error_msg = self._initialization_error or "GCS is not enabled or not configured"
+            raise StorageError(error_msg)
+        _, NotFound, GoogleCloudError = _get_gcs_exception_types()
+        try:
+            blob = self.bucket.blob(key)
+            blob.upload_from_filename(path, content_type=content_type)
+            return key
+        except GoogleCloudError as e:
+            raise StorageError(f"Failed to upload file to GCS: {str(e)}")
+        except Exception as e:
+            raise StorageError(f"Unexpected error uploading file to GCS: {str(e)}")
+
     def download_file(self, file_id: uuid.UUID, file_format: str) -> bytes:
         """Download file from GCS."""
         self._ensure_initialized()

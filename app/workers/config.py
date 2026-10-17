@@ -73,7 +73,12 @@ from app.services.billing.flexprice_service import log_startup_status  # noqa: E
 log_startup_status(component="celery-worker")
 
 # Queues consumed by the dedicated call-import / evaluation worker.
-IMPORTS_WORKER_QUEUES = "imports,diarization,eval-control,evaluations"
+PLATFORM_IMPORTS_WORKER_QUEUE = "platform-imports"
+# Platform historical imports (discovery + hydrate) must run on a worker that
+# consumes this queue — same pool as CSV import workers is fine.
+IMPORTS_WORKER_QUEUES = (
+    f"{PLATFORM_IMPORTS_WORKER_QUEUE},import-control,imports,diarization,eval-control,evaluations"
+)
 EVAL_CONTROL_QUEUE = "eval-control"
 USAGE_WORKER_QUEUE = "usage"
 PLATFORM_WORKER_QUEUE = "platform"
@@ -134,6 +139,16 @@ def _platform_beat_schedule() -> dict:
             "task": "sweep_staging_ingest",
             "schedule": 3600.0,
         }
+    if settings.PLATFORM_IMPORT_FEATURE_ENABLED:
+        schedule["bootstrap-platform-import-discovery"] = {
+            "task": "discover_platform_slice",
+            "schedule": 90.0,
+            "kwargs": {"bootstrap": True},
+        }
+        schedule["dispatch-fair-platform-import-rows"] = {
+            "task": "dispatch_fair_platform_import_rows",
+            "schedule": 45.0,
+        }
     return schedule
 
 
@@ -160,10 +175,9 @@ celery_app.conf.update(
     # up by other healthy children. Default of 4 means a stuck child silently
     # holds 4 reserved tasks hostage.
     worker_prefetch_multiplier=1,
-    # Acknowledge tasks only after they finish, so a task killed by the time
-    # limit (or by worker_max_tasks_per_child recycling a stuck child) is
-    # redelivered rather than lost.
     task_acks_late=True,
+    task_reject_on_worker_lost=True,
+    broker_transport_options={"visibility_timeout": 7200},
     # Recycle prefork children every N tasks. This frees torch model memory,
     # any leaked OMP threads, and HuggingFace tokenizer state, and prevents
     # slow drift from accumulating over hours of import processing.
@@ -182,7 +196,9 @@ celery_app.conf.task_routes = {
     "bulk_diarize_call_import": {"queue": "imports"},
     "bulk_delete_call_import_rows": {"queue": "imports"},
     "materialize_call_import_rows": {"queue": "imports"},
-    "delete_call_import": {"queue": "imports"},
+    "delete_call_import": {"queue": "import-control"},
+    "discover_platform_slice": {"queue": "import-control"},
+    "dispatch_fair_platform_import_rows": {"queue": "import-control"},
     "materialize_call_import_evaluation": {"queue": EVAL_CONTROL_QUEUE},
     "materialize_mapped_call_import_evaluation": {"queue": EVAL_CONTROL_QUEUE},
     "retry_call_import_evaluation": {"queue": EVAL_CONTROL_QUEUE},

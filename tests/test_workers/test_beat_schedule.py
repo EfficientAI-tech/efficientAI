@@ -47,6 +47,8 @@ def test_platform_beat_schedule_includes_platform_and_trace_tasks():
         "prune-oss-usage-history",
         "sweep-idle-traces",
         "sweep-orphan-s3-batches",
+        "bootstrap-platform-import-discovery",
+        "dispatch-fair-platform-import-rows",
     }
     if not getattr(settings, "CLICKHOUSE_URL", None):
         expected.add("sweep-staging-ingest")

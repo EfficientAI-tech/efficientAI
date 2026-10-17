@@ -658,6 +658,7 @@ class TranscriptionService:
                     f"Please configure the provider in Settings."
                 )
 
+            from app.database import release_read_only_session
             from app.services.ai.stt_clients import (
                 transcribe_openai,
                 transcribe_deepgram,
@@ -666,6 +667,14 @@ class TranscriptionService:
                 transcribe_sarvam,
                 transcribe_smallest,
             )
+
+            el_base = None
+            if stt_provider == ModelProvider.ELEVENLABS:
+                el_base = self._resolve_elevenlabs_stt_base_url(
+                    stt_provider, db, organization_id, credential_id=credential_id
+                )
+            if stt_provider != ModelProvider.GOOGLE:
+                release_read_only_session(db)
 
             if stt_provider == ModelProvider.OPENAI:
                 # All OpenAI STT models in app/config/models.json
@@ -679,9 +688,6 @@ class TranscriptionService:
             elif stt_provider == ModelProvider.DEEPGRAM:
                 result = transcribe_deepgram(temp_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.ELEVENLABS:
-                el_base = self._resolve_elevenlabs_stt_base_url(
-                    stt_provider, db, organization_id, credential_id=credential_id
-                )
                 result = transcribe_elevenlabs(
                     temp_file_path, stt_model, api_key, language, base_url=el_base
                 )

@@ -87,6 +87,10 @@ from app.models.schemas import (
     EvaluationMetricClustersState,
     EvaluationPromptImprovementsRequest,
     EvaluationPromptImprovementsState,
+    PromptImprovementReviewUpdate,
+    PromptPushConfirm,
+    PromptPushPreviewResponse,
+    PromptPushResponse,
     MetricFailurePoliciesResponse,
     MetricFailurePoliciesSaveRequest,
     MetricFailurePolicy,
@@ -333,22 +337,34 @@ def _to_evaluation_row_response(
     eval_row_obj: CallImportEvaluationRow,
     source_row: Optional[CallImportRow],
     evaluation: Optional[CallImportEvaluation] = None,
+    *,
+    include_text: bool = True,
 ) -> CallImportEvaluationRowResponse:
-    """Serialize one evaluation row plus joined source-row metadata."""
+    """Serialize one evaluation row plus joined source-row metadata.
+
+    List pages pass ``include_text=False`` so transcript bodies stay off
+    the page. The single-row read passes ``True``.
+    """
+    if include_text and source_row is not None:
+        transcript = _pick_evaluation_row_transcript(source_row, evaluation)
+        production_transcript = (source_row.transcript or "").strip() or None
+        diarised_transcript = (source_row.diarised_transcript or "").strip() or None
+        raw_columns = source_row.raw_columns
+    else:
+        transcript = None
+        production_transcript = None
+        diarised_transcript = None
+        raw_columns = None
     return CallImportEvaluationRowResponse(
         id=eval_row_obj.id,
         evaluation_id=eval_row_obj.evaluation_id,
         call_import_row_id=eval_row_obj.call_import_row_id,
         row_index=source_row.row_index if source_row else None,
         conversation_id=source_row.conversation_id if source_row else None,
-        transcript=_pick_evaluation_row_transcript(source_row, evaluation),
-        production_transcript=(
-            (source_row.transcript or "").strip() or None if source_row else None
-        ),
-        diarised_transcript=(
-            (source_row.diarised_transcript or "").strip() or None if source_row else None
-        ),
-        raw_columns=source_row.raw_columns if source_row else None,
+        transcript=transcript,
+        production_transcript=production_transcript,
+        diarised_transcript=diarised_transcript,
+        raw_columns=raw_columns,
         recording_url=source_row.recording_url if source_row else None,
         recording_date=source_row.recording_date if source_row else None,
         recording_s3_key=source_row.recording_s3_key if source_row else None,
@@ -1055,9 +1071,15 @@ async def create_call_import_evaluation(
     )
 
     if use_diarised:
-        from app.api.v1.routes.call_imports import _is_manual_audio_call_import
+        from app.api.v1.routes.call_imports import (
+            _is_manual_audio_call_import,
+            _is_platform_call_import,
+            platform_import_hydration_complete,
+        )
 
-        if not _is_manual_audio_call_import(call_import):
+        if not _is_manual_audio_call_import(call_import) and not _is_platform_call_import(
+            call_import
+        ):
             if call_import.schema_id:
                 from app.api.v1.routes.call_imports import (
                     _resolve_schema,
@@ -1085,6 +1107,22 @@ async def create_call_import_evaluation(
                     )
 
     starting_from_mapped = False
+    from app.api.v1.routes.call_imports import (
+        _is_platform_call_import,
+        platform_import_hydration_complete,
+    )
+
+    if _is_platform_call_import(call_import) and not platform_import_hydration_complete(
+        call_import
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Platform import is still discovering or fetching recordings. "
+                "Wait until the batch is ready before running evaluation."
+            ),
+        )
+
     if call_import.status == CallImportStatus.MAPPED:
         if not call_import.source_s3_key or not call_import.source_format:
             raise HTTPException(
@@ -1945,14 +1983,29 @@ async def list_call_import_evaluation_rows(
             bounded_shard_fetch=(
                 not sort_recognized or sort_by_clean == "row_index"
             ),
+            row_index_desc=bool(
+                sort_recognized and sort_by_clean == "row_index" and direction_desc
+            ),
+            sort_reads_scores=sort_by_clean.startswith("metric:"),
         )
     else:
-        total = query.count()
-        rows = query.offset((page - 1) * page_size).limit(page_size).all()
+        from app.db_sharding.scatter_gather import defer_call_import_row_text
 
-    # Row detail shows the transcript for this run's chosen source.
+        total = query.count()
+        rows = (
+            query.options(*defer_call_import_row_text())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
+
     items: List[CallImportEvaluationRowResponse] = [
-        _to_evaluation_row_response(eval_row_obj, source_row, eval_row)
+        _to_evaluation_row_response(
+            eval_row_obj,
+            source_row,
+            eval_row,
+            include_text=False,
+        )
         for eval_row_obj, source_row in rows
     ]
 
@@ -1962,6 +2015,93 @@ async def list_call_import_evaluation_rows(
         page=page,
         page_size=page_size,
     )
+
+
+@router.get(
+    "/{eval_id}/rows/{row_id}",
+    response_model=CallImportEvaluationRowResponse,
+    operation_id="getCallImportEvaluationRow",
+)
+async def get_call_import_evaluation_row(
+    call_import_id: UUID,
+    eval_id: UUID,
+    row_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportEvaluationRowResponse:
+    """One evaluation row, including the transcript the list leaves off."""
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if evaluation is None:
+        raise HTTPException(status_code=404, detail="Call import evaluation not found")
+
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    if not is_sharding_enabled():
+        pair = (
+            db.query(CallImportEvaluationRow, CallImportRow)
+            .join(
+                CallImportRow,
+                CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
+            )
+            .filter(
+                CallImportEvaluationRow.id == row_id,
+                CallImportEvaluationRow.evaluation_id == eval_id,
+                CallImportRow.call_import_id == call_import_id,
+            )
+            .first()
+        )
+        if pair is None:
+            raise HTTPException(
+                status_code=404, detail="Call import evaluation row not found"
+            )
+        eval_row, source_row = pair
+        return _to_evaluation_row_response(
+            eval_row,
+            source_row,
+            evaluation,
+            include_text=True,
+        )
+
+    from app.db_sharding.row_ops import (
+        close_row_sessions,
+        locate_call_import_evaluation_row,
+    )
+
+    try:
+        row_db, catalog_db, eval_row, source_row, _shard_id = (
+            locate_call_import_evaluation_row(row_id)
+        )
+    except LookupError:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation row not found"
+        ) from None
+    try:
+        if (
+            eval_row.evaluation_id != eval_id
+            or source_row.call_import_id != call_import_id
+        ):
+            raise HTTPException(
+                status_code=404, detail="Call import evaluation row not found"
+            )
+        return _to_evaluation_row_response(
+            eval_row,
+            source_row,
+            evaluation,
+            include_text=True,
+        )
+    finally:
+        close_row_sessions(row_db, catalog_db)
 
 
 @router.get(
@@ -5738,13 +5878,29 @@ def _generate_and_persist_tldr_summary(
                 organization_id=organization_id,
                 db=db,
                 temperature=0.4,
-                max_tokens=1400,
+                max_tokens=4096,
             )
+            if llm_result.get("truncated"):
+                llm_result = llm_service.generate_response(
+                    messages=messages,
+                    llm_provider=provider_enum,
+                    llm_model=model_str,
+                    organization_id=organization_id,
+                    db=db,
+                    temperature=0.2,
+                    max_tokens=8192,
+                )
     except Exception as e:
         logger.error(f"[CallImportInsights] LLM call failed: {e}")
         raise HTTPException(
             status_code=502, detail=f"LLM call failed: {e}"
         ) from e
+
+    if llm_result.get("truncated"):
+        raise HTTPException(
+            status_code=502,
+            detail="Insights response was cut off before it finished. Try again.",
+        )
 
     total = int(evaluation.total_rows or 0)
     summary = _parse_insights_response(llm_result.get("text", ""))
@@ -6234,9 +6390,9 @@ def _enqueue_prompt_improvements_job(
 
 
 def _load_eval_rows(db: Session, evaluation_id: UUID) -> List[CallImportEvaluationRow]:
-    from app.db_sharding.eval_rows import load_evaluation_rows_for_run
+    from app.db_sharding.scatter_gather import load_evaluation_score_rows
 
-    return load_evaluation_rows_for_run(db, evaluation_id)
+    return load_evaluation_score_rows(db, evaluation_id)
 
 
 def _count_completed_eval_rows(db: Session, evaluation_id: UUID) -> int:
@@ -6989,28 +7145,56 @@ async def generate_call_import_evaluation_prompt_improvements(
 
     from app.services.call_import_prompt_improvements import is_imported_agent
     from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
+    from app.services.platform_import_imported_agent import resolve_imported_agent_for_call_import
+
+    call_import = _require_import(db, call_import_id, organization_id)
+    imported_agent_id = body.imported_agent_id
+    if imported_agent_id is None:
+        linked = resolve_imported_agent_for_call_import(db, call_import, principal)
+        if linked is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No imported agent is linked to this import. Select an imported agent "
+                    "or use a single-agent platform import."
+                ),
+            )
+        imported_agent_id = linked.id
 
     imported_agent = (
         db.query(PromptPartial)
         .filter(
-            PromptPartial.id == body.imported_agent_id,
+            PromptPartial.id == imported_agent_id,
             PromptPartial.organization_id == organization_id,
             PromptPartial.workspace_id == workspace_id,
         )
         .first()
     )
     if imported_agent is None or not is_imported_agent(imported_agent):
-        raise HTTPException(
-            status_code=404,
-            detail="Imported agent not found in the active workspace",
+        from app.services.platform_import_imported_agent import (
+            relink_evaluation_imported_agent,
+            resolve_imported_agent_for_call_import,
         )
+
+        recovered = resolve_imported_agent_for_call_import(db, call_import, principal)
+        if recovered is None or not is_imported_agent(recovered):
+            raise HTTPException(
+                status_code=404,
+                detail="Imported agent not found in the active workspace",
+            )
+        imported_agent = recovered
+        imported_agent_id = recovered.id
+        if isinstance(evaluation.prompt_improvements, dict):
+            relink_evaluation_imported_agent(evaluation, recovered)
+            stamp_evaluation_actor(evaluation, principal)
+            db.commit()
 
     if not body.regenerate and not body.force:
         cached = _prompt_improvements_payload(evaluation)
         if (
             cached is not None
             and cached.status in {"running", "completed"}
-            and cached.imported_agent_id == str(body.imported_agent_id)
+            and cached.imported_agent_id == str(imported_agent_id)
         ):
             return cached
 
@@ -7020,7 +7204,7 @@ async def generate_call_import_evaluation_prompt_improvements(
 
     _enqueue_prompt_improvements_job(
         evaluation,
-        imported_agent_id=body.imported_agent_id,
+        imported_agent_id=imported_agent_id,
         imported_agent_name=imported_agent.name,
         provider=provider_enum.value,
         model=model_str,
@@ -7033,9 +7217,123 @@ async def generate_call_import_evaluation_prompt_improvements(
     db.refresh(evaluation)
     return _prompt_improvements_payload(evaluation) or EvaluationPromptImprovementsState(
         status="running",
-        imported_agent_id=str(body.imported_agent_id),
+        imported_agent_id=str(imported_agent_id),
         imported_agent_name=imported_agent.name,
     )
+
+
+def _load_evaluation_for_prompt_push(
+    db: Session,
+    call_import_id: UUID,
+    eval_id: UUID,
+    organization_id: UUID,
+) -> tuple[CallImport, CallImportEvaluation]:
+    call_import = _require_import(db, call_import_id, organization_id)
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="Call import evaluation not found")
+    return call_import, evaluation
+
+
+@router.patch(
+    "/{eval_id}/prompt-improvements/review",
+    response_model=EvaluationPromptImprovementsState,
+    operation_id="reviewCallImportEvaluationPromptImprovement",
+)
+async def review_call_import_evaluation_prompt_improvement(
+    call_import_id: UUID,
+    eval_id: UUID,
+    body: PromptImprovementReviewUpdate,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> EvaluationPromptImprovementsState:
+    del api_key
+    from app.services.call_import_prompt_push import PromptPushError, set_suggestion_review
+
+    _, evaluation = _load_evaluation_for_prompt_push(db, call_import_id, eval_id, organization_id)
+    try:
+        set_suggestion_review(evaluation, body.suggestion_id, body.review_status, body.edited_text)
+    except PromptPushError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    stamp_evaluation_actor(evaluation, principal)
+    db.commit()
+    db.refresh(evaluation)
+    return _prompt_improvements_payload(evaluation) or EvaluationPromptImprovementsState(status="idle")
+
+
+@router.get(
+    "/{eval_id}/prompt-improvements/push-preview",
+    response_model=PromptPushPreviewResponse,
+    operation_id="previewCallImportEvaluationPromptPush",
+)
+async def preview_call_import_evaluation_prompt_push(
+    call_import_id: UUID,
+    eval_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+) -> PromptPushPreviewResponse:
+    del api_key
+    from app.services.call_import_prompt_push import PromptPushError, preview_evaluation_push
+
+    call_import, evaluation = _load_evaluation_for_prompt_push(
+        db, call_import_id, eval_id, organization_id
+    )
+    try:
+        payload = preview_evaluation_push(
+            db, evaluation, call_import, organization_id, workspace_id
+        )
+    except PromptPushError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return PromptPushPreviewResponse(**payload)
+
+
+@router.post(
+    "/{eval_id}/prompt-improvements/push",
+    response_model=PromptPushResponse,
+    operation_id="pushCallImportEvaluationPrompt",
+)
+async def push_call_import_evaluation_prompt(
+    call_import_id: UUID,
+    eval_id: UUID,
+    body: PromptPushConfirm,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> PromptPushResponse:
+    del api_key
+    from app.services.call_import_prompt_push import PromptPushError, push_evaluation_prompt
+
+    call_import, evaluation = _load_evaluation_for_prompt_push(
+        db, call_import_id, eval_id, organization_id
+    )
+    try:
+        row = push_evaluation_prompt(
+            db,
+            evaluation,
+            call_import,
+            organization_id,
+            workspace_id,
+            body.confirm,
+            principal,
+            push_to_live=body.push_to_live,
+        )
+    except PromptPushError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return row
 
 
 # ---------------------------------------------------------------------------
@@ -8876,6 +9174,11 @@ def _reset_eval_row_for_retry(
     eval_row.started_at = None
     eval_row.finished_at = None
     eval_row.celery_task_id = None
+    from app.workers.tasks.evaluate_call_import_row_audio import (
+        clear_eval_audio_chain,
+    )
+
+    clear_eval_audio_chain(str(eval_row.id))
 
 
 def _enqueue_eval_rows_with_optional_transcribe(

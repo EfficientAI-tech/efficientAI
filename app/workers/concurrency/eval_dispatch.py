@@ -84,8 +84,12 @@ def _needs_transcribe_for_eval(
     can_auto_transcribe = (
         has_stt_config if transcribe_mode == "stt_llm" else has_diariser_config
     )
+    from app.db_sharding.scatter_gather import row_text_present
+
     has_audio = bool((source_row.recording_s3_key or "").strip())
-    existing_dia = (source_row.diarised_transcript or "").strip()
+    existing_dia = row_text_present(
+        source_row, "diarised_transcript", "diarised_transcript_char_length"
+    )
     needs_diarisation = not existing_dia or transcribe_overwrite
     return bool(can_auto_transcribe and has_audio and needs_diarisation)
 
@@ -118,7 +122,12 @@ def _needs_import_for_eval(
         return False
     if (source_row.recording_s3_key or "").strip():
         return False
-    return bool((source_row.recording_url or "").strip())
+    url = (source_row.recording_url or "").strip()
+    if not url:
+        return False
+    if "://" in url and not url.startswith(("http://", "https://")):
+        return source_row.status == CallImportRowStatus.PENDING
+    return True
 
 
 def _fail_eval_row_for_import(
@@ -352,13 +361,20 @@ def _attach_sharded_eval_dispatch_rows(
     else:
         shard_db = db_pool_manager.shard_session_factory(shard_id)()
     try:
+        from app.db_sharding.scatter_gather import (
+            dispatch_eval_row_options,
+            dispatch_source_row_options,
+        )
+
         bound_eval = (
             shard_db.query(CallImportEvaluationRow)
+            .options(*dispatch_eval_row_options())
             .filter(CallImportEvaluationRow.id == eval_row.id)
             .first()
         )
         bound_source = (
             shard_db.query(CallImportRow)
+            .options(*dispatch_source_row_options())
             .filter(CallImportRow.id == source_row.id)
             .first()
         )
@@ -517,10 +533,16 @@ def _try_dispatch_single_row(
             dia_status = (
                 source_row.diarised_transcript_status or ""
             ).strip().lower()
+            from app.db_sharding.scatter_gather import row_text_present
+
             if (
                 dia_status == "failed"
                 and not transcribe_overwrite
-                and not (source_row.diarised_transcript or "").strip()
+                and not row_text_present(
+                    source_row,
+                    "diarised_transcript",
+                    "diarised_transcript_char_length",
+                )
             ):
                 return EvalDispatchOutcome("skip")
 

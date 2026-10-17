@@ -290,6 +290,28 @@ def test_parse_csv_allows_empty_recording_url_when_optional():
     assert len(result.skipped) == 0
 
 
+def test_parse_csv_skips_invalid_recording_url_when_optional():
+    csv_text = (
+        "CallID,Recording Date,Recording URL,Transcript\n"
+        "abc-1,18/05/2026,not-a-url,Skipped row\n"
+        "abc-2,19/05/2026,https://x/ok.mp3,Kept row\n"
+    )
+    params = _standard_params()
+    rec_param = next(p for p in params if p.type == CallImportParameterType.RECORDING_URL.value)
+    rec_param.is_required = False
+    result = _parse_csv(
+        _csv_bytes(csv_text),
+        params,
+        _standard_mapping(),
+        _standard_skipped(),
+    )
+    assert len(result.rows) == 1
+    assert result.rows[0]["conversation_id"] == "abc-2"
+    assert len(result.skipped) == 1
+    assert result.skipped[0].reason == "invalid_recording_url"
+    assert result.skipped[0].source_row == 1
+
+
 def test_parse_csv_skips_row_invalid_recording_url():
     csv_text = (
         "CallID,Recording Date,Recording URL,Transcript\n"

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Optional, TYPE_CHECKING
 
 from loguru import logger
+from sqlalchemy import func, or_, update
 from sqlalchemy.orm import Session
 
 from app.models.database import CallImportEvaluationRow, CallImportRow
@@ -16,37 +17,42 @@ if TYPE_CHECKING:
 _RECONCILE_BATCH = 500
 
 
-def _celery_task_is_active(task_id: str) -> bool:
-    """Return True when a Celery task id is still queued or running."""
+def claim_import_row_for_task(db: Session, row: CallImportRow, task_id: str | None) -> bool:
+    """Take a recording row for this task. A second task must not download it.
+
+    A pending row can be taken once, even if a task id was left on it. After
+    the status is processing, only that same task id may continue.
+    """
     cleaned = (task_id or "").strip()
-    if not cleaned:
+    filters = [
+        CallImportRow.id == row.id,
+        CallImportRow.status.in_(
+            (CallImportRowStatus.PENDING, CallImportRowStatus.PROCESSING)
+        ),
+    ]
+    if cleaned:
+        filters.append(
+            or_(
+                CallImportRow.status == CallImportRowStatus.PENDING,
+                CallImportRow.celery_task_id == cleaned,
+            )
+        )
+    else:
+        filters.append(CallImportRow.status == CallImportRowStatus.PENDING)
+    values: dict = {
+        "status": CallImportRowStatus.PROCESSING,
+        "error_message": None,
+        "attempts": func.coalesce(CallImportRow.attempts, 0) + 1,
+    }
+    if cleaned:
+        values["celery_task_id"] = cleaned
+    result = db.execute(update(CallImportRow).where(*filters).values(**values))
+    if result.rowcount != 1:
+        db.rollback()
         return False
-    try:
-        from app.workers.celery_app import celery_app
-
-        result = celery_app.AsyncResult(cleaned)
-        state = result.state
-        if state in {"STARTED", "RETRY"}:
-            return True
-        if state in {"SUCCESS", "FAILURE", "REVOKED"}:
-            return False
-
-        inspect = celery_app.control.inspect(timeout=0.5)
-        if inspect is None:
-            return False
-        for method_name in ("active", "reserved", "scheduled"):
-            method = getattr(inspect, method_name, None)
-            if method is None:
-                continue
-            payload = method() or {}
-            for tasks in payload.values():
-                for task in tasks:
-                    if task.get("id") == cleaned:
-                        return True
-        return False
-    except Exception as exc:
-        logger.debug("Celery task inspect failed for {}: {}", task_id, exc)
-        return True
+    db.commit()
+    db.refresh(row)
+    return True
 
 
 def _reconcile_import_rows_on_session(db: Session) -> int:
@@ -64,7 +70,7 @@ def _reconcile_import_rows_on_session(db: Session) -> int:
     )
     for row in rows:
         task_id = (row.celery_task_id or "").strip()
-        if not task_id or _celery_task_is_active(task_id):
+        if not task_id or not _celery_task_is_finished(task_id):
             continue
         row.celery_task_id = None
         if (
@@ -99,6 +105,25 @@ def reconcile_orphaned_import_dispatch_locks(catalog_db: Session) -> int:
     return total
 
 
+def _celery_task_is_finished(task_id: str) -> bool:
+    """True only when Celery has finished this task.
+
+    ``PENDING`` is a task waiting in the broker. It must not be treated as
+    dead, or the row is dispatched to the model again.
+    """
+    cleaned = (task_id or "").strip()
+    if not cleaned:
+        return False
+    try:
+        from app.workers.celery_app import celery_app
+
+        state = celery_app.AsyncResult(cleaned).state
+    except Exception as exc:
+        logger.debug("Celery state lookup failed for {}: {}", task_id, exc)
+        return False
+    return state in {"SUCCESS", "FAILURE", "REVOKED"}
+
+
 def _reconcile_eval_rows_on_session(db: Session) -> int:
     cleared = 0
     rows = (
@@ -112,7 +137,7 @@ def _reconcile_eval_rows_on_session(db: Session) -> int:
     )
     for row in rows:
         task_id = (row.celery_task_id or "").strip()
-        if not task_id or _celery_task_is_active(task_id):
+        if not task_id or not _celery_task_is_finished(task_id):
             continue
         row.celery_task_id = None
         cleared += 1

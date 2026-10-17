@@ -165,6 +165,9 @@ def transcribe_google(
                 db=db,
                 credential=credential,
             )
+        from app.database import release_read_only_session
+
+        release_read_only_session(db)
         response = litellm.completion(**call_kwargs)
     except Exception as e:
         logger.error(

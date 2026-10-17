@@ -88,6 +88,7 @@ def _workspaces_with_pending_imports(db: Session) -> List[UUID]:
         .join(Workspace, Workspace.id == CallImport.workspace_id)
         .filter(
             CallImport.status != CallImportStatus.DELETING,
+            CallImport.source_format.is_distinct_from("platform"),
             CallImportRow.status == CallImportRowStatus.PENDING,
             CallImportRow.celery_task_id.is_(None),
             Workspace.is_active.is_(True),
@@ -110,6 +111,7 @@ def _call_imports_with_pending_rows(
         .filter(
             CallImport.workspace_id == workspace_id,
             CallImport.status != CallImportStatus.DELETING,
+            CallImport.source_format.is_distinct_from("platform"),
             CallImportRow.status == CallImportRowStatus.PENDING,
             CallImportRow.celery_task_id.is_(None),
         )

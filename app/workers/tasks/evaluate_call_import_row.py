@@ -220,6 +220,7 @@ def evaluate_call_import_row_task(
     restricted_metric_ids: Optional[List[str]] = None,
     _eval_slot_task_id: Optional[str] = None,
     _skip_audio: bool = False,
+    _predecessor_task_id: Optional[str] = None,
 ):
     """Evaluate one row using the appropriate library per metric type.
 
@@ -234,6 +235,8 @@ def evaluate_call_import_row_task(
     scoring_inputs: dict[str, Any] | None = None
     restricted_metric_uuids: list[UUID] | None = None
     usage_ctx_token = None
+    release_slot = True
+    owns_execution = False
     try:
         from app.db_sharding.row_ops import (
             close_row_sessions,
@@ -241,10 +244,11 @@ def evaluate_call_import_row_task(
         )
 
         row_db = catalog_db = None
+        save_shard_id: str | None = None
         try:
             row_uuid = UUID(eval_row_id)
             try:
-                row_db, catalog_db, eval_row, source_row, _shard_id = (
+                row_db, catalog_db, eval_row, source_row, save_shard_id = (
                     locate_call_import_evaluation_row(row_uuid)
                 )
             except LookupError:
@@ -279,17 +283,42 @@ def evaluate_call_import_row_task(
                 )
             )
 
-            previous_row_status = eval_row.status
+            from app.workers.tasks.evaluate_call_import_row_core import (
+                claim_eval_row_for_task,
+            )
 
-            eval_row.status = "running"
-            eval_row.celery_task_id = self.request.id
-            eval_row.error_message = None
-            eval_row.started_at = eval_row.started_at or _now()
+            if not claim_eval_row_for_task(
+                row_db,
+                eval_row,
+                self.request.id,
+                predecessor_task_id=_predecessor_task_id,
+            ):
+                logger.info(
+                    "Skipping eval row {} already claimed or finished",
+                    eval_row_id,
+                )
+                return {"status": "skipped", "reason": "already_claimed"}
+
+            from app.workers.tasks.evaluate_call_import_row_core import (
+                acquire_eval_execution,
+            )
+
+            if not acquire_eval_execution(self.request.id):
+                release_slot = False
+                from celery.exceptions import MaxRetriesExceededError
+
+                try:
+                    self.retry(countdown=30, max_retries=40)
+                except MaxRetriesExceededError:
+                    release_slot = True
+                    return {"status": "skipped", "reason": "already_claimed"}
+            owns_execution = True
+
+            previous_row_status = "running"
             if evaluation.status == "pending":
                 evaluation.status = "running"
                 evaluation.started_at = evaluation.started_at or _now()
-            _persist_eval_sessions(row_db, catalog_db)
-            previous_row_status = "running"
+                catalog_db.commit()
 
             production_transcript = (source_row.transcript or "").strip()
             diarised_transcript = (source_row.diarised_transcript or "").strip()
@@ -612,7 +641,10 @@ def evaluate_call_import_row_task(
 
             try:
                 row_db, catalog_db, eval_row, _source_row, _ = (
-                    locate_call_import_evaluation_row(UUID(eval_row_id))
+                    locate_call_import_evaluation_row(
+                        UUID(eval_row_id),
+                        shard_id=save_shard_id,
+                    )
                 )
             except LookupError:
                 logger.warning(
@@ -703,11 +735,18 @@ def evaluate_call_import_row_task(
             from app.services.usage.context import reset_usage_context
 
             reset_usage_context(usage_ctx_token)
-        from app.workers.concurrency.fair_dispatch import (
-            finish_eval_work_and_redispatch,
-        )
+        if owns_execution:
+            from app.workers.tasks.evaluate_call_import_row_core import (
+                release_eval_execution,
+            )
 
-        finish_eval_work_and_redispatch(
-            slot_task_id,
-            restricted_metric_ids=restricted_metric_ids,
-        )
+            release_eval_execution(self.request.id)
+        if release_slot:
+            from app.workers.concurrency.fair_dispatch import (
+                finish_eval_work_and_redispatch,
+            )
+
+            finish_eval_work_and_redispatch(
+                slot_task_id,
+                restricted_metric_ids=restricted_metric_ids,
+            )

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { apiClient } from '../../lib/api'
@@ -17,14 +18,11 @@ import {
   PanelLeft,
   PanelRightClose,
   PanelRight,
-  RotateCcw,
   X,
   ChevronRight,
   FileText,
   Eye,
   Code,
-  Tag,
-  Clock,
   Save,
   Sparkles,
   Loader2,
@@ -33,7 +31,7 @@ import {
   RefreshCw,
   Tags,
 } from 'lucide-react'
-import { format } from 'date-fns'
+import { formatDateSafe } from '../../lib/formatDate'
 import { copyTextToClipboard } from '../../lib/clipboard'
 import AIProviderModelPicker from '../../components/AIProviderModelPicker'
 import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
@@ -46,10 +44,16 @@ import AgentPromptSectionView, {
 import {
   displayTags,
   ensureImportedAgentTag,
+  tagsForImportedAgentSave,
   isImportedAgent,
   isMetricPartial,
+  isPlatformImportAgentPartial,
+  latestLivePromptVersion,
+  versionOriginBadge,
+  versionRowExplanation,
   type PartialKind,
 } from './constants'
+import CallImportPartialLink from './components/CallImportPartialLink'
 import {
   emptyMetricPartialContent,
   metricPartialHasSaveableContent,
@@ -57,7 +61,8 @@ import {
   serializeMetricPartialContent,
   type MetricPartialContent,
 } from './metricPartialUtils'
-import type { AgentFlowGraph, AgentFlowNode } from '../../types/api'
+import type { AgentFlowGraph, AgentFlowNode, PromptPushRecord, PromptVersionPushPreview } from '../../types/api'
+import PromptLineDiff from '../callImports/components/PromptLineDiff'
 import {
   countMappedNodes,
   flowchartNeedsPromptMapping,
@@ -89,7 +94,34 @@ const KIND_TABS: { id: PartialKind; label: string }[] = [
 const toolBtn =
   'inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors'
 
+const detailActionBtn =
+  'inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-900 bg-gray-900 text-white hover:bg-gray-800 transition-colors shrink-0'
+const detailIconBtn =
+  'inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-red-200 bg-white text-red-600 hover:bg-red-50 transition-colors shrink-0'
+const versionRowActionBtn =
+  'inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors'
+const versionRowPushBtn =
+  'inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium rounded-md border border-gray-900 bg-gray-900 text-white hover:bg-gray-800 transition-colors'
+
 const PARTIALS_LIST_COLLAPSED_KEY = 'promptPartialsListCollapsed'
+
+function partialListSubtitle(partial: PromptPartial): string | null {
+  const description = partial.description?.trim()
+  if (description) return description
+  if (isPlatformImportAgentPartial(partial)) {
+    return 'Linked from platform import'
+  }
+  return null
+}
+
+function flowchartListLabel(status?: string | null): string {
+  if (!status) return 'No chart'
+  if (status === 'failed') return 'Failed'
+  if (status === 'generating') return 'Generating'
+  if (status === 'mapping') return 'Mapping'
+  if (status === 'completed') return 'Chart ready'
+  return status.replace(/_/g, ' ')
+}
 
 function readListCollapsedPreference(): boolean {
   try {
@@ -127,6 +159,7 @@ interface PromptPartialVersion {
 
 interface PromptPartialDetail extends PromptPartial {
   versions: PromptPartialVersion[]
+  pushes?: PromptPushRecord[]
 }
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -169,6 +202,11 @@ export default function PromptPartials() {
   const [nodeMapError, setNodeMapError] = useState<string | null>(null)
   const [listSidebarCollapsed, setListSidebarCollapsed] = useState(readListCollapsedPreference)
   const [agentDiagramCollapsed, setAgentDiagramCollapsed] = useState(false)
+  const [rollbackVersion, setRollbackVersion] = useState<number | null>(null)
+  const [rollbackConfirm, setRollbackConfirm] = useState('')
+  const [rollbackError, setRollbackError] = useState<string | null>(null)
+  const [restoreTargetVersion, setRestoreTargetVersion] = useState<number | null>(null)
+  const [restoreConfirm, setRestoreConfirm] = useState('')
 
   const toggleListSidebar = (collapsed: boolean) => {
     setListSidebarCollapsed(collapsed)
@@ -232,6 +270,29 @@ export default function PromptPartials() {
       queryClient.invalidateQueries({ queryKey: ['prompt-partials'] })
       queryClient.invalidateQueries({ queryKey: ['prompt-partial'] })
       setCompareVersion(null)
+      setRestoreTargetVersion(null)
+      setRestoreConfirm('')
+    },
+  })
+
+  const rollbackPreview = useQuery<PromptVersionPushPreview>({
+    queryKey: ['prompt-version-push-preview', selectedPartial?.id, rollbackVersion],
+    queryFn: () => apiClient.previewPromptPartialVersionPush(selectedPartial!.id, rollbackVersion!),
+    enabled: !!selectedPartial?.id && rollbackVersion != null,
+    retry: false,
+  })
+
+  const rollbackMutation = useMutation({
+    mutationFn: () => apiClient.pushPromptPartialVersion(selectedPartial!.id, rollbackVersion!, 'confirm'),
+    onSuccess: () => {
+      setRollbackVersion(null)
+      setRollbackConfirm('')
+      setRollbackError(null)
+      queryClient.invalidateQueries({ queryKey: ['prompt-partials'] })
+      queryClient.invalidateQueries({ queryKey: ['prompt-partial'] })
+    },
+    onError: (err: unknown) => {
+      setRollbackError(getApiErrorMessage(err, 'The live prompt was not updated.'))
     },
   })
 
@@ -319,7 +380,7 @@ export default function PromptPartials() {
     setSelectedFlowNodeId(null)
     setPromptHighlight(null)
     setNodeMapError(null)
-    setAgentDiagramCollapsed(false)
+    setAgentDiagramCollapsed(isPlatformImportAgentPartial(partial))
     navigate(
       `/prompt-partials/${partial.id}${effectiveKind === 'all' ? '' : `?kind=${effectiveKind}`}`,
     )
@@ -542,7 +603,7 @@ export default function PromptPartials() {
                   {searchQuery
                     ? 'No prompts match your search'
                     : kindFilter === 'imported_agent'
-                      ? 'No imported agents yet'
+                      ? 'No import-linked agent prompts yet'
                       : kindFilter === 'metric'
                         ? 'No metric partials yet'
                       : kindFilter === 'partial'
@@ -567,7 +628,10 @@ export default function PromptPartials() {
                 )}
               </div>
             ) : (
-              partials.map((partial: PromptPartial) => (
+              partials.map((partial: PromptPartial) => {
+                const listSubtitle = partialListSubtitle(partial)
+                const visibleTags = displayTags(partial.tags)
+                return (
                 <button
                   key={partial.id}
                   onClick={() => handleSelectPartial(partial)}
@@ -578,14 +642,19 @@ export default function PromptPartials() {
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium text-gray-900 truncate">{partial.name}</p>
-                      {partial.description && (
-                        <p className="text-xs text-gray-500 mt-0.5 truncate">{partial.description}</p>
-                      )}
+                      {listSubtitle ? (
+                        <p
+                          className="text-xs text-gray-500 mt-0.5 truncate"
+                          title={listSubtitle}
+                        >
+                          {listSubtitle}
+                        </p>
+                      ) : null}
                       <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                         {isImportedAgent(partial) ? (
                           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-sky-50 text-sky-700 border border-sky-200">
                             <Bot className="h-3 w-3" />
-                            Agent
+                            {isPlatformImportAgentPartial(partial) ? 'Import' : 'Agent'}
                           </span>
                         ) : isMetricPartial(partial) ? (
                           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-violet-50 text-violet-700 border border-violet-200">
@@ -598,21 +667,21 @@ export default function PromptPartials() {
                           v{partial.current_version}
                         </span>
                         {isImportedAgent(partial) ? (
-                          <span className="text-xs text-gray-400 capitalize">
-                            {partial.agent_flowchart_status || 'no chart'}
+                          <span className="text-xs text-gray-400">
+                            {flowchartListLabel(partial.agent_flowchart_status)}
                           </span>
                         ) : (
                           <span className="text-xs text-gray-400">
-                            {format(new Date(partial.updated_at), 'MMM d, yyyy')}
+                            {formatDateSafe(partial.updated_at, 'MMM d, yyyy')}
                           </span>
                         )}
                       </div>
                     </div>
                     <ChevronRight className="h-4 w-4 text-gray-400 flex-shrink-0 mt-0.5" />
                   </div>
-                  {displayTags(partial.tags).length > 0 && (
+                  {visibleTags.length > 0 ? (
                     <div className="flex flex-wrap gap-1 mt-2">
-                      {displayTags(partial.tags).slice(0, 3).map((tag) => (
+                      {visibleTags.slice(0, 3).map((tag) => (
                         <span
                           key={tag}
                           className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-gray-100 text-gray-600"
@@ -620,15 +689,14 @@ export default function PromptPartials() {
                           {tag}
                         </span>
                       ))}
-                      {displayTags(partial.tags).length > 3 && (
-                        <span className="text-xs text-gray-400">
-                          +{displayTags(partial.tags).length - 3}
-                        </span>
-                      )}
+                      {visibleTags.length > 3 ? (
+                        <span className="text-xs text-gray-400">+{visibleTags.length - 3}</span>
+                      ) : null}
                     </div>
-                  )}
+                  ) : null}
                 </button>
-              ))
+                )
+              })
             )}
           </div>
         </div>
@@ -649,23 +717,69 @@ export default function PromptPartials() {
           {selectedPartial ? (
             <>
               {/* Detail Header */}
-              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
-                <div className="min-w-0 flex-1">
+              <div className="px-6 py-3 border-b border-gray-200 space-y-2.5">
+                <div className="min-w-0">
                   <h2 className="text-lg font-semibold text-gray-900 truncate">
                     {partialDetail?.name || selectedPartial.name}
                   </h2>
-                  {(partialDetail?.description || selectedPartial.description) && (
-                    <p className="text-sm text-gray-500 mt-0.5">
-                      {partialDetail?.description || selectedPartial.description}
-                    </p>
-                  )}
+                  <div className="mt-1 flex flex-nowrap items-center gap-2 min-w-0 overflow-hidden">
+                    {(partialDetail?.description || selectedPartial.description) ? (
+                      <span
+                        className="text-sm text-gray-500 truncate min-w-0 flex-1"
+                        title={partialDetail?.description || selectedPartial.description || undefined}
+                      >
+                        {partialDetail?.description || selectedPartial.description}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-gray-400 shrink-0">
+                        Updated{' '}
+                        {formatDateSafe(
+                          partialDetail?.updated_at || selectedPartial.updated_at,
+                          'MMM d, yyyy',
+                        )}
+                      </span>
+                    )}
+                    <span className="flex items-center gap-1.5 shrink-0">
+                    {selectedIsAgent ? (
+                      <>
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-sky-100 text-sky-800 whitespace-nowrap">
+                          <Bot className="h-3 w-3" />
+                          {isPlatformImportAgentPartial(partialDetail || selectedPartial)
+                            ? 'Platform import agent'
+                            : 'Imported agent'}
+                        </span>
+                        {isPlatformImportAgentPartial(partialDetail || selectedPartial) ? (
+                          <CallImportPartialLink
+                            tags={(partialDetail || selectedPartial).tags}
+                            variant="pill"
+                            className="whitespace-nowrap"
+                          />
+                        ) : null}
+                      </>
+                    ) : null}
+                    {selectedIsMetric ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-violet-100 text-violet-800 whitespace-nowrap">
+                        <Tags className="h-3 w-3" />
+                        Metric partial
+                      </span>
+                    ) : null}
+                    {displayTags(partialDetail?.tags || selectedPartial.tags).map((tag: string) => (
+                      <span
+                        key={tag}
+                        className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700 whitespace-nowrap"
+                      >
+                        {tag}
+                      </span>
+                    ))}
+                    </span>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2 ml-4 flex-shrink-0">
-                  {/* Preview / Raw toggle */}
+                <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
                     <button
+                      type="button"
                       onClick={() => setPreviewMode('preview')}
-                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                      className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
                         previewMode === 'preview'
                           ? 'bg-white text-gray-900 shadow-sm'
                           : 'text-gray-500 hover:text-gray-700'
@@ -675,8 +789,9 @@ export default function PromptPartials() {
                       Preview
                     </button>
                     <button
+                      type="button"
                       onClick={() => setPreviewMode('raw')}
-                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                      className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
                         previewMode === 'raw'
                           ? 'bg-white text-gray-900 shadow-sm'
                           : 'text-gray-500 hover:text-gray-700'
@@ -686,80 +801,52 @@ export default function PromptPartials() {
                       Raw
                     </button>
                   </div>
-
-                  <button
-                    onClick={handleCopyPrompt}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors"
-                    title="Copy prompt to clipboard"
-                  >
-                    <ClipboardCopy className="h-3.5 w-3.5" />
-                    Copy
-                  </button>
-
-                  <button
-                    onClick={() => setShowVersionHistory(!showVersionHistory)}
-                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
-                      showVersionHistory
-                        ? 'bg-gray-900 text-white border-gray-900'
-                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                    }`}
-                  >
-                    <History className="h-3.5 w-3.5" />
-                    Versions ({partialDetail?.current_version || selectedPartial.current_version})
-                  </button>
-                  <button
-                    onClick={() => setShowEditModal(true)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors"
-                  >
-                    <Edit3 className="h-3.5 w-3.5" />
-                    Edit
-                  </button>
-                  <button
-                    onClick={() => cloneMutation.mutate(selectedPartial.id)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors"
-                    title="Clone partial"
-                  >
-                    <Copy className="h-3.5 w-3.5" />
-                    Clone
-                  </button>
-                  <button
-                    onClick={() => setShowDeleteConfirm(selectedPartial.id)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-red-200 bg-white text-red-600 hover:bg-red-50 transition-colors"
-                    title="Delete"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              </div>
-
-              {/* Tags */}
-              {(selectedIsAgent || selectedIsMetric || displayTags(partialDetail?.tags || selectedPartial.tags).length > 0) && (
-                <div className="flex items-center gap-2 px-6 py-2 border-b border-gray-100 bg-gray-50/50">
-                  <Tag className="h-3.5 w-3.5 text-gray-400" />
-                  <div className="flex flex-wrap gap-1">
-                    {selectedIsAgent ? (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-sky-100 text-sky-800">
-                        <Bot className="h-3 w-3" />
-                        Imported agent
-                      </span>
-                    ) : null}
-                    {selectedIsMetric ? (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-violet-100 text-violet-800">
-                        <Tags className="h-3 w-3" />
-                        Metric partial
-                      </span>
-                    ) : null}
-                    {displayTags(partialDetail?.tags || selectedPartial.tags).map((tag: string) => (
-                      <span
-                        key={tag}
-                        className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-200 text-gray-700"
-                      >
-                        {tag}
-                      </span>
-                    ))}
+                  <div className="flex flex-wrap items-center justify-end gap-1">
+                    <button
+                      type="button"
+                      onClick={handleCopyPrompt}
+                      className={detailActionBtn}
+                    >
+                      <ClipboardCopy className="h-3.5 w-3.5 shrink-0" />
+                      Copy
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowVersionHistory(true)}
+                      className={`${detailActionBtn} ${
+                        showVersionHistory ? 'ring-2 ring-offset-1 ring-gray-400' : ''
+                      }`}
+                    >
+                      <History className="h-3.5 w-3.5 shrink-0" />
+                      Versions ({partialDetail?.current_version || selectedPartial.current_version})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowEditModal(true)}
+                      className={detailActionBtn}
+                    >
+                      <Edit3 className="h-3.5 w-3.5 shrink-0" />
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => cloneMutation.mutate(selectedPartial.id)}
+                      className={detailActionBtn}
+                    >
+                      <Copy className="h-3.5 w-3.5 shrink-0" />
+                      Clone
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowDeleteConfirm(selectedPartial.id)}
+                      className={detailIconBtn}
+                      title="Delete"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
                   </div>
                 </div>
-              )}
+              </div>
 
               {/* Content Area */}
               <div className="flex-1 flex min-h-0">
@@ -784,14 +871,15 @@ export default function PromptPartials() {
                               Close comparison
                             </button>
                           </div>
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div className="bg-green-50 border border-green-200 rounded-lg p-4 prose prose-sm max-w-none">
-                              <ReactMarkdown>{partialDetail?.content || selectedPartial.content}</ReactMarkdown>
-                            </div>
-                            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 prose prose-sm max-w-none">
-                              <ReactMarkdown>{compareVersion.content}</ReactMarkdown>
-                            </div>
-                          </div>
+                          <PromptLineDiff
+                            leftLabel={`v${compareVersion.version}`}
+                            rightLabel={`v${partialDetail?.current_version || selectedPartial.current_version} (current)`}
+                            before={compareVersion.content}
+                            after={partialDetail?.content || selectedPartial.content}
+                            defaultView="split"
+                            showViewToggle
+                            maxHeightClass="max-h-[32rem]"
+                          />
                         </div>
                       ) : isDetailLoading ? (
                         <div className="flex items-center justify-center h-32">
@@ -1004,7 +1092,7 @@ export default function PromptPartials() {
                     )}
                   </div>
                 ) : selectedIsMetric ? (
-                  <div className={`flex-1 overflow-y-auto ${showVersionHistory ? 'border-r border-gray-200' : ''}`}>
+                  <div className="flex-1 overflow-y-auto">
                     {compareVersion ? (
                       <div className="p-6 space-y-4">
                         <div className="flex items-center justify-between">
@@ -1058,7 +1146,7 @@ export default function PromptPartials() {
                     )}
                   </div>
                 ) : (
-                  <div className={`flex-1 overflow-y-auto ${showVersionHistory ? 'border-r border-gray-200' : ''}`}>
+                  <div className="flex-1 overflow-y-auto">
                     {compareVersion ? (
                       <div className="p-6">
                         <div className="flex items-center justify-between mb-4">
@@ -1075,26 +1163,15 @@ export default function PromptPartials() {
                             Close comparison
                           </button>
                         </div>
-                        <div className="grid grid-cols-2 gap-4">
-                          <div>
-                            <div className="text-xs font-medium text-gray-500 mb-2 flex items-center gap-1">
-                              <span className="inline-block w-2 h-2 rounded-full bg-green-500" />
-                              Current (v{partialDetail?.current_version || selectedPartial.current_version})
-                            </div>
-                            <div className="bg-green-50 border border-green-200 rounded-lg p-4 prose prose-sm max-w-none">
-                              <ReactMarkdown>{partialDetail?.content || selectedPartial.content}</ReactMarkdown>
-                            </div>
-                          </div>
-                          <div>
-                            <div className="text-xs font-medium text-gray-500 mb-2 flex items-center gap-1">
-                              <span className="inline-block w-2 h-2 rounded-full bg-blue-500" />
-                              Version {compareVersion.version}
-                            </div>
-                            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 prose prose-sm max-w-none">
-                              <ReactMarkdown>{compareVersion.content}</ReactMarkdown>
-                            </div>
-                          </div>
-                        </div>
+                        <PromptLineDiff
+                          leftLabel={`v${compareVersion.version}`}
+                          rightLabel={`v${partialDetail?.current_version || selectedPartial.current_version} (current)`}
+                          before={compareVersion.content}
+                          after={partialDetail?.content || selectedPartial.content}
+                          defaultView="split"
+                          showViewToggle
+                          maxHeightClass="max-h-[32rem]"
+                        />
                       </div>
                     ) : isDetailLoading ? (
                       <div className="flex items-center justify-center h-32">
@@ -1116,73 +1193,186 @@ export default function PromptPartials() {
                   </div>
                 )}
 
-                {/* Version History Sidebar */}
-                {showVersionHistory && (
-                  <div
-                    className={`w-72 flex-shrink-0 flex flex-col overflow-hidden ${
-                      selectedIsAgent || selectedIsMetric ? 'border-l border-gray-200' : ''
-                    }`}
-                  >
-                    <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
-                      <h3 className="text-sm font-semibold text-gray-900">Version History</h3>
-                    </div>
-                    <div className="flex-1 overflow-y-auto">
-                      {(partialDetail?.versions || []).map((version: PromptPartialVersion) => (
-                        <div
-                          key={version.id}
-                          className={`px-4 py-3 border-b border-gray-100 hover:bg-gray-50 ${
-                            version.version === (partialDetail?.current_version || selectedPartial.current_version)
-                              ? 'bg-gray-50'
-                              : ''
-                          }`}
-                        >
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-medium text-gray-900">
-                                v{version.version}
-                              </span>
-                              {version.version === (partialDetail?.current_version || selectedPartial.current_version) && (
-                                <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700">
-                                  Current
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                          {version.change_summary && (
-                            <p className="text-xs text-gray-500 mt-1">{version.change_summary}</p>
-                          )}
-                          <div className="flex items-center gap-1 mt-1 text-xs text-gray-400">
-                            <Clock className="h-3 w-3" />
-                            {format(new Date(version.created_at), 'MMM d, yyyy HH:mm')}
-                          </div>
-                          <div className="flex items-center gap-2 mt-2">
-                            <button
-                              onClick={() => startVersionCompare(version)}
-                              className="text-xs text-gray-600 hover:text-gray-900 font-medium"
-                            >
-                              Compare
-                            </button>
-                            {version.version !== (partialDetail?.current_version || selectedPartial.current_version) && (
-                              <button
-                                onClick={() =>
-                                  revertMutation.mutate({
-                                    id: selectedPartial.id,
-                                    version: version.version,
-                                  })
-                                }
-                                className="inline-flex items-center gap-1 text-xs text-amber-600 hover:text-amber-800 font-medium"
-                              >
-                                <RotateCcw className="h-3 w-3" />
-                                Revert
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
               </div>
+
+              {showVersionHistory && typeof document !== 'undefined'
+                ? createPortal(
+                    <div className="fixed inset-0 z-[55] flex justify-end">
+                      <div
+                        className="absolute inset-0 bg-gray-500/40"
+                        onClick={() => setShowVersionHistory(false)}
+                        aria-hidden
+                      />
+                      <div
+                        className="relative flex h-full w-full max-w-md flex-col border-l border-gray-200 bg-white shadow-xl"
+                        role="dialog"
+                        aria-label="Version history"
+                      >
+                        <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-gray-200 bg-gray-50">
+                          <h3 className="text-sm font-semibold text-gray-900">Version history</h3>
+                          <button
+                            type="button"
+                            onClick={() => setShowVersionHistory(false)}
+                            className="rounded-md p-1.5 text-gray-400 hover:bg-gray-200 hover:text-gray-700 shrink-0"
+                            aria-label="Close"
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto custom-scrollbar">
+                          {(() => {
+                            const liveOnProviderVersion = selectedIsAgent
+                              ? latestLivePromptVersion(partialDetail?.pushes)
+                              : null
+                            return (partialDetail?.versions || []).map((version: PromptPartialVersion) => {
+                            const platformImport = isPlatformImportAgentPartial(
+                              partialDetail || selectedPartial,
+                            )
+                            const origin = versionOriginBadge(
+                              version.change_summary,
+                              version.version,
+                              platformImport,
+                            )
+                            const isCurrent =
+                              version.version ===
+                              (partialDetail?.current_version || selectedPartial.current_version)
+                            const isLiveOnProvider =
+                              liveOnProviderVersion != null &&
+                              version.version === liveOnProviderVersion
+                            const explanation = versionRowExplanation(
+                              version.change_summary,
+                              version.version,
+                              platformImport,
+                              { isCurrent, isLiveOnProvider },
+                            )
+                            return (
+                              <div
+                                key={version.id}
+                                className={`px-4 py-3 border-b border-gray-100 ${
+                                  isCurrent ? 'bg-green-50/40 ring-1 ring-inset ring-green-100' : ''
+                                }`}
+                              >
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="text-sm font-semibold text-gray-900">
+                                    v{version.version}
+                                  </span>
+                                  {isCurrent ? (
+                                    <span
+                                      className="rounded px-1.5 py-0.5 text-[10px] font-medium bg-green-100 text-green-800"
+                                      title="Working copy in this app"
+                                    >
+                                      Current · working copy
+                                    </span>
+                                  ) : null}
+                                  {isLiveOnProvider ? (
+                                    <span
+                                      className="rounded px-1.5 py-0.5 text-[10px] font-medium bg-emerald-100 text-emerald-900"
+                                      title="Last version successfully pushed to the voice platform"
+                                    >
+                                      On provider
+                                    </span>
+                                  ) : null}
+                                  {origin ? (
+                                    <span
+                                      className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${origin.className}`}
+                                    >
+                                      {origin.label}
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <p className="mt-1.5 text-xs text-gray-600 leading-snug">
+                                  {explanation}
+                                </p>
+                                <p
+                                  className="mt-1 text-[11px] text-gray-400"
+                                  title={version.created_by || undefined}
+                                >
+                                  {formatDateSafe(version.created_at, 'MMM d, yyyy HH:mm')}
+                                  {version.created_by ? ` · ${version.created_by}` : ''}
+                                </p>
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      startVersionCompare(version)
+                                      setShowVersionHistory(false)
+                                    }}
+                                    className={versionRowActionBtn}
+                                  >
+                                    Compare
+                                  </button>
+                                  {!isCurrent ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setRestoreConfirm('')
+                                        setShowVersionHistory(false)
+                                        setRestoreTargetVersion(version.version)
+                                      }}
+                                      className={versionRowActionBtn}
+                                      title="Make this your working copy here only"
+                                    >
+                                      Restore locally
+                                    </button>
+                                  ) : null}
+                                  {selectedIsAgent && origin?.label !== 'Provider snapshot' ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setRollbackError(null)
+                                        setRollbackConfirm('')
+                                        setShowVersionHistory(false)
+                                        setRollbackVersion(version.version)
+                                      }}
+                                      className={versionRowPushBtn}
+                                      title="Update the voice platform agent to this version’s text"
+                                    >
+                                      Push live
+                                    </button>
+                                  ) : null}
+                                </div>
+                              </div>
+                            )
+                          })
+                          })()}
+                          {selectedIsAgent && (partialDetail?.pushes || []).length > 0 ? (
+                            <div className="px-4 py-3 border-t border-gray-200 bg-gray-50/50">
+                              <h4 className="text-xs font-semibold text-gray-800 mb-1">
+                                Push &amp; save log
+                              </h4>
+                              <p className="text-[11px] text-gray-500 mb-2 leading-snug">
+                                Audit trail from evaluations and manual pushes (newest first).
+                              </p>
+                              {(partialDetail?.pushes || []).map((push) => (
+                                <div
+                                  key={push.id}
+                                  className="mb-2.5 text-[11px] text-gray-600 last:mb-0 border-l-2 border-gray-200 pl-2"
+                                >
+                                  <span className="font-medium text-gray-800">v{push.prompt_version}</span>
+                                  {' — '}
+                                  {push.status === 'saved_only'
+                                    ? 'Saved in Partials only (eval improvements, not pushed)'
+                                    : push.status === 'pushed'
+                                      ? `Pushed live${push.provider ? ` · ${push.provider}` : ''}`
+                                      : push.status === 'failed'
+                                        ? 'Push failed'
+                                        : push.status}
+                                  <br />
+                                  {formatDateSafe(push.created_at, 'MMM d, yyyy HH:mm')}
+                                  {push.pushed_by ? ` · ${push.pushed_by}` : ''}
+                                  {push.error_message ? (
+                                    <span className="text-rose-600"> · {push.error_message}</span>
+                                  ) : null}
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>,
+                    document.body,
+                  )
+                : null}
             </>
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center text-center px-8">
@@ -1195,6 +1385,154 @@ export default function PromptPartials() {
           )}
         </div>
       </div>
+
+      {restoreTargetVersion != null && selectedPartial ? (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-xl bg-white p-5 shadow-xl space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">
+                  Restore v{restoreTargetVersion} locally?
+                </h3>
+                <p className="text-sm text-gray-600 mt-2 leading-snug">
+                  Your working copy in EfficientAI will match this snapshot. Preview and
+                  evaluations will use this text. This does{' '}
+                  <span className="font-medium text-gray-900">not</span> change the voice platform
+                  agent unless you push live separately.
+                </p>
+                <p className="text-xs text-gray-500 mt-2">
+                  Current working copy: v
+                  {partialDetail?.current_version || selectedPartial.current_version}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setRestoreTargetVersion(null)
+                  setRestoreConfirm('')
+                }}
+                className="text-gray-400 hover:text-gray-700 shrink-0"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <label className="block text-sm text-gray-700">
+              Type <span className="font-mono font-medium">confirm</span> to restore
+              <input
+                value={restoreConfirm}
+                onChange={(event) => setRestoreConfirm(event.target.value)}
+                autoComplete="off"
+                className="mt-1 w-full max-w-xs rounded border border-gray-300 px-2 py-1.5 text-sm"
+              />
+            </label>
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setRestoreTargetVersion(null)
+                  setRestoreConfirm('')
+                }}
+                className="rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={revertMutation.isPending || restoreConfirm !== 'confirm'}
+                onClick={() =>
+                  revertMutation.mutate({
+                    id: selectedPartial.id,
+                    version: restoreTargetVersion,
+                  })
+                }
+                className="rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+              >
+                {revertMutation.isPending ? 'Restoring…' : 'Restore locally'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {rollbackVersion != null && selectedPartial ? (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4">
+          <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-xl bg-white p-5 shadow-xl space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">
+                  Push v{rollbackVersion} to live agent
+                </h3>
+                <p className="text-xs text-gray-500 mt-1">
+                  Updates {rollbackPreview.data?.provider || 'the provider'}
+                  {rollbackPreview.data?.external_agent_name ? ` · ${rollbackPreview.data.external_agent_name}` : ''}{' '}
+                  with this version&apos;s text.
+                </p>
+              </div>
+              <button type="button" onClick={() => setRollbackVersion(null)} className="text-gray-400 hover:text-gray-700">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            {rollbackPreview.isLoading ? (
+              <div className="flex justify-center py-8">
+                <Loader2 className="h-5 w-5 animate-spin text-gray-500" />
+              </div>
+            ) : rollbackPreview.isError ? (
+              <p className="text-sm text-red-600">{getApiErrorMessage(rollbackPreview.error, 'Could not load the live prompt.')}</p>
+            ) : rollbackPreview.data ? (
+              <>
+                {rollbackPreview.data.drift_warning ? (
+                  <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                    {rollbackPreview.data.drift_warning}
+                  </p>
+                ) : null}
+                {rollbackPreview.data.block_reason ? (
+                  <p className="text-sm text-amber-700">{rollbackPreview.data.block_reason}</p>
+                ) : null}
+                <PromptLineDiff
+                  leftLabel="Live provider prompt"
+                  rightLabel={`v${rollbackVersion} (push target)`}
+                  before={rollbackPreview.data.live_prompt}
+                  after={rollbackPreview.data.version_prompt}
+                  defaultView="split"
+                  showViewToggle
+                  maxHeightClass="max-h-[28rem]"
+                />
+                <label className="block text-sm text-gray-700">
+                  Type confirm to push this prompt live
+                  <input
+                    value={rollbackConfirm}
+                    onChange={(event) => setRollbackConfirm(event.target.value)}
+                    autoComplete="off"
+                    className="mt-1 w-full max-w-xs rounded border border-gray-300 px-2 py-1.5 text-sm"
+                  />
+                </label>
+              </>
+            ) : null}
+            {rollbackError ? <p className="text-sm text-red-600">{rollbackError}</p> : null}
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setRollbackVersion(null)}
+                className="rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={
+                  rollbackMutation.isPending ||
+                  !rollbackPreview.data?.can_push ||
+                  rollbackConfirm !== 'confirm'
+                }
+                onClick={() => rollbackMutation.mutate()}
+                className="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+              >
+                {rollbackMutation.isPending ? 'Pushing…' : 'Push to live'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* Create Modal */}
       {showCreateModal && (
@@ -1374,7 +1712,7 @@ function PromptPartialModal({
   const updateMutation = useMutation({
     mutationFn: (data: {
       name?: string
-      description?: string
+      description?: string | null
       content?: string
       tags?: string[]
       change_summary?: string
@@ -1403,14 +1741,18 @@ function PromptPartialModal({
       .split(',')
       .map((t) => t.trim())
       .filter(Boolean)
-    const tags = agentMode ? ensureImportedAgentTag(userTags) : userTags
+    const tags = agentMode
+      ? isEditing
+        ? tagsForImportedAgentSave(partial?.tags, userTags)
+        : ensureImportedAgentTag(userTags)
+      : userTags
 
     if (isEditing) {
       updateMutation.mutate({
         name: name.trim(),
-        description: description.trim() || undefined,
+        description: description.trim() || null,
         content: content,
-        tags: tags.length > 0 ? tags : undefined,
+        tags: agentMode ? tags : tags.length > 0 ? tags : undefined,
         change_summary: changeSummary.trim() || undefined,
       })
     } else {

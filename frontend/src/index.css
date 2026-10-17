@@ -6,11 +6,11 @@
   html,
   body,
   #root {
-    @apply overflow-x-hidden;
+    @apply overflow-x-hidden min-h-full bg-gray-50;
   }
 
   body {
-    @apply bg-gray-50 text-gray-900 font-sans antialiased;
+    @apply text-gray-900 font-sans antialiased;
   }
 }
 
@@ -25,8 +25,36 @@
   }
 }
 
+@keyframes pushModalFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pushModalScaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
 
 @layer utilities {
+  .push-modal-panel {
+    animation: pushModalScaleIn 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .push-modal-step-enter {
+    animation: pushModalFadeIn 0.18s ease-out;
+  }
+
   .custom-scrollbar::-webkit-scrollbar {
     width: 6px;
     height: 6px;

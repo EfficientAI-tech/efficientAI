@@ -296,6 +296,7 @@ export default function ChatImports() {
           `Remove batch "${pendingDelete?.original_filename || pendingDelete?.id}"? This cannot be undone.`
         }
         confirmLabel="Delete"
+        confirmPhrase="confirm"
         variant="danger"
         isLoading={deleteMutation.isPending}
         onConfirm={() => pendingDelete && deleteMutation.mutate(pendingDelete.id)}
