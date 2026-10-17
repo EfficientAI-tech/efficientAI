@@ -235,6 +235,8 @@ def evaluate_call_import_row_task(
     scoring_inputs: dict[str, Any] | None = None
     restricted_metric_uuids: list[UUID] | None = None
     usage_ctx_token = None
+    release_slot = True
+    owns_execution = False
     try:
         from app.db_sharding.row_ops import (
             close_row_sessions,
@@ -296,6 +298,21 @@ def evaluate_call_import_row_task(
                     eval_row_id,
                 )
                 return {"status": "skipped", "reason": "already_claimed"}
+
+            from app.workers.tasks.evaluate_call_import_row_core import (
+                acquire_eval_execution,
+            )
+
+            if not acquire_eval_execution(self.request.id):
+                release_slot = False
+                from celery.exceptions import MaxRetriesExceededError
+
+                try:
+                    self.retry(countdown=30, max_retries=40)
+                except MaxRetriesExceededError:
+                    release_slot = True
+                    return {"status": "skipped", "reason": "already_claimed"}
+            owns_execution = True
 
             previous_row_status = "running"
             if evaluation.status == "pending":
@@ -718,11 +735,18 @@ def evaluate_call_import_row_task(
             from app.services.usage.context import reset_usage_context
 
             reset_usage_context(usage_ctx_token)
-        from app.workers.concurrency.fair_dispatch import (
-            finish_eval_work_and_redispatch,
-        )
+        if owns_execution:
+            from app.workers.tasks.evaluate_call_import_row_core import (
+                release_eval_execution,
+            )
 
-        finish_eval_work_and_redispatch(
-            slot_task_id,
-            restricted_metric_ids=restricted_metric_ids,
-        )
+            release_eval_execution(self.request.id)
+        if release_slot:
+            from app.workers.concurrency.fair_dispatch import (
+                finish_eval_work_and_redispatch,
+            )
+
+            finish_eval_work_and_redispatch(
+                slot_task_id,
+                restricted_metric_ids=restricted_metric_ids,
+            )

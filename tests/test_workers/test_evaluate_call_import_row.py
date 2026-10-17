@@ -1749,6 +1749,39 @@ class _ChainRedis:
         self.store.pop(key, None)
 
 
+def test_second_delivery_does_not_own_the_model_call(monkeypatch):
+    fake = _ChainRedis()
+    monkeypatch.setattr(
+        "app.workers.concurrency.limits._get_redis",
+        lambda: fake,
+    )
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        acquire_eval_execution,
+        release_eval_execution,
+    )
+
+    assert acquire_eval_execution("") is True
+    assert acquire_eval_execution("llm-1") is True
+    assert acquire_eval_execution("llm-1") is False
+    assert acquire_eval_execution("llm-2") is True
+    release_eval_execution("llm-1")
+    assert acquire_eval_execution("llm-1") is True
+
+
+def test_execution_lock_allows_the_call_when_redis_is_down(monkeypatch):
+    class _Down:
+        def set(self, *_args, **_kwargs):
+            raise RuntimeError("redis down")
+
+    monkeypatch.setattr(
+        "app.workers.concurrency.limits._get_redis",
+        lambda: _Down(),
+    )
+    from app.workers.tasks.evaluate_call_import_row_core import acquire_eval_execution
+
+    assert acquire_eval_execution("llm-1") is True
+
+
 def test_audio_chain_marker_belongs_to_one_audio_task(monkeypatch):
     fake = _ChainRedis()
     monkeypatch.setattr(

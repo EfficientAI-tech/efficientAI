@@ -103,6 +103,48 @@ def claim_eval_row_for_task(
     return True
 
 
+_EXECUTION_TTL_SECONDS = 15 * 60
+
+
+def _execution_key(task_id: str) -> str:
+    return f"eval:execution:{task_id}"
+
+
+def acquire_eval_execution(task_id: str | None) -> bool:
+    """True when this delivery may call the model.
+
+    A second delivery of the same task id loses. Redis errors allow the
+    call so a lock outage does not skip a row that nobody else is scoring.
+    """
+    cleaned = (task_id or "").strip()
+    if not cleaned:
+        return True
+    try:
+        from app.workers.concurrency.limits import _get_redis
+
+        acquired = _get_redis().set(
+            _execution_key(cleaned),
+            "1",
+            nx=True,
+            ex=_EXECUTION_TTL_SECONDS,
+        )
+    except Exception:
+        return True
+    return bool(acquired)
+
+
+def release_eval_execution(task_id: str | None) -> None:
+    cleaned = (task_id or "").strip()
+    if not cleaned:
+        return
+    try:
+        from app.workers.concurrency.limits import _get_redis
+
+        _get_redis().delete(_execution_key(cleaned))
+    except Exception:
+        return
+
+
 def as_json_dict(value: Any) -> dict:
     return value if isinstance(value, dict) else {}
 
