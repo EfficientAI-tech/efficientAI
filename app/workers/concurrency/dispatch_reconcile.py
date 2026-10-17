@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Optional, TYPE_CHECKING
 
 from loguru import logger
-from sqlalchemy import and_, func, or_, update
+from sqlalchemy import func, or_, update
 from sqlalchemy.orm import Session
 
 from app.models.database import CallImportEvaluationRow, CallImportRow
@@ -18,7 +18,11 @@ _RECONCILE_BATCH = 500
 
 
 def claim_import_row_for_task(db: Session, row: CallImportRow, task_id: str | None) -> bool:
-    """Take a recording row for this task. A second task must not download it."""
+    """Take a recording row for this task. A second task must not download it.
+
+    A pending row can be taken once, even if a task id was left on it. After
+    the status is processing, only that same task id may continue.
+    """
     cleaned = (task_id or "").strip()
     filters = [
         CallImportRow.id == row.id,
@@ -29,10 +33,7 @@ def claim_import_row_for_task(db: Session, row: CallImportRow, task_id: str | No
     if cleaned:
         filters.append(
             or_(
-                and_(
-                    CallImportRow.status == CallImportRowStatus.PENDING,
-                    CallImportRow.celery_task_id.is_(None),
-                ),
+                CallImportRow.status == CallImportRowStatus.PENDING,
                 CallImportRow.celery_task_id == cleaned,
             )
         )
