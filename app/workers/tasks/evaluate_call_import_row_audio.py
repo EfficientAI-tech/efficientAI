@@ -46,6 +46,8 @@ def _persist_sessions(row_db, catalog_db) -> None:
 
 
 _CHAIN_TTL_SECONDS = 7200
+_PUBLISH_LOCK_SECONDS = 60
+_PUBLISH_ATTEMPTS = 8
 
 
 def _chain_key(eval_row_id: str) -> str:
@@ -111,7 +113,7 @@ def clear_eval_audio_chain(eval_row_id: str) -> None:
 
 
 def _claim_chain_publish(chained_task_id: str) -> bool | None:
-    """True if this caller may publish, False if another already did, None if unknown."""
+    """True if this caller may publish. False if a publish is in progress."""
     try:
         from app.workers.concurrency.limits import _get_redis
 
@@ -119,7 +121,7 @@ def _claim_chain_publish(chained_task_id: str) -> bool | None:
             _publish_lock_key(chained_task_id),
             "1",
             nx=True,
-            ex=_CHAIN_TTL_SECONDS,
+            ex=_PUBLISH_LOCK_SECONDS,
         )
     except Exception:
         logger.warning("audio chain publish lock failed for {}", chained_task_id)
@@ -136,6 +138,13 @@ def _release_chain_publish(chained_task_id: str) -> None:
         return
 
 
+def _llm_task_is_queued(
+    eval_row_id: str, audio_task_id: str, chained_task_id: str
+) -> bool:
+    fresh = _read_audio_chain(eval_row_id, audio_task_id)
+    return bool(fresh and fresh[0] == "published" and fresh[1] == chained_task_id)
+
+
 def _publish_chained_llm(
     *,
     eval_row_id: str,
@@ -144,18 +153,20 @@ def _publish_chained_llm(
     predecessor_task_id: str,
     slot_task_id: str | None,
     restricted_metric_ids: Optional[List[str]],
-    allow_without_lock: bool,
 ) -> bool:
-    """Queue the LLM task once. A second caller does not send it again."""
+    """Queue the LLM task once.
+
+    True only when this call queued it, or the published marker already
+    proves an earlier call did. A lock with no marker is an unfinished
+    publish, not proof the task was queued.
+    """
     from app.workers.tasks.evaluate_call_import_row import (
         evaluate_call_import_row_task,
     )
 
     acquired = _claim_chain_publish(chained_task_id)
-    if acquired is False:
-        return False
-    if acquired is None and not allow_without_lock:
-        return False
+    if acquired is not True:
+        return _llm_task_is_queued(eval_row_id, audio_task_id, chained_task_id)
     chain_kwargs: dict = {
         "_skip_audio": True,
         "_eval_slot_task_id": slot_task_id,
@@ -177,6 +188,17 @@ def _publish_chained_llm(
     return True
 
 
+def _retry_unfinished_publish(task) -> bool:
+    """Come back after the in-progress lock. False when retries are exhausted."""
+    from celery.exceptions import MaxRetriesExceededError
+
+    try:
+        task.retry(countdown=_PUBLISH_LOCK_SECONDS, max_retries=_PUBLISH_ATTEMPTS)
+    except MaxRetriesExceededError:
+        return False
+    return False
+
+
 @celery_app.task(
     name="evaluate_call_import_row_audio",
     bind=True,
@@ -195,6 +217,7 @@ def evaluate_call_import_row_audio_task(
 
     slot_task_id = _eval_slot_task_id or self.request.id
     chain_llm = False
+    keep_slot = False
     try:
         with evaluation_row_session(eval_row_id) as (
             row_db,
@@ -237,14 +260,13 @@ def evaluate_call_import_row_audio_task(
                 and owner in {"", mine, chain_state[1]}
             ):
                 try:
-                    _publish_chained_llm(
+                    queued = _publish_chained_llm(
                         eval_row_id=eval_row_id,
                         audio_task_id=mine,
                         chained_task_id=chain_state[1],
                         predecessor_task_id=mine,
                         slot_task_id=slot_task_id,
                         restricted_metric_ids=restricted_metric_ids,
-                        allow_without_lock=False,
                     )
                 except Exception:
                     logger.exception(
@@ -267,6 +289,26 @@ def evaluate_call_import_row_audio_task(
                         "eval_row_id": eval_row_id,
                         "reason": "chain_enqueue_failed",
                     }
+                if not queued:
+                    keep_slot = True
+                    if not _retry_unfinished_publish(self):
+                        keep_slot = False
+                        clear_eval_audio_chain(eval_row_id)
+                        eval_row.status = "failed"
+                        eval_row.error_message = "Failed to enqueue LLM evaluation phase"
+                        eval_row.finished_at = now_utc()
+                        _rollup_terminal(
+                            row_db,
+                            catalog_db,
+                            evaluation,
+                            eval_row,
+                            previous_row_status="running",
+                        )
+                        return {
+                            "status": "failed",
+                            "eval_row_id": eval_row_id,
+                            "reason": "chain_enqueue_failed",
+                        }
                 eval_row.celery_task_id = chain_state[1]
                 chain_llm = True
                 row_db.commit()
@@ -444,23 +486,20 @@ def evaluate_call_import_row_audio_task(
                 chain_state = _read_audio_chain(eval_row_id, mine)
                 if chain_state:
                     chained_task_id = chain_state[1]
-                    already_reserved = True
                 else:
                     chained_task_id = str(uuid4())
                     _write_audio_chain(
                         eval_row_id, "reserved", mine, chained_task_id
                     )
-                    already_reserved = False
                 if not chain_state or chain_state[0] == "reserved":
                     try:
-                        _publish_chained_llm(
+                        queued = _publish_chained_llm(
                             eval_row_id=str(eval_row.id),
                             audio_task_id=mine,
                             chained_task_id=chained_task_id,
                             predecessor_task_id=mine,
                             slot_task_id=slot_task_id,
                             restricted_metric_ids=restricted_metric_ids,
-                            allow_without_lock=not already_reserved,
                         )
                     except Exception:
                         logger.exception(
@@ -483,6 +522,26 @@ def evaluate_call_import_row_audio_task(
                             "eval_row_id": eval_row_id,
                             "reason": "chain_enqueue_failed",
                         }
+                    if not queued:
+                        keep_slot = True
+                        if not _retry_unfinished_publish(self):
+                            keep_slot = False
+                            clear_eval_audio_chain(eval_row_id)
+                            eval_row.status = "failed"
+                            eval_row.error_message = "Failed to enqueue LLM evaluation phase"
+                            eval_row.finished_at = now_utc()
+                            _rollup_terminal(
+                                row_db,
+                                catalog_db,
+                                evaluation,
+                                eval_row,
+                                previous_row_status=previous_row_status,
+                            )
+                            return {
+                                "status": "failed",
+                                "eval_row_id": eval_row_id,
+                                "reason": "chain_enqueue_failed",
+                            }
                 eval_row.celery_task_id = chained_task_id
                 chain_llm = True
                 row_db.commit()
@@ -520,7 +579,7 @@ def evaluate_call_import_row_audio_task(
         )
         return {"status": "skipped", "reason": "row_not_found"}
     finally:
-        if not chain_llm:
+        if not chain_llm and not keep_slot:
             from app.workers.concurrency.fair_dispatch import (
                 finish_eval_work_and_redispatch,
             )

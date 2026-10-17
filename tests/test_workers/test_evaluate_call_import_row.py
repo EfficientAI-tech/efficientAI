@@ -1419,6 +1419,10 @@ def test_evaluate_call_import_row_audio_chain_enqueue_failure_marks_failed(
         "apply_async",
         _raise_enqueue,
     )
+    monkeypatch.setattr(
+        "app.workers.concurrency.limits._get_redis",
+        lambda: _ChainRedis(),
+    )
 
     result = audio_module.evaluate_call_import_row_audio_task.run(
         str(eval_rows[0].id)
@@ -1785,11 +1789,78 @@ def test_chained_llm_is_published_once(monkeypatch):
         predecessor_task_id="audio-a",
         slot_task_id="slot",
         restricted_metric_ids=None,
-        allow_without_lock=False,
     )
     assert _publish_chained_llm(**kwargs) is True
-    assert _publish_chained_llm(**kwargs) is False
+    assert _publish_chained_llm(**kwargs) is True
     assert calls == ["llm-1"]
+
+
+def test_unfinished_publish_lock_is_not_treated_as_queued(monkeypatch):
+    fake = _ChainRedis()
+    fake.store["eval:audio-chain-publish:llm-1"] = "1"
+    monkeypatch.setattr(
+        "app.workers.concurrency.limits._get_redis",
+        lambda: fake,
+    )
+    calls = []
+    monkeypatch.setattr(
+        "app.workers.tasks.evaluate_call_import_row.evaluate_call_import_row_task.apply_async",
+        lambda *args, **kwargs: calls.append(kwargs.get("task_id")),
+    )
+    from app.workers.tasks.evaluate_call_import_row_audio import (
+        _publish_chained_llm,
+        _write_audio_chain,
+    )
+
+    _write_audio_chain("row-1", "reserved", "audio-a", "llm-1")
+    assert (
+        _publish_chained_llm(
+            eval_row_id="row-1",
+            audio_task_id="audio-a",
+            chained_task_id="llm-1",
+            predecessor_task_id="audio-a",
+            slot_task_id="slot",
+            restricted_metric_ids=None,
+        )
+        is False
+    )
+    assert calls == []
+
+
+def test_publish_is_skipped_when_redis_cannot_lock(monkeypatch):
+    class _Down:
+        def get(self, _key):
+            raise RuntimeError("redis down")
+
+        def set(self, *_args, **_kwargs):
+            raise RuntimeError("redis down")
+
+        def delete(self, _key):
+            raise RuntimeError("redis down")
+
+    monkeypatch.setattr(
+        "app.workers.concurrency.limits._get_redis",
+        lambda: _Down(),
+    )
+    calls = []
+    monkeypatch.setattr(
+        "app.workers.tasks.evaluate_call_import_row.evaluate_call_import_row_task.apply_async",
+        lambda *args, **kwargs: calls.append(kwargs.get("task_id")),
+    )
+    from app.workers.tasks.evaluate_call_import_row_audio import _publish_chained_llm
+
+    assert (
+        _publish_chained_llm(
+            eval_row_id="row-1",
+            audio_task_id="audio-a",
+            chained_task_id="llm-1",
+            predecessor_task_id="audio-a",
+            slot_task_id="slot",
+            restricted_metric_ids=None,
+        )
+        is False
+    )
+    assert calls == []
 
 
 def test_retry_clears_audio_chain_marker(monkeypatch):
