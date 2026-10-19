@@ -2071,6 +2071,57 @@ def test_duplicate_task_scores_and_bills_the_row_once(db_session, monkeypatch):
     assert evaluation.completed_rows == 1
 
 
+def test_shard_score_save_skips_catalog_foreign_key(db_session, monkeypatch):
+    from contextlib import contextmanager
+    from datetime import datetime, timezone
+
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        commit_terminal_row_and_rollup,
+    )
+
+    entered = []
+
+    @contextmanager
+    def _ctx(session):
+        entered.append(session)
+        yield
+
+    monkeypatch.setattr("app.db_sharding.row_ops.shard_row_write_context", _ctx)
+
+    _, _, _, _, evaluation, eval_rows = _seed(db_session)
+    evaluation.total_rows = 1
+    evaluation.status = "running"
+    eval_row = eval_rows[0]
+    eval_row.status = "running"
+    db_session.commit()
+
+    eval_row.status = "completed"
+    eval_row.metric_scores = {"m": {"value": 1}}
+    eval_row.finished_at = datetime.now(timezone.utc)
+
+    class _MissingParent:
+        def query(self, *_args, **_kwargs):
+            return self
+
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def first(self):
+            return None
+
+    commit_terminal_row_and_rollup(
+        db_session,
+        evaluation,
+        eval_row,
+        previous_row_status="running",
+        catalog_db=_MissingParent(),
+    )
+    assert entered == [db_session]
+    db_session.refresh(eval_row)
+    assert eval_row.status == "completed"
+    assert eval_row.metric_scores == {"m": {"value": 1}}
+
+
 def test_second_terminal_write_does_not_advance_progress(db_session):
     from datetime import datetime, timezone
 

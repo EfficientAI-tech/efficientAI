@@ -630,31 +630,40 @@ def commit_terminal_row_and_rollup(
     previous_row_status: str,
     catalog_db: Session | None = None,
 ) -> None:
+    from contextlib import nullcontext
+
+    from app.db_sharding.row_ops import shard_row_write_context
+
     parent_db = catalog_db if catalog_db is not None and catalog_db is not row_db else row_db
-    transition = row_db.execute(
-        update(CallImportEvaluationRow)
-        .where(
-            CallImportEvaluationRow.id == eval_row.id,
-            CallImportEvaluationRow.status.in_(("pending", "running")),
-        )
-        .values(status=eval_row.status)
+    # Shard FK points at the catalogue evaluation; skip it for this write.
+    write_ctx = (
+        shard_row_write_context(row_db) if parent_db is not row_db else nullcontext()
     )
-    if transition.rowcount != 1:
-        row_db.rollback()
-        return
-    if (eval_row.status or "").lower() == "completed":
-        source_row = (
-            row_db.query(CallImportRow)
-            .filter(CallImportRow.id == eval_row.call_import_row_id)
-            .first()
+    with write_ctx:
+        transition = row_db.execute(
+            update(CallImportEvaluationRow)
+            .where(
+                CallImportEvaluationRow.id == eval_row.id,
+                CallImportEvaluationRow.status.in_(("pending", "running")),
+            )
+            .values(status=eval_row.status)
         )
-        maybe_bill_completed_eval_row_flexprice(
-            row_db,
-            evaluation,
-            eval_row,
-            source_row=source_row,
-        )
-    row_db.commit()
+        if transition.rowcount != 1:
+            row_db.rollback()
+            return
+        if (eval_row.status or "").lower() == "completed":
+            source_row = (
+                row_db.query(CallImportRow)
+                .filter(CallImportRow.id == eval_row.call_import_row_id)
+                .first()
+            )
+            maybe_bill_completed_eval_row_flexprice(
+                row_db,
+                evaluation,
+                eval_row,
+                source_row=source_row,
+            )
+        row_db.commit()
     if parent_db is not row_db:
         evaluation = (
             parent_db.query(CallImportEvaluation)
