@@ -3149,6 +3149,58 @@ class CallImportEvaluationPdfReport(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class CallImportEvaluationExport(Base):
+    """Background CSV/XLSX export for one evaluation run."""
+
+    __tablename__ = "call_import_evaluation_exports"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    evaluation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_import_evaluations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    call_import_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_imports.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    organization_id = Column(
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    format = Column(String(8), nullable=False, default="csv")
+    include_transcripts = Column(Boolean, nullable=False, default=False)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    error_message = Column(Text, nullable=True)
+    parts = Column(JSONB, nullable=False, default=list)
+    claim_token = Column(String(36), nullable=True)
+    heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+
+
+# One active export per evaluation. A full unique index would block the next
+# download after the first job finishes, and SQLite turns postgresql_where
+# into that full index, so this DDL is postgres-only.
+event.listen(
+    CallImportEvaluationExport.__table__,
+    "after_create",
+    DDL(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_call_import_evaluation_exports_active "
+        "ON call_import_evaluation_exports (evaluation_id) "
+        "WHERE status IN ('pending', 'running')"
+    ).execute_if(dialect="postgresql"),
+)
+
+
 # ---------------------------------------------------------------------------
 # Judge Alignment (AlignEval-style hybrid integration)
 #

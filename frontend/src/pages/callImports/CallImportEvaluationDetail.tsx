@@ -76,6 +76,7 @@ import type {
   CallImportEvaluation,
   DiscoveredMetric,
   CallImportEvaluationBulkActionResponse,
+  CallImportEvaluationExportJob,
   CallImportEvaluationBaselineCandidate,
   CallImportEvaluationRetryResponse,
   CallImportEvaluationRow,
@@ -470,6 +471,9 @@ export default function CallImportEvaluationDetail() {
   const [deleteEvalOpen, setDeleteEvalOpen] = useState(false)
   const [downloadMenuOpen, setDownloadMenuOpen] = useState(false)
   const downloadMenuRef = useRef<HTMLDivElement>(null)
+  const exportPollRef = useRef(0)
+  const [exportPreparing, setExportPreparing] = useState(false)
+  const [exportJob, setExportJob] = useState<CallImportEvaluationExportJob | null>(null)
   const [pdfReportMenuOpen, setPdfReportMenuOpen] = useState(false)
   const pdfReportMenuRef = useRef<HTMLDivElement>(null)
   const [pdfReportOpen, setPdfReportOpen] = useState(false)
@@ -2082,22 +2086,46 @@ export default function CallImportEvaluationDetail() {
     )
   }
 
-  const handleExport = async (format: 'csv' | 'xlsx') => {
+  const handleExport = async (
+    format: 'csv' | 'xlsx',
+    includeTranscripts = false,
+  ) => {
     if (!id || !evalId) return
     setDownloadMenuOpen(false)
+    const pollId = exportPollRef.current + 1
+    exportPollRef.current = pollId
+    setExportPreparing(true)
+    setExportJob(null)
     try {
-      const blob = await apiClient.exportCallImportEvaluation(id, evalId, format)
-      const url = window.URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = `call-import-${id}-evaluation-${evalId}.${format}`
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      window.URL.revokeObjectURL(url)
+      let job = await apiClient.startCallImportEvaluationExport(
+        id,
+        evalId,
+        format,
+        includeTranscripts,
+      )
+      while (job.status === 'pending' || job.status === 'running') {
+        if (exportPollRef.current !== pollId) return
+        await new Promise((resolve) => setTimeout(resolve, 2000))
+        if (exportPollRef.current !== pollId) return
+        job = await apiClient.getCallImportEvaluationExport(id, evalId, job.id)
+      }
+      if (exportPollRef.current !== pollId) return
+      setExportJob(job)
+      if (job.status === 'failed') {
+        alert(job.error_message || 'Export failed')
+        return
+      }
+      const ready = (job.parts || []).filter((part) => part.download_url)
+      if (ready.length === 1 && ready[0].download_url) {
+        window.location.assign(ready[0].download_url)
+      } else if (ready.length === 0) {
+        alert(job.error_message || 'Export finished without a download link')
+      }
     } catch (e) {
       console.error('Failed to export evaluation', e)
       alert(`Failed to export evaluation ${format.toUpperCase()}`)
+    } finally {
+      if (exportPollRef.current === pollId) setExportPreparing(false)
     }
   }
 
@@ -2620,6 +2648,12 @@ export default function CallImportEvaluationDetail() {
   }, [downloadMenuOpen])
 
   useEffect(() => {
+    return () => {
+      exportPollRef.current += 1
+    }
+  }, [])
+
+  useEffect(() => {
     if (!pdfReportMenuOpen) return
     const handleClickOutside = (event: MouseEvent) => {
       if (
@@ -2876,31 +2910,53 @@ export default function CallImportEvaluationDetail() {
                 />
               }
               onClick={() => setDownloadMenuOpen((prev) => !prev)}
-              disabled={!rowsQuery.data?.items?.length}
+              disabled={!rowsQuery.data?.items?.length || exportPreparing}
             >
-              Download
+              {exportPreparing ? 'Preparing download…' : 'Download'}
             </Button>
             {downloadMenuOpen && (
               <div
-                className="absolute right-0 z-20 mt-1 w-44 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden"
+                className="absolute right-0 z-20 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden"
                 role="menu"
               >
                 <button
                   type="button"
                   className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
-                  onClick={() => handleExport('csv')}
+                  onClick={() => handleExport('csv', false)}
                   role="menuitem"
                 >
-                  Download as CSV
+                  Download scores (CSV)
+                </button>
+                <button
+                  type="button"
+                  className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 disabled:text-gray-400"
+                  onClick={() => handleExport('xlsx', false)}
+                  disabled={(evaluation?.total_rows ?? 0) > 1048576}
+                  role="menuitem"
+                >
+                  Download scores (Excel)
                 </button>
                 <button
                   type="button"
                   className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
-                  onClick={() => handleExport('xlsx')}
+                  onClick={() => handleExport('csv', true)}
                   role="menuitem"
                 >
-                  Download as Excel
+                  Download transcripts (CSV)
                 </button>
+              </div>
+            )}
+            {exportJob && exportJob.parts.length > 1 && (
+              <div className="absolute right-0 z-20 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
+                {exportJob.parts.map((part) => (
+                  <a
+                    key={part.part}
+                    href={part.download_url || undefined}
+                    className="block px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
+                  >
+                    Part {part.part}
+                  </a>
+                ))}
               </div>
             )}
           </div>

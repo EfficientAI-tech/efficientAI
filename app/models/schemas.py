@@ -4475,6 +4475,29 @@ class CallImportEvaluationRetryResponse(BaseModel):
     )
 
 
+class CallImportEvaluationExportPart(BaseModel):
+    part: int
+    filename: str
+    row_count: int
+    byte_size: int
+    download_url: Optional[str] = None
+
+
+class CallImportEvaluationExportRequest(BaseModel):
+    format: Literal["csv", "xlsx"] = "csv"
+    include_transcripts: bool = False
+
+
+class CallImportEvaluationExportJobResponse(BaseModel):
+    id: UUID
+    evaluation_id: UUID
+    status: str
+    format: str
+    include_transcripts: bool
+    error_message: Optional[str] = None
+    parts: List[CallImportEvaluationExportPart] = Field(default_factory=list)
+
+
 class CallImportEvaluationBulkActionResponse(BaseModel):
     """Acknowledgement for bulk cancel / force-fail requests accepted off-thread."""
 

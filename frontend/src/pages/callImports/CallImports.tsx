@@ -36,6 +36,7 @@ import { platformImportLabel } from './platformImportLabel'
 import { itemsOf } from '../../lib/safeData'
 
 const PAGE_SIZE = 20
+const LIST_POLL_MS = 60_000
 
 const STATUS_OPTIONS: Array<{ label: string; value: '' | CallImportStatus }> = [
   { label: 'All statuses', value: '' },
@@ -124,7 +125,7 @@ export default function CallImports() {
     refetchInterval: (query) => {
       const items = itemsOf<CallImport>(query.state.data)
       const hasDeleting = items.some((i: CallImport) => i.status === 'deleting')
-      if (hasDeleting) return 4000
+      if (hasDeleting) return LIST_POLL_MS
       const active = items.filter(
         (i: CallImport) => i.status === 'pending' || i.status === 'processing',
       )
@@ -133,7 +134,7 @@ export default function CallImports() {
         usePlatformImportProgressStore.getState().watches.map((watch) => watch.id),
       )
       const uncovered = active.filter((item) => !watched.has(item.id))
-      return uncovered.length > 0 ? 4000 : false
+      return uncovered.length > 0 ? LIST_POLL_MS : false
     },
   })
 

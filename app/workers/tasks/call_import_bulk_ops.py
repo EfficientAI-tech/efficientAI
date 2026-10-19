@@ -349,3 +349,27 @@ def deferred_call_import_rollup_task(call_import_id: str) -> dict:
         return {"status": "rolled_up"}
     finally:
         db.close()
+
+
+@celery_app.task(
+    name="export_call_import_evaluation",
+    bind=True,
+    max_retries=1,
+    soft_time_limit=6 * 60 * 60,
+    time_limit=6 * 60 * 60 + 120,
+)
+def export_call_import_evaluation_task(self, job_id: str) -> dict:
+    """Write an evaluation export to blob storage off the API thread.
+
+    The app-wide limit is 30 minutes, which is shorter than a large export.
+    This task keeps its own limit. A redelivered copy exits when the heartbeat
+    is still fresh.
+    """
+    del self
+    db = SessionLocal()
+    try:
+        from app.services.call_imports.evaluation_export import execute_evaluation_export
+
+        return execute_evaluation_export(db, UUID(job_id))
+    finally:
+        db.close()

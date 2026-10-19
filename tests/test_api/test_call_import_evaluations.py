@@ -583,20 +583,21 @@ def test_export_csv_uses_raw_columns_and_metric_names(
         }
     db_session.commit()
 
-    response = authenticated_client.get(
-        f"/api/v1/call-imports/{call_import.id}/evaluations/{created['id']}/export"
-    )
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/csv")
+    from app.services.call_imports.evaluation_export import render_export_csv_bytes
 
-    csv_text = response.text
+    evaluation = db_session.get(CallImportEvaluation, UUID(created["id"]))
+    content = render_export_csv_bytes(
+        db_session, call_import, evaluation, include_transcripts=False
+    )
+    csv_text = content.decode("utf-8-sig")
     lines = [line for line in csv_text.splitlines() if line]
     assert lines, "CSV export should not be empty"
 
     header_cols = lines[0].split(",")
     # User-supplied header order is preserved before metric columns.
+    # The mapped transcript column is left out of the default scores file.
     assert header_cols[0] == "CallID"
-    assert "Transcript" in header_cols
+    assert "Transcript" not in header_cols
     assert "Recording URL" in header_cols
     assert "AgentName" in header_cols
     assert header_cols[-1] == "Empathy"
@@ -610,8 +611,9 @@ def test_export_unknown_evaluation_returns_404(
     authenticated_client, db_session, org_id, seed_org
 ):
     call_import, _ = _make_call_import(db_session, org_id, rows=1)
-    response = authenticated_client.get(
-        f"/api/v1/call-imports/{call_import.id}/evaluations/{uuid4()}/export"
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{uuid4()}/export",
+        json={"format": "csv"},
     )
     assert response.status_code == 404
 

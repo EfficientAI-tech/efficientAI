@@ -1950,6 +1950,24 @@ export interface CallImportEvaluationBaselineCandidatesResponse {
   default_evaluation_id: string | null
 }
 
+export interface CallImportEvaluationExportPart {
+  part: number
+  filename: string
+  row_count: number
+  byte_size: number
+  download_url?: string | null
+}
+
+export interface CallImportEvaluationExportJob {
+  id: string
+  evaluation_id: string
+  status: string
+  format: 'csv' | 'xlsx' | string
+  include_transcripts: boolean
+  error_message?: string | null
+  parts: CallImportEvaluationExportPart[]
+}
+
 export interface CallImportEvaluationPdfReport {
   id: string
   filename: string

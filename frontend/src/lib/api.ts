@@ -56,6 +56,7 @@ import type {
   CallImportPreviewResponse,
   CallImportEvaluation,
   CallImportEvaluationBaselineCandidatesResponse,
+  CallImportEvaluationExportJob,
   CallImportEvaluationPdfReport,
   CallImportEvaluationPdfReportListResponse,
   CallImportEvaluationLLMOverride,
@@ -3758,14 +3759,26 @@ class ApiClient {
     return response.data
   }
 
-  async exportCallImportEvaluation(
+  async startCallImportEvaluationExport(
     callImportId: string,
     evaluationId: string,
     format: 'csv' | 'xlsx' = 'csv',
-  ): Promise<Blob> {
-    const response = await this.client.get(
+    includeTranscripts = false,
+  ): Promise<CallImportEvaluationExportJob> {
+    const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/export`,
-      { params: { format }, responseType: 'blob' },
+      { format, include_transcripts: includeTranscripts },
+    )
+    return response.data
+  }
+
+  async getCallImportEvaluationExport(
+    callImportId: string,
+    evaluationId: string,
+    jobId: string,
+  ): Promise<CallImportEvaluationExportJob> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/export-jobs/${jobId}`,
     )
     return response.data
   }

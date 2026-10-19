@@ -201,6 +201,54 @@ def _parse_csv(body: bytes) -> tuple[list[str], list[dict[str, str]]]:
     return list(reader.fieldnames or []), list(reader)
 
 
+class _ExportBody:
+    def __init__(self, content: bytes, content_type: str, disposition: str):
+        self.content = content
+        self.status_code = 200
+        self.headers = {
+            "content-type": content_type,
+            "content-disposition": disposition,
+        }
+        if content_type.startswith("text/"):
+            self.text = content.decode("utf-8-sig")
+        else:
+            self.text = ""
+
+
+def _render_export(
+    db_session,
+    call_import,
+    evaluation,
+    *,
+    include_transcripts=True,
+    format="csv",
+):
+    """Column checks call the projector. Delivery is covered by the job tests."""
+    from app.services.call_imports.evaluation_export import (
+        render_export_csv_bytes,
+        render_export_xlsx_bytes,
+    )
+
+    if format == "xlsx":
+        content = render_export_xlsx_bytes(db_session, call_import, evaluation)
+        return _ExportBody(
+            content,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            'attachment; filename="export.xlsx"',
+        )
+    content = render_export_csv_bytes(
+        db_session,
+        call_import,
+        evaluation,
+        include_transcripts=include_transcripts,
+    )
+    return _ExportBody(
+        content,
+        "text/csv; charset=utf-8-sig",
+        'attachment; filename="export.csv"',
+    )
+
+
 def test_export_emits_rationale_column_for_capture_rationale_metric(
     authenticated_client, db_session, org_id, seed_org
 ):
@@ -232,8 +280,8 @@ def test_export_emits_rationale_column_for_capture_rationale_metric(
         },
     )
 
-    response = authenticated_client.get(
-        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export"
+    response = _render_export(
+        db_session, call_import, evaluation, include_transcripts=True
     )
     assert response.status_code == 200, response.text
     headers, rows = _parse_csv(response.content)
@@ -291,8 +339,8 @@ def test_export_omits_rationale_column_when_capture_rationale_false(
         },
     )
 
-    response = authenticated_client.get(
-        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export"
+    response = _render_export(
+        db_session, call_import, evaluation, include_transcripts=True
     )
     assert response.status_code == 200, response.text
     headers, rows = _parse_csv(response.content)
@@ -336,8 +384,8 @@ def test_export_handles_missing_rationale_value_gracefully(
         },
     )
 
-    response = authenticated_client.get(
-        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export"
+    response = _render_export(
+        db_session, call_import, evaluation, include_transcripts=True
     )
     assert response.status_code == 200, response.text
     headers, rows = _parse_csv(response.content)
@@ -393,8 +441,8 @@ def test_export_pairs_each_metrics_value_and_rationale_in_order(
         },
     )
 
-    response = authenticated_client.get(
-        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export"
+    response = _render_export(
+        db_session, call_import, evaluation, include_transcripts=True
     )
     assert response.status_code == 200, response.text
     headers, rows = _parse_csv(response.content)
@@ -448,8 +496,8 @@ def test_export_surfaces_both_transcripts_and_diarised_source(
     evaluation.transcript_source = "diarised"
     db_session.commit()
 
-    response = authenticated_client.get(
-        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export"
+    response = _render_export(
+        db_session, call_import, evaluation, include_transcripts=True
     )
     assert response.status_code == 200, response.text
     headers, rows = _parse_csv(response.content)
@@ -490,8 +538,8 @@ def test_export_omits_diarised_source_when_diarised_transcript_missing(
     evaluation.transcript_source = "diarised"
     db_session.commit()
 
-    response = authenticated_client.get(
-        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export"
+    response = _render_export(
+        db_session, call_import, evaluation, include_transcripts=True
     )
     assert response.status_code == 200, response.text
     _headers, rows = _parse_csv(response.content)
@@ -547,8 +595,8 @@ def test_export_diarised_source_is_per_row(
         )
     db_session.commit()
 
-    response = authenticated_client.get(
-        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export"
+    response = _render_export(
+        db_session, call_import, evaluation, include_transcripts=True
     )
     assert response.status_code == 200, response.text
     _headers, rows = _parse_csv(response.content)
@@ -595,8 +643,8 @@ def test_export_flattens_multi_line_diarised_transcript(
         },
     )
 
-    response = authenticated_client.get(
-        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export"
+    response = _render_export(
+        db_session, call_import, evaluation, include_transcripts=True
     )
     assert response.status_code == 200, response.text
     _, rows = _parse_csv(response.content)
@@ -613,9 +661,7 @@ def test_export_flattens_multi_line_diarised_transcript(
 def test_export_supports_xlsx_format(
     authenticated_client, db_session, org_id, seed_org
 ):
-    """The ``format=xlsx`` query param returns a native Excel workbook
-    rather than a CSV — same column layout, same flattened transcripts,
-    UTF-8-native cells (no BOM dance needed)."""
+    """Scores xlsx omits transcript bodies. Transcript CSV still flattens them."""
     import io as io_module
 
     from openpyxl import load_workbook
@@ -644,9 +690,14 @@ def test_export_supports_xlsx_format(
         },
     )
 
-    response = authenticated_client.get(
-        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export",
-        params={"format": "xlsx"},
+    transcript_csv = _render_export(
+        db_session, call_import, evaluation, include_transcripts=True
+    )
+    _csv_headers, csv_rows = _parse_csv(transcript_csv.content)
+    assert csv_rows[0]["Diarised Transcript"] == "agent: नमस्ते user: हेलो"
+
+    response = _render_export(
+        db_session, call_import, evaluation, format="xlsx"
     )
     assert response.status_code == 200, response.text
     assert response.headers["content-type"].startswith(
@@ -659,17 +710,13 @@ def test_export_supports_xlsx_format(
     worksheet = workbook.active
     rows_iter = worksheet.iter_rows(values_only=True)
     header_row = list(next(rows_iter))
-    assert "Production Transcript" in header_row
-    assert "Diarised Transcript" in header_row
+    assert "Production Transcript" not in header_row
+    assert "Diarised Transcript" not in header_row
     assert "Quality" in header_row
 
     data_rows = [list(r) for r in rows_iter]
     assert len(data_rows) == 1
-
-    diarised_idx = header_row.index("Diarised Transcript")
-    quality_idx = header_row.index("Quality")
-    assert data_rows[0][diarised_idx] == "agent: नमस्ते user: हेलो"
-    assert data_rows[0][quality_idx] == "0.75"
+    assert data_rows[0][header_row.index("Quality")] == "0.75"
 
 
 def test_export_defaults_to_csv_when_format_omitted(
@@ -696,8 +743,8 @@ def test_export_defaults_to_csv_when_format_omitted(
         },
     )
 
-    response = authenticated_client.get(
-        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export"
+    response = _render_export(
+        db_session, call_import, evaluation, include_transcripts=True
     )
     assert response.status_code == 200, response.text
     assert response.headers["content-type"].startswith("text/csv")
@@ -736,8 +783,8 @@ def test_export_includes_conversation_id_for_audio_upload(
         },
     )
 
-    csv_response = authenticated_client.get(
-        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export"
+    csv_response = _render_export(
+        db_session, call_import, evaluation, include_transcripts=True
     )
     assert csv_response.status_code == 200, csv_response.text
     headers, rows = _parse_csv(csv_response.content)
@@ -747,9 +794,8 @@ def test_export_includes_conversation_id_for_audio_upload(
     assert rows[0]["conversation_id"] == "sales_call"
     assert rows[0]["Quality"] == "0.9"
 
-    xlsx_response = authenticated_client.get(
-        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export",
-        params={"format": "xlsx"},
+    xlsx_response = _render_export(
+        db_session, call_import, evaluation, format="xlsx"
     )
     assert xlsx_response.status_code == 200, xlsx_response.text
 
@@ -763,3 +809,537 @@ def test_export_includes_conversation_id_for_audio_upload(
     assert len(data_rows) == 1
     assert data_rows[0][header_row.index("conversation_id")] == "sales_call"
     assert data_rows[0][header_row.index("Quality")] == "0.9"
+
+
+def test_default_projector_omits_transcript_and_rationale(
+    db_session, org_id, seed_org
+):
+    call_import = _make_call_import(db_session, org_id)
+    source_row = _make_call_import_row(db_session, call_import)
+    metric = _make_metric(
+        db_session, org_id, name="Pitch Type", capture_rationale=True
+    )
+    evaluation = _make_evaluation_with_row(
+        db_session,
+        call_import=call_import,
+        source_row=source_row,
+        metrics=[metric],
+        metric_scores={
+            str(metric.id): {
+                "value": "WITH data",
+                "rationale": "because the pitch named the product",
+            }
+        },
+    )
+
+    response = _render_export(
+        db_session, call_import, evaluation, include_transcripts=False
+    )
+    headers, rows = _parse_csv(response.content)
+    assert "Transcript" not in headers
+    assert "Production Transcript" not in headers
+    assert "Diarised Transcript" not in headers
+    assert "Pitch Type - LLM Rationale" not in headers
+    assert "Evaluated Transcript Source" in headers
+    assert rows[0]["Pitch Type"] == "WITH data"
+    assert "because the pitch named the product" not in response.text
+
+
+def test_default_export_query_does_not_select_transcript_columns(db_session):
+    from sqlalchemy.dialects import postgresql
+
+    from app.services.call_imports.evaluation_export import export_page_query
+
+    def _sql(*, include_transcripts: bool) -> str:
+        query = export_page_query(
+            db_session, uuid4(), include_transcripts=include_transcripts
+        )
+        return " ".join(
+            str(query.statement.compile(dialect=postgresql.dialect())).lower().split()
+        )
+
+    default_sql = _sql(include_transcripts=False)
+    assert "call_import_rows.transcript" not in default_sql
+    assert "diarised_transcript" not in default_sql
+
+    transcript_sql = _sql(include_transcripts=True)
+    assert "call_import_rows.transcript" in transcript_sql
+    assert "call_import_rows.diarised_transcript" in transcript_sql
+
+
+def test_export_start_returns_job_and_status_returns_one_link_per_part(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    import os
+    from uuid import UUID
+
+    from app.services.call_imports.evaluation_export import execute_evaluation_export
+    from app.services.storage.blob_storage_service import blob_storage_service
+    import app.workers.tasks.call_import_bulk_ops as bulk
+
+    call_import = _make_call_import(db_session, org_id)
+    source_row = _make_call_import_row(db_session, call_import)
+    metric = _make_metric(db_session, org_id, name="Quality")
+    evaluation = _make_evaluation_with_row(
+        db_session,
+        call_import=call_import,
+        source_row=source_row,
+        metrics=[metric],
+        metric_scores={str(metric.id): {"value": 1, "metric_name": "Quality"}},
+    )
+
+    uploads = []
+
+    def _upload(path, key, content_type=None):
+        assert isinstance(path, str)
+        assert os.path.isfile(path)
+        assert not isinstance(path, (bytes, bytearray))
+        uploads.append((path, key, content_type))
+
+    monkeypatch.setattr(blob_storage_service, "is_enabled", lambda: True)
+    monkeypatch.setattr(
+        "app.services.call_imports.evaluation_export._export_object_key",
+        lambda job, filename: f"tests/{job.id}/{filename}",
+    )
+    monkeypatch.setattr(blob_storage_service, "upload_file_by_key_from_path", _upload)
+    monkeypatch.setattr(
+        blob_storage_service,
+        "generate_presigned_url_by_key",
+        lambda key, expiration=3600, response_content_disposition=None: (
+            f"https://files.example/{key}"
+        ),
+    )
+
+    def _delay(job_id):
+        execute_evaluation_export(db_session, UUID(job_id))
+        return type("Task", (), {"id": "inline-export"})()
+
+    monkeypatch.setattr(bulk.export_call_import_evaluation_task, "delay", _delay)
+
+    started = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export",
+        json={"format": "csv"},
+    )
+    assert started.status_code == 202, started.text
+    body = started.json()
+    assert body["status"] == "completed"
+    assert body["include_transcripts"] is False
+    assert len(uploads) == 1
+    assert uploads[0][0].endswith(".csv.gz")
+    assert uploads[0][2] == "application/gzip"
+
+    status = authenticated_client.get(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}"
+        f"/export-jobs/{body['id']}"
+    )
+    assert status.status_code == 200
+    assert status.headers["content-type"].startswith("application/json")
+    payload = status.json()
+    assert len(payload["parts"]) == 1
+    assert payload["parts"][0]["download_url"].startswith("https://files.example/")
+    assert payload["parts"][0]["row_count"] == 1
+    assert "hello world" not in status.text
+
+
+def test_second_export_reuses_the_pending_job(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    from app.services.storage.blob_storage_service import blob_storage_service
+
+    call_import = _make_call_import(db_session, org_id)
+    source_row = _make_call_import_row(db_session, call_import)
+    metric = _make_metric(db_session, org_id, name="Quality")
+    evaluation = _make_evaluation_with_row(
+        db_session,
+        call_import=call_import,
+        source_row=source_row,
+        metrics=[metric],
+        metric_scores={},
+    )
+    monkeypatch.setattr(blob_storage_service, "is_enabled", lambda: True)
+
+    url = f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export"
+    first = authenticated_client.post(url, json={"format": "csv"})
+    second = authenticated_client.post(url, json={"format": "csv"})
+    assert first.status_code == 202, first.text
+    assert second.status_code == 202, second.text
+    assert first.json()["id"] == second.json()["id"]
+    assert first.json()["status"] == "pending"
+
+
+def test_xlsx_past_sheet_cap_is_rejected(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    call_import = _make_call_import(db_session, org_id)
+    source_row = _make_call_import_row(db_session, call_import)
+    metric = _make_metric(db_session, org_id, name="Quality")
+    evaluation = _make_evaluation_with_row(
+        db_session,
+        call_import=call_import,
+        source_row=source_row,
+        metrics=[metric],
+        metric_scores={},
+    )
+    monkeypatch.setattr(
+        "app.db_sharding.eval_rows.count_evaluation_rows_for_run",
+        lambda *_args, **_kwargs: 1_048_577,
+    )
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export",
+        json={"format": "xlsx"},
+    )
+    assert response.status_code == 400
+    assert "Excel" in response.json()["detail"]
+
+
+def test_xlsx_transcript_export_is_rejected(
+    authenticated_client, db_session, org_id, seed_org
+):
+    call_import = _make_call_import(db_session, org_id)
+    source_row = _make_call_import_row(db_session, call_import)
+    metric = _make_metric(db_session, org_id, name="Quality")
+    evaluation = _make_evaluation_with_row(
+        db_session,
+        call_import=call_import,
+        source_row=source_row,
+        metrics=[metric],
+        metric_scores={},
+    )
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export",
+        json={"format": "xlsx", "include_transcripts": True},
+    )
+    assert response.status_code == 400
+
+
+def test_quarter_million_rows_upload_three_gzip_parts(
+    db_session, org_id, seed_org, monkeypatch
+):
+    import os
+    from uuid import UUID
+
+    from app.models.database import CallImportEvaluationExport
+    from app.services.call_imports import evaluation_export as export_mod
+    from app.services.storage.blob_storage_service import blob_storage_service
+
+    call_import = _make_call_import(db_session, org_id)
+    source_row = _make_call_import_row(db_session, call_import)
+    metric = _make_metric(db_session, org_id, name="Quality")
+    evaluation = _make_evaluation_with_row(
+        db_session,
+        call_import=call_import,
+        source_row=source_row,
+        metrics=[metric],
+        metric_scores={},
+    )
+    job = CallImportEvaluationExport(
+        evaluation_id=evaluation.id,
+        call_import_id=call_import.id,
+        organization_id=call_import.organization_id,
+        workspace_id=call_import.workspace_id,
+        format="csv",
+        include_transcripts=False,
+        status="pending",
+        parts=[],
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    def _pairs(*_args, **_kwargs):
+        for _ in range(250_000):
+            yield object(), object()
+
+    uploads = []
+
+    def _upload(path, key, content_type=None):
+        assert isinstance(path, str)
+        assert os.path.isfile(path)
+        assert path.endswith(".csv.gz")
+        uploads.append(
+            {
+                "path": path,
+                "key": key,
+                "content_type": content_type,
+                "byte_size": os.path.getsize(path),
+            }
+        )
+
+    monkeypatch.setattr(export_mod, "iter_export_pairs", _pairs)
+    monkeypatch.setattr(export_mod, "project_export_row", lambda *_a, **_k: {"CallID": "c"})
+    monkeypatch.setattr(blob_storage_service, "is_enabled", lambda: True)
+    monkeypatch.setattr(
+        export_mod,
+        "_export_object_key",
+        lambda job, filename: f"tests/{job.id}/{filename}",
+    )
+    monkeypatch.setattr(blob_storage_service, "upload_file_by_key_from_path", _upload)
+
+    result = export_mod.execute_evaluation_export(db_session, job.id)
+    assert result["status"] == "completed"
+    assert result["parts"] == 3
+    assert len(uploads) == 3
+    db_session.refresh(job)
+    assert [part["row_count"] for part in job.parts] == [100_000, 100_000, 50_000]
+    assert all(part["s3_key"] for part in job.parts)
+
+
+def _pending_export_job(db_session, call_import, evaluation):
+    from app.models.database import CallImportEvaluationExport
+
+    job = CallImportEvaluationExport(
+        evaluation_id=evaluation.id,
+        call_import_id=call_import.id,
+        organization_id=call_import.organization_id,
+        workspace_id=call_import.workspace_id,
+        format="csv",
+        include_transcripts=False,
+        status="pending",
+        parts=[],
+    )
+    db_session.add(job)
+    db_session.commit()
+    return job
+
+
+def test_fresh_running_export_is_not_scanned_again(
+    db_session, org_id, seed_org, monkeypatch
+):
+    from datetime import datetime, timezone
+
+    from app.services.call_imports import evaluation_export as export_mod
+    from app.services.storage.blob_storage_service import blob_storage_service
+
+    call_import = _make_call_import(db_session, org_id)
+    source_row = _make_call_import_row(db_session, call_import)
+    metric = _make_metric(db_session, org_id, name="Quality")
+    evaluation = _make_evaluation_with_row(
+        db_session,
+        call_import=call_import,
+        source_row=source_row,
+        metrics=[metric],
+        metric_scores={},
+    )
+    job = _pending_export_job(db_session, call_import, evaluation)
+    job.status = "running"
+    job.heartbeat_at = datetime.now(timezone.utc)
+    job.claim_token = "live-worker"
+    db_session.commit()
+
+    uploads = []
+    monkeypatch.setattr(blob_storage_service, "is_enabled", lambda: True)
+    monkeypatch.setattr(
+        blob_storage_service,
+        "upload_file_by_key_from_path",
+        lambda *args, **kwargs: uploads.append(args),
+    )
+
+    result = export_mod.execute_evaluation_export(db_session, job.id)
+    assert result["status"] == "running"
+    assert uploads == []
+    db_session.refresh(job)
+    assert job.claim_token == "live-worker"
+
+
+def test_stale_running_export_is_scanned_again(
+    db_session, org_id, seed_org, monkeypatch
+):
+    from datetime import datetime, timedelta, timezone
+
+    from app.services.call_imports import evaluation_export as export_mod
+    from app.services.storage.blob_storage_service import blob_storage_service
+
+    call_import = _make_call_import(db_session, org_id)
+    source_row = _make_call_import_row(db_session, call_import)
+    metric = _make_metric(db_session, org_id, name="Quality")
+    evaluation = _make_evaluation_with_row(
+        db_session,
+        call_import=call_import,
+        source_row=source_row,
+        metrics=[metric],
+        metric_scores={str(metric.id): {"value": 1}},
+    )
+    job = _pending_export_job(db_session, call_import, evaluation)
+    job.status = "running"
+    job.heartbeat_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    job.claim_token = "dead-worker"
+    db_session.commit()
+
+    uploads = []
+    monkeypatch.setattr(blob_storage_service, "is_enabled", lambda: True)
+    monkeypatch.setattr(
+        export_mod,
+        "_export_object_key",
+        lambda owned, filename: f"tests/{owned.id}/{filename}",
+    )
+    monkeypatch.setattr(
+        blob_storage_service,
+        "upload_file_by_key_from_path",
+        lambda path, key, content_type=None: uploads.append(path),
+    )
+
+    result = export_mod.execute_evaluation_export(db_session, job.id)
+    assert result["status"] == "completed", result
+    assert len(uploads) == 1
+    assert uploads[0].endswith(".csv.gz")
+    db_session.refresh(job)
+    assert job.claim_token != "dead-worker"
+    assert job.parts[0]["row_count"] == 1
+
+
+def test_storage_disabled_fails_the_job(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    from app.services.storage.blob_storage_service import blob_storage_service
+
+    call_import = _make_call_import(db_session, org_id)
+    source_row = _make_call_import_row(db_session, call_import)
+    metric = _make_metric(db_session, org_id, name="Quality")
+    evaluation = _make_evaluation_with_row(
+        db_session,
+        call_import=call_import,
+        source_row=source_row,
+        metrics=[metric],
+        metric_scores={},
+    )
+    monkeypatch.setattr(blob_storage_service, "is_enabled", lambda: False)
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export",
+        json={"format": "csv"},
+    )
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["status"] == "failed"
+    assert "storage" in body["error_message"].lower()
+
+
+def test_live_running_export_is_not_queued_again(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    from datetime import datetime, timezone
+
+    from app.services.storage.blob_storage_service import blob_storage_service
+    import app.workers.tasks.call_import_bulk_ops as bulk
+
+    call_import = _make_call_import(db_session, org_id)
+    source_row = _make_call_import_row(db_session, call_import)
+    metric = _make_metric(db_session, org_id, name="Quality")
+    evaluation = _make_evaluation_with_row(
+        db_session,
+        call_import=call_import,
+        source_row=source_row,
+        metrics=[metric],
+        metric_scores={},
+    )
+    job = _pending_export_job(db_session, call_import, evaluation)
+    job.status = "running"
+    job.heartbeat_at = datetime.now(timezone.utc)
+    job.claim_token = "live-worker"
+    db_session.commit()
+
+    queued = []
+    monkeypatch.setattr(blob_storage_service, "is_enabled", lambda: True)
+    monkeypatch.setattr(
+        bulk.export_call_import_evaluation_task,
+        "delay",
+        lambda job_id: queued.append(job_id),
+    )
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export",
+        json={"format": "xlsx"},
+    )
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["id"] == str(job.id)
+    assert body["status"] == "running"
+    assert body["format"] == "csv"
+    assert queued == []
+
+
+def test_failed_enqueue_marks_the_job_failed(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    from app.services.storage.blob_storage_service import blob_storage_service
+    import app.workers.tasks.call_import_bulk_ops as bulk
+
+    call_import = _make_call_import(db_session, org_id)
+    source_row = _make_call_import_row(db_session, call_import)
+    metric = _make_metric(db_session, org_id, name="Quality")
+    evaluation = _make_evaluation_with_row(
+        db_session,
+        call_import=call_import,
+        source_row=source_row,
+        metrics=[metric],
+        metric_scores={},
+    )
+    monkeypatch.setattr(blob_storage_service, "is_enabled", lambda: True)
+
+    def _delay(_job_id):
+        raise RuntimeError("broker down")
+
+    monkeypatch.setattr(bulk.export_call_import_evaluation_task, "delay", _delay)
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export",
+        json={"format": "csv"},
+    )
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["status"] == "failed"
+    assert "queue" in body["error_message"].lower()
+
+
+def test_export_commits_each_page(
+    db_session, org_id, seed_org, monkeypatch
+):
+    from app.models.database import CallImportEvaluationRow
+    from app.services.call_imports import evaluation_export as export_mod
+    from app.services.storage.blob_storage_service import blob_storage_service
+
+    call_import = _make_call_import(db_session, org_id)
+    first = _make_call_import_row(db_session, call_import, row_index=0)
+    second = _make_call_import_row(db_session, call_import, row_index=1)
+    metric = _make_metric(db_session, org_id, name="Quality")
+    evaluation = _make_evaluation_with_row(
+        db_session,
+        call_import=call_import,
+        source_row=first,
+        metrics=[metric],
+        metric_scores={},
+    )
+    db_session.add(
+        CallImportEvaluationRow(
+            evaluation_id=evaluation.id,
+            call_import_row_id=second.id,
+            status="completed",
+            metric_scores={},
+        )
+    )
+    db_session.commit()
+    job = _pending_export_job(db_session, call_import, evaluation)
+
+    commits = {"n": 0}
+    original_commit = db_session.commit
+
+    def _commit():
+        commits["n"] += 1
+        return original_commit()
+
+    monkeypatch.setattr(export_mod, "EXPORT_PAGE_SIZE", 1)
+    monkeypatch.setattr(db_session, "commit", _commit)
+    monkeypatch.setattr(blob_storage_service, "is_enabled", lambda: True)
+    monkeypatch.setattr(
+        export_mod,
+        "_export_object_key",
+        lambda owned, filename: f"tests/{owned.id}/{filename}",
+    )
+    monkeypatch.setattr(
+        blob_storage_service,
+        "upload_file_by_key_from_path",
+        lambda *args, **kwargs: None,
+    )
+
+    result = export_mod.execute_evaluation_export(db_session, job.id)
+    assert result["status"] == "completed", result
+    assert result["parts"] == 1
+    # Claim, layout, one commit per page, and the final write. One commit
+    # for the whole file would stay under this.
+    assert commits["n"] >= 4

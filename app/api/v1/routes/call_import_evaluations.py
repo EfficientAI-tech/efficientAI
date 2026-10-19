@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import csv
 import base64
 import io
 import json
@@ -59,6 +58,8 @@ from app.models.schemas import (
     CallImportEvaluationBulkDelete,
     CallImportEvaluationBulkActionResponse,
     CallImportEvaluationCreate,
+    CallImportEvaluationExportJobResponse,
+    CallImportEvaluationExportRequest,
     CallImportEvaluationListResponse,
     CallImportEvaluationResponse,
     CallImportEvaluationRetryRequest,
@@ -274,41 +275,6 @@ def require_call_import_capability(capability: str):
         return call_import
 
     return _dep
-
-
-def _flatten_transcript(text: Optional[str]) -> str:
-    """Collapse a multi-line transcript onto a single line for spreadsheet export.
-
-    The diarised transcript is stored as ``<speaker>: <text>`` lines joined
-    by ``\\n`` because the in-app ``TranscriptView`` parses those line
-    breaks to render chat bubbles. In Excel / Google Sheets that same
-    newline-per-turn formatting causes each cell to balloon vertically,
-    which the user reads as "lots of empty space on top of the cell".
-    Flattening at export time keeps the DB shape intact while giving the
-    spreadsheet a single-line cell per row.
-    """
-    if not text:
-        return ""
-    parts = [
-        segment.strip()
-        for segment in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    ]
-    return " ".join(p for p in parts if p)
-
-
-def _evaluated_transcript_source_label(
-    evaluation: CallImportEvaluation,
-    source_row: CallImportRow,
-) -> str:
-    """Label which transcript source this row was scored against."""
-    source = (evaluation.transcript_source or "diarised").strip().lower()
-    if source == "production":
-        if not (source_row.transcript or "").strip():
-            return ""
-        return "Production"
-    if not (source_row.diarised_transcript or "").strip():
-        return ""
-    return "Diarised"
 
 
 def _pick_evaluation_row_transcript(
@@ -2104,27 +2070,27 @@ async def get_call_import_evaluation_row(
         close_row_sessions(row_db, catalog_db)
 
 
-@router.get(
+@router.post(
     "/{eval_id}/export",
-    operation_id="exportCallImportEvaluationCsv",
+    response_model=CallImportEvaluationExportJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="startCallImportEvaluationExport",
 )
-async def export_call_import_evaluation_csv(
+async def start_call_import_evaluation_export(
     call_import_id: UUID,
     eval_id: UUID,
-    format: Literal["csv", "xlsx"] = Query(
-        "csv",
-        description=(
-            "Output format. ``csv`` returns a UTF-8 BOM CSV; ``xlsx`` "
-            "returns a native Excel workbook (single sheet)."
-        ),
-    ),
+    payload: Optional[CallImportEvaluationExportRequest] = Body(None),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
-) -> StreamingResponse:
+) -> CallImportEvaluationExportJobResponse:
+    """Queue a gzip CSV (or scores-only xlsx) export and return the job.
+
+    The file is built off this request. Poll the job, then download each
+    part from blob storage.
+    """
     del api_key
     call_import = _require_import(db, call_import_id, organization_id)
-
     evaluation = (
         db.query(CallImportEvaluation)
         .filter(
@@ -2137,337 +2103,185 @@ async def export_call_import_evaluation_csv(
     if not evaluation:
         raise HTTPException(status_code=404, detail="Call import evaluation not found")
 
-    selected_metric_ids = _serialize_selected_metric_ids(evaluation.selected_metric_ids)
-    # Include parent metric ids referenced in selected_metric_groups so
-    # the export shows a parent "Chosen Label" column next to its
-    # children's true/false columns.
-    lookup_ids: List[UUID] = list(selected_metric_ids)
-    groups_raw = (
-        evaluation.selected_metric_groups
-        if isinstance(evaluation.selected_metric_groups, dict)
-        else {}
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models.database import CallImportEvaluationExport
+    from app.services.call_imports.evaluation_export import (
+        XLSX_SHEET_ROW_CAP,
+        execute_evaluation_export,
+        export_job_is_stale,
     )
-    for parent_str in groups_raw.keys():
-        try:
-            pid = UUID(parent_str)
-            if pid not in lookup_ids:
-                lookup_ids.append(pid)
-        except (TypeError, ValueError):
-            continue
-    metrics = _metrics_for_ids(db, organization_id, lookup_ids)
-    metric_names = {str(metric.id): metric.name for metric in metrics}
-    metrics_by_id = {str(metric.id): metric for metric in metrics}
+    from app.services.storage.blob_storage_service import blob_storage_service
 
-    # Two export-time modes depending on how the batch was uploaded:
-    #
-    #   * Schema-driven (new): ``call_imports.schema_id`` is set,
-    #     ``parameter_mapping`` records which CSV header fed each
-    #     parameter, and ``raw_columns`` on each row is keyed by
-    #     parameter NAME. Export headers are the parameter names.
-    #   * Legacy (pre-schema): ``column_mapping`` / ``extra_columns`` /
-    #     ``custom_column_mapping`` drive the columns and
-    #     ``raw_columns`` is keyed by the original CSV header.
-    #
-    # We bucket entries into ``standard_export_headers`` (raw_columns
-    # key == export header) and ``custom_export`` (export header
-    # differs from the raw_columns key) so the row-projection loop
-    # below stays mode-agnostic.
-    standard_export_headers: List[str] = []
-    custom_export: List[tuple[str, str]] = []  # [(export_header, raw_columns_key)]
-
-    if call_import.schema_id is not None:
-        # Use the live schema parameter list for column ordering. Falls
-        # back to whatever's in ``parameter_mapping`` if the schema was
-        # deleted (defensive - the FK is ON DELETE RESTRICT, but tests
-        # / future cascades may still hit this branch).
-        from app.models.database import CallImportSchema as _ImportSchema
-
-        schema_obj = (
-            db.query(_ImportSchema)
-            .filter(_ImportSchema.id == call_import.schema_id)
-            .first()
+    body = payload or CallImportEvaluationExportRequest()
+    if body.format == "xlsx" and body.include_transcripts:
+        raise HTTPException(
+            status_code=400,
+            detail="Excel export does not include transcript text. Download the CSV parts instead.",
         )
-        if schema_obj is not None:
-            params_sorted = sorted(
-                schema_obj.parameters, key=lambda p: p.ordering or 0
-            )
-            for param in params_sorted:
-                if param.name and param.name not in standard_export_headers:
-                    standard_export_headers.append(param.name)
-        else:
-            for param_name in (call_import.parameter_mapping or {}).keys():
-                if param_name and param_name not in standard_export_headers:
-                    standard_export_headers.append(param_name)
-    else:
-        mapping = call_import.column_mapping or {}
-        mapped_headers = [
-            mapping.get("external_call_id"),
-            mapping.get("transcript"),
-            mapping.get("recording_url"),
-        ]
-        for header in [*mapped_headers, *(call_import.extra_columns or [])]:
-            if (
-                isinstance(header, str)
-                and header
-                and header not in standard_export_headers
-            ):
-                standard_export_headers.append(header)
+    if body.format == "xlsx":
+        from app.db_sharding.eval_rows import count_evaluation_rows_for_run
 
-        custom_mapping = call_import.custom_column_mapping or {}
-        if isinstance(custom_mapping, dict):
-            for name, csv_header in custom_mapping.items():
-                if not isinstance(name, str) or not isinstance(csv_header, str):
-                    continue
-                if not name or not csv_header:
-                    continue
-                if name in standard_export_headers:
-                    continue  # would clobber a real column
-                custom_export.append((name, csv_header))
-
-    if (
-        call_import.source_format == "audio"
-        and "conversation_id" not in standard_export_headers
-    ):
-        standard_export_headers.insert(0, "conversation_id")
-
-    # Build the metric columns: each parent (if any) gets a value column
-    # and (when capture_rationale=true) a "<Parent> - LLM Rationale"
-    # column. The per-child boolean columns are intentionally suppressed
-    # — categorization metrics now collapse to exactly two columns in
-    # the export, mirroring the in-app table.
-    child_ids_in_groups: set[str] = set()
-    for parent_str, child_strs in groups_raw.items():
-        for child_str in child_strs:
-            if isinstance(child_str, str):
-                child_ids_in_groups.add(child_str)
-
-    metric_headers: List[str] = []
-    rationale_headers: Dict[str, str] = {}  # metric_id_str -> rationale column name
-    seen_metric_ids: set[str] = set()
-
-    def _add_metric_column(metric: Metric) -> None:
-        mid_str = str(metric.id)
-        if mid_str in seen_metric_ids:
-            return
-        # Skip any child whose parent is part of this run — the parent
-        # column above already shows the chosen child name as its
-        # value.
-        if mid_str in child_ids_in_groups:
-            return
-        seen_metric_ids.add(mid_str)
-        header = metric_names[mid_str]
-        metric_headers.append(header)
-        if bool(getattr(metric, "capture_rationale", False)):
-            rationale_header = f"{header} - LLM Rationale"
-            metric_headers.append(rationale_header)
-            rationale_headers[mid_str] = rationale_header
-
-    for parent_str in groups_raw.keys():
-        parent = metrics_by_id.get(parent_str)
-        if parent:
-            _add_metric_column(parent)
-        # Children of an in-run parent are deliberately not emitted —
-        # the ``child_ids_in_groups`` guard inside ``_add_metric_column``
-        # is what enforces this. We still iterate the keys above (not
-        # ``.items()``) so the parent-only emission is explicit.
-    # Append anything left over (standalone metrics not in any group, or
-    # legacy runs without ``selected_metric_groups``).
-    for metric in metrics:
-        if metric.selection_mode and not metric.parent_metric_id:
-            continue  # already handled above
-        if str(metric.id) in seen_metric_ids:
-            continue
-        _add_metric_column(metric)
-
-    # Three new fixed columns surface the two transcript fields and the
-    # evaluation's transcript_source as live values pulled from the
-    # ``CallImportRow`` (not from the frozen ``raw_columns`` snapshot).
-    # The user can now compare "what was in the CSV" vs "what the
-    # diarisation worker produced" without round-tripping through the
-    # UI, and downstream tools can verify which transcript the metrics
-    # were computed against.
-    PRODUCTION_TRANSCRIPT_HEADER = "Production Transcript"
-    DIARISED_TRANSCRIPT_HEADER = "Diarised Transcript"
-    EVAL_SOURCE_HEADER = "Evaluated Transcript Source"
-
-    fieldnames = [
-        *standard_export_headers,
-        *[h for h, _ in custom_export],
-        PRODUCTION_TRANSCRIPT_HEADER,
-        DIARISED_TRANSCRIPT_HEADER,
-        EVAL_SOURCE_HEADER,
-        *metric_headers,
-    ]
-
-    from app.db_sharding.scatter_gather import load_evaluation_row_pairs
-    from app.db_sharding.sessions import is_sharding_enabled
-
-    if is_sharding_enabled():
-        rows = sorted(
-            load_evaluation_row_pairs(db, eval_id),
-            key=lambda pair: int(pair[1].row_index or 0),
-        )
-    else:
-        rows = (
-            db.query(CallImportEvaluationRow, CallImportRow)
-            .join(
-                CallImportRow,
-                CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
-            )
-            .filter(CallImportEvaluationRow.evaluation_id == eval_id)
-            .order_by(CallImportRow.row_index.asc())
-            .all()
-        )
-
-    def _project_rows() -> Iterator[Dict[str, str]]:
-        for eval_row, source_row in rows:
-            row_out: Dict[str, str] = {}
-            raw = (
-                source_row.raw_columns
-                if isinstance(source_row.raw_columns, dict)
-                else {}
-            )
-            for header in standard_export_headers:
-                value = raw.get(header)
-                if value is None and header == "conversation_id":
-                    value = source_row.conversation_id
-                row_out[header] = "" if value is None else str(value)
-            for export_header, csv_header in custom_export:
-                value = raw.get(csv_header)
-                row_out[export_header] = "" if value is None else str(value)
-
-            # Live transcripts pulled from the row, NOT from raw_columns,
-            # so re-diarised values are always reflected in the export.
-            # Both transcript columns are flattened to a single line so the
-            # spreadsheet cell doesn't balloon vertically — the in-app
-            # ``TranscriptView`` still has the DB copy with line breaks
-            # intact for chat-bubble rendering.
-            row_out[PRODUCTION_TRANSCRIPT_HEADER] = _flatten_transcript(
-                source_row.transcript
-            )
-            row_out[DIARISED_TRANSCRIPT_HEADER] = _flatten_transcript(
-                source_row.diarised_transcript
-            )
-            row_out[EVAL_SOURCE_HEADER] = _evaluated_transcript_source_label(
-                evaluation,
-                source_row,
-            )
-
-            scores = (
-                eval_row.metric_scores
-                if isinstance(eval_row.metric_scores, dict)
-                else {}
-            )
-            for metric in metrics:
-                metric_score = (
-                    scores.get(str(metric.id))
-                    if isinstance(scores, dict)
-                    else None
-                )
-                value = (
-                    metric_score.get("value")
-                    if isinstance(metric_score, dict)
-                    else None
-                )
-                # Parent metrics (selection_mode set) render the chosen
-                # child name for single_choice or the ";"-joined list of
-                # true child names for multi_label.
-                if (
-                    metric.selection_mode
-                    and not metric.parent_metric_id
-                    and isinstance(metric_score, dict)
-                ):
-                    if metric.selection_mode == "multi_label":
-                        selected = metric_score.get("selected_child_names")
-                        if isinstance(selected, list):
-                            value = ";".join(str(s) for s in selected)
-                    else:
-                        value = (
-                            metric_score.get("chosen_child_name")
-                            or metric_score.get("value")
-                        )
-                row_out[metric.name] = "" if value is None else str(value)
-                rationale_header = rationale_headers.get(str(metric.id))
-                if rationale_header is not None:
-                    rationale = (
-                        metric_score.get("rationale")
-                        if isinstance(metric_score, dict)
-                        else None
-                    )
-                    row_out[rationale_header] = (
-                        "" if rationale is None else str(rationale)
-                    )
-            yield row_out
-
-    base_filename = f"call-import-{call_import_id}-evaluation-{eval_id}"
-
-    if format == "xlsx":
-        # xlsx is unicode-native (Hindi/Devanagari, emoji, etc.) so the
-        # UTF-8-BOM dance isn't needed here. ``write_only`` mode keeps
-        # peak memory bounded for large evaluations because openpyxl
-        # only buffers the current row.
-        try:
-            from openpyxl import Workbook  # type: ignore
-            from openpyxl.cell import WriteOnlyCell  # type: ignore
-            from openpyxl.styles import Font  # type: ignore
-        except ImportError as exc:  # pragma: no cover - exercised by pyproject lock
+        row_count = count_evaluation_rows_for_run(db, eval_id)
+        if row_count > XLSX_SHEET_ROW_CAP:
             raise HTTPException(
-                status_code=500,
+                status_code=400,
                 detail=(
-                    "Excel export requires the 'openpyxl' package which is "
-                    "not installed."
+                    "This run has more rows than Excel allows on one sheet. "
+                    "Download the CSV parts instead."
                 ),
-            ) from exc
+            )
 
-        workbook = Workbook(write_only=True)
-        worksheet = workbook.create_sheet(title="Evaluation")
+    active = _active_export_job(db, eval_id)
+    if active is not None:
+        if blob_storage_service.is_enabled() and (
+            active.status == "pending" or export_job_is_stale(active)
+        ):
+            try:
+                _enqueue_evaluation_export(str(active.id))
+            except Exception as exc:
+                if active.status == "pending":
+                    active.status = "failed"
+                    active.error_message = f"Could not queue the export: {exc}"
+                    active.finished_at = datetime.now(timezone.utc)
+                    db.commit()
+                    db.refresh(active)
+        return _export_job_response(active)
 
-        bold_font = Font(bold=True)
-        header_cells = []
-        for header in fieldnames:
-            cell = WriteOnlyCell(worksheet, value=header)
-            cell.font = bold_font
-            header_cells.append(cell)
-        worksheet.append(header_cells)
+    job = CallImportEvaluationExport(
+        evaluation_id=evaluation.id,
+        call_import_id=call_import.id,
+        organization_id=organization_id,
+        workspace_id=call_import.workspace_id,
+        format=body.format,
+        include_transcripts=body.include_transcripts,
+        status="pending",
+        parts=[],
+    )
+    db.add(job)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        active = _active_export_job(db, eval_id)
+        if active is not None:
+            return _export_job_response(active)
+        raise
+    db.refresh(job)
 
-        for row_dict in _project_rows():
-            worksheet.append([row_dict.get(h, "") for h in fieldnames])
+    if not blob_storage_service.is_enabled():
+        execute_evaluation_export(db, job.id)
+        db.refresh(job)
+        return _export_job_response(job)
 
-        buffer = io.BytesIO()
-        workbook.save(buffer)
-        xlsx_bytes = buffer.getvalue()
-        filename = f"{base_filename}.xlsx"
-        return StreamingResponse(
-            iter([xlsx_bytes]),
-            media_type=(
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            ),
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    try:
+        _enqueue_evaluation_export(str(job.id))
+    except Exception as exc:
+        job.status = "failed"
+        job.error_message = f"Could not queue the export: {exc}"
+        job.finished_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(job)
+    return _export_job_response(job)
+
+
+@router.get(
+    "/{eval_id}/export-jobs/{job_id}",
+    response_model=CallImportEvaluationExportJobResponse,
+    operation_id="getCallImportEvaluationExport",
+)
+async def get_call_import_evaluation_export(
+    call_import_id: UUID,
+    eval_id: UUID,
+    job_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportEvaluationExportJobResponse:
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+    from app.models.database import CallImportEvaluationExport
+
+    job = (
+        db.query(CallImportEvaluationExport)
+        .filter(
+            CallImportEvaluationExport.id == job_id,
+            CallImportEvaluationExport.evaluation_id == eval_id,
+            CallImportEvaluationExport.call_import_id == call_import_id,
+            CallImportEvaluationExport.organization_id == organization_id,
         )
+        .first()
+    )
+    if job is None:
+        raise HTTPException(status_code=404, detail="Export job not found")
+    return _export_job_response(job, with_download_urls=True)
 
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
-    writer.writeheader()
-    for row_dict in _project_rows():
-        writer.writerow(row_dict)
 
-    # Excel on Windows defaults to the system ANSI codepage (Windows-1252)
-    # when a CSV has no encoding marker, which turns UTF-8 Hindi/Devanagari
-    # / any non-ASCII text into mojibake (e.g. ``ठीक`` → ``à¤ à¥€à¤•``).
-    # A UTF-8 BOM tells Excel to switch to UTF-8 decoding and is silently
-    # skipped by every other UTF-8-aware reader (pandas, LibreOffice,
-    # Google Sheets, etc.), so the data round-trips correctly everywhere.
-    csv_text = output.getvalue()
-    # ``utf-8-sig`` adds the UTF-8 BOM so Excel on Windows decodes the file
-    # as UTF-8 instead of the system codepage. We also declare the same
-    # codec in the Content-Type header so well-behaved HTTP clients (incl.
-    # ``httpx`` / ``requests`` in our tests) strip the BOM during decode.
-    csv_bytes = csv_text.encode("utf-8-sig")
-    filename = f"{base_filename}.csv"
-    return StreamingResponse(
-        iter([csv_bytes]),
-        media_type="text/csv; charset=utf-8-sig",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+def _active_export_job(db: Session, evaluation_id: UUID):
+    from app.models.database import CallImportEvaluationExport
+
+    return (
+        db.query(CallImportEvaluationExport)
+        .filter(
+            CallImportEvaluationExport.evaluation_id == evaluation_id,
+            CallImportEvaluationExport.status.in_(("pending", "running")),
+        )
+        .first()
+    )
+
+
+def _enqueue_evaluation_export(job_id: str) -> None:
+    from app.workers.tasks.call_import_bulk_ops import (
+        export_call_import_evaluation_task,
+    )
+
+    export_call_import_evaluation_task.delay(job_id)
+
+
+def _export_job_response(job, *, with_download_urls: bool = False):
+    from app.models.schemas import (
+        CallImportEvaluationExportJobResponse,
+        CallImportEvaluationExportPart,
+    )
+    from app.services.call_imports.evaluation_export import EXPORT_URL_TTL_SECONDS
+    from app.services.storage.blob_storage_service import blob_storage_service
+
+    parts = []
+    raw_parts = job.parts if isinstance(job.parts, list) else []
+    for item in raw_parts:
+        if not isinstance(item, dict):
+            continue
+        download_url = None
+        key = item.get("s3_key")
+        filename = item.get("filename") or "export.csv.gz"
+        if (
+            with_download_urls
+            and job.status == "completed"
+            and key
+            and blob_storage_service.is_enabled()
+        ):
+            download_url = blob_storage_service.generate_presigned_url_by_key(
+                key,
+                expiration=EXPORT_URL_TTL_SECONDS,
+                response_content_disposition=f'attachment; filename="{filename}"',
+            )
+        parts.append(
+            CallImportEvaluationExportPart(
+                part=int(item.get("part") or 0),
+                filename=filename,
+                row_count=int(item.get("row_count") or 0),
+                byte_size=int(item.get("byte_size") or 0),
+                download_url=download_url,
+            )
+        )
+    return CallImportEvaluationExportJobResponse(
+        id=job.id,
+        evaluation_id=job.evaluation_id,
+        status=job.status,
+        format=job.format,
+        include_transcripts=bool(job.include_transcripts),
+        error_message=job.error_message,
+        parts=parts,
     )
 
 
@@ -4700,12 +4514,26 @@ async def cancel_call_import_evaluation(
     target_count = count_evaluation_cancel_targets(db, eval_id, mode="abort")
     if target_count == 0:
         from app.services.call_imports.bulk_ops import (
-            _sweep_evaluation_diarisation_cancel,
+            count_inflight_diarisation_for_evaluation,
         )
 
-        swept = _sweep_evaluation_diarisation_cancel(db, eval_id)
-        if swept:
-            db.commit()
+        inflight_diarisation = count_inflight_diarisation_for_evaluation(
+            db,
+            eval_id,
+            evaluation.call_import_id,
+        )
+        if inflight_diarisation == 0:
+            return CallImportEvaluationBulkActionResponse(
+                accepted=True,
+                target_count=0,
+                evaluation_id=eval_id,
+            )
+        _claim_evaluation_bulk_operation(eval_id, "abort")
+        from app.workers.tasks.call_import_bulk_ops import (
+            cancel_call_import_evaluation_task,
+        )
+
+        cancel_call_import_evaluation_task.delay(str(eval_id), mode="abort")
         return CallImportEvaluationBulkActionResponse(
             accepted=True,
             target_count=0,

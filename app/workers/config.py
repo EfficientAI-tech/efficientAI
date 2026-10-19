@@ -203,6 +203,7 @@ celery_app.conf.task_routes = {
     "materialize_mapped_call_import_evaluation": {"queue": EVAL_CONTROL_QUEUE},
     "retry_call_import_evaluation": {"queue": EVAL_CONTROL_QUEUE},
     "cancel_call_import_evaluation": {"queue": EVAL_CONTROL_QUEUE},
+    "export_call_import_evaluation": {"queue": EVAL_CONTROL_QUEUE},
     "evaluate_call_import_row": {"queue": "evaluations"},
     "evaluate_call_import_row_audio": {"queue": "audio-metrics"},
     "transcribe_call_import_row": {"queue": "diarization"},

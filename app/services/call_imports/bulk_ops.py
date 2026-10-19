@@ -1174,14 +1174,6 @@ def rollup_call_import_batch_status(db: Session, call_import: CallImport) -> Non
     clear_import_progress_redis(call_import.id)
 
 
-_EVAL_CANCEL_COLUMNS = (
-    CallImportEvaluationRow.id,
-    CallImportEvaluationRow.status,
-    CallImportEvaluationRow.celery_task_id,
-    CallImportEvaluationRow.call_import_row_id,
-)
-
-
 def count_evaluation_cancel_targets(
     db: Session,
     evaluation_id: UUID,
@@ -1210,6 +1202,97 @@ def count_evaluation_cancel_targets(
     else:
         query = query.filter(CallImportEvaluationRow.status == "pending")
     return int(query.scalar() or 0)
+
+
+def cancel_eval_page_query(session: Session, evaluation_id: UUID, *, status: str):
+    """One eval status page. No sort, no source join, no transcript columns."""
+    return session.query(
+        CallImportEvaluationRow.id,
+        CallImportEvaluationRow.celery_task_id,
+        CallImportEvaluationRow.call_import_row_id,
+    ).filter(
+        CallImportEvaluationRow.evaluation_id == evaluation_id,
+        CallImportEvaluationRow.status == status,
+    )
+
+
+def cancel_inflight_diarisation_query(session: Session, source_ids: List[UUID]):
+    """Task ids for source rows on this page that are still in diarisation."""
+    return session.query(
+        CallImportRow.id,
+        CallImportRow.celery_task_id,
+    ).filter(
+        CallImportRow.id.in_(source_ids),
+        CallImportRow.diarised_transcript_status.in_(("pending", "running")),
+    )
+
+
+def diarisation_sweep_page_query(
+    session: Session,
+    evaluation_id: UUID,
+    call_import_id: UUID,
+    *,
+    status: str,
+):
+    """Leftover in-flight diarisation for one status. Transcript bodies stay out."""
+    return (
+        session.query(CallImportRow.id, CallImportRow.celery_task_id)
+        .join(
+            CallImportEvaluationRow,
+            CallImportEvaluationRow.call_import_row_id == CallImportRow.id,
+        )
+        .filter(
+            CallImportRow.call_import_id == call_import_id,
+            CallImportRow.diarised_transcript_status == status,
+            CallImportEvaluationRow.evaluation_id == evaluation_id,
+        )
+    )
+
+
+def _count_inflight_diarisation_on_session(
+    session: Session,
+    evaluation_id: UUID,
+    call_import_id: UUID,
+) -> int:
+    query = session.query(func.count(CallImportRow.id)).join(
+        CallImportEvaluationRow,
+        CallImportEvaluationRow.call_import_row_id == CallImportRow.id,
+    ).filter(
+        CallImportRow.call_import_id == call_import_id,
+        CallImportEvaluationRow.evaluation_id == evaluation_id,
+        CallImportRow.diarised_transcript_status.in_(("pending", "running")),
+    )
+    return int(query.scalar() or 0)
+
+
+def count_inflight_diarisation_for_evaluation(
+    db: Session,
+    evaluation_id: UUID,
+    call_import_id: UUID,
+) -> int:
+    """Count in-flight diarisation rows for this run without loading bodies."""
+    if not is_sharding_enabled():
+        return _count_inflight_diarisation_on_session(
+            db, evaluation_id, call_import_id
+        )
+    from app.db_sharding.pool_manager import db_pool_manager
+
+    router = db_pool_manager.router
+    if router is None:
+        return _count_inflight_diarisation_on_session(
+            db, evaluation_id, call_import_id
+        )
+    total = 0
+    for shard_id in router.shard_ids:
+        factory = db_pool_manager.shard_session_factory(shard_id)
+        shard_db = factory()
+        try:
+            total += _count_inflight_diarisation_on_session(
+                shard_db, evaluation_id, call_import_id
+            )
+        finally:
+            shard_db.close()
+    return total
 
 
 def _batch_revoke_celery_task_ids(
@@ -1276,7 +1359,11 @@ def execute_evaluation_cancel(
             )
 
         if mode == "abort":
-            _sweep_evaluation_diarisation_cancel(db, evaluation_id)
+            _sweep_evaluation_diarisation_cancel(
+                db,
+                evaluation_id,
+                evaluation.call_import_id,
+            )
 
         db.refresh(evaluation)
         _rollup_evaluation_status(evaluation, db)
@@ -1295,66 +1382,157 @@ def execute_evaluation_cancel(
         clear_evaluation_bulk_operation(evaluation_id)
 
 
+def _append_task_ids(task_ids: List[str], seen: set, rows) -> None:
+    for row in rows:
+        task_id = row.celery_task_id if isinstance(row.celery_task_id, str) else ""
+        task_id = task_id.strip()
+        if task_id and task_id not in seen:
+            seen.add(task_id)
+            task_ids.append(task_id)
+
+
+def _write_cancel_page(
+    session: Session,
+    eval_ids: List[UUID],
+    *,
+    status: str,
+    source_ids: List[UUID],
+    now: datetime,
+) -> int:
+    """One UPDATE per table for this page. Eval rowcount, or source rowcount when the page is diarisation-only."""
+    from app.api.v1.routes.call_import_evaluations import EVAL_CANCELLED_BY_USER_ERROR
+    from app.api.v1.routes.call_imports import CANCELLED_BY_USER_ERROR
+    from app.db_sharding.row_ops import shard_row_write_context
+
+    if not eval_ids and not source_ids:
+        return 0
+    updated = 0
+    with shard_row_write_context(session):
+        if eval_ids:
+            result = session.execute(
+                update(CallImportEvaluationRow)
+                .where(
+                    CallImportEvaluationRow.id.in_(eval_ids),
+                    CallImportEvaluationRow.status == status,
+                )
+                .values(
+                    status="failed",
+                    error_message=EVAL_CANCELLED_BY_USER_ERROR,
+                    finished_at=now,
+                    celery_task_id=None,
+                ),
+                execution_options={"synchronize_session": False},
+            )
+            updated = int(result.rowcount or 0)
+            if updated < 0:
+                updated = len(eval_ids)
+        if source_ids:
+            result = session.execute(
+                update(CallImportRow)
+                .where(
+                    CallImportRow.id.in_(source_ids),
+                    CallImportRow.diarised_transcript_status.in_(
+                        ("pending", "running")
+                    ),
+                )
+                .values(
+                    diarised_transcript_status="failed",
+                    diarised_transcript_error=CANCELLED_BY_USER_ERROR,
+                    celery_task_id=None,
+                ),
+                execution_options={"synchronize_session": False},
+            )
+            if not eval_ids:
+                updated = int(result.rowcount or 0)
+                if updated < 0:
+                    updated = len(source_ids)
+        session.commit()
+    return updated
+
+
+def _sweep_diarisation_on_session(
+    session: Session,
+    evaluation_id: UUID,
+    call_import_id: UUID,
+) -> int:
+    """Page leftover in-flight diarisation. One status at a time, one UPDATE per page."""
+    cancelled_total = 0
+    for status in ("pending", "running"):
+        previous_ids: Optional[set] = None
+        while True:
+            page = (
+                diarisation_sweep_page_query(
+                    session,
+                    evaluation_id,
+                    call_import_id,
+                    status=status,
+                )
+                .limit(_BULK_INSERT_CHUNK)
+                .all()
+            )
+            if not page:
+                break
+            page_ids = [row.id for row in page]
+            page_id_set = set(page_ids)
+            if previous_ids is not None and page_id_set == previous_ids:
+                logger.warning(
+                    "Diarisation cancel page for evaluation {} status {} made no progress",
+                    evaluation_id,
+                    status,
+                )
+                break
+            previous_ids = page_id_set
+            task_ids: List[str] = []
+            _append_task_ids(task_ids, set(), page)
+            updated = _write_cancel_page(
+                session,
+                [],
+                status=status,
+                source_ids=page_ids,
+                now=datetime.now(timezone.utc),
+            )
+            _batch_revoke_celery_task_ids(task_ids, terminate=True)
+            if updated == 0:
+                logger.warning(
+                    "Diarisation cancel page for evaluation {} status {} updated no rows",
+                    evaluation_id,
+                    status,
+                )
+                break
+            cancelled_total += updated
+    return cancelled_total
+
+
 def _sweep_evaluation_diarisation_cancel(
     catalog_db: Session,
     evaluation_id: UUID,
+    call_import_id: UUID,
 ) -> int:
     """Fail any remaining in-flight diarisation for rows in this evaluation run."""
-    from app.api.v1.routes.call_imports import _apply_diarisation_cancel
-
-    cancelled_total = 0
     if is_sharding_enabled():
         from app.db_sharding.pool_manager import db_pool_manager
 
         router = db_pool_manager.router
         assert router is not None
+        cancelled_total = 0
         for shard_id in router.shard_ids:
             factory = db_pool_manager.shard_session_factory(shard_id)
             shard_db = factory()
             try:
-                source_rows = (
-                    shard_db.query(CallImportRow)
-                    .join(
-                        CallImportEvaluationRow,
-                        CallImportEvaluationRow.call_import_row_id
-                        == CallImportRow.id,
-                    )
-                    .filter(
-                        CallImportEvaluationRow.evaluation_id == evaluation_id,
-                        CallImportRow.diarised_transcript_status.in_(
-                            ("pending", "running")
-                        ),
-                    )
-                    .all()
+                cancelled_total += _sweep_diarisation_on_session(
+                    shard_db,
+                    evaluation_id,
+                    call_import_id,
                 )
-                if not source_rows:
-                    continue
-                cancelled, _ = _apply_diarisation_cancel(source_rows)
-                if cancelled:
-                    shard_db.commit()
-                    cancelled_total += cancelled
             finally:
                 shard_db.close()
         return cancelled_total
 
-    source_rows = (
-        catalog_db.query(CallImportRow)
-        .join(
-            CallImportEvaluationRow,
-            CallImportEvaluationRow.call_import_row_id == CallImportRow.id,
-        )
-        .filter(
-            CallImportEvaluationRow.evaluation_id == evaluation_id,
-            CallImportRow.diarised_transcript_status.in_(("pending", "running")),
-        )
-        .all()
+    return _sweep_diarisation_on_session(
+        catalog_db,
+        evaluation_id,
+        call_import_id,
     )
-    if not source_rows:
-        return 0
-    cancelled, _ = _apply_diarisation_cancel(source_rows)
-    if cancelled:
-        catalog_db.commit()
-    return cancelled
 
 
 def _cancel_evaluation_rows_on_session(
@@ -1363,65 +1541,56 @@ def _cancel_evaluation_rows_on_session(
     *,
     mode: Literal["abort", "force_fail_pending"],
 ) -> int:
-    from app.api.v1.routes.call_import_evaluations import (
-        _cancel_eval_row_with_source_diarisation,
-    )
-
-    cancelled_total = 0
+    statuses = ("pending", "running") if mode == "abort" else ("pending",)
     cascade_diarisation = mode == "abort"
-    while True:
-        query = db.query(CallImportEvaluationRow).filter(
-            CallImportEvaluationRow.evaluation_id == evaluation_id
-        )
-        if cascade_diarisation:
-            query = query.add_columns(CallImportRow).join(
-                CallImportRow,
-                CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
-            )
-        else:
-            query = query.options(load_only(*_EVAL_CANCEL_COLUMNS))
-        if mode == "abort":
-            query = query.filter(
-                CallImportEvaluationRow.status.in_(("pending", "running"))
-            )
-        else:
-            query = query.filter(CallImportEvaluationRow.status == "pending")
-
-        if cascade_diarisation:
-            rows = (
-                query.order_by(CallImportEvaluationRow.id.asc())
+    cancelled_total = 0
+    for status in statuses:
+        previous_ids: Optional[set] = None
+        while True:
+            page = (
+                cancel_eval_page_query(db, evaluation_id, status=status)
                 .limit(_BULK_INSERT_CHUNK)
                 .all()
             )
-            if not rows:
+            if not page:
                 break
-            pairs = [(eval_row, source_row) for eval_row, source_row in rows]
-        else:
-            eval_rows = (
-                query.order_by(CallImportEvaluationRow.id.asc())
-                .limit(_BULK_INSERT_CHUNK)
-                .all()
-            )
-            if not eval_rows:
+            page_ids = [row.id for row in page]
+            page_id_set = set(page_ids)
+            if previous_ids is not None and page_id_set == previous_ids:
+                logger.warning(
+                    "Cancel page for evaluation {} status {} made no progress",
+                    evaluation_id,
+                    status,
+                )
                 break
-            pairs = [(eval_row, None) for eval_row in eval_rows]
-
-        task_ids: List[str] = []
-        now = datetime.now(timezone.utc)
-        for eval_row, source_row in pairs:
-            row_task_ids = _cancel_eval_row_with_source_diarisation(
-                eval_row,
-                source_row,
-                cascade_diarisation=cascade_diarisation,
-                now=now,
+            previous_ids = page_id_set
+            task_ids: List[str] = []
+            seen_tasks: set = set()
+            _append_task_ids(task_ids, seen_tasks, page)
+            source_ids: List[UUID] = []
+            if cascade_diarisation:
+                source_rows = cancel_inflight_diarisation_query(
+                    db,
+                    [row.call_import_row_id for row in page],
+                ).all()
+                source_ids = [row.id for row in source_rows]
+                _append_task_ids(task_ids, seen_tasks, source_rows)
+            updated = _write_cancel_page(
+                db,
+                page_ids,
+                status=status,
+                source_ids=source_ids,
+                now=datetime.now(timezone.utc),
             )
-            for task_id in row_task_ids:
-                if task_id not in task_ids:
-                    task_ids.append(task_id)
-            cancelled_total += 1
-
-        _batch_revoke_celery_task_ids(task_ids, terminate=True)
-        db.commit()
+            _batch_revoke_celery_task_ids(task_ids, terminate=True)
+            if updated == 0:
+                logger.warning(
+                    "Cancel page for evaluation {} status {} updated no rows",
+                    evaluation_id,
+                    status,
+                )
+                break
+            cancelled_total += updated
     return cancelled_total
 
 

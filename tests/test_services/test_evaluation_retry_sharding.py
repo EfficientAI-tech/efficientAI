@@ -95,10 +95,15 @@ def test_persist_evaluation_retry_targets_uses_catalog_when_not_sharded():
 
 
 def _compiled_sql(query) -> str:
+    return _compiled_clause(query.statement)
+
+
+def _compiled_clause(clause) -> str:
     from sqlalchemy.dialects import postgresql
 
+    statement = getattr(clause, "statement", clause)
     return " ".join(
-        str(query.statement.compile(dialect=postgresql.dialect())).lower().split()
+        str(statement.compile(dialect=postgresql.dialect())).lower().split()
     )
 
 
@@ -167,6 +172,71 @@ def test_retry_target_query_filters_status_and_skips_transcript_bodies():
     assert "attempts" in stuck_sql
     assert "order by" not in stuck_sql
     _assert_transcript_bodies_not_selected(stuck_sql)
+
+
+def test_cancel_page_queries_skip_sort_and_transcript_bodies():
+    from sqlalchemy.orm import Session
+
+    from app.services.call_imports.bulk_ops import (
+        cancel_eval_page_query,
+        diarisation_sweep_page_query,
+    )
+
+    session = Session()
+    eval_sql = _compiled_sql(
+        cancel_eval_page_query(session, uuid4(), status="pending")
+    )
+    assert "call_import_evaluation_rows.status =" in eval_sql
+    assert "order by" not in eval_sql
+    assert "call_import_rows" not in eval_sql
+    assert "metric_scores" not in eval_sql
+    _assert_transcript_bodies_not_selected(eval_sql)
+
+    sweep_sql = _compiled_sql(
+        diarisation_sweep_page_query(
+            session,
+            uuid4(),
+            uuid4(),
+            status="running",
+        )
+    )
+    assert "order by" not in sweep_sql
+    assert "call_import_rows.call_import_id =" in sweep_sql
+    assert "call_import_rows.diarised_transcript_status =" in sweep_sql
+    assert "call_import_evaluation_rows.evaluation_id =" in sweep_sql
+    _assert_transcript_bodies_not_selected(sweep_sql)
+
+
+def test_cancel_page_is_one_update_per_table():
+    from datetime import datetime, timezone
+
+    from app.services.call_imports.bulk_ops import _write_cancel_page
+
+    session = MagicMock()
+    session.execute.return_value.rowcount = 3
+    eval_ids = [uuid4(), uuid4(), uuid4()]
+    source_ids = [uuid4(), uuid4()]
+    _write_cancel_page(
+        session,
+        eval_ids,
+        status="pending",
+        source_ids=source_ids,
+        now=datetime.now(timezone.utc),
+    )
+
+    assert session.execute.call_count == 2
+    eval_sql = _compiled_clause(session.execute.call_args_list[0].args[0])
+    source_sql = _compiled_clause(session.execute.call_args_list[1].args[0])
+    assert eval_sql.startswith("update call_import_evaluation_rows")
+    assert "call_import_evaluation_rows.status =" in eval_sql
+    assert source_sql.startswith("update call_import_rows")
+    assert "diarised_transcript_status" in source_sql
+    _assert_transcript_bodies_not_selected(eval_sql)
+    _assert_transcript_bodies_not_selected(source_sql)
+    assert session.execute.call_args_list[0].kwargs["execution_options"] == {
+        "synchronize_session": False
+    }
+    session.commit.assert_called_once()
 
 
 def test_metric_retry_page_is_one_postgres_update():

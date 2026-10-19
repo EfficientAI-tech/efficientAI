@@ -825,6 +825,9 @@ def _wire_bulk_ops_stubs(db_session):
     fake_bulk_ops_module.cancel_call_import_evaluation_task = types.SimpleNamespace(
         delay=_sync_cancel_delay
     )
+    fake_bulk_ops_module.export_call_import_evaluation_task = types.SimpleNamespace(
+        delay=lambda *_args, **_kwargs: types.SimpleNamespace(id="fake-export-task")
+    )
 
 def _install_concurrency_stubs():
     fake_fair_dispatch_module = sys.modules.get("app.workers.concurrency.fair_dispatch")
