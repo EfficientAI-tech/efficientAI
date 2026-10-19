@@ -2129,13 +2129,12 @@ async def start_call_import_evaluation_export(
 
     active = _active_export_job(db, eval_id)
     if active is not None and not _export_request_matches(active, body):
-        if export_job_is_stale(active):
-            active.status = "failed"
-            active.error_message = "Stopped because a different export was requested."
-            active.finished_at = datetime.now(timezone.utc)
-            db.commit()
+        was_stale = export_job_is_stale(active)
+        if was_stale and _fail_stale_export_job(db, active):
             active = None
-        else:
+        elif was_stale:
+            active = _active_export_job(db, eval_id)
+        if active is not None and not _export_request_matches(active, body):
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -2233,6 +2232,48 @@ async def get_call_import_evaluation_export(
     if job is None:
         raise HTTPException(status_code=404, detail="Export job not found")
     return _export_job_response(job, with_download_urls=True)
+
+
+def _fail_stale_export_job(db: Session, job) -> bool:
+    """Fail a stale running export only while that same claim still holds it.
+
+    The heartbeat and claim are the values already loaded on ``job``. A
+    worker that claimed the export after this read changes both, the
+    update matches nothing, and the caller re-reads the live job.
+    """
+    from sqlalchemy import update
+
+    from app.models.database import CallImportEvaluationExport
+
+    observed_heartbeat = job.heartbeat_at
+    observed_claim = job.claim_token
+    heartbeat_still = (
+        CallImportEvaluationExport.heartbeat_at.is_(None)
+        if observed_heartbeat is None
+        else CallImportEvaluationExport.heartbeat_at == observed_heartbeat
+    )
+    claim_still = (
+        CallImportEvaluationExport.claim_token.is_(None)
+        if observed_claim is None
+        else CallImportEvaluationExport.claim_token == observed_claim
+    )
+    result = db.execute(
+        update(CallImportEvaluationExport)
+        .where(
+            CallImportEvaluationExport.id == job.id,
+            CallImportEvaluationExport.status == "running",
+            heartbeat_still,
+            claim_still,
+        )
+        .values(
+            status="failed",
+            error_message="Stopped because a different export was requested.",
+            finished_at=datetime.now(timezone.utc),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    db.commit()
+    return bool(result.rowcount)
 
 
 def _export_request_matches(job, body) -> bool:

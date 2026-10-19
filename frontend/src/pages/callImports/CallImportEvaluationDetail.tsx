@@ -76,6 +76,7 @@ import type {
   CallImportEvaluation,
   DiscoveredMetric,
   CallImportEvaluationBulkActionResponse,
+  CallImportEvaluationExportPart,
   CallImportEvaluationBaselineCandidate,
   CallImportEvaluationRetryResponse,
   CallImportEvaluationRow,
@@ -479,6 +480,7 @@ export default function CallImportEvaluationDetail() {
   const downloadMenuRef = useRef<HTMLDivElement>(null)
   const exportPollRef = useRef(0)
   const [exportPreparing, setExportPreparing] = useState(false)
+  const [exportParts, setExportParts] = useState<CallImportEvaluationExportPart[]>([])
   const [pdfReportMenuOpen, setPdfReportMenuOpen] = useState(false)
   const pdfReportMenuRef = useRef<HTMLDivElement>(null)
   const [pdfReportOpen, setPdfReportOpen] = useState(false)
@@ -2097,6 +2099,7 @@ export default function CallImportEvaluationDetail() {
     const pollId = exportPollRef.current + 1
     exportPollRef.current = pollId
     setExportPreparing(true)
+    setExportParts([])
     try {
       let job = await apiClient.startCallImportEvaluationExport(
         id,
@@ -2118,7 +2121,9 @@ export default function CallImportEvaluationDetail() {
       const ready = (job.parts || []).filter((part) => part.download_url)
       if (ready.length === 1 && ready[0].download_url) {
         window.location.assign(ready[0].download_url)
-      } else if (ready.length === 0) {
+      } else if (ready.length > 1) {
+        setExportParts(ready)
+      } else {
         alert(job.error_message || 'Export finished without a download link')
       }
     } catch (e: any) {
@@ -2948,6 +2953,19 @@ export default function CallImportEvaluationDetail() {
                 >
                   Download as Excel
                 </button>
+              </div>
+            )}
+            {exportParts.length > 1 && (
+              <div className="absolute right-0 z-20 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
+                {exportParts.map((part) => (
+                  <a
+                    key={part.part}
+                    href={part.download_url || undefined}
+                    className="block px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
+                  >
+                    Part {part.part}
+                  </a>
+                ))}
               </div>
             )}
           </div>

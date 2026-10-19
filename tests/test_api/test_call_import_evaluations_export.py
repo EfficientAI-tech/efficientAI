@@ -1297,6 +1297,95 @@ def test_different_export_while_one_is_running_is_rejected(
     assert job.include_transcripts is False
 
 
+def test_stale_different_export_is_replaced(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    from datetime import datetime, timedelta, timezone
+
+    from app.services.storage.blob_storage_service import blob_storage_service
+
+    call_import = _make_call_import(db_session, org_id)
+    source_row = _make_call_import_row(db_session, call_import)
+    metric = _make_metric(db_session, org_id, name="Quality")
+    evaluation = _make_evaluation_with_row(
+        db_session,
+        call_import=call_import,
+        source_row=source_row,
+        metrics=[metric],
+        metric_scores={},
+    )
+    job = _pending_export_job(db_session, call_import, evaluation)
+    job.status = "running"
+    job.heartbeat_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    job.claim_token = "dead-worker"
+    db_session.commit()
+    monkeypatch.setattr(blob_storage_service, "is_enabled", lambda: True)
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export",
+        json={"format": "xlsx"},
+    )
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["id"] != str(job.id)
+    assert body["format"] == "xlsx"
+    assert body["status"] == "pending"
+    db_session.refresh(job)
+    assert job.status == "failed"
+    assert "different export" in (job.error_message or "")
+
+
+def test_recovered_export_is_not_failed_from_a_stale_read(
+    db_session, org_id, seed_org
+):
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import update
+
+    from app.api.v1.routes.call_import_evaluations import _fail_stale_export_job
+    from app.models.database import CallImportEvaluationExport
+
+    call_import = _make_call_import(db_session, org_id)
+    source_row = _make_call_import_row(db_session, call_import)
+    metric = _make_metric(db_session, org_id, name="Quality")
+    evaluation = _make_evaluation_with_row(
+        db_session,
+        call_import=call_import,
+        source_row=source_row,
+        metrics=[metric],
+        metric_scores={},
+    )
+    job = _pending_export_job(db_session, call_import, evaluation)
+    job.status = "running"
+    job.heartbeat_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    job.claim_token = "dead-worker"
+    db_session.commit()
+    db_session.refresh(job)
+    db_session.expunge(job)
+
+    db_session.execute(
+        update(CallImportEvaluationExport)
+        .where(CallImportEvaluationExport.id == job.id)
+        .values(
+            status="running",
+            claim_token="recovered-worker",
+            heartbeat_at=datetime.now(timezone.utc),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    db_session.commit()
+
+    assert _fail_stale_export_job(db_session, job) is False
+    fresh = (
+        db_session.query(CallImportEvaluationExport)
+        .filter(CallImportEvaluationExport.id == job.id)
+        .one()
+    )
+    assert fresh.status == "running"
+    assert fresh.claim_token == "recovered-worker"
+    assert fresh.finished_at is None
+
+
 def test_scores_export_omits_schema_transcript_parameter(
     db_session, org_id, seed_org
 ):
