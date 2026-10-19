@@ -3763,7 +3763,7 @@ class ApiClient {
     callImportId: string,
     evaluationId: string,
     format: 'csv' | 'xlsx' = 'csv',
-    includeTranscripts = false,
+    includeTranscripts = true,
   ): Promise<CallImportEvaluationExportJob> {
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/export`,

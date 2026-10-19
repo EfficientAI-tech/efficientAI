@@ -21,9 +21,31 @@ def _table_exists(db: Session, table_name: str) -> bool:
     return row is not None
 
 
+def _ensure_claim_columns(db: Session) -> None:
+    db.execute(
+        text(
+            """
+            ALTER TABLE call_import_evaluation_exports
+                ADD COLUMN IF NOT EXISTS claim_token VARCHAR(36),
+                ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_call_import_evaluation_exports_active
+            ON call_import_evaluation_exports (evaluation_id)
+            WHERE status IN ('pending', 'running')
+            """
+        )
+    )
+
+
 def upgrade(db: Session):
     if _table_exists(db, "call_import_evaluation_exports"):
-        print("call_import_evaluation_exports already exists, skipping")
+        _ensure_claim_columns(db)
+        print("call_import_evaluation_exports already exists, columns ensured")
         db.commit()
         return
 

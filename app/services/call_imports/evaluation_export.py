@@ -128,7 +128,8 @@ def _omitted_raw_headers(call_import: CallImport, db: Session) -> set:
         )
         if schema is not None:
             for param in schema.parameters:
-                if (param.name or "").strip().lower() == "transcript":
+                param_type = getattr(param.type, "value", param.type)
+                if str(param_type or "").strip().lower() == "transcript" and param.name:
                     omitted.add(param.name)
     return omitted
 
@@ -671,6 +672,17 @@ def _job_status(db: Session, job_id: UUID) -> dict:
     return {"job_id": str(job_id), "status": job.status}
 
 
+def _claim_retry_delay_seconds(job: Optional[CallImportEvaluationExport]) -> Optional[int]:
+    """How long a redelivered task should wait before trying to claim again."""
+    if job is None or job.status in {"completed", "failed"}:
+        return None
+    if job.status != "running" or export_job_is_stale(job):
+        return 5
+    beat = _aware(job.heartbeat_at) or _aware(job.created_at) or datetime.now(timezone.utc)
+    remaining = (beat + EXPORT_HEARTBEAT_STALE - datetime.now(timezone.utc)).total_seconds()
+    return max(5, int(remaining) + 5)
+
+
 def _claim_export_job(db: Session, job_id: UUID) -> Optional[str]:
     """Take a pending job, or a running one whose heartbeat has gone stale."""
     now = datetime.now(timezone.utc)
@@ -801,7 +813,19 @@ def execute_evaluation_export(db: Session, job_id: UUID) -> dict:
 
     claim_token = _claim_export_job(db, job_id)
     if claim_token is None:
-        return _job_status(db, job_id)
+        current = (
+            db.query(CallImportEvaluationExport)
+            .filter(CallImportEvaluationExport.id == job_id)
+            .first()
+        )
+        payload = {
+            "job_id": str(job_id),
+            "status": current.status if current is not None else "missing",
+        }
+        retry_after = _claim_retry_delay_seconds(current)
+        if retry_after is not None:
+            payload["retry_after_seconds"] = retry_after
+        return payload
 
     dest = None
     uploaded: List[str] = []
@@ -868,7 +892,12 @@ def execute_evaluation_export(db: Session, job_id: UUID) -> dict:
                 }
             )
         else:
-            written = write_csv_gz_parts(projected, layout.fieldnames, dest)
+            written = write_csv_gz_parts(
+                projected,
+                layout.fieldnames,
+                dest,
+                part_rows=2**31,
+            )
             if not written:
                 filename = (
                     f"call-import-{call_import_id}-evaluation-{evaluation_id}.csv.gz"
@@ -892,8 +921,12 @@ def execute_evaluation_export(db: Session, job_id: UUID) -> dict:
             for part in written:
                 part_no = int(part["part"])
                 filename = (
-                    f"call-import-{call_import_id}-evaluation-{evaluation_id}"
-                    f"-part-{part_no:04d}.csv.gz"
+                    f"call-import-{call_import_id}-evaluation-{evaluation_id}.csv.gz"
+                    if len(written) == 1
+                    else (
+                        f"call-import-{call_import_id}-evaluation-{evaluation_id}"
+                        f"-part-{part_no:04d}.csv.gz"
+                    )
                 )
                 key = _export_object_key(key_job, filename)
                 blob_storage_service.upload_file_by_key_from_path(
@@ -977,7 +1010,7 @@ def render_export_xlsx_bytes(
         db,
         call_import,
         evaluation,
-        include_transcripts=False,
+        include_transcripts=True,
     )
     dest = tempfile.mkdtemp(prefix="eval-export-test-")
     path = os.path.join(dest, "export.xlsx")
@@ -988,7 +1021,7 @@ def render_export_xlsx_bytes(
                 db,
                 call_import.id,
                 evaluation.id,
-                include_transcripts=False,
+                include_transcripts=True,
             )
         )
         write_xlsx(path, layout.fieldnames, projected)

@@ -587,7 +587,7 @@ def test_export_csv_uses_raw_columns_and_metric_names(
 
     evaluation = db_session.get(CallImportEvaluation, UUID(created["id"]))
     content = render_export_csv_bytes(
-        db_session, call_import, evaluation, include_transcripts=False
+        db_session, call_import, evaluation, include_transcripts=True
     )
     csv_text = content.decode("utf-8-sig")
     lines = [line for line in csv_text.splitlines() if line]
@@ -595,9 +595,8 @@ def test_export_csv_uses_raw_columns_and_metric_names(
 
     header_cols = lines[0].split(",")
     # User-supplied header order is preserved before metric columns.
-    # The mapped transcript column is left out of the default scores file.
     assert header_cols[0] == "CallID"
-    assert "Transcript" not in header_cols
+    assert "Transcript" in header_cols
     assert "Recording URL" in header_cols
     assert "AgentName" in header_cols
     assert header_cols[-1] == "Empathy"

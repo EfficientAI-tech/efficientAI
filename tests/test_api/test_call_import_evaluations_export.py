@@ -710,12 +710,13 @@ def test_export_supports_xlsx_format(
     worksheet = workbook.active
     rows_iter = worksheet.iter_rows(values_only=True)
     header_row = list(next(rows_iter))
-    assert "Production Transcript" not in header_row
-    assert "Diarised Transcript" not in header_row
+    assert "Production Transcript" in header_row
+    assert "Diarised Transcript" in header_row
     assert "Quality" in header_row
 
     data_rows = [list(r) for r in rows_iter]
     assert len(data_rows) == 1
+    assert data_rows[0][header_row.index("Diarised Transcript")] == "agent: नमस्ते user: हेलो"
     assert data_rows[0][header_row.index("Quality")] == "0.75"
 
 
@@ -923,7 +924,7 @@ def test_export_start_returns_job_and_status_returns_one_link_per_part(
     assert started.status_code == 202, started.text
     body = started.json()
     assert body["status"] == "completed"
-    assert body["include_transcripts"] is False
+    assert body["include_transcripts"] is True
     assert len(uploads) == 1
     assert uploads[0][0].endswith(".csv.gz")
     assert uploads[0][2] == "application/gzip"
@@ -992,9 +993,11 @@ def test_xlsx_past_sheet_cap_is_rejected(
     assert "Excel" in response.json()["detail"]
 
 
-def test_xlsx_transcript_export_is_rejected(
-    authenticated_client, db_session, org_id, seed_org
+def test_xlsx_export_includes_transcripts(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
 ):
+    from app.services.storage.blob_storage_service import blob_storage_service
+
     call_import = _make_call_import(db_session, org_id)
     source_row = _make_call_import_row(db_session, call_import)
     metric = _make_metric(db_session, org_id, name="Quality")
@@ -1005,11 +1008,14 @@ def test_xlsx_transcript_export_is_rejected(
         metrics=[metric],
         metric_scores={},
     )
+    monkeypatch.setattr(blob_storage_service, "is_enabled", lambda: True)
     response = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export",
-        json={"format": "xlsx", "include_transcripts": True},
+        json={"format": "xlsx"},
     )
-    assert response.status_code == 400
+    assert response.status_code == 202, response.text
+    assert response.json()["include_transcripts"] is True
+    assert response.json()["format"] == "xlsx"
 
 
 def test_quarter_million_rows_upload_three_gzip_parts(
@@ -1076,11 +1082,12 @@ def test_quarter_million_rows_upload_three_gzip_parts(
 
     result = export_mod.execute_evaluation_export(db_session, job.id)
     assert result["status"] == "completed"
-    assert result["parts"] == 3
-    assert len(uploads) == 3
+    assert result["parts"] == 1
+    assert len(uploads) == 1
     db_session.refresh(job)
-    assert [part["row_count"] for part in job.parts] == [100_000, 100_000, 50_000]
-    assert all(part["s3_key"] for part in job.parts)
+    assert [part["row_count"] for part in job.parts] == [250_000]
+    assert job.parts[0]["filename"].endswith(".csv.gz")
+    assert "-part-" not in job.parts[0]["filename"]
 
 
 def _pending_export_job(db_session, call_import, evaluation):
@@ -1135,6 +1142,7 @@ def test_fresh_running_export_is_not_scanned_again(
 
     result = export_mod.execute_evaluation_export(db_session, job.id)
     assert result["status"] == "running"
+    assert result["retry_after_seconds"] >= 5
     assert uploads == []
     db_session.refresh(job)
     assert job.claim_token == "live-worker"
@@ -1232,6 +1240,7 @@ def test_live_running_export_is_not_queued_again(
     )
     job = _pending_export_job(db_session, call_import, evaluation)
     job.status = "running"
+    job.include_transcripts = True
     job.heartbeat_at = datetime.now(timezone.utc)
     job.claim_token = "live-worker"
     db_session.commit()
@@ -1245,7 +1254,7 @@ def test_live_running_export_is_not_queued_again(
     )
     response = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export",
-        json={"format": "xlsx"},
+        json={"format": "csv"},
     )
     assert response.status_code == 202, response.text
     body = response.json()
@@ -1253,6 +1262,94 @@ def test_live_running_export_is_not_queued_again(
     assert body["status"] == "running"
     assert body["format"] == "csv"
     assert queued == []
+
+
+def test_different_export_while_one_is_running_is_rejected(
+    authenticated_client, db_session, org_id, seed_org
+):
+    from datetime import datetime, timezone
+
+    call_import = _make_call_import(db_session, org_id)
+    source_row = _make_call_import_row(db_session, call_import)
+    metric = _make_metric(db_session, org_id, name="Quality")
+    evaluation = _make_evaluation_with_row(
+        db_session,
+        call_import=call_import,
+        source_row=source_row,
+        metrics=[metric],
+        metric_scores={},
+    )
+    job = _pending_export_job(db_session, call_import, evaluation)
+    job.status = "running"
+    job.heartbeat_at = datetime.now(timezone.utc)
+    db_session.commit()
+
+    url = f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export"
+    excel = authenticated_client.post(url, json={"format": "xlsx"})
+    transcripts = authenticated_client.post(
+        url, json={"format": "csv", "include_transcripts": True}
+    )
+    assert excel.status_code == 409, excel.text
+    assert transcripts.status_code == 409, transcripts.text
+    db_session.refresh(job)
+    assert job.status == "running"
+    assert job.format == "csv"
+    assert job.include_transcripts is False
+
+
+def test_scores_export_omits_schema_transcript_parameter(
+    db_session, org_id, seed_org
+):
+    from app.models.database import CallImportSchema, CallImportSchemaParameter
+
+    call_import = _make_call_import(db_session, org_id)
+    schema = CallImportSchema(
+        organization_id=call_import.organization_id,
+        workspace_id=call_import.workspace_id,
+        name="Voice QA",
+    )
+    db_session.add(schema)
+    db_session.commit()
+    db_session.add_all(
+        [
+            CallImportSchemaParameter(
+                schema_id=schema.id,
+                name="Call Text",
+                type="transcript",
+                ordering=0,
+            ),
+            CallImportSchemaParameter(
+                schema_id=schema.id,
+                name="Agent",
+                type="text",
+                ordering=1,
+            ),
+        ]
+    )
+    call_import.schema_id = schema.id
+    db_session.commit()
+    source_row = _make_call_import_row(
+        db_session,
+        call_import,
+        raw_columns={"Call Text": "secret transcript", "Agent": "Ada"},
+    )
+    metric = _make_metric(db_session, org_id, name="Quality")
+    evaluation = _make_evaluation_with_row(
+        db_session,
+        call_import=call_import,
+        source_row=source_row,
+        metrics=[metric],
+        metric_scores={str(metric.id): {"value": 1}},
+    )
+
+    response = _render_export(
+        db_session, call_import, evaluation, include_transcripts=False
+    )
+    headers, rows = _parse_csv(response.content)
+    assert "Call Text" not in headers
+    assert "Agent" in headers
+    assert rows[0]["Agent"] == "Ada"
+    assert "secret transcript" not in response.text
 
 
 def test_failed_enqueue_marks_the_job_failed(

@@ -2114,11 +2114,6 @@ async def start_call_import_evaluation_export(
     from app.services.storage.blob_storage_service import blob_storage_service
 
     body = payload or CallImportEvaluationExportRequest()
-    if body.format == "xlsx" and body.include_transcripts:
-        raise HTTPException(
-            status_code=400,
-            detail="Excel export does not include transcript text. Download the CSV parts instead.",
-        )
     if body.format == "xlsx":
         from app.db_sharding.eval_rows import count_evaluation_rows_for_run
 
@@ -2128,11 +2123,26 @@ async def start_call_import_evaluation_export(
                 status_code=400,
                 detail=(
                     "This run has more rows than Excel allows on one sheet. "
-                    "Download the CSV parts instead."
+                    "Download the CSV instead."
                 ),
             )
 
     active = _active_export_job(db, eval_id)
+    if active is not None and not _export_request_matches(active, body):
+        if export_job_is_stale(active):
+            active.status = "failed"
+            active.error_message = "Stopped because a different export was requested."
+            active.finished_at = datetime.now(timezone.utc)
+            db.commit()
+            active = None
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "An export is already running for this evaluation. "
+                    "Wait for it to finish before starting a different download."
+                ),
+            )
     if active is not None:
         if blob_storage_service.is_enabled() and (
             active.status == "pending" or export_job_is_stale(active)
@@ -2164,8 +2174,16 @@ async def start_call_import_evaluation_export(
     except IntegrityError:
         db.rollback()
         active = _active_export_job(db, eval_id)
-        if active is not None:
+        if active is not None and _export_request_matches(active, body):
             return _export_job_response(active)
+        if active is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "An export is already running for this evaluation. "
+                    "Wait for it to finish before starting a different download."
+                ),
+            )
         raise
     db.refresh(job)
 
@@ -2215,6 +2233,12 @@ async def get_call_import_evaluation_export(
     if job is None:
         raise HTTPException(status_code=404, detail="Export job not found")
     return _export_job_response(job, with_download_urls=True)
+
+
+def _export_request_matches(job, body) -> bool:
+    return (job.format or "csv") == body.format and bool(job.include_transcripts) == bool(
+        body.include_transcripts
+    )
 
 
 def _active_export_job(db: Session, evaluation_id: UUID):

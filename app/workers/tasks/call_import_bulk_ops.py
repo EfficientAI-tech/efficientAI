@@ -354,7 +354,7 @@ def deferred_call_import_rollup_task(call_import_id: str) -> dict:
 @celery_app.task(
     name="export_call_import_evaluation",
     bind=True,
-    max_retries=1,
+    max_retries=30,
     soft_time_limit=6 * 60 * 60,
     time_limit=6 * 60 * 60 + 120,
 )
@@ -362,14 +362,17 @@ def export_call_import_evaluation_task(self, job_id: str) -> dict:
     """Write an evaluation export to blob storage off the API thread.
 
     The app-wide limit is 30 minutes, which is shorter than a large export.
-    This task keeps its own limit. A redelivered copy exits when the heartbeat
-    is still fresh.
+    A redelivered copy waits until the current claim's heartbeat expires,
+    then takes the job instead of acknowledging the delivery and stopping.
     """
-    del self
     db = SessionLocal()
     try:
         from app.services.call_imports.evaluation_export import execute_evaluation_export
 
-        return execute_evaluation_export(db, UUID(job_id))
+        result = execute_evaluation_export(db, UUID(job_id))
     finally:
         db.close()
+    retry_after = result.get("retry_after_seconds")
+    if retry_after:
+        raise self.retry(countdown=int(retry_after))
+    return result

@@ -4485,7 +4485,7 @@ class CallImportEvaluationExportPart(BaseModel):
 
 class CallImportEvaluationExportRequest(BaseModel):
     format: Literal["csv", "xlsx"] = "csv"
-    include_transcripts: bool = False
+    include_transcripts: bool = True
 
 
 class CallImportEvaluationExportJobResponse(BaseModel):

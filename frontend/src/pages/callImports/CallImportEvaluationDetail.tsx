@@ -409,6 +409,13 @@ function SortableHeader({
   )
 }
 
+function exportReadyHint(rowCount: number): string {
+  if (rowCount <= 5000) return 'Usually ready in under a minute.'
+  const minutes = Math.max(1, Math.round(rowCount / 25000))
+  const unit = minutes === 1 ? 'minute' : 'minutes'
+  return `A file this size usually takes about ${minutes} ${unit}.`
+}
+
 export default function CallImportEvaluationDetail() {
   const { id, evalId } = useParams<{ id: string; evalId: string }>()
   const navigate = useNavigate()
@@ -2086,10 +2093,7 @@ export default function CallImportEvaluationDetail() {
     )
   }
 
-  const handleExport = async (
-    format: 'csv' | 'xlsx',
-    includeTranscripts = false,
-  ) => {
+  const handleExport = async (format: 'csv' | 'xlsx') => {
     if (!id || !evalId) return
     setDownloadMenuOpen(false)
     const pollId = exportPollRef.current + 1
@@ -2101,7 +2105,7 @@ export default function CallImportEvaluationDetail() {
         id,
         evalId,
         format,
-        includeTranscripts,
+        true,
       )
       while (job.status === 'pending' || job.status === 'running') {
         if (exportPollRef.current !== pollId) return
@@ -2121,9 +2125,10 @@ export default function CallImportEvaluationDetail() {
       } else if (ready.length === 0) {
         alert(job.error_message || 'Export finished without a download link')
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error('Failed to export evaluation', e)
-      alert(`Failed to export evaluation ${format.toUpperCase()}`)
+      const detail = e?.response?.data?.detail
+      alert(typeof detail === 'string' ? detail : `Failed to export evaluation ${format.toUpperCase()}`)
     } finally {
       if (exportPollRef.current === pollId) setExportPreparing(false)
     }
@@ -2911,52 +2916,42 @@ export default function CallImportEvaluationDetail() {
               }
               onClick={() => setDownloadMenuOpen((prev) => !prev)}
               disabled={!rowsQuery.data?.items?.length || exportPreparing}
+              title={
+                exportPreparing
+                  ? `Preparing download. ${exportReadyHint(evaluation?.total_rows ?? 0)}`
+                  : exportReadyHint(evaluation?.total_rows ?? 0)
+              }
             >
               {exportPreparing ? 'Preparing download…' : 'Download'}
             </Button>
             {downloadMenuOpen && (
               <div
-                className="absolute right-0 z-20 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden"
+                className="absolute right-0 z-20 mt-1 w-44 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden"
                 role="menu"
               >
                 <button
                   type="button"
                   className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
-                  onClick={() => handleExport('csv', false)}
+                  title={exportReadyHint(evaluation?.total_rows ?? 0)}
+                  onClick={() => handleExport('csv')}
                   role="menuitem"
                 >
-                  Download scores (CSV)
+                  Download as CSV
                 </button>
                 <button
                   type="button"
                   className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 disabled:text-gray-400"
-                  onClick={() => handleExport('xlsx', false)}
+                  onClick={() => handleExport('xlsx')}
                   disabled={(evaluation?.total_rows ?? 0) > 1048576}
+                  title={
+                    (evaluation?.total_rows ?? 0) > 1048576
+                      ? 'Excel cannot open a sheet this long. Download the CSV instead.'
+                      : exportReadyHint(evaluation?.total_rows ?? 0)
+                  }
                   role="menuitem"
                 >
-                  Download scores (Excel)
+                  Download as Excel
                 </button>
-                <button
-                  type="button"
-                  className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
-                  onClick={() => handleExport('csv', true)}
-                  role="menuitem"
-                >
-                  Download transcripts (CSV)
-                </button>
-              </div>
-            )}
-            {exportJob && exportJob.parts.length > 1 && (
-              <div className="absolute right-0 z-20 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
-                {exportJob.parts.map((part) => (
-                  <a
-                    key={part.part}
-                    href={part.download_url || undefined}
-                    className="block px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
-                  >
-                    Part {part.part}
-                  </a>
-                ))}
               </div>
             )}
           </div>
