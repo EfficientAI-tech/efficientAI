@@ -76,7 +76,6 @@ import type {
   CallImportEvaluation,
   DiscoveredMetric,
   CallImportEvaluationBulkActionResponse,
-  CallImportEvaluationExportJob,
   CallImportEvaluationBaselineCandidate,
   CallImportEvaluationRetryResponse,
   CallImportEvaluationRow,
@@ -480,7 +479,6 @@ export default function CallImportEvaluationDetail() {
   const downloadMenuRef = useRef<HTMLDivElement>(null)
   const exportPollRef = useRef(0)
   const [exportPreparing, setExportPreparing] = useState(false)
-  const [exportJob, setExportJob] = useState<CallImportEvaluationExportJob | null>(null)
   const [pdfReportMenuOpen, setPdfReportMenuOpen] = useState(false)
   const pdfReportMenuRef = useRef<HTMLDivElement>(null)
   const [pdfReportOpen, setPdfReportOpen] = useState(false)
@@ -2099,7 +2097,6 @@ export default function CallImportEvaluationDetail() {
     const pollId = exportPollRef.current + 1
     exportPollRef.current = pollId
     setExportPreparing(true)
-    setExportJob(null)
     try {
       let job = await apiClient.startCallImportEvaluationExport(
         id,
@@ -2114,7 +2111,6 @@ export default function CallImportEvaluationDetail() {
         job = await apiClient.getCallImportEvaluationExport(id, evalId, job.id)
       }
       if (exportPollRef.current !== pollId) return
-      setExportJob(job)
       if (job.status === 'failed') {
         alert(job.error_message || 'Export failed')
         return
