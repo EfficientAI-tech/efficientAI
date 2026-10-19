@@ -39,7 +39,9 @@ _DISPATCH_LOCK_TTL_SECONDS = 90
 _WS_EVAL_RR_CURSOR_KEY_PREFIX = "eval:fair:rr_cursor:ws:"
 _RESTRICTED_ROW_KEY_PREFIX = "eval:restricted:row:"
 _TRANSCRIBE_OVERWRITE_KEY_PREFIX = "eval:transcribe_overwrite:"
-_RESTRICTED_ROW_TTL_SECONDS = 20 * 60
+# A 400k metric retry is dispatched 75 rows at a time. The last row can sit
+# for more than a day, so the marker has to outlive that queue.
+_RESTRICTED_ROW_TTL_SECONDS = 72 * 60 * 60
 _DISPATCH_DEDUPE_KEY = "eval:fair:dispatch_dedupe"
 _DISPATCH_AT_CAPACITY_BACKOFF_SECONDS = 15
 
@@ -58,21 +60,38 @@ def store_row_restricted_metrics(
     restricted_metric_ids: Optional[List[str]],
 ) -> None:
     """Persist metric-subset retry ids until the fair dispatcher enqueues the row."""
-    if not restricted_metric_ids:
-        return
-    key = f"{_RESTRICTED_ROW_KEY_PREFIX}{eval_row_id}"
+    store_rows_restricted_metrics([eval_row_id], restricted_metric_ids)
+
+
+def store_rows_restricted_metrics(
+    eval_row_ids: List[UUID | str],
+    restricted_metric_ids: Optional[List[str]],
+) -> bool:
+    """Pipeline one metric-subset marker write for a retry page.
+
+    Returns False when the markers were not stored. Callers must not flip
+    those rows to pending, or dispatch would re-score every metric.
+    """
+    if not restricted_metric_ids or not eval_row_ids:
+        return True
+    payload = json.dumps(restricted_metric_ids)
     try:
-        _get_redis().setex(
-            key,
-            _RESTRICTED_ROW_TTL_SECONDS,
-            json.dumps(restricted_metric_ids),
-        )
+        pipe = _get_redis().pipeline()
+        for eval_row_id in eval_row_ids:
+            pipe.setex(
+                f"{_RESTRICTED_ROW_KEY_PREFIX}{eval_row_id}",
+                _RESTRICTED_ROW_TTL_SECONDS,
+                payload,
+            )
+        pipe.execute()
     except redis.RedisError as exc:
         logger.warning(
-            "Failed to store restricted metrics for eval row {}: {}",
-            eval_row_id,
+            "Failed to store restricted metrics for {} eval rows: {}",
+            len(eval_row_ids),
             exc,
         )
+        return False
+    return True
 
 
 def store_evaluation_transcribe_overwrite(

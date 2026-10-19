@@ -1748,6 +1748,34 @@ class _ChainRedis:
     def delete(self, key):
         self.store.pop(key, None)
 
+    def pipeline(self):
+        redis = self
+
+        class _Pipe:
+            def __init__(self):
+                self.ops = []
+
+            def get(self, key):
+                self.ops.append(("get", key))
+                return self
+
+            def delete(self, key):
+                self.ops.append(("delete", key))
+                return self
+
+            def execute(self):
+                results = []
+                for op, key in self.ops:
+                    if op == "get":
+                        results.append(redis.store.get(key))
+                    else:
+                        redis.store.pop(key, None)
+                        results.append(1)
+                self.ops = []
+                return results
+
+        return _Pipe()
+
 
 def test_second_delivery_does_not_own_the_model_call(monkeypatch):
     fake = _ChainRedis()
@@ -1912,6 +1940,10 @@ def test_retry_clears_audio_chain_marker(monkeypatch):
     row.error_message = "old"
     row.started_at = 1
     row.finished_at = 1
+    _reset_eval_row_for_retry(row)
+    assert cleared == []
+    row.celery_task_id = "task-1"
+    row.status = "failed"
     _reset_eval_row_for_retry(row)
     assert cleared == ["row-1"]
     assert row.status == "pending"

@@ -6,7 +6,8 @@ from contextlib import contextmanager
 from typing import Any, Callable, List, Optional, Sequence, Tuple, TypeVar
 from uuid import UUID
 
-from sqlalchemy.orm import Load, Query, Session
+from sqlalchemy import func
+from sqlalchemy.orm import Load, Query, Session, load_only
 
 from app.db_sharding.pool_manager import db_pool_manager
 from app.db_sharding.row_ops import (
@@ -18,11 +19,14 @@ from app.db_sharding.scatter_gather import (
     defer_call_import_row_text,
     load_evaluation_row_pairs,
     plan_slice_page,
+    retry_source_row_options,
 )
 from app.db_sharding.sessions import is_sharding_enabled
 from app.models.database import CallImportEvaluation, CallImportEvaluationRow, CallImportRow
 
 T = TypeVar("T")
+
+RETRY_ROW_PAGE_SIZE = 1000
 
 
 def load_evaluation_rows_for_run(
@@ -50,11 +54,33 @@ def count_evaluation_rows_for_run(
     *,
     statuses: Optional[Sequence[str]] = None,
 ) -> int:
-    rows = load_evaluation_rows_for_run(catalog_db, evaluation_id)
-    if not statuses:
-        return len(rows)
-    allowed = set(statuses)
-    return sum(1 for row in rows if (row.status or "") in allowed)
+    """Count eval rows by status. Does not load row bodies."""
+
+    def _count(session: Session) -> int:
+        query = session.query(func.count(CallImportEvaluationRow.id)).filter(
+            CallImportEvaluationRow.evaluation_id == evaluation_id
+        )
+        if statuses:
+            query = query.filter(CallImportEvaluationRow.status.in_(list(statuses)))
+        return int(query.scalar() or 0)
+
+    if not is_sharding_enabled():
+        return _count(catalog_db)
+
+    router = db_pool_manager.router
+    if router is None:
+        return _count(catalog_db)
+    total = 0
+    for shard_id in router.shard_ids:
+        factory = db_pool_manager.shard_session_factory(shard_id)
+        shard_db = factory()
+        try:
+            total += _count(shard_db)
+        finally:
+            shard_db.close()
+    if total == 0:
+        return _count(catalog_db)
+    return total
 
 
 def foreach_evaluation_row_mutating(
@@ -369,6 +395,230 @@ def fetch_evaluation_row_pairs_page(
     return total, _page_pairs_by_ids(build_query, page_ids)
 
 
+def retry_eval_row_columns(*, include_metric_scores: bool) -> tuple:
+    columns = [
+        CallImportEvaluationRow.id,
+        CallImportEvaluationRow.evaluation_id,
+        CallImportEvaluationRow.call_import_row_id,
+        CallImportEvaluationRow.status,
+        CallImportEvaluationRow.celery_task_id,
+    ]
+    if include_metric_scores:
+        columns.append(CallImportEvaluationRow.metric_scores)
+    return tuple(columns)
+
+
+def retry_eval_ids_query(
+    session: Session,
+    evaluation_id: UUID,
+    row_ids: Sequence[UUID],
+) -> Query:
+    """Explicit retry ids. Slim columns, no status filter, no transcript bodies."""
+    return (
+        session.query(CallImportEvaluationRow)
+        .options(load_only(*retry_eval_row_columns(include_metric_scores=False)))
+        .filter(
+            CallImportEvaluationRow.evaluation_id == evaluation_id,
+            CallImportEvaluationRow.id.in_(list(row_ids)),
+        )
+    )
+
+
+def retry_eval_page_query(
+    session: Session,
+    evaluation_id: UUID,
+    *,
+    status: str,
+    after_id: Optional[UUID] = None,
+    row_ids: Optional[Sequence[UUID]] = None,
+    exclude_ids: Optional[Sequence[UUID]] = None,
+    include_metric_scores: bool = False,
+    ordered: bool = False,
+) -> Query:
+    """One status range on (evaluation_id, status). No transcript columns.
+
+    The worker leaves ``ordered`` off so Postgres can stop after LIMIT on
+    ``ix_eval_rows_eval_status``. A read-only gather passes ``ordered`` and
+    walks ids, because it does not change status and must not spin.
+    """
+    query = (
+        session.query(CallImportEvaluationRow)
+        .options(
+            load_only(
+                *retry_eval_row_columns(include_metric_scores=include_metric_scores)
+            )
+        )
+        .filter(
+            CallImportEvaluationRow.evaluation_id == evaluation_id,
+            CallImportEvaluationRow.status == status,
+        )
+    )
+    if after_id is not None:
+        query = query.filter(CallImportEvaluationRow.id > after_id)
+    if row_ids:
+        query = query.filter(CallImportEvaluationRow.id.in_(list(row_ids)))
+    if exclude_ids:
+        query = query.filter(CallImportEvaluationRow.id.notin_(list(exclude_ids)))
+    if ordered:
+        query = query.order_by(CallImportEvaluationRow.id.asc())
+    return query
+
+
+def retry_source_page_query(session: Session, source_ids: Sequence[UUID]) -> Query:
+    """Source columns for one retry page. Transcript bodies stay out of the SELECT."""
+    return (
+        session.query(CallImportRow)
+        .options(*retry_source_row_options())
+        .filter(CallImportRow.id.in_(list(source_ids)))
+    )
+
+
+def load_retry_target_page(
+    session: Session,
+    evaluation_id: UUID,
+    *,
+    status: str,
+    after_id: Optional[UUID] = None,
+    row_ids: Optional[Sequence[UUID]] = None,
+    exclude_ids: Optional[Sequence[UUID]] = None,
+    include_metric_scores: bool = False,
+    ordered: bool = False,
+    limit: int = RETRY_ROW_PAGE_SIZE,
+) -> List[Tuple[CallImportEvaluationRow, Optional[CallImportRow]]]:
+    eval_rows = (
+        retry_eval_page_query(
+            session,
+            evaluation_id,
+            status=status,
+            after_id=after_id,
+            row_ids=row_ids,
+            exclude_ids=exclude_ids,
+            include_metric_scores=include_metric_scores,
+            ordered=ordered,
+        )
+        .limit(limit)
+        .all()
+    )
+    if not eval_rows:
+        return []
+    sources = {
+        row.id: row
+        for row in retry_source_page_query(
+            session,
+            [row.call_import_row_id for row in eval_rows],
+        ).all()
+    }
+    return [(row, sources.get(row.call_import_row_id)) for row in eval_rows]
+
+
+def iter_evaluation_row_sessions(catalog_db: Session, call_import_id: UUID):
+    """Yield (session, shard_id) for row writes. shard_id is None on the catalog."""
+    if not is_sharding_enabled():
+        yield catalog_db, None
+        return
+    router = db_pool_manager.router
+    if router is None:
+        yield catalog_db, None
+        return
+    from app.db_sharding.scatter_gather import shard_ids_for_import
+
+    for shard_id in shard_ids_for_import(catalog_db, call_import_id):
+        factory = db_pool_manager.shard_session_factory(shard_id)
+        session = factory()
+        try:
+            yield session, shard_id
+        finally:
+            session.close()
+
+
+def _retry_statuses(*, include_completed: bool) -> List[str]:
+    if include_completed:
+        return ["failed", "completed"]
+    return ["failed"]
+
+
+def _collect_retry_targets_on_session(
+    session: Session,
+    evaluation: CallImportEvaluation,
+    requested_ids: Optional[List[UUID]],
+    *,
+    include_completed: bool,
+) -> Tuple[List[Tuple[CallImportEvaluationRow, CallImportRow]], List, set]:
+    from app.models.schemas import CallImportEvaluationRetrySkippedItem
+
+    targets: List[Tuple[CallImportEvaluationRow, CallImportRow]] = []
+    skipped: List[CallImportEvaluationRetrySkippedItem] = []
+    found: set = set()
+
+    def _take(page: List[Tuple[CallImportEvaluationRow, Optional[CallImportRow]]]) -> None:
+        for eval_row, source_row in page:
+            found.add(eval_row.id)
+            if requested_ids is not None and eval_row.status in {"pending", "running"}:
+                skipped.append(
+                    CallImportEvaluationRetrySkippedItem(
+                        eval_row_id=eval_row.id,
+                        reason="in_progress",
+                    )
+                )
+                continue
+            if (
+                requested_ids is not None
+                and eval_row.status == "completed"
+                and not include_completed
+            ):
+                skipped.append(
+                    CallImportEvaluationRetrySkippedItem(
+                        eval_row_id=eval_row.id,
+                        reason="completed",
+                    )
+                )
+                continue
+            if source_row is None:
+                skipped.append(
+                    CallImportEvaluationRetrySkippedItem(
+                        eval_row_id=eval_row.id,
+                        reason="source_row_missing",
+                    )
+                )
+                continue
+            targets.append((eval_row, source_row))
+
+    if requested_ids is not None:
+        for start in range(0, len(requested_ids), RETRY_ROW_PAGE_SIZE):
+            chunk = list(requested_ids)[start : start + RETRY_ROW_PAGE_SIZE]
+            eval_rows = retry_eval_ids_query(session, evaluation.id, chunk).all()
+            if not eval_rows:
+                continue
+            sources = {
+                row.id: row
+                for row in retry_source_page_query(
+                    session,
+                    [row.call_import_row_id for row in eval_rows],
+                ).all()
+            }
+            _take([(row, sources.get(row.call_import_row_id)) for row in eval_rows])
+        return targets, skipped, found
+
+    for status in _retry_statuses(include_completed=include_completed):
+        after_id: Optional[UUID] = None
+        while True:
+            page = load_retry_target_page(
+                session,
+                evaluation.id,
+                status=status,
+                after_id=after_id,
+                include_metric_scores=False,
+                ordered=True,
+            )
+            if not page:
+                break
+            after_id = page[-1][0].id
+            _take(page)
+            if len(page) < RETRY_ROW_PAGE_SIZE:
+                break
+    return targets, skipped, found
+
+
 def gather_retry_targets_sharded(
     catalog_db: Session,
     evaluation: CallImportEvaluation,
@@ -376,55 +626,32 @@ def gather_retry_targets_sharded(
     *,
     include_completed: bool,
 ) -> Tuple[List[Tuple[CallImportEvaluationRow, CallImportRow]], List]:
-    """Return (targets, skipped_as_dict_list) for bulk retry when sharding is on."""
+    """Return slim retry targets. Status filter is in SQL, not after a full load."""
     from app.models.schemas import CallImportEvaluationRetrySkippedItem
 
-    pairs = load_evaluation_row_pairs(catalog_db, evaluation.id)
-    eval_by_id = {er.id: (er, sr) for er, sr in pairs}
-
     targets: List[Tuple[CallImportEvaluationRow, CallImportRow]] = []
-    skipped: List[CallImportEvaluationRetrySkippedItem] = []
-
-    if requested_ids is None:
-        if include_completed:
-            candidate_ids = [
-                er.id
-                for er, _ in pairs
-                if er.status in ("failed", "completed")
-            ]
-        else:
-            candidate_ids = [er.id for er, _ in pairs if er.status == "failed"]
-    else:
-        requested_set = set(requested_ids)
-        candidate_ids = [eid for eid in requested_set if eid in eval_by_id]
-        for missing in requested_set - set(candidate_ids):
+    skipped: List = []
+    found: set = set()
+    for session, _shard_id in iter_evaluation_row_sessions(
+        catalog_db, evaluation.call_import_id
+    ):
+        page_targets, page_skipped, page_found = _collect_retry_targets_on_session(
+            session,
+            evaluation,
+            requested_ids,
+            include_completed=include_completed,
+        )
+        targets.extend(page_targets)
+        skipped.extend(page_skipped)
+        found.update(page_found)
+    if requested_ids is not None:
+        for missing in set(requested_ids) - found:
             skipped.append(
                 CallImportEvaluationRetrySkippedItem(
                     eval_row_id=missing,
                     reason="unknown",
                 )
             )
-
-    for eid in candidate_ids:
-        eval_row, source_row = eval_by_id[eid]
-        if eval_row.status in {"pending", "running"}:
-            skipped.append(
-                CallImportEvaluationRetrySkippedItem(
-                    eval_row_id=eval_row.id,
-                    reason="in_progress",
-                )
-            )
-            continue
-        if eval_row.status == "completed" and not include_completed:
-            skipped.append(
-                CallImportEvaluationRetrySkippedItem(
-                    eval_row_id=eval_row.id,
-                    reason="completed",
-                )
-            )
-            continue
-        targets.append((eval_row, source_row))
-
     return targets, skipped
 
 

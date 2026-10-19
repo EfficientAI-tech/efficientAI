@@ -95,19 +95,39 @@ def _write_audio_chain(
         logger.warning("audio chain marker write failed for {}", eval_row_id)
 
 
+def _chained_task_id_from_marker(raw) -> str:
+    text = raw.decode() if isinstance(raw, bytes) else str(raw or "")
+    _state, _sep, rest = text.partition(":")
+    _owner, _sep2, chained_task_id = rest.partition(":")
+    return chained_task_id
+
+
 def clear_eval_audio_chain(eval_row_id: str) -> None:
     """Drop a handoff so a new attempt cannot reuse it."""
+    clear_eval_audio_chains([eval_row_id])
+
+
+def clear_eval_audio_chains(eval_row_ids: List[str]) -> None:
+    """Pipeline chain deletes for one retry page."""
+    ids = [row_id for row_id in eval_row_ids if row_id]
+    if not ids:
+        return
     try:
         from app.workers.concurrency.limits import _get_redis
 
         client = _get_redis()
-        raw = client.get(_chain_key(eval_row_id))
-        text = raw.decode() if isinstance(raw, bytes) else str(raw or "")
-        _state, _sep, rest = text.partition(":")
-        _owner, _sep2, chained_task_id = rest.partition(":")
-        if chained_task_id:
-            client.delete(_publish_lock_key(chained_task_id))
-        client.delete(_chain_key(eval_row_id))
+        keys = [_chain_key(row_id) for row_id in ids]
+        pipe = client.pipeline()
+        for key in keys:
+            pipe.get(key)
+        values = pipe.execute()
+        pipe = client.pipeline()
+        for key, raw in zip(keys, values):
+            chained_task_id = _chained_task_id_from_marker(raw)
+            if chained_task_id:
+                pipe.delete(_publish_lock_key(chained_task_id))
+            pipe.delete(key)
+        pipe.execute()
     except Exception:
         return
 

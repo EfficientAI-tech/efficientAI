@@ -839,6 +839,8 @@ def _install_concurrency_stubs():
         fake_fair_dispatch_module.schedule_fair_dispatch = lambda *_a, **_kw: None
     if not hasattr(fake_fair_dispatch_module, "store_row_restricted_metrics"):
         fake_fair_dispatch_module.store_row_restricted_metrics = lambda *_a, **_kw: None
+    if not hasattr(fake_fair_dispatch_module, "store_rows_restricted_metrics"):
+        fake_fair_dispatch_module.store_rows_restricted_metrics = lambda *_a, **_kw: None
     if not hasattr(fake_fair_dispatch_module, "store_evaluation_transcribe_overwrite"):
         fake_fair_dispatch_module.store_evaluation_transcribe_overwrite = (
             lambda *_a, **_kw: None

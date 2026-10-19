@@ -1654,6 +1654,14 @@ def _resolve_telephony_integration(
     return integration
 
 
+_STUCK_PENDING_ERROR_MARKERS = (
+    "rejected credentials",
+    "telephony credentials rejected",
+    "auth failed",
+    "recording fetch failed after",
+)
+
+
 def _is_stuck_pending_import_row(row: CallImportRow) -> bool:
     """True when a pending row exhausted retries or hit credential errors."""
     from app.models.enums import CallImportRowStatus
@@ -1663,13 +1671,7 @@ def _is_stuck_pending_import_row(row: CallImportRow) -> bool:
     if (row.attempts or 0) > 0:
         return True
     message = (row.error_message or "").lower()
-    auth_indicators = (
-        "rejected credentials",
-        "telephony credentials rejected",
-        "auth failed",
-        "recording fetch failed after",
-    )
-    return any(indicator in message for indicator in auth_indicators)
+    return any(marker in message for marker in _STUCK_PENDING_ERROR_MARKERS)
 
 
 def _validate_telephony_credentials_live(
@@ -3876,50 +3878,29 @@ async def retry_failed_call_import_rows(
             call_import.telephony_integration_id = None
         db.flush()
 
-    candidate_rows = (
-        db.query(CallImportRow)
-        .filter(
-            CallImportRow.call_import_id == call_import.id,
-            CallImportRow.status.in_(
-                (CallImportRowStatus.FAILED, CallImportRowStatus.PENDING)
-            ),
-        )
-        .order_by(CallImportRow.row_index.asc())
-        .all()
+    from app.services.call_imports.bulk_ops import (
+        mark_import_rows_enqueue_failed,
+        requeue_failed_import_rows,
     )
-    retryable_rows = [
-        row
-        for row in candidate_rows
-        if row.status == CallImportRowStatus.FAILED
-        or _is_stuck_pending_import_row(row)
-    ]
-    if not retryable_rows:
+    from app.workers.concurrency.fair_import_dispatch import (
+        schedule_fair_import_dispatch,
+    )
+
+    reset_ids = requeue_failed_import_rows(db, call_import.id)
+    if not reset_ids:
         return CallImportRetryFailedRowsResponse(
             requeued=0,
             enqueue_failed=0,
             skipped=0,
         )
 
-    from app.workers.concurrency.fair_import_dispatch import (
-        schedule_fair_import_dispatch,
-    )
-
-    # Reset rows to pending BEFORE enqueue so the UI reflects "retry in
-    # progress" immediately even if the worker queue is backlogged.
-    for row in retryable_rows:
-        row.status = CallImportRowStatus.PENDING
-        row.error_message = None
-        row.celery_task_id = None
-        row.attempts = 0
-
-    db.flush()
     _recompute_call_import_counters(db, call_import)
     stamp_call_import_actor(call_import, principal)
     db.commit()
 
     try:
         schedule_fair_import_dispatch(max_workspace_turns=999)
-        requeued = len(retryable_rows)
+        requeued = len(reset_ids)
         enqueue_failed = 0
         skipped = 0
     except Exception as exc:  # noqa: BLE001
@@ -3928,17 +3909,12 @@ async def retry_failed_call_import_rows(
             call_import.id,
         )
         requeued = 0
-        enqueue_failed = len(retryable_rows)
-        skipped = 0
-        for row in retryable_rows:
-            db.refresh(row)
-            if row.status != CallImportRowStatus.PENDING:
-                skipped += 1
-                enqueue_failed -= 1
-                continue
-            row.status = CallImportRowStatus.FAILED
-            row.error_message = f"Failed to enqueue retry: {exc}"
-        db.flush()
+        enqueue_failed, skipped = mark_import_rows_enqueue_failed(
+            db,
+            call_import.id,
+            reset_ids,
+            f"Failed to enqueue retry: {exc}",
+        )
         _recompute_call_import_counters(db, call_import)
         db.commit()
 

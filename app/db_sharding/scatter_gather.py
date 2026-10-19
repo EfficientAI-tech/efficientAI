@@ -650,6 +650,33 @@ def dispatch_eval_row_options():
     )
 
 
+def retry_source_row_options():
+    """Retry columns plus text lengths. Does not load transcript bodies."""
+    return (
+        load_only(
+            CallImportRow.id,
+            CallImportRow.call_import_id,
+            CallImportRow.row_index,
+            CallImportRow.status,
+            CallImportRow.celery_task_id,
+            CallImportRow.recording_s3_key,
+            CallImportRow.recording_url,
+            CallImportRow.error_message,
+            CallImportRow.attempts,
+            CallImportRow.diarised_transcript_status,
+            CallImportRow.diarised_transcript_error,
+        ),
+        with_expression(
+            CallImportRow.transcript_char_length,
+            _text_char_length(CallImportRow.transcript),
+        ),
+        with_expression(
+            CallImportRow.diarised_transcript_char_length,
+            _text_char_length(CallImportRow.diarised_transcript),
+        ),
+    )
+
+
 def dispatch_source_row_options():
     """Columns the eval dispatcher reads or writes, plus text lengths."""
     return (

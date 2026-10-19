@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 from loguru import logger
 from fastapi import HTTPException
 from sqlalchemy.orm import Session, load_only
-from sqlalchemy import func
+from sqlalchemy import func, update
 
 from app.db_sharding.sessions import is_sharding_enabled
 
@@ -1449,6 +1449,165 @@ def _cancel_evaluation_rows_all_shards(
     return total
 
 
+def _session_is_postgresql(session: Session) -> bool:
+    bind = session.get_bind()
+    return bind is not None and getattr(getattr(bind, "dialect", None), "name", None) == "postgresql"
+
+
+def _expunge_mapped(session: Session, objects) -> None:
+    """Drop mapped rows from the identity map. Unmapped test doubles are ignored."""
+    for obj in objects:
+        state = getattr(obj, "_sa_instance_state", None)
+        if state is not None and state.session is session:
+            session.expunge(obj)
+
+
+def _expunge_retry_page(
+    session: Session,
+    page: List[Tuple[CallImportEvaluationRow, Optional[CallImportRow]]],
+) -> None:
+    """Drop the page from the identity map so a 400k retry does not keep every row."""
+    mapped = []
+    for eval_row, source_row in page:
+        mapped.append(eval_row)
+        if source_row is not None:
+            mapped.append(source_row)
+    _expunge_mapped(session, mapped)
+
+
+def _apply_source_retry_updates(
+    session: Session,
+    sources: List[CallImportRow],
+    *,
+    transcribe_overwrite: bool,
+) -> None:
+    """One UPDATE per distinct source change. Rows that need nothing are not written."""
+    from app.api.v1.routes.call_import_evaluations import source_retry_assignments
+
+    grouped: dict[tuple, List[UUID]] = {}
+    templates: dict[tuple, dict] = {}
+    for source_row in sources:
+        changes = source_retry_assignments(
+            source_row,
+            transcribe_overwrite=transcribe_overwrite,
+        )
+        if not changes:
+            continue
+        key = tuple(sorted(changes.items(), key=lambda item: item[0]))
+        grouped.setdefault(key, []).append(source_row.id)
+        templates[key] = changes
+    for key, row_ids in grouped.items():
+        session.execute(
+            update(CallImportRow)
+            .where(CallImportRow.id.in_(row_ids))
+            .values(**templates[key]),
+            execution_options={"synchronize_session": False},
+        )
+
+
+def _apply_metric_score_resets(
+    session: Session,
+    page: List[Tuple[CallImportEvaluationRow, Optional[CallImportRow]]],
+    metric_ids: List[UUID],
+) -> None:
+    """Write trimmed score documents. Postgres does this as one UPDATE per page."""
+    from sqlalchemy import bindparam, text
+    from sqlalchemy.dialects.postgresql import ARRAY, JSON, UUID as PG_UUID
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.api.v1.routes.call_import_evaluations import _metric_scores_for_retry
+
+    payloads = [
+        (
+            eval_row.id,
+            _metric_scores_for_retry(eval_row.metric_scores, metric_ids),
+        )
+        for eval_row, _source_row in page
+    ]
+    if _session_is_postgresql(session):
+        session.execute(
+            text(
+                """
+                UPDATE call_import_evaluation_rows AS r
+                SET status = 'pending',
+                    error_message = NULL,
+                    started_at = NULL,
+                    finished_at = NULL,
+                    celery_task_id = NULL,
+                    metric_scores = data.scores
+                FROM unnest(:ids, :scores) AS data(id, scores)
+                WHERE r.id = data.id
+                """
+            ).bindparams(
+                bindparam("ids", type_=ARRAY(PG_UUID(as_uuid=True))),
+                bindparam("scores", type_=ARRAY(JSON())),
+            ),
+            {
+                "ids": [row_id for row_id, _scores in payloads],
+                "scores": [scores for _row_id, scores in payloads],
+            },
+        )
+        return
+
+    by_id = {eval_row.id: eval_row for eval_row, _source_row in page}
+    for row_id, scores in payloads:
+        eval_row = by_id[row_id]
+        eval_row.status = "pending"
+        eval_row.error_message = None
+        eval_row.metric_scores = scores
+        eval_row.started_at = None
+        eval_row.finished_at = None
+        eval_row.celery_task_id = None
+        flag_modified(eval_row, "metric_scores")
+
+
+def _write_retry_page(
+    session: Session,
+    page: List[Tuple[CallImportEvaluationRow, Optional[CallImportRow]]],
+    *,
+    metric_ids: Optional[List[UUID]] = None,
+    transcribe_overwrite: bool = False,
+) -> None:
+    """Reset one page with bulk updates, then drop the objects from the session."""
+    from app.db_sharding.row_ops import shard_row_write_context
+    from app.workers.tasks.evaluate_call_import_row_audio import clear_eval_audio_chains
+
+    if not page:
+        return
+    chain_ids = [
+        str(eval_row.id)
+        for eval_row, _source_row in page
+        if (eval_row.celery_task_id or "").strip()
+    ]
+    sources = [source_row for _eval_row, source_row in page if source_row is not None]
+    with shard_row_write_context(session):
+        if metric_ids:
+            _apply_metric_score_resets(session, page, metric_ids)
+        else:
+            eval_ids = [eval_row.id for eval_row, _source_row in page]
+            session.execute(
+                update(CallImportEvaluationRow)
+                .where(CallImportEvaluationRow.id.in_(eval_ids))
+                .values(
+                    status="pending",
+                    error_message=None,
+                    metric_scores={},
+                    started_at=None,
+                    finished_at=None,
+                    celery_task_id=None,
+                ),
+                execution_options={"synchronize_session": False},
+            )
+        _apply_source_retry_updates(
+            session,
+            sources,
+            transcribe_overwrite=transcribe_overwrite,
+        )
+        clear_eval_audio_chains(chain_ids)
+        session.commit()
+    _expunge_retry_page(session, page)
+
+
 def _persist_evaluation_retry_targets(
     catalog_db: Session,
     evaluation: CallImportEvaluation,
@@ -1460,12 +1619,6 @@ def _persist_evaluation_retry_targets(
     """Apply retry resets on the correct DB session (per shard when sharding)."""
     from collections import defaultdict
 
-    from sqlalchemy.orm.attributes import flag_modified
-
-    from app.api.v1.routes.call_import_evaluations import (
-        _prepare_source_row_for_retry,
-        _reset_eval_row_for_retry,
-    )
     from app.db_sharding.pool_manager import db_pool_manager
     from app.db_sharding.row_ops import shard_id_for_row
 
@@ -1477,71 +1630,101 @@ def _persist_evaluation_retry_targets(
                 task_ids.append(task_id)
     _batch_revoke_celery_task_ids(task_ids, terminate=False)
 
-    if not is_sharding_enabled():
-        for eval_row, source_row in targets:
-            _prepare_source_row_for_retry(
-                source_row,
-                transcribe_overwrite=transcribe_overwrite,
-            )
-            _reset_eval_row_for_retry(
-                eval_row,
-                metric_ids=metric_ids,
-                skip_revoke=True,
-            )
-        catalog_db.commit()
+    if not targets:
         return
 
-    by_shard: dict[str, List[Tuple[UUID, UUID]]] = defaultdict(list)
+    if not is_sharding_enabled():
+        _write_retry_page(
+            catalog_db,
+            targets,
+            metric_ids=metric_ids,
+            transcribe_overwrite=transcribe_overwrite,
+        )
+        return
+
+    by_shard: dict[str, List[Tuple[CallImportEvaluationRow, CallImportRow]]] = defaultdict(list)
     for eval_row, source_row in targets:
         shard_id = shard_id_for_row(
             catalog_db,
             evaluation.call_import_id,
             int(source_row.row_index or 0),
         )
-        by_shard[shard_id].append((eval_row.id, source_row.id))
+        by_shard[shard_id].append((eval_row, source_row))
 
     router = db_pool_manager.router
     assert router is not None
-    for shard_id, id_pairs in by_shard.items():
+    for shard_id, page in by_shard.items():
         factory = db_pool_manager.shard_session_factory(shard_id)
         shard_db = factory()
         try:
-            eval_row_ids = [pair[0] for pair in id_pairs]
-            source_row_ids = [pair[1] for pair in id_pairs]
-            eval_by_id = {
-                row.id: row
-                for row in shard_db.query(CallImportEvaluationRow)
-                .filter(CallImportEvaluationRow.id.in_(eval_row_ids))
-                .all()
-            }
-            source_by_id = {
-                row.id: row
-                for row in shard_db.query(CallImportRow)
-                .filter(CallImportRow.id.in_(source_row_ids))
-                .all()
-            }
-            for eval_row_id, source_row_id in id_pairs:
-                bound_eval = eval_by_id.get(eval_row_id)
-                bound_source = source_by_id.get(source_row_id)
-                if bound_eval is None or bound_source is None:
-                    continue
-                _prepare_source_row_for_retry(
-                    bound_source,
-                    transcribe_overwrite=transcribe_overwrite,
-                )
-                _reset_eval_row_for_retry(
-                    bound_eval,
-                    metric_ids=metric_ids,
-                    skip_revoke=True,
-                )
-                if metric_ids:
-                    flag_modified(bound_eval, "metric_scores")
-            shard_db.commit()
+            _write_retry_page(
+                shard_db,
+                page,
+                metric_ids=metric_ids,
+                transcribe_overwrite=transcribe_overwrite,
+            )
         except Exception:
             shard_db.rollback()
             raise
         finally:
             shard_db.close()
+
+
+def _tally_retry_page(
+    evaluation: CallImportEvaluation,
+    page: List[Tuple[CallImportEvaluationRow, CallImportRow]],
+    *,
+    transcribe_overwrite: bool,
+) -> Tuple[int, int]:
+    from app.workers.concurrency.eval_dispatch import _needs_transcribe_for_eval
+
+    eval_only = 0
+    transcribe = 0
+    for _eval_row, source_row in page:
+        if _needs_transcribe_for_eval(
+            evaluation,
+            source_row,
+            transcribe_overwrite=transcribe_overwrite,
+        ):
+            transcribe += 1
+        else:
+            eval_only += 1
+    return eval_only, transcribe
+
+
+def _mark_eval_rows_failed(
+    catalog_db: Session,
+    evaluation: CallImportEvaluation,
+    groups: List[Tuple[Optional[str], List[UUID]]],
+    message: str,
+) -> None:
+    """Set only the ids this retry reset back to failed."""
+    from app.db_sharding.pool_manager import db_pool_manager
+    from app.db_sharding.row_ops import shard_row_write_context
+
+    for shard_id, row_ids in groups:
+        if not row_ids:
+            continue
+        owned = False
+        if shard_id is None:
+            session = catalog_db
+        else:
+            session = db_pool_manager.shard_session_factory(shard_id)()
+            owned = True
+        try:
+            with shard_row_write_context(session):
+                for start in range(0, len(row_ids), _BULK_INSERT_CHUNK):
+                    chunk = row_ids[start : start + _BULK_INSERT_CHUNK]
+                    session.execute(
+                        update(CallImportEvaluationRow)
+                        .where(CallImportEvaluationRow.id.in_(chunk))
+                        .values(status="failed", error_message=message),
+                        execution_options={"synchronize_session": False},
+                    )
+                session.commit()
+        finally:
+            if owned:
+                session.close()
 
 
 def execute_evaluation_retry(
@@ -1553,13 +1736,17 @@ def execute_evaluation_retry(
     include_completed: bool = False,
     transcribe_overwrite: bool = False,
 ) -> dict:
-    """Reset failed eval rows in chunks and start throttled dispatch."""
-    from app.api.v1.routes.call_import_evaluations import (
-        _enqueue_eval_rows_with_optional_transcribe,
-        _gather_retry_targets,
-        _prepare_source_row_for_retry,
-        _reset_eval_row_for_retry,
-        _rollup_evaluation_status,
+    """Page failed rows, bulk-reset them, then start throttled dispatch."""
+    from app.api.v1.routes.call_import_evaluations import _rollup_evaluation_status
+    from app.db_sharding.eval_rows import (
+        RETRY_ROW_PAGE_SIZE,
+        iter_evaluation_row_sessions,
+        load_retry_target_page,
+    )
+    from app.workers.concurrency.fair_dispatch import (
+        schedule_fair_dispatch,
+        store_evaluation_transcribe_overwrite,
+        store_rows_restricted_metrics,
     )
 
     evaluation = (
@@ -1574,64 +1761,140 @@ def execute_evaluation_retry(
         )
         return {"evaluation_id": str(evaluation_id), "requeued": 0}
 
-    try:
-        targets, skipped = _gather_retry_targets(
-            db,
+    include = include_completed or bool(metric_ids)
+    statuses = ["failed", "completed"] if include else ["failed"]
+    restricted = [str(mid) for mid in metric_ids] if metric_ids else None
+    eval_pk = evaluation.id
+    import_id = evaluation.call_import_id
+    eval_only = 0
+    transcribe = 0
+    scheduled_early = False
+    seen: set[UUID] = set()
+    orphans: List[UUID] = []
+    shard_reset: List[UUID] = []
+    reset_groups: List[Tuple[Optional[str], List[UUID]]] = []
+
+    def _reset_loaded_page(session: Session, raw) -> str:
+        """Reset one loaded page. Returns stop, continue, or empty."""
+        nonlocal eval_only, transcribe, scheduled_early
+        if not raw:
+            return "empty"
+        fresh = []
+        repeated = True
+        for eval_row, source_row in raw:
+            if eval_row.id in seen:
+                continue
+            repeated = False
+            seen.add(eval_row.id)
+            if source_row is None:
+                orphans.append(eval_row.id)
+                continue
+            fresh.append((eval_row, source_row))
+        if repeated:
+            logger.warning(
+                "Retry page for evaluation {} made no progress",
+                evaluation_id,
+            )
+            return "stop"
+        if not fresh:
+            if len(raw) < RETRY_ROW_PAGE_SIZE:
+                return "stop"
+            return "continue"
+        page_ids = [eval_row.id for eval_row, _source_row in fresh]
+        if restricted:
+            stored = store_rows_restricted_metrics(page_ids, restricted)
+            if stored is False:
+                raise RuntimeError(
+                    "Metric-subset retry did not store row markers; "
+                    "leaving the page unchanged"
+                )
+        page_eval_only, page_transcribe = _tally_retry_page(
             evaluation,
-            eval_row_ids,
-            include_completed=include_completed,
+            fresh,
+            transcribe_overwrite=transcribe_overwrite,
         )
-        if not targets:
+        _write_retry_page(
+            session,
+            fresh,
+            metric_ids=metric_ids,
+            transcribe_overwrite=transcribe_overwrite,
+        )
+        eval_only += page_eval_only
+        transcribe += page_transcribe
+        shard_reset.extend(page_ids)
+        if not scheduled_early:
+            schedule_fair_dispatch(max_workspace_turns=999)
+            scheduled_early = True
+        if len(raw) < RETRY_ROW_PAGE_SIZE:
+            return "stop"
+        return "continue"
+
+    def _drain_session(session: Session, shard_id: Optional[str]) -> int:
+        nonlocal seen, orphans, shard_reset
+        seen = set()
+        orphans = []
+        shard_reset = []
+        if eval_row_ids:
+            for status in statuses:
+                for start in range(0, len(eval_row_ids), RETRY_ROW_PAGE_SIZE):
+                    chunk = eval_row_ids[start : start + RETRY_ROW_PAGE_SIZE]
+                    raw = load_retry_target_page(
+                        session,
+                        eval_pk,
+                        status=status,
+                        row_ids=chunk,
+                        include_metric_scores=bool(metric_ids),
+                        ordered=False,
+                        limit=len(chunk),
+                    )
+                    _reset_loaded_page(session, raw)
+        else:
+            for status in statuses:
+                while True:
+                    raw = load_retry_target_page(
+                        session,
+                        eval_pk,
+                        status=status,
+                        exclude_ids=orphans or None,
+                        include_metric_scores=bool(metric_ids),
+                        ordered=False,
+                        limit=RETRY_ROW_PAGE_SIZE,
+                    )
+                    action = _reset_loaded_page(session, raw)
+                    if action in {"empty", "stop"}:
+                        break
+        if shard_reset:
+            reset_groups.append((shard_id, shard_reset))
+        return len(shard_reset)
+
+    try:
+        saw_rows = 0
+        for session, shard_id in iter_evaluation_row_sessions(db, import_id):
+            saw_rows += _drain_session(session, shard_id)
+        if is_sharding_enabled() and saw_rows == 0:
+            _drain_session(db, None)
+
+        requeued = eval_only + transcribe
+        if requeued == 0:
             return {
                 "evaluation_id": str(evaluation_id),
                 "requeued": 0,
-                "skipped": len(skipped),
+                "skipped": 0,
             }
 
-        for start in range(0, len(targets), _BULK_INSERT_CHUNK):
-            chunk = targets[start : start + _BULK_INSERT_CHUNK]
-            _persist_evaluation_retry_targets(
-                db,
-                evaluation,
-                chunk,
-                metric_ids=metric_ids,
-                transcribe_overwrite=transcribe_overwrite,
-            )
-
         try:
-            evaluate_only, transcribe_chain = (
-                _enqueue_eval_rows_with_optional_transcribe(
-                    db,
-                    evaluation,
-                    targets,
-                    transcribe_overwrite=transcribe_overwrite,
-                    restricted_metric_ids=metric_ids,
-                )
+            store_evaluation_transcribe_overwrite(
+                evaluation.id,
+                overwrite=transcribe_overwrite,
             )
+            schedule_fair_dispatch(max_workspace_turns=999)
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "Failed to re-enqueue evaluation {} after retry reset",
                 evaluation_id,
             )
             err_msg = f"Failed to re-enqueue retry: {exc}"
-            target_ids = {eval_row.id for eval_row, _ in targets}
-            if is_sharding_enabled():
-                from app.db_sharding.eval_rows import foreach_evaluation_row_mutating
-
-                def _mark_failed(row: CallImportEvaluationRow) -> bool:
-                    if row.id not in target_ids:
-                        return False
-                    row.status = "failed"
-                    row.error_message = err_msg
-                    return True
-
-                foreach_evaluation_row_mutating(db, evaluation_id, _mark_failed)
-            else:
-                for eval_row, _ in targets:
-                    if eval_row.id in target_ids:
-                        eval_row.status = "failed"
-                        eval_row.error_message = err_msg
-                db.commit()
+            _mark_eval_rows_failed(db, evaluation, reset_groups, err_msg)
             _rollup_evaluation_status(evaluation, db)
             db.commit()
             return {
@@ -1646,9 +1909,9 @@ def execute_evaluation_retry(
         db.commit()
         return {
             "evaluation_id": str(evaluation_id),
-            "requeued": evaluate_only + transcribe_chain,
-            "transcribe_requeued": transcribe_chain,
-            "skipped": len(skipped),
+            "requeued": requeued,
+            "transcribe_requeued": transcribe,
+            "skipped": 0,
         }
     finally:
         from app.services.call_imports.evaluation_bulk_op import (
@@ -1656,3 +1919,169 @@ def execute_evaluation_retry(
         )
 
         clear_evaluation_bulk_operation(evaluation_id)
+
+
+_IMPORT_RETRY_COLUMNS = (
+    CallImportRow.id,
+    CallImportRow.status,
+    CallImportRow.recording_s3_key,
+    CallImportRow.celery_task_id,
+    CallImportRow.attempts,
+    CallImportRow.error_message,
+)
+
+
+def _stuck_pending_import_clause():
+    from sqlalchemy import or_
+
+    from app.api.v1.routes.call_imports import _STUCK_PENDING_ERROR_MARKERS
+
+    return or_(
+        CallImportRow.attempts > 0,
+        *[
+            CallImportRow.error_message.ilike(f"%{marker}%")
+            for marker in _STUCK_PENDING_ERROR_MARKERS
+        ],
+    )
+
+
+def import_failed_retry_query(session: Session, call_import_id: UUID):
+    """Failed import rows only. Healthy pending rows are not in this scan."""
+    return (
+        session.query(CallImportRow)
+        .options(load_only(*_IMPORT_RETRY_COLUMNS))
+        .filter(
+            CallImportRow.call_import_id == call_import_id,
+            CallImportRow.status == CallImportRowStatus.FAILED,
+        )
+    )
+
+
+def import_stuck_pending_retry_query(session: Session, call_import_id: UUID):
+    """Pending rows that exhausted retries or hit a credential error."""
+    return (
+        session.query(CallImportRow)
+        .options(load_only(*_IMPORT_RETRY_COLUMNS))
+        .filter(
+            CallImportRow.call_import_id == call_import_id,
+            CallImportRow.status == CallImportRowStatus.PENDING,
+            _stuck_pending_import_clause(),
+        )
+    )
+
+
+def _reset_import_retry_page(session: Session, rows: List[CallImportRow]) -> None:
+    from app.db_sharding.row_ops import shard_row_write_context
+
+    if not rows:
+        return
+    row_ids = [row.id for row in rows]
+    with shard_row_write_context(session):
+        session.execute(
+            update(CallImportRow)
+            .where(CallImportRow.id.in_(row_ids))
+            .values(
+                status=CallImportRowStatus.PENDING,
+                error_message=None,
+                celery_task_id=None,
+                attempts=0,
+            ),
+            execution_options={"synchronize_session": False},
+        )
+        session.commit()
+    _expunge_mapped(session, rows)
+
+
+def _drain_import_retry_session(session: Session, call_import_id: UUID) -> List[UUID]:
+    from app.db_sharding.eval_rows import RETRY_ROW_PAGE_SIZE
+
+    reset_ids: List[UUID] = []
+    seen: set[UUID] = set()
+    queries = (
+        import_failed_retry_query,
+        import_stuck_pending_retry_query,
+    )
+    for build_query in queries:
+        while True:
+            page = build_query(session, call_import_id).limit(RETRY_ROW_PAGE_SIZE).all()
+            if not page:
+                break
+            fresh = [row for row in page if row.id not in seen]
+            if not fresh:
+                break
+            fresh_ids = [row.id for row in fresh]
+            seen.update(fresh_ids)
+            _reset_import_retry_page(session, fresh)
+            reset_ids.extend(fresh_ids)
+            if len(page) < RETRY_ROW_PAGE_SIZE:
+                break
+    return reset_ids
+
+
+def requeue_failed_import_rows(
+    catalog_db: Session,
+    call_import_id: UUID,
+) -> List[UUID]:
+    """Page failed and stuck-pending import rows and reset each page in one UPDATE."""
+    from app.db_sharding.eval_rows import iter_evaluation_row_sessions
+
+    reset_ids: List[UUID] = []
+    for session, _shard_id in iter_evaluation_row_sessions(catalog_db, call_import_id):
+        reset_ids.extend(_drain_import_retry_session(session, call_import_id))
+    if is_sharding_enabled() and not reset_ids:
+        reset_ids.extend(_drain_import_retry_session(catalog_db, call_import_id))
+    return reset_ids
+
+
+def mark_import_rows_enqueue_failed(
+    catalog_db: Session,
+    call_import_id: UUID,
+    row_ids: List[UUID],
+    message: str,
+) -> Tuple[int, int]:
+    """Return (enqueue_failed, skipped) after marking still-pending ids failed."""
+    from app.db_sharding.eval_rows import iter_evaluation_row_sessions
+    from app.db_sharding.row_ops import shard_row_write_context
+
+    if not row_ids:
+        return 0, 0
+    from app.db_sharding.eval_rows import RETRY_ROW_PAGE_SIZE
+
+    remaining = list(dict.fromkeys(row_ids))
+    enqueue_failed = 0
+    skipped = 0
+    for session, _shard_id in iter_evaluation_row_sessions(catalog_db, call_import_id):
+        if not remaining:
+            break
+        still_remaining: List[UUID] = []
+        for start in range(0, len(remaining), RETRY_ROW_PAGE_SIZE):
+            chunk = remaining[start : start + RETRY_ROW_PAGE_SIZE]
+            rows = (
+                session.query(CallImportRow.id, CallImportRow.status)
+                .filter(CallImportRow.id.in_(chunk))
+                .all()
+            )
+            found = {row.id for row in rows}
+            still_remaining.extend(row_id for row_id in chunk if row_id not in found)
+            pending_ids = [
+                row.id
+                for row in rows
+                if row.status == CallImportRowStatus.PENDING
+            ]
+            skipped += len(rows) - len(pending_ids)
+            if not pending_ids:
+                continue
+            with shard_row_write_context(session):
+                session.execute(
+                    update(CallImportRow)
+                    .where(CallImportRow.id.in_(pending_ids))
+                    .values(
+                        status=CallImportRowStatus.FAILED,
+                        error_message=message,
+                    ),
+                    execution_options={"synchronize_session": False},
+                )
+                session.commit()
+            enqueue_failed += len(pending_ids)
+        remaining = still_remaining
+    return enqueue_failed, skipped

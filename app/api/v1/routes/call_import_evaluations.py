@@ -9079,47 +9079,85 @@ async def delete_call_import_evaluation_row(
 # like "just fix it" instead of "fail again immediately".
 
 
+def source_retry_assignments(
+    source_row: CallImportRow,
+    *,
+    transcribe_overwrite: bool,
+) -> dict:
+    """Columns a retry should write. Empty when the source row is already reusable."""
+    from app.api.v1.routes.call_imports import _is_stuck_pending_import_row
+    from app.db_sharding.scatter_gather import row_text_present
+
+    changes: dict = {}
+    if (getattr(source_row, "celery_task_id", None) or "").strip():
+        changes["celery_task_id"] = None
+
+    no_audio = not (getattr(source_row, "recording_s3_key", None) or "").strip()
+    status = getattr(source_row, "status", None)
+    requeue = no_audio and status in (
+        CallImportRowStatus.FAILED,
+        CallImportRowStatus.PROCESSING,
+    )
+    if no_audio and status == CallImportRowStatus.PENDING:
+        requeue = _is_stuck_pending_import_row(source_row)
+    if requeue:
+        if status != CallImportRowStatus.PENDING:
+            changes["status"] = CallImportRowStatus.PENDING
+        if getattr(source_row, "error_message", None) is not None:
+            changes["error_message"] = None
+        if (getattr(source_row, "attempts", 0) or 0) != 0:
+            changes["attempts"] = 0
+
+    has_dia = row_text_present(
+        source_row, "diarised_transcript", "diarised_transcript_char_length"
+    )
+    if transcribe_overwrite and has_dia:
+        changes["diarised_transcript"] = None
+        has_dia = False
+
+    dia_status = (
+        getattr(source_row, "diarised_transcript_status", None) or ""
+    ).strip().lower()
+    if has_dia and not transcribe_overwrite:
+        if dia_status != "completed":
+            changes["diarised_transcript_status"] = "completed"
+        if getattr(source_row, "diarised_transcript_error", None) is not None:
+            changes["diarised_transcript_error"] = None
+        return changes
+
+    if dia_status in {"failed", "pending", "running", "idle"}:
+        if dia_status != "idle":
+            changes["diarised_transcript_status"] = "idle"
+        if getattr(source_row, "diarised_transcript_error", None) is not None:
+            changes["diarised_transcript_error"] = None
+    return changes
+
+
 def _prepare_source_row_for_retry(
     source_row: CallImportRow,
     *,
     transcribe_overwrite: bool,
 ) -> None:
     """Clear stale diarisation markers so retry dispatch can re-run the pipeline."""
-    source_row.celery_task_id = None
+    for column, value in source_retry_assignments(
+        source_row,
+        transcribe_overwrite=transcribe_overwrite,
+    ).items():
+        setattr(source_row, column, value)
 
-    # Re-fetch recordings when a prior import failed or stalled without S3 audio.
-    # Mirrors retry_failed_call_import_rows so eval retry can re-enqueue imports.
-    from app.api.v1.routes.call_imports import _is_stuck_pending_import_row
 
-    if (
-        source_row.status
-        in (
-            CallImportRowStatus.FAILED,
-            CallImportRowStatus.PROCESSING,
-        )
-        and not (source_row.recording_s3_key or "").strip()
-    ) or (
-        _is_stuck_pending_import_row(source_row)
-        and not (source_row.recording_s3_key or "").strip()
-    ):
-        source_row.status = CallImportRowStatus.PENDING
-        source_row.error_message = None
-        source_row.attempts = 0
-
-    if transcribe_overwrite and (source_row.diarised_transcript or "").strip():
-        source_row.diarised_transcript = None
-
-    has_dia = bool((source_row.diarised_transcript or "").strip())
-    dia_status = (source_row.diarised_transcript_status or "").strip().lower()
-
-    if has_dia and not transcribe_overwrite:
-        source_row.diarised_transcript_status = "completed"
-        source_row.diarised_transcript_error = None
-        return
-
-    if dia_status in {"failed", "pending", "running", "idle"}:
-        source_row.diarised_transcript_status = "idle"
-        source_row.diarised_transcript_error = None
+def _metric_scores_for_retry(existing, metric_ids: Optional[List[UUID]]) -> dict:
+    """Full retry clears every score. A metric subset removes only those keys."""
+    if not metric_ids:
+        return {}
+    scores = existing if isinstance(existing, dict) else {}
+    target_keys = {str(mid).lower() for mid in metric_ids}
+    return {
+        key: value
+        for key, value in scores.items()
+        if _is_metric_scores_meta_key(str(key))
+        or str(key).lower() not in target_keys
+    }
 
 
 def _reset_eval_row_for_retry(
@@ -9127,6 +9165,7 @@ def _reset_eval_row_for_retry(
     *,
     metric_ids: Optional[List[UUID]] = None,
     skip_revoke: bool = False,
+    skip_chain: bool = False,
 ) -> None:
     """Wipe per-row state so the worker can re-run it cleanly.
 
@@ -9154,26 +9193,16 @@ def _reset_eval_row_for_retry(
             pass
     eval_row.status = "pending"
     eval_row.error_message = None
-    if metric_ids:
-        # Strip ONLY the targeted metric keys. Both string and UUID
-        # forms can appear in ``metric_scores`` depending on which
-        # code path wrote the dict, so we normalise to lower-case
-        # strings for the comparison.
-        existing = (
-            eval_row.metric_scores if isinstance(eval_row.metric_scores, dict) else {}
-        )
-        target_keys = {str(mid).lower() for mid in metric_ids}
-        eval_row.metric_scores = {
-            key: value
-            for key, value in existing.items()
-            if _is_metric_scores_meta_key(str(key))
-            or str(key).lower() not in target_keys
-        }
-    else:
-        eval_row.metric_scores = {}
+    eval_row.metric_scores = _metric_scores_for_retry(
+        eval_row.metric_scores,
+        metric_ids,
+    )
     eval_row.started_at = None
     eval_row.finished_at = None
+    task_id = (eval_row.celery_task_id or "").strip()
     eval_row.celery_task_id = None
+    if skip_chain or not task_id:
+        return
     from app.workers.tasks.evaluate_call_import_row_audio import (
         clear_eval_audio_chain,
     )
@@ -9523,78 +9552,22 @@ def _gather_retry_targets(
             include_completed=include_completed,
         )
 
-    eval_rows_query = db.query(CallImportEvaluationRow).filter(
-        CallImportEvaluationRow.evaluation_id == evaluation.id
+    from app.db_sharding.eval_rows import _collect_retry_targets_on_session
+
+    targets, skipped, found = _collect_retry_targets_on_session(
+        db,
+        evaluation,
+        requested_ids,
+        include_completed=include_completed,
     )
-
-    targets: List[Tuple[CallImportEvaluationRow, CallImportRow]] = []
-    skipped: List[CallImportEvaluationRetrySkippedItem] = []
-
-    if requested_ids is None:
-        if include_completed:
-            # "Retry everything" path used by the metric-subset re-run
-            # UI. Still skip in-flight rows below so we don't trample
-            # work the worker is actively doing.
-            candidate_rows = eval_rows_query.filter(
-                CallImportEvaluationRow.status.in_(["failed", "completed"])
-            ).all()
-        else:
-            candidate_rows = eval_rows_query.filter(
-                CallImportEvaluationRow.status == "failed"
-            ).all()
-    else:
-        requested_set = set(requested_ids)
-        candidate_rows = eval_rows_query.filter(
-            CallImportEvaluationRow.id.in_(requested_set)
-        ).all()
-        found_ids = {row.id for row in candidate_rows}
-        for missing in requested_set - found_ids:
+    if requested_ids is not None:
+        for missing in set(requested_ids) - found:
             skipped.append(
                 CallImportEvaluationRetrySkippedItem(
                     eval_row_id=missing,
                     reason="unknown",
                 )
             )
-
-    if not candidate_rows:
-        return targets, skipped
-
-    source_row_ids = [row.call_import_row_id for row in candidate_rows]
-    source_rows = (
-        db.query(CallImportRow)
-        .filter(CallImportRow.id.in_(source_row_ids))
-        .all()
-    )
-    source_by_id = {row.id: row for row in source_rows}
-
-    for eval_row in candidate_rows:
-        if eval_row.status in {"pending", "running"}:
-            skipped.append(
-                CallImportEvaluationRetrySkippedItem(
-                    eval_row_id=eval_row.id,
-                    reason="in_progress",
-                )
-            )
-            continue
-        if eval_row.status == "completed" and not include_completed:
-            skipped.append(
-                CallImportEvaluationRetrySkippedItem(
-                    eval_row_id=eval_row.id,
-                    reason="completed",
-                )
-            )
-            continue
-        source_row = source_by_id.get(eval_row.call_import_row_id)
-        if source_row is None:
-            skipped.append(
-                CallImportEvaluationRetrySkippedItem(
-                    eval_row_id=eval_row.id,
-                    reason="source_row_missing",
-                )
-            )
-            continue
-        targets.append((eval_row, source_row))
-
     return targets, skipped
 
 

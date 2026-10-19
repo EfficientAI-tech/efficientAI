@@ -115,6 +115,7 @@ def stub_workers(monkeypatch):
     fake_fair_module = types.ModuleType("app.workers.concurrency.fair_dispatch")
     fake_fair_module.schedule_fair_dispatch = lambda *_a, **_kw: None
     fake_fair_module.store_row_restricted_metrics = lambda *_a, **_kw: None
+    fake_fair_module.store_rows_restricted_metrics = lambda *_a, **_kw: None
     fake_fair_module.store_evaluation_transcribe_overwrite = lambda *_a, **_kw: None
     fake_fair_module.read_fair_dispatch_state = lambda: {
         "global_rr_cursor": 0,
@@ -1203,6 +1204,7 @@ def test_retry_failed_rows_flips_partial_run_back_to_running(
     parent.completed_rows = 1
     parent.failed_rows = 1
     db_session.commit()
+    failed_row_id = eval_rows[1].id
 
     response = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations/{eval_uuid}/retry",
@@ -1213,10 +1215,169 @@ def test_retry_failed_rows_flips_partial_run_back_to_running(
     assert body["requeued"] == 1
 
     db_session.refresh(parent)
-    db_session.refresh(eval_rows[1])
+    retried = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.id == failed_row_id)
+        .one()
+    )
     assert parent.status == "running"
-    assert eval_rows[1].status == "pending"
-    assert eval_rows[1].error_message is None
+    assert retried.status == "pending"
+    assert retried.error_message is None
+
+
+def test_retry_updates_only_failed_rows_and_keeps_completed_transcripts(
+    authenticated_client, db_session, org_id, seed_org
+):
+    metric = _make_metric(db_session, org_id)
+    call_import, rows = _make_call_import(db_session, org_id, rows=2)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    secret = "RETRY_TRANSCRIPT_BODY_" + ("q" * 400)
+    rows[0].transcript = secret
+    rows[0].diarised_transcript = secret
+    rows[1].transcript = "failed row transcript"
+    rows[1].diarised_transcript = None
+
+    eval_uuid = UUID(created["id"])
+    eval_rows = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_uuid)
+        .order_by(CallImportEvaluationRow.created_at.asc())
+        .all()
+    )
+    kept_scores = {str(metric.id): {"value": 4, "type": "rating"}}
+    eval_rows[0].status = "completed"
+    eval_rows[0].metric_scores = kept_scores
+    eval_rows[1].status = "failed"
+    eval_rows[1].error_message = "LLM timeout"
+    eval_rows[1].metric_scores = {str(metric.id): {"value": 1, "type": "rating"}}
+    db_session.commit()
+    completed_id = eval_rows[0].id
+    failed_id = eval_rows[1].id
+    kept_source_id = rows[0].id
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{eval_uuid}/retry",
+        json={},
+    )
+    assert response.status_code == 202, response.text
+    assert response.json()["requeued"] == 1
+
+    completed = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.id == completed_id)
+        .one()
+    )
+    failed = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.id == failed_id)
+        .one()
+    )
+    kept_source = (
+        db_session.query(CallImportRow).filter(CallImportRow.id == kept_source_id).one()
+    )
+    assert completed.status == "completed"
+    assert completed.metric_scores[str(metric.id)]["value"] == 4
+    assert kept_source.transcript == secret
+    assert kept_source.diarised_transcript == secret
+    assert failed.status == "pending"
+    assert failed.metric_scores == {}
+
+
+def test_metric_subset_retry_preserves_other_scores(
+    authenticated_client, db_session, org_id, seed_org
+):
+    metric_a = _make_metric(db_session, org_id, name="Politeness")
+    metric_b = _make_metric(db_session, org_id, name="Empathy")
+    call_import, rows = _make_call_import(db_session, org_id, rows=2)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric_a.id, metric_b.id]),
+    ).json()
+
+    secret = "METRIC_SUBSET_TRANSCRIPT_" + ("z" * 200)
+    rows[0].transcript = secret
+    rows[0].diarised_transcript = secret
+
+    eval_uuid = UUID(created["id"])
+    eval_rows = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_uuid)
+        .order_by(CallImportEvaluationRow.created_at.asc())
+        .all()
+    )
+    scores = {
+        str(metric_a.id): {"value": 1, "type": "rating"},
+        str(metric_b.id): {"value": 2, "type": "rating"},
+    }
+    eval_rows[0].status = "completed"
+    eval_rows[0].metric_scores = dict(scores)
+    eval_rows[1].status = "failed"
+    eval_rows[1].metric_scores = dict(scores)
+    db_session.commit()
+    kept_source_id = rows[0].id
+    retried_ids = (eval_rows[0].id, eval_rows[1].id)
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{eval_uuid}/retry",
+        json={"metric_ids": [str(metric_a.id)]},
+    )
+    assert response.status_code == 202, response.text
+    assert response.json()["requeued"] == 2
+
+    kept_source = (
+        db_session.query(CallImportRow).filter(CallImportRow.id == kept_source_id).one()
+    )
+    assert kept_source.transcript == secret
+    assert kept_source.diarised_transcript == secret
+    for eval_row_id in retried_ids:
+        eval_row = (
+            db_session.query(CallImportEvaluationRow)
+            .filter(CallImportEvaluationRow.id == eval_row_id)
+            .one()
+        )
+        assert eval_row.status == "pending"
+        assert str(metric_a.id) not in (eval_row.metric_scores or {})
+        assert eval_row.metric_scores[str(metric_b.id)]["value"] == 2
+
+
+def test_retry_drains_failed_rows_one_page_at_a_time(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    monkeypatch.setattr("app.db_sharding.eval_rows.RETRY_ROW_PAGE_SIZE", 1)
+    metric = _make_metric(db_session, org_id)
+    call_import, _rows = _make_call_import(db_session, org_id, rows=2)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+    eval_uuid = UUID(created["id"])
+    eval_rows = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_uuid)
+        .all()
+    )
+    for eval_row in eval_rows:
+        eval_row.status = "failed"
+        eval_row.metric_scores = {str(metric.id): {"value": 1}}
+    db_session.commit()
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{eval_uuid}/retry",
+        json={},
+    )
+    assert response.status_code == 202, response.text
+    assert response.json()["requeued"] == 2
+    refreshed = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_uuid)
+        .all()
+    )
+    assert {row.status for row in refreshed} == {"pending"}
+    assert all(row.metric_scores == {} for row in refreshed)
 
 
 def test_retry_clears_failed_diarisation_to_idle_not_null(
@@ -1245,6 +1406,7 @@ def test_retry_clears_failed_diarisation_to_idle_not_null(
     eval_row.status = "failed"
     eval_row.error_message = "Diarisation failed"
     db_session.commit()
+    source_row_id = source_row.id
 
     response = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations/{eval_uuid}/retry",
@@ -1252,7 +1414,9 @@ def test_retry_clears_failed_diarisation_to_idle_not_null(
     )
     assert response.status_code == 202, response.text
 
-    db_session.refresh(source_row)
+    source_row = (
+        db_session.query(CallImportRow).filter(CallImportRow.id == source_row_id).one()
+    )
     assert source_row.diarised_transcript_status == "idle"
     assert source_row.diarised_transcript_error is None
 
@@ -1281,6 +1445,7 @@ def test_retry_marks_existing_diarised_transcript_completed(
     )
     eval_row.status = "failed"
     db_session.commit()
+    source_row_id = source_row.id
 
     response = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations/{eval_uuid}/retry",
@@ -1288,7 +1453,9 @@ def test_retry_marks_existing_diarised_transcript_completed(
     )
     assert response.status_code == 202, response.text
 
-    db_session.refresh(source_row)
+    source_row = (
+        db_session.query(CallImportRow).filter(CallImportRow.id == source_row_id).one()
+    )
     assert source_row.diarised_transcript_status == "completed"
     assert "hello" in (source_row.diarised_transcript or "")
 

@@ -51,18 +51,31 @@ def test_find_evaluation_row_in_run_two_shard_pairs():
 
 def test_gather_retry_targets_failed_rows_from_two_shards():
     catalog_db = MagicMock()
-    evaluation = MagicMock(id=uuid4())
+    evaluation = MagicMock(id=uuid4(), call_import_id=uuid4())
+    shard_a = MagicMock(name="shard-a")
+    shard_b = MagicMock(name="shard-b")
     er1 = MagicMock(id=uuid4(), status="failed")
     er2 = MagicMock(id=uuid4(), status="failed")
-    er3 = MagicMock(id=uuid4(), status="running")
+    seen = []
+
+    def _sessions(_catalog, _import_id):
+        yield shard_a, "shard-a"
+        yield shard_b, "shard-b"
+
+    def _page(session, _evaluation_id, **kwargs):
+        seen.append(kwargs)
+        if session is shard_a and kwargs.get("after_id") is None:
+            return [(er1, MagicMock())]
+        if session is shard_b and kwargs.get("after_id") is None:
+            return [(er2, MagicMock())]
+        return []
 
     with patch(
-        "app.db_sharding.eval_rows.load_evaluation_row_pairs",
-        return_value=[
-            (er1, MagicMock()),
-            (er2, MagicMock()),
-            (er3, MagicMock()),
-        ],
+        "app.db_sharding.eval_rows.iter_evaluation_row_sessions",
+        _sessions,
+    ), patch(
+        "app.db_sharding.eval_rows.load_retry_target_page",
+        _page,
     ):
         targets, skipped = gather_retry_targets_sharded(
             catalog_db,
@@ -74,3 +87,7 @@ def test_gather_retry_targets_failed_rows_from_two_shards():
     assert len(targets) == 2
     assert {t[0].id for t in targets} == {er1.id, er2.id}
     assert skipped == []
+    assert seen
+    assert all(call["status"] == "failed" for call in seen)
+    assert all(call["include_metric_scores"] is False for call in seen)
+    assert all(call["ordered"] is True for call in seen)

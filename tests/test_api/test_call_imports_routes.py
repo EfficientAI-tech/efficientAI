@@ -1313,6 +1313,7 @@ def test_retry_failed_requeues_stuck_pending_rows(
     )
     db_session.add(row)
     db_session.commit()
+    row_id = row.id
 
     scheduled = {"called": False}
 
@@ -1330,10 +1331,80 @@ def test_retry_failed_requeues_stuck_pending_rows(
     assert response.status_code == 202, response.text
     assert response.json()["requeued"] == 1
     assert scheduled["called"] is True
-    db_session.refresh(row)
+    row = db_session.query(CallImportRow).filter(CallImportRow.id == row_id).one()
     assert row.status == CallImportRowStatus.PENDING
     assert row.error_message is None
     assert row.attempts == 0
+
+
+def test_retry_failed_leaves_healthy_pending_rows_alone(
+    authenticated_client, db_session, org_id, seed_org
+):
+    integration = _seed_integration(db_session, org_id)
+    workspace_id = _default_workspace_id(db_session, org_id)
+    call_import = CallImport(
+        id=uuid4(),
+        organization_id=org_id,
+        workspace_id=workspace_id,
+        provider=integration.provider,
+        telephony_integration_id=integration.id,
+        original_filename="batch.csv",
+        source_format="csv",
+        total_rows=2,
+        completed_rows=0,
+        failed_rows=1,
+        status=CallImportStatus.PROCESSING,
+    )
+    db_session.add(call_import)
+    db_session.flush()
+    failed = CallImportRow(
+        id=uuid4(),
+        call_import_id=call_import.id,
+        organization_id=org_id,
+        workspace_id=workspace_id,
+        row_index=0,
+        conversation_id="call-failed",
+        recording_url="https://example.com/failed.mp3",
+        status=CallImportRowStatus.FAILED,
+        attempts=3,
+        error_message="download failed",
+    )
+    healthy = CallImportRow(
+        id=uuid4(),
+        call_import_id=call_import.id,
+        organization_id=org_id,
+        workspace_id=workspace_id,
+        row_index=1,
+        conversation_id="call-waiting",
+        recording_url="https://example.com/waiting.mp3",
+        status=CallImportRowStatus.PENDING,
+        attempts=0,
+        error_message=None,
+    )
+    db_session.add(failed)
+    db_session.add(healthy)
+    db_session.commit()
+    failed_id = failed.id
+    healthy_id = healthy.id
+
+    with patch(
+        "app.workers.concurrency.fair_import_dispatch.schedule_fair_import_dispatch",
+        lambda *_args, **_kwargs: None,
+    ):
+        response = authenticated_client.post(
+            f"/api/v1/call-imports/{call_import.id}/retry-failed",
+        )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["requeued"] == 1
+    failed = db_session.query(CallImportRow).filter(CallImportRow.id == failed_id).one()
+    healthy = db_session.query(CallImportRow).filter(CallImportRow.id == healthy_id).one()
+    assert failed.status == CallImportRowStatus.PENDING
+    assert failed.attempts == 0
+    assert failed.error_message is None
+    assert healthy.status == CallImportRowStatus.PENDING
+    assert healthy.attempts == 0
+    assert healthy.error_message is None
 
 
 def test_audio_upload_rejects_invalid_inputs(
