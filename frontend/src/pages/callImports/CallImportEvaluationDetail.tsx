@@ -2955,7 +2955,7 @@ export default function CallImportEvaluationDetail() {
                 </button>
               </div>
             )}
-            {exportParts.length > 1 && (
+            {exportParts.length > 1 && !downloadMenuOpen && (
               <div className="absolute right-0 z-20 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
                 {exportParts.map((part) => (
                   <a
