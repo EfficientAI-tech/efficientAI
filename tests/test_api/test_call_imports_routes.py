@@ -1407,6 +1407,91 @@ def test_retry_failed_leaves_healthy_pending_rows_alone(
     assert healthy.error_message is None
 
 
+def test_retry_failed_commits_replacement_credentials_before_requeue(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    old = _seed_integration(db_session, org_id, provider="twilio")
+    new = _seed_integration(db_session, org_id, provider="twilio")
+    workspace_id = _default_workspace_id(db_session, org_id)
+    call_import = CallImport(
+        id=uuid4(),
+        organization_id=org_id,
+        workspace_id=workspace_id,
+        provider=old.provider,
+        telephony_integration_id=old.id,
+        original_filename="batch.csv",
+        source_format="csv",
+        total_rows=1,
+        completed_rows=0,
+        failed_rows=1,
+        status=CallImportStatus.FAILED,
+    )
+    db_session.add(call_import)
+    db_session.flush()
+    row = CallImportRow(
+        id=uuid4(),
+        call_import_id=call_import.id,
+        organization_id=org_id,
+        workspace_id=workspace_id,
+        row_index=0,
+        conversation_id="call-1",
+        recording_url="https://example.com/rec.mp3",
+        status=CallImportRowStatus.FAILED,
+        attempts=1,
+        error_message="download failed",
+    )
+    db_session.add(row)
+    db_session.commit()
+    import_id = call_import.id
+    row_id = row.id
+    new_id = new.id
+
+    snapshots = []
+    original_commit = db_session.commit
+
+    def _commit(*args, **kwargs):
+        try:
+            snapshots.append((call_import.telephony_integration_id, row.status))
+        except Exception:
+            snapshots.append((None, None))
+        return original_commit(*args, **kwargs)
+
+    monkeypatch.setattr(db_session, "commit", _commit)
+    monkeypatch.setattr(
+        "app.services.telephony.telephony_service.telephony_service.get_provider_client",
+        lambda *_args, **_kwargs: SimpleNamespace(test_connection=lambda: None),
+    )
+
+    with patch(
+        "app.workers.concurrency.fair_import_dispatch.schedule_fair_import_dispatch",
+        lambda *_args, **_kwargs: None,
+    ):
+        response = authenticated_client.post(
+            f"/api/v1/call-imports/{import_id}/retry-failed",
+            json={
+                "provider": "twilio",
+                "telephony_integration_id": str(new_id),
+            },
+        )
+
+    assert response.status_code == 202, response.text
+    credential_commit = next(
+        index
+        for index, snap in enumerate(snapshots)
+        if snap == (new_id, CallImportRowStatus.FAILED)
+    )
+    pending_commits = [
+        index
+        for index, snap in enumerate(snapshots)
+        if snap[1] == CallImportRowStatus.PENDING
+    ]
+    assert not pending_commits or credential_commit < pending_commits[0]
+    retried = db_session.query(CallImportRow).filter(CallImportRow.id == row_id).one()
+    assert retried.status == CallImportRowStatus.PENDING
+    parent = db_session.query(CallImport).filter(CallImport.id == import_id).one()
+    assert parent.telephony_integration_id == new_id
+
+
 def test_audio_upload_rejects_invalid_inputs(
     authenticated_client, monkeypatch, seed_org
 ):

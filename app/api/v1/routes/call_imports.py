@@ -3876,7 +3876,8 @@ async def retry_failed_call_import_rows(
         else:
             call_import.provider = None
             call_import.telephony_integration_id = None
-        db.flush()
+        stamp_call_import_actor(call_import, principal)
+        db.commit()
 
     from app.services.call_imports.bulk_ops import (
         mark_import_rows_enqueue_failed,
@@ -3895,7 +3896,8 @@ async def retry_failed_call_import_rows(
         )
 
     _recompute_call_import_counters(db, call_import)
-    stamp_call_import_actor(call_import, principal)
+    if payload is None:
+        stamp_call_import_actor(call_import, principal)
     db.commit()
 
     try:
