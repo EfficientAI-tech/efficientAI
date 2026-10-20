@@ -476,7 +476,11 @@ export default function ChatConnectionDetailsStep({
 
     const copyWebhook = () => {
       if (!platformWebhookUrl) return
-      copyTextToClipboard(platformWebhookUrl, () => showToast('Webhook URL copied', 'success'))
+      copyTextToClipboard(
+        platformWebhookUrl,
+        () => showToast('Webhook URL copied', 'success'),
+        () => showToast('Could not copy URL', 'error'),
+      )
     }
 
     return (
@@ -571,8 +575,10 @@ export default function ChatConnectionDetailsStep({
                     <button
                       type="button"
                       onClick={() => {
-                        copyTextToClipboard(metaWhatsappInboundWebhookUrl, () =>
-                          showToast('Copied', 'success'),
+                        copyTextToClipboard(
+                          metaWhatsappInboundWebhookUrl,
+                          () => showToast('Copied', 'success'),
+                          () => showToast('Copy failed', 'error'),
                         )
                       }}
                       className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-xs font-medium text-gray-800 hover:bg-gray-50"

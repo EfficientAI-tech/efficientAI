@@ -74,11 +74,15 @@ export default function BlindTestsTab() {
 
   const copyShareLink = (token: string) => {
     const url = `${window.location.origin}/blind-test/${token}`
-    copyTextToClipboard(url, () => {
-      setCopiedToken(token)
-      showToast('Public link copied', 'success')
-      setTimeout(() => setCopiedToken((t) => (t === token ? null : t)), 1500)
-    })
+    copyTextToClipboard(
+      url,
+      () => {
+        setCopiedToken(token)
+        showToast('Public link copied', 'success')
+        setTimeout(() => setCopiedToken((t) => (t === token ? null : t)), 1500)
+      },
+      () => showToast('Failed to copy link', 'error'),
+    )
   }
 
   if (viewingPastId) {

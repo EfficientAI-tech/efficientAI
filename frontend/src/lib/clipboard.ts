@@ -8,6 +8,7 @@
 export function copyTextToClipboard(
   text: string,
   onSuccess?: () => void,
+  onError?: () => void,
 ): void {
   if (!text) return
 
@@ -23,11 +24,12 @@ export function copyTextToClipboard(
       ta.style.opacity = '0'
       document.body.appendChild(ta)
       ta.select()
-      document.execCommand('copy')
+      const copied = document.execCommand('copy')
       document.body.removeChild(ta)
-      finalize()
+      if (copied) finalize()
+      else onError?.()
     } catch {
-      // Swallow — user can still drag-select visible text.
+      onError?.()
     }
   }
 
