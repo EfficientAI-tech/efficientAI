@@ -17,6 +17,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import Button from './Button'
 import { apiClient } from '../lib/api'
+import { microphoneUnavailableMessage } from '../lib/secureContext'
 import { evaluationStatusFromRecording } from '../lib/evaluationStatus'
 import type { WSProtocolConfig, TranscriptEntry, ParsedWSMessage } from '../lib/wsProtocols'
 
@@ -650,7 +651,7 @@ export default function GenericVoiceWSClient({
         log('Microphone acquired')
       } catch {
         micStreamRef.current = null
-        log('Microphone unavailable — connecting without mic', 'system')
+        log(microphoneUnavailableMessage(), 'system')
       }
 
       // AudioContext + recording destination (mixes mic + bot audio)

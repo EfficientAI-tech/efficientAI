@@ -5,6 +5,7 @@ import { RetellWebClient } from 'retell-client-js-sdk'
 import Vapi from '@vapi-ai/web'
 import { Conversation } from '@elevenlabs/client'
 import { apiClient } from '../../../lib/api'
+import { microphoneUnavailableMessage } from '../../../lib/secureContext'
 import { Integration, IntegrationPlatform } from '../../../types/api'
 import { getIntegrationPlatformLabel } from '../../../config/providers'
 import VoiceAgent from '../../../components/VoiceAgent'
@@ -156,7 +157,7 @@ export default function AgentTalkSidebar({
       stream.getTracks().forEach((t) => t.stop())
     } catch {
       setIsConnecting(false)
-      showToast('Microphone permission is required for voice calls', 'error')
+      showToast(microphoneUnavailableMessage(), 'error')
       return
     }
 

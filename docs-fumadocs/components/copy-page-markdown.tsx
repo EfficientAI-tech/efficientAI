@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { copyText } from '../lib/clipboard';
 
 type Props = {
   mdPath?: string;
@@ -20,7 +21,7 @@ export function CopyPageMarkdown({ mdPath, markdown }: Props) {
         text = await response.text();
       }
       if (!text) throw new Error('No markdown available');
-      await navigator.clipboard.writeText(text);
+      await copyText(text);
       setStatus('copied');
       window.setTimeout(() => setStatus('idle'), 1400);
     } catch {

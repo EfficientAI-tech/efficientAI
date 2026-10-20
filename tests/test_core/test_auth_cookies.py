@@ -142,3 +142,30 @@ def test_csrf_not_bypassed_by_stale_api_key_header(cookie_auth_client):
         headers={CSRF_HEADER: csrf},
     )
     assert allowed.status_code == 200
+
+
+def test_cookie_secure_off_for_http_frontend_when_unset(monkeypatch):
+    from app.core.auth.cookies import _cookie_secure
+
+    monkeypatch.setattr(settings, "DEBUG", False)
+    monkeypatch.setattr(settings, "AUTH_COOKIE_SECURE", None)
+    monkeypatch.setattr(settings, "FRONTEND_BASE_URL", "http://app.internal")
+    assert _cookie_secure() is False
+
+
+def test_cookie_secure_on_for_https_frontend_when_unset(monkeypatch):
+    from app.core.auth.cookies import _cookie_secure
+
+    monkeypatch.setattr(settings, "DEBUG", False)
+    monkeypatch.setattr(settings, "AUTH_COOKIE_SECURE", None)
+    monkeypatch.setattr(settings, "FRONTEND_BASE_URL", "https://app.example.com")
+    assert _cookie_secure() is True
+
+
+def test_explicit_cookie_secure_overrides_http_frontend(monkeypatch):
+    from app.core.auth.cookies import _cookie_secure
+
+    monkeypatch.setattr(settings, "DEBUG", False)
+    monkeypatch.setattr(settings, "AUTH_COOKIE_SECURE", True)
+    monkeypatch.setattr(settings, "FRONTEND_BASE_URL", "http://app.internal")
+    assert _cookie_secure() is True

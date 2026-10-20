@@ -1,4 +1,5 @@
 import type { AuthProviderConfig } from './api'
+import { randomId } from './randomId'
 
 const PKCE_VERIFIER_KEY = 'oidc_code_verifier'
 const PKCE_STATE_KEY = 'oidc_state'
@@ -19,6 +20,9 @@ export function generateCodeVerifier(): string {
 }
 
 export async function generateCodeChallenge(verifier: string): Promise<string> {
+  if (!crypto.subtle?.digest) {
+    throw new Error('SSO requires HTTPS')
+  }
   const data = new TextEncoder().encode(verifier)
   const digest = await crypto.subtle.digest('SHA-256', data)
   return base64UrlEncode(digest)
@@ -76,7 +80,7 @@ export async function buildAuthorizeUrl(
 
   const verifier = generateCodeVerifier()
   const challenge = await generateCodeChallenge(verifier)
-  const state = crypto.randomUUID()
+  const state = randomId()
   storePkceSession(verifier, state)
 
   const params = new URLSearchParams({

@@ -61,6 +61,7 @@ import { apiClient, type ReportBranding } from '../../lib/api'
 import { getApiErrorMessage } from '../../lib/apiErrors'
 import { itemsOf } from '../../lib/safeData'
 import { downloadBlob } from '../../lib/download'
+import { copyTextToClipboard } from '../../lib/clipboard'
 import {
   isLLMSelectionComplete,
   resolveLLMModelForSubmit,
@@ -733,40 +734,7 @@ export default function CallImportEvaluationDetail() {
         setCopiedRowId((prev) => (prev === row.id ? null : prev))
       }, 1500)
     }
-    // Same fallback dance as ``CallImportDetail.handleCopyConversationId``
-    // — ``navigator.clipboard`` requires a secure context, so LAN dev
-    // over plain HTTP needs the ``execCommand`` escape hatch.
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(text).then(finalize).catch(() => {
-        try {
-          const ta = document.createElement('textarea')
-          ta.value = text
-          ta.style.position = 'fixed'
-          ta.style.opacity = '0'
-          document.body.appendChild(ta)
-          ta.select()
-          document.execCommand('copy')
-          document.body.removeChild(ta)
-          finalize()
-        } catch {
-          // Drag-select still works as a last resort.
-        }
-      })
-    } else {
-      try {
-        const ta = document.createElement('textarea')
-        ta.value = text
-        ta.style.position = 'fixed'
-        ta.style.opacity = '0'
-        document.body.appendChild(ta)
-        ta.select()
-        document.execCommand('copy')
-        document.body.removeChild(ta)
-        finalize()
-      } catch {
-        // Drag-select still works as a last resort.
-      }
-    }
+    copyTextToClipboard(text, finalize)
   }
 
   // Column-click sort state. ``sortBy`` is one of the built-in column

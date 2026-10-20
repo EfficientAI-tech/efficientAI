@@ -2,6 +2,7 @@
 
 import type { ComponentPropsWithoutRef, ReactNode } from 'react';
 import { useState } from 'react';
+import { copyText } from '../lib/clipboard';
 
 function headingText(node: ReactNode): string {
   if (typeof node === 'string') return node;
@@ -25,7 +26,7 @@ export function MdxHeading({
 
   async function copySectionHeading() {
     if (!text) return;
-    await navigator.clipboard.writeText(`${prefix} ${text}\n\n`);
+    await copyText(`${prefix} ${text}\n\n`);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1400);
   }

@@ -16,6 +16,7 @@ import Button from '../../../../components/Button'
 import ProviderLogo, { getProviderInfo } from '../../../../components/shared/ProviderLogo'
 import { useVoicePlayground } from '../context'
 import { useToast } from '../../../../hooks/useToast'
+import { copyTextToClipboard } from '../../../../lib/clipboard'
 import StatusBadge from './StatusBadge'
 import ComparisonResultsView from './ComparisonResultsView'
 import { TTSComparisonSummary } from '../types'
@@ -71,16 +72,13 @@ export default function BlindTestsTab() {
   const benchmarkCount = blindTests.filter((c) => (c.mode || 'benchmark') === 'benchmark').length
   const standaloneCount = blindTests.filter((c) => c.mode === 'blind_test_only').length
 
-  const copyShareLink = async (token: string) => {
+  const copyShareLink = (token: string) => {
     const url = `${window.location.origin}/blind-test/${token}`
-    try {
-      await navigator.clipboard.writeText(url)
+    copyTextToClipboard(url, () => {
       setCopiedToken(token)
       showToast('Public link copied', 'success')
       setTimeout(() => setCopiedToken((t) => (t === token ? null : t)), 1500)
-    } catch {
-      showToast('Failed to copy link', 'error')
-    }
+    })
   }
 
   if (viewingPastId) {

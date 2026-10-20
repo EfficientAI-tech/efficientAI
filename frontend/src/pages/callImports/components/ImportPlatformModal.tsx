@@ -12,6 +12,7 @@ import {
   X,
 } from 'lucide-react'
 import { apiClient } from '../../../lib/api'
+import { randomId } from '../../../lib/randomId'
 import { getApiErrorMessage } from '../../../lib/apiErrors'
 import {
   getIntegrationPlatformLabel,
@@ -84,7 +85,7 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
   const navigate = useNavigate()
   const { showToast, ToastContainer } = useToast()
   const pinPlatformImport = usePinPlatformImport()
-  const idempotencyKey = useRef(crypto.randomUUID())
+  const idempotencyKey = useRef(randomId())
   const [step, setStep] = useState<Step>('provider')
   const [platform, setPlatform] = useState<PlatformKey | ''>('')
   const [integrationId, setIntegrationId] = useState('')
@@ -135,7 +136,7 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
 
   useEffect(() => {
     if (!open) return
-    idempotencyKey.current = crypto.randomUUID()
+    idempotencyKey.current = randomId()
     setStep('provider')
     setPlatform('')
     setIntegrationId('')

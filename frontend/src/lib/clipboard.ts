@@ -31,9 +31,17 @@ export function copyTextToClipboard(
     }
   }
 
-  if (navigator.clipboard?.writeText) {
+  const canUseClipboard =
+    typeof window !== 'undefined' &&
+    window.isSecureContext &&
+    typeof navigator.clipboard?.writeText === 'function'
+  if (!canUseClipboard) {
+    fallbackCopy()
+    return
+  }
+  try {
     navigator.clipboard.writeText(text).then(finalize).catch(fallbackCopy)
-  } else {
+  } catch {
     fallbackCopy()
   }
 }
@@ -42,6 +50,9 @@ export function copyTextToClipboard(
  * Read text from the clipboard. Requires a secure context and permission.
  */
 export async function readTextFromClipboard(): Promise<string> {
+  if (typeof window !== 'undefined' && !window.isSecureContext) {
+    throw new Error('Pasting from the clipboard requires HTTPS. Paste with the keyboard instead.')
+  }
   if (!navigator.clipboard?.readText) {
     throw new Error('Clipboard read is not supported in this browser.')
   }

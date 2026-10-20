@@ -8,6 +8,7 @@ import {
   Search,
 } from 'lucide-react'
 import type { MetricClustersClient } from './clients'
+import { copyTextToClipboard } from '../../lib/clipboard'
 import type {
   EvaluationMetricClustersState,
   MetricCluster,
@@ -30,7 +31,7 @@ function shortId(id: string): string {
 }
 
 function copyToClipboard(text: string) {
-  void navigator.clipboard?.writeText(text)
+  copyTextToClipboard(text)
 }
 
 function gapBadgeClass(): string {

@@ -13,6 +13,7 @@ import { useIsAdmin } from '../../hooks/useRole'
 import WorkspaceRolesSection from '../../components/WorkspaceRolesSection'
 import WorkspaceMembersSection from '../../components/iam/WorkspaceMembersSection'
 import { PASSWORD_POLICY_HINT, validatePasswordPolicy } from '../../lib/passwordPolicy'
+import { copyTextToClipboard } from '../../lib/clipboard'
 import { buildInviteShareUrl } from '../../lib/inviteUrl'
 import { useOssQuotas } from '../../hooks/useOssQuotas'
 import { refreshOssQuotaUsage } from '../../store/licenseStore'
@@ -225,13 +226,14 @@ export default function IAM() {
     inviteMutation.mutate({ email: inviteEmail, role: inviteRole })
   }
 
-  const handleCopyInviteLink = async (invitation: Invitation) => {
+  const handleCopyInviteLink = (invitation: Invitation) => {
     const shareUrl = buildInviteShareUrl(invitation)
     if (!shareUrl) return
-    await navigator.clipboard.writeText(shareUrl)
-    setCopiedInviteId(invitation.id)
-    setTimeout(() => setCopiedInviteId(null), 2000)
-    showToast('Invite link copied', 'success')
+    copyTextToClipboard(shareUrl, () => {
+      setCopiedInviteId(invitation.id)
+      setTimeout(() => setCopiedInviteId(null), 2000)
+      showToast('Invite link copied', 'success')
+    })
   }
 
   const closeResetPasswordModal = () => {
@@ -432,10 +434,11 @@ export default function IAM() {
                     </code>
                     <button
                       type="button"
-                      onClick={async () => {
-                        await navigator.clipboard.writeText(organization.id)
-                        setCopiedOrgId(true)
-                        setTimeout(() => setCopiedOrgId(false), 2000)
+                      onClick={() => {
+                        copyTextToClipboard(organization.id, () => {
+                          setCopiedOrgId(true)
+                          setTimeout(() => setCopiedOrgId(false), 2000)
+                        })
                       }}
                       className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
                       title="Copy organization ID"
@@ -635,9 +638,10 @@ export default function IAM() {
               <code className="flex-1 text-xs font-mono text-green-900 break-all">{lastInviteUrl}</code>
               <button
                 type="button"
-                onClick={async () => {
-                  await navigator.clipboard.writeText(lastInviteUrl)
-                  showToast('Invite link copied', 'success')
+                onClick={() => {
+                  copyTextToClipboard(lastInviteUrl, () => {
+                    showToast('Invite link copied', 'success')
+                  })
                 }}
                 className="p-2 text-green-700 hover:bg-green-100 rounded-lg"
                 title="Copy invite link"

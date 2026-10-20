@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import Button from '../../../../components/Button'
 import { apiClient } from '../../../../lib/api'
+import { copyTextToClipboard } from '../../../../lib/clipboard'
 import {
   BlindTestCustomMetric,
   BlindTestShareDetail,
@@ -132,15 +133,12 @@ export default function ShareBlindTestModal({
     },
   })
 
-  const handleCopy = async () => {
+  const handleCopy = () => {
     if (!publicUrl) return
-    try {
-      await navigator.clipboard.writeText(publicUrl)
+    copyTextToClipboard(publicUrl, () => {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
-    } catch {
-      /* ignore */
-    }
+    })
   }
 
   const updateMetric = (id: string, patch: Partial<MetricDraft>) => {

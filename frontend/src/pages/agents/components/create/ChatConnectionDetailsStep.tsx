@@ -14,6 +14,7 @@ import type { LucideIcon } from 'lucide-react'
 import WhatsAppIcon from '../../../../components/icons/WhatsAppIcon'
 import { Integration, IntegrationPlatform } from '../../../../types/api'
 import { apiClient } from '../../../../lib/api'
+import { copyTextToClipboard } from '../../../../lib/clipboard'
 import { CHAT_CONFIG_SECRET_MASK, isStoredChatSecret } from '../../../../lib/chatConnectionSecrets'
 import { CREATE_WIZARD_FIELD_CLASS, CREATE_WIZARD_LABEL_CLASS } from './createWizardUi'
 import type { ChatIntegrationOptionId } from './ChatIntegrationTypeStep'
@@ -473,14 +474,9 @@ export default function ChatConnectionDetailsStep({
         ? buildPlatformTelnyxSmsInboundWebhookUrl(telnyxWebhookPublicBase)
         : buildPlatformTwilioSmsInboundWebhookUrl(twilioWebhookPublicBase)
 
-    const copyWebhook = async () => {
+    const copyWebhook = () => {
       if (!platformWebhookUrl) return
-      try {
-        await navigator.clipboard.writeText(platformWebhookUrl)
-        showToast('Webhook URL copied', 'success')
-      } catch {
-        showToast('Could not copy URL', 'error')
-      }
+      copyTextToClipboard(platformWebhookUrl, () => showToast('Webhook URL copied', 'success'))
     }
 
     return (
@@ -575,10 +571,9 @@ export default function ChatConnectionDetailsStep({
                     <button
                       type="button"
                       onClick={() => {
-                        void navigator.clipboard
-                          .writeText(metaWhatsappInboundWebhookUrl)
-                          .then(() => showToast('Copied', 'success'))
-                          .catch(() => showToast('Copy failed', 'error'))
+                        copyTextToClipboard(metaWhatsappInboundWebhookUrl, () =>
+                          showToast('Copied', 'success'),
+                        )
                       }}
                       className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-xs font-medium text-gray-800 hover:bg-gray-50"
                     >
