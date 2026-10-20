@@ -1,5 +1,6 @@
 import { Copy, Check, Link2, Loader2 } from 'lucide-react'
 import { useState } from 'react'
+import { copyTextToClipboard } from '../../lib/clipboard'
 import IncidentTimeline from './IncidentTimeline'
 import IncidentChannelActivity from './IncidentChannelActivity'
 import { buildIncidentTimeline, hasLifecycleSyncActivity } from './incidentActivityUtils'
@@ -40,10 +41,11 @@ export default function IncidentDetailPanel({
   const steps = buildIncidentTimeline(item)
   const syncActivity = hasLifecycleSyncActivity(item.notification_details)
 
-  const copyId = async () => {
-    await navigator.clipboard.writeText(item.id)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+  const copyId = () => {
+    copyTextToClipboard(item.id, () => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
   }
 
   return (

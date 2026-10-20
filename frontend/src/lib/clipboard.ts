@@ -8,6 +8,7 @@
 export function copyTextToClipboard(
   text: string,
   onSuccess?: () => void,
+  onError?: () => void,
 ): void {
   if (!text) return
 
@@ -23,17 +24,26 @@ export function copyTextToClipboard(
       ta.style.opacity = '0'
       document.body.appendChild(ta)
       ta.select()
-      document.execCommand('copy')
+      const copied = document.execCommand('copy')
       document.body.removeChild(ta)
-      finalize()
+      if (copied) finalize()
+      else onError?.()
     } catch {
-      // Swallow — user can still drag-select visible text.
+      onError?.()
     }
   }
 
-  if (navigator.clipboard?.writeText) {
+  const canUseClipboard =
+    typeof window !== 'undefined' &&
+    window.isSecureContext &&
+    typeof navigator.clipboard?.writeText === 'function'
+  if (!canUseClipboard) {
+    fallbackCopy()
+    return
+  }
+  try {
     navigator.clipboard.writeText(text).then(finalize).catch(fallbackCopy)
-  } else {
+  } catch {
     fallbackCopy()
   }
 }
@@ -42,6 +52,9 @@ export function copyTextToClipboard(
  * Read text from the clipboard. Requires a secure context and permission.
  */
 export async function readTextFromClipboard(): Promise<string> {
+  if (typeof window !== 'undefined' && !window.isSecureContext) {
+    throw new Error('Pasting from the clipboard requires HTTPS. Paste with the keyboard instead.')
+  }
   if (!navigator.clipboard?.readText) {
     throw new Error('Clipboard read is not supported in this browser.')
   }

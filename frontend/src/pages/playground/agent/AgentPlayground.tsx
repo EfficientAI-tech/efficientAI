@@ -3,6 +3,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAgentStore } from '../../../store/agentStore'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
+import { randomId } from '../../../lib/randomId'
+import { microphoneUnavailableMessage } from '../../../lib/secureContext'
 import { Play, X, Phone, PhoneOff, RefreshCw, Mic, Bot, PhoneCall, Trash2, AlertTriangle, CheckSquare, Square, Bookmark, BookmarkCheck, Search } from 'lucide-react'
 import Button from '../../../components/Button'
 import TableListPagination from '../../../components/TableListPagination'
@@ -245,7 +247,7 @@ export default function AgentPlayground() {
     const url = customWebsocketUrl.trim()
     if (!url) return
     const label = saveLabel.trim() || url
-    const entry: SavedWsUrl = { id: crypto.randomUUID(), label, url, createdAt: new Date().toISOString() }
+    const entry: SavedWsUrl = { id: randomId(), label, url, createdAt: new Date().toISOString() }
     persistSavedUrls([entry, ...savedWsUrls])
     setSaveLabel('')
     setShowSaveForm(false)
@@ -402,7 +404,7 @@ export default function AgentPlayground() {
         } catch (micError: any) {
           console.error('Microphone permission denied:', micError)
           setIsConnecting(false)
-          showToast('Microphone permission is required for voice calls', 'error')
+          showToast(microphoneUnavailableMessage(), 'error')
           return
         }
 
@@ -606,7 +608,7 @@ export default function AgentPlayground() {
         } catch (micError: any) {
           console.error('Microphone permission denied:', micError)
           setIsConnecting(false)
-          showToast('Microphone permission is required for voice calls', 'error')
+          showToast(microphoneUnavailableMessage(), 'error')
           return
         }
 
@@ -716,7 +718,7 @@ export default function AgentPlayground() {
         } catch (micError: any) {
           console.error('Microphone permission denied:', micError)
           setIsConnecting(false)
-          showToast('Microphone permission is required for voice calls', 'error')
+          showToast(microphoneUnavailableMessage(), 'error')
           return
         }
 

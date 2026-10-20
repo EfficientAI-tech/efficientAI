@@ -6,6 +6,7 @@ import Button from '../Button'
 import ConfirmModal from '../ConfirmModal'
 import { useToast } from '../../hooks/useToast'
 import { getApiErrorMessage } from '../../lib/apiErrors'
+import { copyTextToClipboard } from '../../lib/clipboard'
 
 const ENABLE_PHRASE = 'ENABLE_ALERT_SYNC'
 
@@ -62,11 +63,12 @@ export default function AlertingSyncSettingsCard() {
     setExpanded(true)
   }
 
-  const copyWebhook = async () => {
+  const copyWebhook = () => {
     if (!data?.pagerduty_webhook_url) return
-    await navigator.clipboard.writeText(data.pagerduty_webhook_url)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    copyTextToClipboard(data.pagerduty_webhook_url, () => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
   }
 
   if (isLoading) {

@@ -2,6 +2,7 @@
 
 import type { ComponentPropsWithoutRef, ReactNode } from 'react';
 import { useMemo, useState } from 'react';
+import { copyText } from '../lib/clipboard';
 
 function collectText(node: ReactNode): string {
   if (typeof node === 'string') return node;
@@ -44,7 +45,7 @@ export function MdxPre(props: ComponentPropsWithoutRef<'pre'>) {
   }, [props.children]);
 
   async function copyMarkdown() {
-    await navigator.clipboard.writeText(extracted.markdown);
+    await copyText(extracted.markdown);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1400);
   }

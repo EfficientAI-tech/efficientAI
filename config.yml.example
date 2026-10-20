@@ -251,6 +251,8 @@ auth:
     refresh_token_ttl_days: 7
     cookie_session:
       enabled: true
+      # Browsers drop Secure cookies on plain HTTP. HTTPS installs keep this true.
+      # HTTP installs must set secure: false (or leave cookie_session unset and use an http:// frontend_base_url).
       secure: true
       samesite: lax
       # domain: ".efficientai.cloud"

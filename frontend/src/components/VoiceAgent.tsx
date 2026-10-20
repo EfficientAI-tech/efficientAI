@@ -15,6 +15,7 @@ import Button from './Button'
 import VoiceOrb, { VoiceOrbSpeaker } from './VoiceOrb'
 import { useAgentStore } from '../store/agentStore'
 import { apiClient, apiBaseUrl } from '../lib/api'
+import { microphoneUnavailableMessage } from '../lib/secureContext'
 
 interface VoiceAgentProps {
   personaId?: string
@@ -391,7 +392,7 @@ export default function VoiceAgent({
         micStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true })
       } catch {
         micStreamRef.current = null
-        log('Microphone stream unavailable for local recording', 'system')
+        log(microphoneUnavailableMessage(), 'system')
       }
 
       // Create WebSocketTransport

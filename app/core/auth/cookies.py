@@ -26,6 +26,9 @@ def _cookie_secure() -> bool:
     configured = getattr(settings, "AUTH_COOKIE_SECURE", None)
     if configured is not None:
         return bool(configured)
+    frontend = (getattr(settings, "FRONTEND_BASE_URL", None) or "").strip().lower()
+    if frontend.startswith("http://"):
+        return False
     return not settings.DEBUG
 
 

@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
+import { copyTextToClipboard } from '../../lib/clipboard'
 import { useState } from 'react'
 import { APIKey } from '../../types/api'
 import { Key, Plus, Trash2, RotateCw, Copy, Check, AlertCircle } from 'lucide-react'
@@ -103,10 +104,11 @@ export default function Settings() {
   }
 
   const copyToClipboard = (text: string, keyId: string) => {
-    navigator.clipboard.writeText(text)
-    setCopiedKeyId(keyId)
-    showToast('Copied to clipboard', 'success')
-    setTimeout(() => setCopiedKeyId(null), 2000)
+    copyTextToClipboard(text, () => {
+      setCopiedKeyId(keyId)
+      showToast('Copied to clipboard', 'success')
+      setTimeout(() => setCopiedKeyId(null), 2000)
+    })
   }
 
   const formatDate = (dateString: string | null | undefined) => {

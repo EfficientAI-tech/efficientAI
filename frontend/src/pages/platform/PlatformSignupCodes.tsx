@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import { Button, Chip, Switch } from '@heroui/react'
 import { apiClient, type PlatformSignupCode } from '../../lib/api'
+import { copyTextToClipboard } from '../../lib/clipboard'
 
 export default function PlatformSignupCodes() {
   const [codes, setCodes] = useState<PlatformSignupCode[]>([])
@@ -97,11 +98,12 @@ export default function PlatformSignupCodes() {
     }
   }
 
-  const copyCreatedCode = async () => {
+  const copyCreatedCode = () => {
     if (!createdCodePlaintext) return
-    await navigator.clipboard.writeText(createdCodePlaintext)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    copyTextToClipboard(createdCodePlaintext, () => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
   }
 
   return (
