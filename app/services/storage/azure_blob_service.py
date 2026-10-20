@@ -270,6 +270,31 @@ class AzureBlobService:
                 f"Failed to upload file to Azure Blob Storage: {str(e)}"
             )
 
+    def upload_file_by_key_from_path(
+        self, path: str, key: str, content_type: str = "audio/mpeg"
+    ) -> str:
+        self._ensure_initialized()
+        if not self.is_enabled():
+            error_msg = (
+                self._initialization_error
+                or "Azure Blob Storage is not enabled or not configured"
+            )
+            raise StorageError(error_msg)
+        try:
+            _, _, _, _, ContentSettings = _get_azure_libs()
+            blob_client = self.container_client.get_blob_client(key)
+            with open(path, "rb") as handle:
+                blob_client.upload_blob(
+                    handle,
+                    overwrite=True,
+                    content_settings=ContentSettings(content_type=content_type),
+                )
+            return key
+        except Exception as e:
+            raise StorageError(
+                f"Failed to upload file to Azure Blob Storage: {str(e)}"
+            )
+
     def download_file(self, file_id: uuid.UUID, file_format: str) -> bytes:
         """Download file from Azure Blob Storage."""
         self._ensure_initialized()

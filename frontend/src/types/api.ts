@@ -1264,6 +1264,69 @@ export interface CallImport {
   updated_at: string
   created_by_email?: string | null
   last_updated_by_email?: string | null
+  voice_integration_id?: string | null
+  platform_agents?: Array<{ id: string; name: string; medium?: string | null }>
+  imported_agent_partial_id?: string | null
+  window_start?: string | null
+  window_end?: string | null
+  discovery_status?: string | null
+  paused_at?: string | null
+  pause_reason?: string | null
+  skip_counts?: Record<string, number>
+}
+
+export interface PlatformImportDiscoveryProgress {
+  slices_total: number
+  slices_completed: number
+  slices_running: number
+  slices_queued?: number
+  slices_pending: number
+  slices_failed: number
+  listed_total: number
+  percent: number
+}
+
+export interface PlatformImportRecordingsProgress {
+  total: number
+  completed: number
+  failed: number
+  processing: number
+  pending: number
+  queued?: number
+  percent: number
+}
+
+export interface PlatformImportProgress {
+  call_import_id: string
+  provider: string | null
+  dataset: string | null
+  status: string
+  discovery_status: string | null
+  paused: boolean
+  pause_reason: string | null
+  phase:
+    | 'discovering'
+    | 'importing'
+    | 'complete'
+    | 'paused'
+    | 'failed'
+    | 'deleting'
+    | 'stalled'
+    | 'capped'
+  overall_percent: number
+  is_active: boolean
+  calls_discovered: number
+  skip_counts: Record<string, number>
+  window_start?: string | null
+  window_end?: string | null
+  updated_at: string
+  last_progress_at?: string | null
+  backlog?: number | null
+  inflight?: number | null
+  rate_limited?: boolean
+  slice_errors?: number
+  discovery: PlatformImportDiscoveryProgress
+  recordings: PlatformImportRecordingsProgress
 }
 
 export interface CallImportDetail extends CallImport {
@@ -1285,6 +1348,7 @@ export interface CallImportDetail extends CallImport {
   diarised_running_rows: number
   diarised_completed_rows: number
   diarised_failed_rows: number
+  platform_progress?: PlatformImportProgress | null
 }
 
 export interface CallImportListResponse {
@@ -1787,6 +1851,8 @@ export interface PromptImprovementSuggestion {
   rationale: string
   flow_node_id?: string
   flow_node_label?: string
+  review_status?: 'pending' | 'accepted' | 'rejected' | 'applied'
+  edited_text?: string | null
 }
 
 export interface EvaluationPromptImprovementsState {
@@ -1801,6 +1867,58 @@ export interface EvaluationPromptImprovementsState {
   model?: string | null
   error_message?: string | null
   is_stale: boolean
+  require_review?: boolean
+}
+
+export interface PromptPushRecord {
+  id: string
+  prompt_partial_id: string
+  prompt_version: number
+  provider: string
+  external_agent_id: string
+  external_agent_name?: string | null
+  integration_id?: string | null
+  evaluation_id?: string | null
+  pushed_by?: string | null
+  status: 'pushed' | 'failed' | string
+  error_message?: string | null
+  created_at: string
+}
+
+export interface PromptPushPreview {
+  base_prompt: string
+  live_prompt: string
+  composed_prompt: string
+  saved_prompt_matches_live?: boolean | null
+  imported_agent_name?: string | null
+  imported_agent_id?: string | null
+  relinked_imported_agent?: boolean
+  partial_current_version?: number
+  partial_next_version?: number
+  accepted_count: number
+  rejected_count: number
+  pending_count: number
+  require_review: boolean
+  can_push: boolean
+  can_save_version?: boolean
+  block_reason?: string | null
+  save_block_reason?: string | null
+  provider?: string | null
+  external_agent_id?: string | null
+  external_agent_name?: string | null
+}
+
+export interface PromptVersionPushPreview {
+  live_prompt: string
+  version_prompt: string
+  version: number
+  provider?: string | null
+  external_agent_id?: string | null
+  external_agent_name?: string | null
+  can_push: boolean
+  block_reason?: string | null
+  drift_warning?: string | null
+  is_current_version?: boolean
 }
 
 export interface MetricPeriodDelta {
@@ -1830,6 +1948,24 @@ export interface CallImportEvaluationBaselineCandidate {
 export interface CallImportEvaluationBaselineCandidatesResponse {
   items: CallImportEvaluationBaselineCandidate[]
   default_evaluation_id: string | null
+}
+
+export interface CallImportEvaluationExportPart {
+  part: number
+  filename: string
+  row_count: number
+  byte_size: number
+  download_url?: string | null
+}
+
+export interface CallImportEvaluationExportJob {
+  id: string
+  evaluation_id: string
+  status: string
+  format: 'csv' | 'xlsx' | string
+  include_transcripts: boolean
+  error_message?: string | null
+  parts: CallImportEvaluationExportPart[]
 }
 
 export interface CallImportEvaluationPdfReport {

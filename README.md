@@ -65,7 +65,7 @@ There are two ways to run the application:
    | `media` | Live voice WebSocket media server |
    | `worker` | Celery: `celery` (evaluator cron runs), `audio-metrics` queues |
    | `beat` | Celery Beat scheduler + `platform` queue worker (alerts, FX, OSS prune) — **single replica** |
-   | `worker-imports` | Celery: `imports`, `diarization`, `eval-control`, `evaluations` |
+   | `worker-imports` | Celery: `platform-imports`, `imports`, `diarization`, `eval-control`, `evaluations` |
    | `worker-usage` | Celery: `usage` queue (flush Redis counters, cost recompute, evaluator cron dispatch) |
 
    **Usage costs:** token/cost rollups stay stale without `beat`, `worker-usage`, and default `worker` (evaluator cron runs; or `eai start-all`).

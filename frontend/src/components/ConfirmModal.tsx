@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { AlertTriangle } from 'lucide-react'
 import Button from './Button'
@@ -14,6 +14,7 @@ interface ConfirmModalProps {
   onConfirm: () => void
   onCancel: () => void
   variant?: 'danger' | 'warning' | 'default'
+  confirmPhrase?: string
 }
 
 export default function ConfirmModal({
@@ -27,7 +28,13 @@ export default function ConfirmModal({
   onConfirm,
   onCancel,
   variant = 'danger',
+  confirmPhrase,
 }: ConfirmModalProps) {
+  const [typedPhrase, setTypedPhrase] = useState('')
+  useEffect(() => {
+    if (!isOpen) setTypedPhrase('')
+  }, [isOpen])
+  const phraseMatches = !confirmPhrase || typedPhrase === confirmPhrase
   // Get styles for button and icon based on variant
   const getStyles = () => {
     switch (variant) {
@@ -90,6 +97,17 @@ export default function ConfirmModal({
                 )
               )}
               {children}
+              {confirmPhrase ? (
+                <label className="block text-sm text-gray-700">
+                  Type <span className="font-semibold">{confirmPhrase}</span> to continue
+                  <input
+                    value={typedPhrase}
+                    onChange={(e) => setTypedPhrase(e.target.value)}
+                    autoComplete="off"
+                    className="mt-1.5 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-red-400 focus:outline-none focus:ring-1 focus:ring-red-400"
+                  />
+                </label>
+              ) : null}
             </div>
           )}
           
@@ -104,7 +122,7 @@ export default function ConfirmModal({
             </Button>
             <button
               onClick={onConfirm}
-              disabled={isLoading}
+              disabled={isLoading || !phraseMatches}
               className={`px-4 py-2 rounded-full font-semibold transition-colors disabled:opacity-50 ${styles.buttonClass}`}
             >
               {isLoading ? (

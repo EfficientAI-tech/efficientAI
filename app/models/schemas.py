@@ -3142,9 +3142,29 @@ class PromptPartialResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PromptPushResponse(BaseModel):
+    """One live provider prompt push. The prompt text lives on the version row."""
+
+    id: UUID
+    prompt_partial_id: UUID
+    prompt_version: int
+    provider: str
+    external_agent_id: str
+    external_agent_name: Optional[str] = None
+    integration_id: Optional[UUID] = None
+    evaluation_id: Optional[UUID] = None
+    pushed_by: Optional[str] = None
+    status: str
+    error_message: Optional[str] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class PromptPartialDetailResponse(PromptPartialResponse):
     """Schema for prompt partial detail with versions."""
     versions: List[PromptPartialVersionResponse] = []
+    pushes: List[PromptPushResponse] = []
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -3636,6 +3656,14 @@ class CallImportSourceRowSkip(BaseModel):
     )
 
 
+class PlatformImportAgentRef(BaseModel):
+    """Provider agent this platform import was scoped to."""
+
+    id: str
+    name: str
+    medium: Optional[str] = None
+
+
 class CallImportResponse(BaseModel):
     """Summary of a call-import batch."""
 
@@ -3697,6 +3725,18 @@ class CallImportResponse(BaseModel):
     updated_at: datetime
     created_by_email: Optional[str] = None
     last_updated_by_email: Optional[str] = None
+    voice_integration_id: Optional[UUID] = None
+    platform_agents: List[PlatformImportAgentRef] = Field(default_factory=list)
+    window_start: Optional[datetime] = None
+    window_end: Optional[datetime] = None
+    discovery_status: Optional[str] = None
+    paused_at: Optional[datetime] = None
+    pause_reason: Optional[str] = None
+    skip_counts: Dict[str, int] = Field(default_factory=dict)
+    imported_agent_partial_id: Optional[UUID] = Field(
+        None,
+        description="Imported-agent PromptPartial auto-linked from this platform import.",
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -3723,6 +3763,7 @@ class CallImportDetailResponse(CallImportResponse):
     diarised_running_rows: int = 0
     diarised_completed_rows: int = 0
     diarised_failed_rows: int = 0
+    platform_progress: Optional[Dict[str, Any]] = None
 
 
 class CallImportListResponse(BaseModel):
@@ -4432,6 +4473,29 @@ class CallImportEvaluationRetryResponse(BaseModel):
         default_factory=list,
         description="Rows the caller asked for that we did not re-enqueue.",
     )
+
+
+class CallImportEvaluationExportPart(BaseModel):
+    part: int
+    filename: str
+    row_count: int
+    byte_size: int
+    download_url: Optional[str] = None
+
+
+class CallImportEvaluationExportRequest(BaseModel):
+    format: Literal["csv", "xlsx"] = "csv"
+    include_transcripts: bool = True
+
+
+class CallImportEvaluationExportJobResponse(BaseModel):
+    id: UUID
+    evaluation_id: UUID
+    status: str
+    format: str
+    include_transcripts: bool
+    error_message: Optional[str] = None
+    parts: List[CallImportEvaluationExportPart] = Field(default_factory=list)
 
 
 class CallImportEvaluationBulkActionResponse(BaseModel):
@@ -5418,6 +5482,8 @@ class PromptImprovementSuggestion(BaseModel):
     rationale: str = ""
     flow_node_id: str = ""
     flow_node_label: str = ""
+    review_status: Literal["pending", "accepted", "rejected", "applied"] = "pending"
+    edited_text: Optional[str] = None
 
 
 class EvaluationPromptImprovementsState(BaseModel):
@@ -5434,17 +5500,65 @@ class EvaluationPromptImprovementsState(BaseModel):
     model: Optional[str] = None
     error_message: Optional[str] = None
     is_stale: bool = False
+    require_review: bool = True
 
 
 class EvaluationPromptImprovementsRequest(BaseModel):
     """Body for ``POST /evaluations/{eval_id}/prompt-improvements``."""
 
-    imported_agent_id: UUID
+    imported_agent_id: Optional[UUID] = None
     regenerate: bool = False
     force: bool = False
     provider: Optional[str] = None
     model: Optional[str] = None
     credential_id: Optional[UUID] = None
+
+
+class PromptImprovementReviewUpdate(BaseModel):
+    suggestion_id: str
+    review_status: Literal["pending", "accepted", "rejected"]
+    edited_text: Optional[str] = None
+
+
+class PromptPushConfirm(BaseModel):
+    confirm: str
+    push_to_live: bool = True
+
+
+class PromptPushPreviewResponse(BaseModel):
+    base_prompt: str
+    live_prompt: str = ""
+    composed_prompt: str
+    saved_prompt_matches_live: Optional[bool] = None
+    imported_agent_name: Optional[str] = None
+    imported_agent_id: Optional[str] = None
+    relinked_imported_agent: bool = False
+    partial_current_version: int = 1
+    partial_next_version: int = 1
+    accepted_count: int = 0
+    rejected_count: int = 0
+    pending_count: int = 0
+    require_review: bool = True
+    can_push: bool = False
+    can_save_version: bool = False
+    block_reason: Optional[str] = None
+    save_block_reason: Optional[str] = None
+    provider: Optional[str] = None
+    external_agent_id: Optional[str] = None
+    external_agent_name: Optional[str] = None
+
+
+class PromptVersionPushPreviewResponse(BaseModel):
+    live_prompt: str
+    version_prompt: str
+    version: int
+    provider: Optional[str] = None
+    external_agent_id: Optional[str] = None
+    external_agent_name: Optional[str] = None
+    can_push: bool = False
+    block_reason: Optional[str] = None
+    drift_warning: Optional[str] = None
+    is_current_version: bool = False
 
 
 class EvaluationMetricClustersRequest(BaseModel):

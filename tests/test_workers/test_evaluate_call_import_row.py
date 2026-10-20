@@ -181,7 +181,7 @@ def _patch_eval_row_storage(monkeypatch):
 def _patch_row_location(monkeypatch, db_session):
     """Route shard-aware row lookup to the pytest session."""
 
-    def _locate(eval_row_id):
+    def _locate(eval_row_id, shard_id=None):
         eid = eval_row_id if isinstance(eval_row_id, UUID) else UUID(str(eval_row_id))
         row = (
             db_session.query(CallImportEvaluationRow, CallImportRow)
@@ -205,6 +205,12 @@ def _patch_row_location(monkeypatch, db_session):
     monkeypatch.setattr(
         "app.db_sharding.eval_rows.locate_call_import_evaluation_row",
         _locate,
+    )
+    # Importing the worker reloads config.yml and turns sharding back on.
+    # These tests keep every row in the pytest session.
+    monkeypatch.setattr(
+        "app.db_sharding.sessions.is_sharding_enabled",
+        lambda: False,
     )
 
 
@@ -1413,6 +1419,10 @@ def test_evaluate_call_import_row_audio_chain_enqueue_failure_marks_failed(
         "apply_async",
         _raise_enqueue,
     )
+    monkeypatch.setattr(
+        "app.workers.concurrency.limits._get_redis",
+        lambda: _ChainRedis(),
+    )
 
     result = audio_module.evaluate_call_import_row_audio_task.run(
         str(eval_rows[0].id)
@@ -1444,6 +1454,28 @@ def test_counter_deltas_for_status_transition():
     assert counter_deltas_for_status_transition("completed", "pending") == (-1, 0)
     assert counter_deltas_for_status_transition("failed", "completed") == (1, -1)
     assert counter_deltas_for_status_transition("running", "running") == (0, 0)
+
+
+def test_confirm_eval_finished_when_this_task_is_the_only_one_left(monkeypatch):
+    """A drifted counter still closes the run when no other task is in flight."""
+    from uuid import uuid4
+
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        _should_confirm_eval_finished,
+    )
+
+    evaluation_id = uuid4()
+    inflight = {"value": 1}
+
+    monkeypatch.setattr(
+        "app.workers.concurrency.limits.read_job_inflight",
+        lambda _evaluation_id: inflight["value"],
+    )
+
+    assert _should_confirm_eval_finished(evaluation_id, 4) is True
+    inflight["value"] = 8
+    assert _should_confirm_eval_finished(evaluation_id, 4) is False
+    assert _should_confirm_eval_finished(evaluation_id, 0) is True
 
 
 def test_rollup_parent_incremental_without_row_scan(db_session, monkeypatch):
@@ -1641,3 +1673,540 @@ def test_build_llm_config_buckets_splits_on_metric_overrides(db_session):
         run_credential_id=None,
     )
     assert len(buckets) == 2
+
+
+def test_second_task_does_not_claim_a_row_already_owned(db_session):
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        claim_eval_row_for_task,
+    )
+
+    _, _, _, _, _, eval_rows = _seed(db_session)
+    eval_row = eval_rows[0]
+    eval_row.celery_task_id = "task-a"
+    db_session.commit()
+
+    assert claim_eval_row_for_task(db_session, eval_row, "task-a") is True
+    assert eval_row.status == "running"
+    assert eval_row.celery_task_id == "task-a"
+
+    assert claim_eval_row_for_task(db_session, eval_row, "task-b") is False
+    db_session.refresh(eval_row)
+    assert eval_row.status == "running"
+    assert eval_row.celery_task_id == "task-a"
+
+    eval_row.celery_task_id = None
+    db_session.commit()
+    assert claim_eval_row_for_task(db_session, eval_row, "task-b") is False
+    db_session.refresh(eval_row)
+    assert eval_row.status == "running"
+    assert eval_row.celery_task_id is None
+
+
+def test_chained_llm_task_takes_the_row_from_its_audio_predecessor(db_session):
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        claim_eval_row_for_task,
+    )
+
+    _, _, _, _, _, eval_rows = _seed(db_session)
+    eval_row = eval_rows[0]
+    eval_row.status = "running"
+    eval_row.celery_task_id = "audio-task"
+    db_session.commit()
+
+    assert (
+        claim_eval_row_for_task(
+            db_session,
+            eval_row,
+            "llm-task",
+            predecessor_task_id="audio-task",
+        )
+        is True
+    )
+    assert eval_row.celery_task_id == "llm-task"
+
+    eval_row.status = "running"
+    eval_row.celery_task_id = "audio-task"
+    db_session.commit()
+    assert claim_eval_row_for_task(db_session, eval_row, "other-task") is False
+    db_session.refresh(eval_row)
+    assert eval_row.celery_task_id == "audio-task"
+
+
+class _ChainRedis:
+    def __init__(self):
+        self.store = {}
+
+    def get(self, key):
+        return self.store.get(key)
+
+    def set(self, key, value, ex=None, nx=False):
+        if nx and key in self.store:
+            return None
+        self.store[key] = value
+        return True
+
+    def delete(self, key):
+        self.store.pop(key, None)
+
+    def pipeline(self):
+        redis = self
+
+        class _Pipe:
+            def __init__(self):
+                self.ops = []
+
+            def get(self, key):
+                self.ops.append(("get", key))
+                return self
+
+            def delete(self, key):
+                self.ops.append(("delete", key))
+                return self
+
+            def execute(self):
+                results = []
+                for op, key in self.ops:
+                    if op == "get":
+                        results.append(redis.store.get(key))
+                    else:
+                        redis.store.pop(key, None)
+                        results.append(1)
+                self.ops = []
+                return results
+
+        return _Pipe()
+
+
+def test_second_delivery_does_not_own_the_model_call(monkeypatch):
+    fake = _ChainRedis()
+    monkeypatch.setattr(
+        "app.workers.concurrency.limits._get_redis",
+        lambda: fake,
+    )
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        acquire_eval_execution,
+        release_eval_execution,
+    )
+
+    assert acquire_eval_execution("") is True
+    assert acquire_eval_execution("llm-1") is True
+    assert acquire_eval_execution("llm-1") is False
+    assert acquire_eval_execution("llm-2") is True
+    release_eval_execution("llm-1")
+    assert acquire_eval_execution("llm-1") is True
+
+
+def test_execution_lock_allows_the_call_when_redis_is_down(monkeypatch):
+    class _Down:
+        def set(self, *_args, **_kwargs):
+            raise RuntimeError("redis down")
+
+    monkeypatch.setattr(
+        "app.workers.concurrency.limits._get_redis",
+        lambda: _Down(),
+    )
+    from app.workers.tasks.evaluate_call_import_row_core import acquire_eval_execution
+
+    assert acquire_eval_execution("llm-1") is True
+
+
+def test_audio_chain_marker_belongs_to_one_audio_task(monkeypatch):
+    fake = _ChainRedis()
+    monkeypatch.setattr(
+        "app.workers.concurrency.limits._get_redis",
+        lambda: fake,
+    )
+    from app.workers.tasks.evaluate_call_import_row_audio import (
+        _read_audio_chain,
+        _write_audio_chain,
+        clear_eval_audio_chain,
+    )
+
+    _write_audio_chain("row-1", "published", "audio-a", "llm-1")
+    assert _read_audio_chain("row-1", "audio-a") == ("published", "llm-1")
+    assert _read_audio_chain("row-1", "audio-b") is None
+    clear_eval_audio_chain("row-1")
+    assert _read_audio_chain("row-1", "audio-a") is None
+    assert "eval:audio-chain-publish:llm-1" not in fake.store
+
+
+def test_chained_llm_is_published_once(monkeypatch):
+    fake = _ChainRedis()
+    monkeypatch.setattr(
+        "app.workers.concurrency.limits._get_redis",
+        lambda: fake,
+    )
+    calls = []
+    monkeypatch.setattr(
+        "app.workers.tasks.evaluate_call_import_row.evaluate_call_import_row_task.apply_async",
+        lambda *args, **kwargs: calls.append(kwargs.get("task_id")),
+    )
+    from app.workers.tasks.evaluate_call_import_row_audio import _publish_chained_llm
+
+    kwargs = dict(
+        eval_row_id="row-1",
+        audio_task_id="audio-a",
+        chained_task_id="llm-1",
+        predecessor_task_id="audio-a",
+        slot_task_id="slot",
+        restricted_metric_ids=None,
+    )
+    assert _publish_chained_llm(**kwargs) is True
+    assert _publish_chained_llm(**kwargs) is True
+    assert calls == ["llm-1"]
+
+
+def test_unfinished_publish_lock_is_not_treated_as_queued(monkeypatch):
+    fake = _ChainRedis()
+    fake.store["eval:audio-chain-publish:llm-1"] = "1"
+    monkeypatch.setattr(
+        "app.workers.concurrency.limits._get_redis",
+        lambda: fake,
+    )
+    calls = []
+    monkeypatch.setattr(
+        "app.workers.tasks.evaluate_call_import_row.evaluate_call_import_row_task.apply_async",
+        lambda *args, **kwargs: calls.append(kwargs.get("task_id")),
+    )
+    from app.workers.tasks.evaluate_call_import_row_audio import (
+        _publish_chained_llm,
+        _write_audio_chain,
+    )
+
+    _write_audio_chain("row-1", "reserved", "audio-a", "llm-1")
+    assert (
+        _publish_chained_llm(
+            eval_row_id="row-1",
+            audio_task_id="audio-a",
+            chained_task_id="llm-1",
+            predecessor_task_id="audio-a",
+            slot_task_id="slot",
+            restricted_metric_ids=None,
+        )
+        is False
+    )
+    assert calls == []
+
+
+def test_publish_is_skipped_when_redis_cannot_lock(monkeypatch):
+    class _Down:
+        def get(self, _key):
+            raise RuntimeError("redis down")
+
+        def set(self, *_args, **_kwargs):
+            raise RuntimeError("redis down")
+
+        def delete(self, _key):
+            raise RuntimeError("redis down")
+
+    monkeypatch.setattr(
+        "app.workers.concurrency.limits._get_redis",
+        lambda: _Down(),
+    )
+    calls = []
+    monkeypatch.setattr(
+        "app.workers.tasks.evaluate_call_import_row.evaluate_call_import_row_task.apply_async",
+        lambda *args, **kwargs: calls.append(kwargs.get("task_id")),
+    )
+    from app.workers.tasks.evaluate_call_import_row_audio import _publish_chained_llm
+
+    assert (
+        _publish_chained_llm(
+            eval_row_id="row-1",
+            audio_task_id="audio-a",
+            chained_task_id="llm-1",
+            predecessor_task_id="audio-a",
+            slot_task_id="slot",
+            restricted_metric_ids=None,
+        )
+        is False
+    )
+    assert calls == []
+
+
+def test_retry_clears_audio_chain_marker(monkeypatch):
+    cleared = []
+    monkeypatch.setattr(
+        "app.workers.tasks.evaluate_call_import_row_audio.clear_eval_audio_chain",
+        lambda row_id: cleared.append(row_id),
+    )
+    from app.api.v1.routes.call_import_evaluations import _reset_eval_row_for_retry
+
+    row = type("Row", (), {})()
+    row.id = "row-1"
+    row.status = "failed"
+    row.celery_task_id = None
+    row.metric_scores = {"keep": 1}
+    row.error_message = "old"
+    row.started_at = 1
+    row.finished_at = 1
+    _reset_eval_row_for_retry(row)
+    assert cleared == []
+    row.celery_task_id = "task-1"
+    row.status = "failed"
+    _reset_eval_row_for_retry(row)
+    assert cleared == ["row-1"]
+    assert row.status == "pending"
+    assert row.celery_task_id is None
+    assert row.metric_scores == {}
+
+
+def test_evaluate_call_import_row_skips_when_another_task_owns_it(
+    db_session, monkeypatch
+):
+    _, _, _, _, _, eval_rows = _seed(db_session)
+    eval_rows[0].celery_task_id = "task-a"
+    db_session.commit()
+    called = []
+
+    def _capture(*_args, **_kwargs):
+        called.append(1)
+        return ({}, 0.1)
+
+    task_module = _patch_dependencies(
+        monkeypatch, db_session, evaluate_with_llm=_capture
+    )
+    task = task_module.evaluate_call_import_row_task
+    task.push_request(id="task-b")
+    try:
+        result = task.run(str(eval_rows[0].id))
+    finally:
+        task.pop_request()
+
+    assert result == {"status": "skipped", "reason": "already_claimed"}
+    assert called == []
+    db_session.refresh(eval_rows[0])
+    assert eval_rows[0].status == "pending"
+    assert eval_rows[0].celery_task_id == "task-a"
+
+
+def _install_fake_celery_result(monkeypatch, state: str) -> None:
+    import sys
+    import types
+
+    class _Result:
+        def __init__(self):
+            self.state = state
+
+    class _App:
+        @staticmethod
+        def AsyncResult(_task_id):
+            return _Result()
+
+    fake = types.ModuleType("app.workers.celery_app")
+    fake.celery_app = _App()
+    monkeypatch.setitem(sys.modules, "app.workers.celery_app", fake)
+
+
+def test_queued_task_id_stays_active_while_the_row_is_fresh(monkeypatch):
+    from app.workers.concurrency.dispatch_reconcile import _celery_task_is_finished
+
+    _install_fake_celery_result(monkeypatch, "PENDING")
+    assert _celery_task_is_finished("task-a") is False
+
+
+def test_pending_task_id_is_kept_no_matter_how_old(monkeypatch):
+    from app.workers.concurrency.dispatch_reconcile import (
+        _celery_task_is_finished,
+    )
+
+    _install_fake_celery_result(monkeypatch, "PENDING")
+    assert _celery_task_is_finished("task-a") is False
+
+
+def test_finished_task_id_is_not_active(monkeypatch):
+    from app.workers.concurrency.dispatch_reconcile import _celery_task_is_finished
+
+    _install_fake_celery_result(monkeypatch, "SUCCESS")
+    assert _celery_task_is_finished("task-a") is True
+
+
+def test_duplicate_task_scores_and_bills_the_row_once(db_session, monkeypatch):
+    """Two workers on one row must make one LLM call and one usage record."""
+    _, _, _, _, evaluation, eval_rows = _seed(db_session)
+    eval_row = eval_rows[0]
+    eval_row.celery_task_id = "task-a"
+    db_session.commit()
+
+    llm_calls = []
+    usage_calls = []
+
+    def _record_usage(*_args, **_kwargs):
+        usage_calls.append(1)
+        return True
+
+    monkeypatch.setattr(
+        "app.services.usage.llm_usage.record_llm_usage",
+        _record_usage,
+    )
+
+    task_module = None
+
+    def _llm(*_args, **kwargs):
+        from app.services.usage.llm_usage import record_llm_usage
+        from app.services.usage.normalize import UsageSnapshot
+
+        llm_calls.append(1)
+        record_llm_usage(
+            "typesafe/jev-1.13",
+            UsageSnapshot(prompt_tokens=10, completion_tokens=2),
+            organization_id=evaluation.organization_id,
+        )
+        if len(llm_calls) == 1:
+            duplicate = task_module.evaluate_call_import_row_task
+            duplicate.push_request(id="task-b")
+            try:
+                second = duplicate.run(str(eval_row.id))
+            finally:
+                duplicate.pop_request()
+            assert second == {"status": "skipped", "reason": "already_claimed"}
+        metrics = kwargs.get("llm_metrics") or []
+        return (
+            {
+                str(metric.id): {
+                    "value": 4,
+                    "type": "rating",
+                    "metric_name": metric.name,
+                }
+                for metric in metrics
+            },
+            0.1,
+        )
+
+    task_module = _patch_dependencies(
+        monkeypatch, db_session, evaluate_with_llm=_llm
+    )
+    task = task_module.evaluate_call_import_row_task
+    task.push_request(id="task-a")
+    try:
+        result = task.run(str(eval_row.id))
+    finally:
+        task.pop_request()
+
+    assert result["status"] == "completed"
+    assert llm_calls == [1]
+    assert usage_calls == [1]
+    db_session.refresh(eval_row)
+    db_session.refresh(evaluation)
+    assert eval_row.status == "completed"
+    assert evaluation.completed_rows == 1
+
+    task.push_request(id="task-c")
+    try:
+        again = task.run(str(eval_row.id))
+    finally:
+        task.pop_request()
+    assert again == {"status": "skipped", "reason": "already_claimed"}
+    assert llm_calls == [1]
+    assert usage_calls == [1]
+    db_session.refresh(evaluation)
+    assert evaluation.completed_rows == 1
+
+
+def test_shard_score_save_skips_catalog_foreign_key(db_session, monkeypatch):
+    from contextlib import contextmanager
+    from datetime import datetime, timezone
+
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        commit_terminal_row_and_rollup,
+    )
+
+    entered = []
+
+    @contextmanager
+    def _ctx(session):
+        entered.append(session)
+        yield
+
+    monkeypatch.setattr("app.db_sharding.row_ops.shard_row_write_context", _ctx)
+
+    _, _, _, _, evaluation, eval_rows = _seed(db_session)
+    evaluation.total_rows = 1
+    evaluation.status = "running"
+    eval_row = eval_rows[0]
+    eval_row.status = "running"
+    db_session.commit()
+
+    eval_row.status = "completed"
+    eval_row.metric_scores = {"m": {"value": 1}}
+    eval_row.finished_at = datetime.now(timezone.utc)
+
+    class _MissingParent:
+        def query(self, *_args, **_kwargs):
+            return self
+
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def first(self):
+            return None
+
+    commit_terminal_row_and_rollup(
+        db_session,
+        evaluation,
+        eval_row,
+        previous_row_status="running",
+        catalog_db=_MissingParent(),
+    )
+    assert entered == [db_session]
+    db_session.refresh(eval_row)
+    assert eval_row.status == "completed"
+    assert eval_row.metric_scores == {"m": {"value": 1}}
+
+
+def test_second_terminal_write_does_not_advance_progress(db_session):
+    from datetime import datetime, timezone
+
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        commit_terminal_row_and_rollup,
+    )
+
+    _, _, _, _, evaluation, eval_rows = _seed(db_session)
+    evaluation.total_rows = 1
+    evaluation.status = "running"
+    eval_row = eval_rows[0]
+    eval_row.status = "running"
+    db_session.commit()
+
+    eval_row.status = "completed"
+    eval_row.finished_at = datetime.now(timezone.utc)
+    commit_terminal_row_and_rollup(
+        db_session,
+        evaluation,
+        eval_row,
+        previous_row_status="running",
+    )
+    db_session.refresh(evaluation)
+    assert evaluation.completed_rows == 1
+
+    eval_row.status = "completed"
+    commit_terminal_row_and_rollup(
+        db_session,
+        evaluation,
+        eval_row,
+        previous_row_status="running",
+    )
+    db_session.refresh(evaluation)
+    db_session.refresh(eval_row)
+    assert evaluation.completed_rows == 1
+    assert eval_row.status == "completed"
+
+
+def test_queued_eval_row_is_not_cleared_for_a_second_dispatch(
+    db_session, monkeypatch
+):
+    from app.workers.concurrency.dispatch_reconcile import (
+        _reconcile_eval_rows_on_session,
+    )
+
+    _install_fake_celery_result(monkeypatch, "PENDING")
+    _, _, _, _, _, eval_rows = _seed(db_session)
+    eval_row = eval_rows[0]
+    eval_row.status = "pending"
+    eval_row.celery_task_id = "task-a"
+    db_session.commit()
+
+    assert _reconcile_eval_rows_on_session(db_session) == 0
+    db_session.refresh(eval_row)
+    assert eval_row.status == "pending"
+    assert eval_row.celery_task_id == "task-a"

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import csv
 import base64
 import io
 import json
@@ -59,6 +58,8 @@ from app.models.schemas import (
     CallImportEvaluationBulkDelete,
     CallImportEvaluationBulkActionResponse,
     CallImportEvaluationCreate,
+    CallImportEvaluationExportJobResponse,
+    CallImportEvaluationExportRequest,
     CallImportEvaluationListResponse,
     CallImportEvaluationResponse,
     CallImportEvaluationRetryRequest,
@@ -87,6 +88,10 @@ from app.models.schemas import (
     EvaluationMetricClustersState,
     EvaluationPromptImprovementsRequest,
     EvaluationPromptImprovementsState,
+    PromptImprovementReviewUpdate,
+    PromptPushConfirm,
+    PromptPushPreviewResponse,
+    PromptPushResponse,
     MetricFailurePoliciesResponse,
     MetricFailurePoliciesSaveRequest,
     MetricFailurePolicy,
@@ -272,41 +277,6 @@ def require_call_import_capability(capability: str):
     return _dep
 
 
-def _flatten_transcript(text: Optional[str]) -> str:
-    """Collapse a multi-line transcript onto a single line for spreadsheet export.
-
-    The diarised transcript is stored as ``<speaker>: <text>`` lines joined
-    by ``\\n`` because the in-app ``TranscriptView`` parses those line
-    breaks to render chat bubbles. In Excel / Google Sheets that same
-    newline-per-turn formatting causes each cell to balloon vertically,
-    which the user reads as "lots of empty space on top of the cell".
-    Flattening at export time keeps the DB shape intact while giving the
-    spreadsheet a single-line cell per row.
-    """
-    if not text:
-        return ""
-    parts = [
-        segment.strip()
-        for segment in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    ]
-    return " ".join(p for p in parts if p)
-
-
-def _evaluated_transcript_source_label(
-    evaluation: CallImportEvaluation,
-    source_row: CallImportRow,
-) -> str:
-    """Label which transcript source this row was scored against."""
-    source = (evaluation.transcript_source or "diarised").strip().lower()
-    if source == "production":
-        if not (source_row.transcript or "").strip():
-            return ""
-        return "Production"
-    if not (source_row.diarised_transcript or "").strip():
-        return ""
-    return "Diarised"
-
-
 def _pick_evaluation_row_transcript(
     source_row: Optional[CallImportRow],
     evaluation: Optional[CallImportEvaluation] = None,
@@ -333,22 +303,34 @@ def _to_evaluation_row_response(
     eval_row_obj: CallImportEvaluationRow,
     source_row: Optional[CallImportRow],
     evaluation: Optional[CallImportEvaluation] = None,
+    *,
+    include_text: bool = True,
 ) -> CallImportEvaluationRowResponse:
-    """Serialize one evaluation row plus joined source-row metadata."""
+    """Serialize one evaluation row plus joined source-row metadata.
+
+    List pages pass ``include_text=False`` so transcript bodies stay off
+    the page. The single-row read passes ``True``.
+    """
+    if include_text and source_row is not None:
+        transcript = _pick_evaluation_row_transcript(source_row, evaluation)
+        production_transcript = (source_row.transcript or "").strip() or None
+        diarised_transcript = (source_row.diarised_transcript or "").strip() or None
+        raw_columns = source_row.raw_columns
+    else:
+        transcript = None
+        production_transcript = None
+        diarised_transcript = None
+        raw_columns = None
     return CallImportEvaluationRowResponse(
         id=eval_row_obj.id,
         evaluation_id=eval_row_obj.evaluation_id,
         call_import_row_id=eval_row_obj.call_import_row_id,
         row_index=source_row.row_index if source_row else None,
         conversation_id=source_row.conversation_id if source_row else None,
-        transcript=_pick_evaluation_row_transcript(source_row, evaluation),
-        production_transcript=(
-            (source_row.transcript or "").strip() or None if source_row else None
-        ),
-        diarised_transcript=(
-            (source_row.diarised_transcript or "").strip() or None if source_row else None
-        ),
-        raw_columns=source_row.raw_columns if source_row else None,
+        transcript=transcript,
+        production_transcript=production_transcript,
+        diarised_transcript=diarised_transcript,
+        raw_columns=raw_columns,
         recording_url=source_row.recording_url if source_row else None,
         recording_date=source_row.recording_date if source_row else None,
         recording_s3_key=source_row.recording_s3_key if source_row else None,
@@ -1055,9 +1037,15 @@ async def create_call_import_evaluation(
     )
 
     if use_diarised:
-        from app.api.v1.routes.call_imports import _is_manual_audio_call_import
+        from app.api.v1.routes.call_imports import (
+            _is_manual_audio_call_import,
+            _is_platform_call_import,
+            platform_import_hydration_complete,
+        )
 
-        if not _is_manual_audio_call_import(call_import):
+        if not _is_manual_audio_call_import(call_import) and not _is_platform_call_import(
+            call_import
+        ):
             if call_import.schema_id:
                 from app.api.v1.routes.call_imports import (
                     _resolve_schema,
@@ -1085,6 +1073,22 @@ async def create_call_import_evaluation(
                     )
 
     starting_from_mapped = False
+    from app.api.v1.routes.call_imports import (
+        _is_platform_call_import,
+        platform_import_hydration_complete,
+    )
+
+    if _is_platform_call_import(call_import) and not platform_import_hydration_complete(
+        call_import
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Platform import is still discovering or fetching recordings. "
+                "Wait until the batch is ready before running evaluation."
+            ),
+        )
+
     if call_import.status == CallImportStatus.MAPPED:
         if not call_import.source_s3_key or not call_import.source_format:
             raise HTTPException(
@@ -1945,14 +1949,29 @@ async def list_call_import_evaluation_rows(
             bounded_shard_fetch=(
                 not sort_recognized or sort_by_clean == "row_index"
             ),
+            row_index_desc=bool(
+                sort_recognized and sort_by_clean == "row_index" and direction_desc
+            ),
+            sort_reads_scores=sort_by_clean.startswith("metric:"),
         )
     else:
-        total = query.count()
-        rows = query.offset((page - 1) * page_size).limit(page_size).all()
+        from app.db_sharding.scatter_gather import defer_call_import_row_text
 
-    # Row detail shows the transcript for this run's chosen source.
+        total = query.count()
+        rows = (
+            query.options(*defer_call_import_row_text())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
+
     items: List[CallImportEvaluationRowResponse] = [
-        _to_evaluation_row_response(eval_row_obj, source_row, eval_row)
+        _to_evaluation_row_response(
+            eval_row_obj,
+            source_row,
+            eval_row,
+            include_text=False,
+        )
         for eval_row_obj, source_row in rows
     ]
 
@@ -1965,26 +1984,113 @@ async def list_call_import_evaluation_rows(
 
 
 @router.get(
-    "/{eval_id}/export",
-    operation_id="exportCallImportEvaluationCsv",
+    "/{eval_id}/rows/{row_id}",
+    response_model=CallImportEvaluationRowResponse,
+    operation_id="getCallImportEvaluationRow",
 )
-async def export_call_import_evaluation_csv(
+async def get_call_import_evaluation_row(
     call_import_id: UUID,
     eval_id: UUID,
-    format: Literal["csv", "xlsx"] = Query(
-        "csv",
-        description=(
-            "Output format. ``csv`` returns a UTF-8 BOM CSV; ``xlsx`` "
-            "returns a native Excel workbook (single sheet)."
-        ),
-    ),
+    row_id: UUID,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
-) -> StreamingResponse:
+) -> CallImportEvaluationRowResponse:
+    """One evaluation row, including the transcript the list leaves off."""
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if evaluation is None:
+        raise HTTPException(status_code=404, detail="Call import evaluation not found")
+
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    if not is_sharding_enabled():
+        pair = (
+            db.query(CallImportEvaluationRow, CallImportRow)
+            .join(
+                CallImportRow,
+                CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
+            )
+            .filter(
+                CallImportEvaluationRow.id == row_id,
+                CallImportEvaluationRow.evaluation_id == eval_id,
+                CallImportRow.call_import_id == call_import_id,
+            )
+            .first()
+        )
+        if pair is None:
+            raise HTTPException(
+                status_code=404, detail="Call import evaluation row not found"
+            )
+        eval_row, source_row = pair
+        return _to_evaluation_row_response(
+            eval_row,
+            source_row,
+            evaluation,
+            include_text=True,
+        )
+
+    from app.db_sharding.row_ops import (
+        close_row_sessions,
+        locate_call_import_evaluation_row,
+    )
+
+    try:
+        row_db, catalog_db, eval_row, source_row, _shard_id = (
+            locate_call_import_evaluation_row(row_id)
+        )
+    except LookupError:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation row not found"
+        ) from None
+    try:
+        if (
+            eval_row.evaluation_id != eval_id
+            or source_row.call_import_id != call_import_id
+        ):
+            raise HTTPException(
+                status_code=404, detail="Call import evaluation row not found"
+            )
+        return _to_evaluation_row_response(
+            eval_row,
+            source_row,
+            evaluation,
+            include_text=True,
+        )
+    finally:
+        close_row_sessions(row_db, catalog_db)
+
+
+@router.post(
+    "/{eval_id}/export",
+    response_model=CallImportEvaluationExportJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="startCallImportEvaluationExport",
+)
+async def start_call_import_evaluation_export(
+    call_import_id: UUID,
+    eval_id: UUID,
+    payload: Optional[CallImportEvaluationExportRequest] = Body(None),
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportEvaluationExportJobResponse:
+    """Queue a gzip CSV (or scores-only xlsx) export and return the job.
+
+    The file is built off this request. Poll the job, then download each
+    part from blob storage.
+    """
     del api_key
     call_import = _require_import(db, call_import_id, organization_id)
-
     evaluation = (
         db.query(CallImportEvaluation)
         .filter(
@@ -1997,337 +2103,250 @@ async def export_call_import_evaluation_csv(
     if not evaluation:
         raise HTTPException(status_code=404, detail="Call import evaluation not found")
 
-    selected_metric_ids = _serialize_selected_metric_ids(evaluation.selected_metric_ids)
-    # Include parent metric ids referenced in selected_metric_groups so
-    # the export shows a parent "Chosen Label" column next to its
-    # children's true/false columns.
-    lookup_ids: List[UUID] = list(selected_metric_ids)
-    groups_raw = (
-        evaluation.selected_metric_groups
-        if isinstance(evaluation.selected_metric_groups, dict)
-        else {}
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models.database import CallImportEvaluationExport
+    from app.services.call_imports.evaluation_export import (
+        XLSX_SHEET_ROW_CAP,
+        execute_evaluation_export,
+        export_job_is_stale,
     )
-    for parent_str in groups_raw.keys():
-        try:
-            pid = UUID(parent_str)
-            if pid not in lookup_ids:
-                lookup_ids.append(pid)
-        except (TypeError, ValueError):
-            continue
-    metrics = _metrics_for_ids(db, organization_id, lookup_ids)
-    metric_names = {str(metric.id): metric.name for metric in metrics}
-    metrics_by_id = {str(metric.id): metric for metric in metrics}
+    from app.services.storage.blob_storage_service import blob_storage_service
 
-    # Two export-time modes depending on how the batch was uploaded:
-    #
-    #   * Schema-driven (new): ``call_imports.schema_id`` is set,
-    #     ``parameter_mapping`` records which CSV header fed each
-    #     parameter, and ``raw_columns`` on each row is keyed by
-    #     parameter NAME. Export headers are the parameter names.
-    #   * Legacy (pre-schema): ``column_mapping`` / ``extra_columns`` /
-    #     ``custom_column_mapping`` drive the columns and
-    #     ``raw_columns`` is keyed by the original CSV header.
-    #
-    # We bucket entries into ``standard_export_headers`` (raw_columns
-    # key == export header) and ``custom_export`` (export header
-    # differs from the raw_columns key) so the row-projection loop
-    # below stays mode-agnostic.
-    standard_export_headers: List[str] = []
-    custom_export: List[tuple[str, str]] = []  # [(export_header, raw_columns_key)]
+    body = payload or CallImportEvaluationExportRequest()
+    if body.format == "xlsx":
+        from app.db_sharding.eval_rows import count_evaluation_rows_for_run
 
-    if call_import.schema_id is not None:
-        # Use the live schema parameter list for column ordering. Falls
-        # back to whatever's in ``parameter_mapping`` if the schema was
-        # deleted (defensive - the FK is ON DELETE RESTRICT, but tests
-        # / future cascades may still hit this branch).
-        from app.models.database import CallImportSchema as _ImportSchema
-
-        schema_obj = (
-            db.query(_ImportSchema)
-            .filter(_ImportSchema.id == call_import.schema_id)
-            .first()
-        )
-        if schema_obj is not None:
-            params_sorted = sorted(
-                schema_obj.parameters, key=lambda p: p.ordering or 0
-            )
-            for param in params_sorted:
-                if param.name and param.name not in standard_export_headers:
-                    standard_export_headers.append(param.name)
-        else:
-            for param_name in (call_import.parameter_mapping or {}).keys():
-                if param_name and param_name not in standard_export_headers:
-                    standard_export_headers.append(param_name)
-    else:
-        mapping = call_import.column_mapping or {}
-        mapped_headers = [
-            mapping.get("external_call_id"),
-            mapping.get("transcript"),
-            mapping.get("recording_url"),
-        ]
-        for header in [*mapped_headers, *(call_import.extra_columns or [])]:
-            if (
-                isinstance(header, str)
-                and header
-                and header not in standard_export_headers
-            ):
-                standard_export_headers.append(header)
-
-        custom_mapping = call_import.custom_column_mapping or {}
-        if isinstance(custom_mapping, dict):
-            for name, csv_header in custom_mapping.items():
-                if not isinstance(name, str) or not isinstance(csv_header, str):
-                    continue
-                if not name or not csv_header:
-                    continue
-                if name in standard_export_headers:
-                    continue  # would clobber a real column
-                custom_export.append((name, csv_header))
-
-    if (
-        call_import.source_format == "audio"
-        and "conversation_id" not in standard_export_headers
-    ):
-        standard_export_headers.insert(0, "conversation_id")
-
-    # Build the metric columns: each parent (if any) gets a value column
-    # and (when capture_rationale=true) a "<Parent> - LLM Rationale"
-    # column. The per-child boolean columns are intentionally suppressed
-    # — categorization metrics now collapse to exactly two columns in
-    # the export, mirroring the in-app table.
-    child_ids_in_groups: set[str] = set()
-    for parent_str, child_strs in groups_raw.items():
-        for child_str in child_strs:
-            if isinstance(child_str, str):
-                child_ids_in_groups.add(child_str)
-
-    metric_headers: List[str] = []
-    rationale_headers: Dict[str, str] = {}  # metric_id_str -> rationale column name
-    seen_metric_ids: set[str] = set()
-
-    def _add_metric_column(metric: Metric) -> None:
-        mid_str = str(metric.id)
-        if mid_str in seen_metric_ids:
-            return
-        # Skip any child whose parent is part of this run — the parent
-        # column above already shows the chosen child name as its
-        # value.
-        if mid_str in child_ids_in_groups:
-            return
-        seen_metric_ids.add(mid_str)
-        header = metric_names[mid_str]
-        metric_headers.append(header)
-        if bool(getattr(metric, "capture_rationale", False)):
-            rationale_header = f"{header} - LLM Rationale"
-            metric_headers.append(rationale_header)
-            rationale_headers[mid_str] = rationale_header
-
-    for parent_str in groups_raw.keys():
-        parent = metrics_by_id.get(parent_str)
-        if parent:
-            _add_metric_column(parent)
-        # Children of an in-run parent are deliberately not emitted —
-        # the ``child_ids_in_groups`` guard inside ``_add_metric_column``
-        # is what enforces this. We still iterate the keys above (not
-        # ``.items()``) so the parent-only emission is explicit.
-    # Append anything left over (standalone metrics not in any group, or
-    # legacy runs without ``selected_metric_groups``).
-    for metric in metrics:
-        if metric.selection_mode and not metric.parent_metric_id:
-            continue  # already handled above
-        if str(metric.id) in seen_metric_ids:
-            continue
-        _add_metric_column(metric)
-
-    # Three new fixed columns surface the two transcript fields and the
-    # evaluation's transcript_source as live values pulled from the
-    # ``CallImportRow`` (not from the frozen ``raw_columns`` snapshot).
-    # The user can now compare "what was in the CSV" vs "what the
-    # diarisation worker produced" without round-tripping through the
-    # UI, and downstream tools can verify which transcript the metrics
-    # were computed against.
-    PRODUCTION_TRANSCRIPT_HEADER = "Production Transcript"
-    DIARISED_TRANSCRIPT_HEADER = "Diarised Transcript"
-    EVAL_SOURCE_HEADER = "Evaluated Transcript Source"
-
-    fieldnames = [
-        *standard_export_headers,
-        *[h for h, _ in custom_export],
-        PRODUCTION_TRANSCRIPT_HEADER,
-        DIARISED_TRANSCRIPT_HEADER,
-        EVAL_SOURCE_HEADER,
-        *metric_headers,
-    ]
-
-    from app.db_sharding.scatter_gather import load_evaluation_row_pairs
-    from app.db_sharding.sessions import is_sharding_enabled
-
-    if is_sharding_enabled():
-        rows = sorted(
-            load_evaluation_row_pairs(db, eval_id),
-            key=lambda pair: int(pair[1].row_index or 0),
-        )
-    else:
-        rows = (
-            db.query(CallImportEvaluationRow, CallImportRow)
-            .join(
-                CallImportRow,
-                CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
-            )
-            .filter(CallImportEvaluationRow.evaluation_id == eval_id)
-            .order_by(CallImportRow.row_index.asc())
-            .all()
-        )
-
-    def _project_rows() -> Iterator[Dict[str, str]]:
-        for eval_row, source_row in rows:
-            row_out: Dict[str, str] = {}
-            raw = (
-                source_row.raw_columns
-                if isinstance(source_row.raw_columns, dict)
-                else {}
-            )
-            for header in standard_export_headers:
-                value = raw.get(header)
-                if value is None and header == "conversation_id":
-                    value = source_row.conversation_id
-                row_out[header] = "" if value is None else str(value)
-            for export_header, csv_header in custom_export:
-                value = raw.get(csv_header)
-                row_out[export_header] = "" if value is None else str(value)
-
-            # Live transcripts pulled from the row, NOT from raw_columns,
-            # so re-diarised values are always reflected in the export.
-            # Both transcript columns are flattened to a single line so the
-            # spreadsheet cell doesn't balloon vertically — the in-app
-            # ``TranscriptView`` still has the DB copy with line breaks
-            # intact for chat-bubble rendering.
-            row_out[PRODUCTION_TRANSCRIPT_HEADER] = _flatten_transcript(
-                source_row.transcript
-            )
-            row_out[DIARISED_TRANSCRIPT_HEADER] = _flatten_transcript(
-                source_row.diarised_transcript
-            )
-            row_out[EVAL_SOURCE_HEADER] = _evaluated_transcript_source_label(
-                evaluation,
-                source_row,
-            )
-
-            scores = (
-                eval_row.metric_scores
-                if isinstance(eval_row.metric_scores, dict)
-                else {}
-            )
-            for metric in metrics:
-                metric_score = (
-                    scores.get(str(metric.id))
-                    if isinstance(scores, dict)
-                    else None
-                )
-                value = (
-                    metric_score.get("value")
-                    if isinstance(metric_score, dict)
-                    else None
-                )
-                # Parent metrics (selection_mode set) render the chosen
-                # child name for single_choice or the ";"-joined list of
-                # true child names for multi_label.
-                if (
-                    metric.selection_mode
-                    and not metric.parent_metric_id
-                    and isinstance(metric_score, dict)
-                ):
-                    if metric.selection_mode == "multi_label":
-                        selected = metric_score.get("selected_child_names")
-                        if isinstance(selected, list):
-                            value = ";".join(str(s) for s in selected)
-                    else:
-                        value = (
-                            metric_score.get("chosen_child_name")
-                            or metric_score.get("value")
-                        )
-                row_out[metric.name] = "" if value is None else str(value)
-                rationale_header = rationale_headers.get(str(metric.id))
-                if rationale_header is not None:
-                    rationale = (
-                        metric_score.get("rationale")
-                        if isinstance(metric_score, dict)
-                        else None
-                    )
-                    row_out[rationale_header] = (
-                        "" if rationale is None else str(rationale)
-                    )
-            yield row_out
-
-    base_filename = f"call-import-{call_import_id}-evaluation-{eval_id}"
-
-    if format == "xlsx":
-        # xlsx is unicode-native (Hindi/Devanagari, emoji, etc.) so the
-        # UTF-8-BOM dance isn't needed here. ``write_only`` mode keeps
-        # peak memory bounded for large evaluations because openpyxl
-        # only buffers the current row.
-        try:
-            from openpyxl import Workbook  # type: ignore
-            from openpyxl.cell import WriteOnlyCell  # type: ignore
-            from openpyxl.styles import Font  # type: ignore
-        except ImportError as exc:  # pragma: no cover - exercised by pyproject lock
+        row_count = count_evaluation_rows_for_run(db, eval_id)
+        if row_count > XLSX_SHEET_ROW_CAP:
             raise HTTPException(
-                status_code=500,
+                status_code=400,
                 detail=(
-                    "Excel export requires the 'openpyxl' package which is "
-                    "not installed."
+                    "This run has more rows than Excel allows on one sheet. "
+                    "Download the CSV instead."
                 ),
-            ) from exc
+            )
 
-        workbook = Workbook(write_only=True)
-        worksheet = workbook.create_sheet(title="Evaluation")
+    active = _active_export_job(db, eval_id)
+    if active is not None and not _export_request_matches(active, body):
+        was_stale = export_job_is_stale(active)
+        if was_stale and _fail_stale_export_job(db, active):
+            active = None
+        elif was_stale:
+            active = _active_export_job(db, eval_id)
+        if active is not None and not _export_request_matches(active, body):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "An export is already running for this evaluation. "
+                    "Wait for it to finish before starting a different download."
+                ),
+            )
+    if active is not None:
+        if blob_storage_service.is_enabled() and (
+            active.status == "pending" or export_job_is_stale(active)
+        ):
+            try:
+                _enqueue_evaluation_export(str(active.id))
+            except Exception as exc:
+                if active.status == "pending":
+                    active.status = "failed"
+                    active.error_message = f"Could not queue the export: {exc}"
+                    active.finished_at = datetime.now(timezone.utc)
+                    db.commit()
+                    db.refresh(active)
+        return _export_job_response(active)
 
-        bold_font = Font(bold=True)
-        header_cells = []
-        for header in fieldnames:
-            cell = WriteOnlyCell(worksheet, value=header)
-            cell.font = bold_font
-            header_cells.append(cell)
-        worksheet.append(header_cells)
+    job = CallImportEvaluationExport(
+        evaluation_id=evaluation.id,
+        call_import_id=call_import.id,
+        organization_id=organization_id,
+        workspace_id=call_import.workspace_id,
+        format=body.format,
+        include_transcripts=body.include_transcripts,
+        status="pending",
+        parts=[],
+    )
+    db.add(job)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        active = _active_export_job(db, eval_id)
+        if active is not None and _export_request_matches(active, body):
+            return _export_job_response(active)
+        if active is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "An export is already running for this evaluation. "
+                    "Wait for it to finish before starting a different download."
+                ),
+            )
+        raise
+    db.refresh(job)
 
-        for row_dict in _project_rows():
-            worksheet.append([row_dict.get(h, "") for h in fieldnames])
+    if not blob_storage_service.is_enabled():
+        execute_evaluation_export(db, job.id)
+        db.refresh(job)
+        return _export_job_response(job)
 
-        buffer = io.BytesIO()
-        workbook.save(buffer)
-        xlsx_bytes = buffer.getvalue()
-        filename = f"{base_filename}.xlsx"
-        return StreamingResponse(
-            iter([xlsx_bytes]),
-            media_type=(
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            ),
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    try:
+        _enqueue_evaluation_export(str(job.id))
+    except Exception as exc:
+        job.status = "failed"
+        job.error_message = f"Could not queue the export: {exc}"
+        job.finished_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(job)
+    return _export_job_response(job)
+
+
+@router.get(
+    "/{eval_id}/export-jobs/{job_id}",
+    response_model=CallImportEvaluationExportJobResponse,
+    operation_id="getCallImportEvaluationExport",
+)
+async def get_call_import_evaluation_export(
+    call_import_id: UUID,
+    eval_id: UUID,
+    job_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportEvaluationExportJobResponse:
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+    from app.models.database import CallImportEvaluationExport
+
+    job = (
+        db.query(CallImportEvaluationExport)
+        .filter(
+            CallImportEvaluationExport.id == job_id,
+            CallImportEvaluationExport.evaluation_id == eval_id,
+            CallImportEvaluationExport.call_import_id == call_import_id,
+            CallImportEvaluationExport.organization_id == organization_id,
         )
+        .first()
+    )
+    if job is None:
+        raise HTTPException(status_code=404, detail="Export job not found")
+    return _export_job_response(job, with_download_urls=True)
 
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
-    writer.writeheader()
-    for row_dict in _project_rows():
-        writer.writerow(row_dict)
 
-    # Excel on Windows defaults to the system ANSI codepage (Windows-1252)
-    # when a CSV has no encoding marker, which turns UTF-8 Hindi/Devanagari
-    # / any non-ASCII text into mojibake (e.g. ``ठीक`` → ``à¤ à¥€à¤•``).
-    # A UTF-8 BOM tells Excel to switch to UTF-8 decoding and is silently
-    # skipped by every other UTF-8-aware reader (pandas, LibreOffice,
-    # Google Sheets, etc.), so the data round-trips correctly everywhere.
-    csv_text = output.getvalue()
-    # ``utf-8-sig`` adds the UTF-8 BOM so Excel on Windows decodes the file
-    # as UTF-8 instead of the system codepage. We also declare the same
-    # codec in the Content-Type header so well-behaved HTTP clients (incl.
-    # ``httpx`` / ``requests`` in our tests) strip the BOM during decode.
-    csv_bytes = csv_text.encode("utf-8-sig")
-    filename = f"{base_filename}.csv"
-    return StreamingResponse(
-        iter([csv_bytes]),
-        media_type="text/csv; charset=utf-8-sig",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+def _fail_stale_export_job(db: Session, job) -> bool:
+    """Fail a stale running export only while that same claim still holds it.
+
+    The heartbeat and claim are the values already loaded on ``job``. A
+    worker that claimed the export after this read changes both, the
+    update matches nothing, and the caller re-reads the live job.
+    """
+    from sqlalchemy import update
+
+    from app.models.database import CallImportEvaluationExport
+
+    observed_heartbeat = job.heartbeat_at
+    observed_claim = job.claim_token
+    heartbeat_still = (
+        CallImportEvaluationExport.heartbeat_at.is_(None)
+        if observed_heartbeat is None
+        else CallImportEvaluationExport.heartbeat_at == observed_heartbeat
+    )
+    claim_still = (
+        CallImportEvaluationExport.claim_token.is_(None)
+        if observed_claim is None
+        else CallImportEvaluationExport.claim_token == observed_claim
+    )
+    result = db.execute(
+        update(CallImportEvaluationExport)
+        .where(
+            CallImportEvaluationExport.id == job.id,
+            CallImportEvaluationExport.status == "running",
+            heartbeat_still,
+            claim_still,
+        )
+        .values(
+            status="failed",
+            error_message="Stopped because a different export was requested.",
+            finished_at=datetime.now(timezone.utc),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    db.commit()
+    return bool(result.rowcount)
+
+
+def _export_request_matches(job, body) -> bool:
+    return (job.format or "csv") == body.format and bool(job.include_transcripts) == bool(
+        body.include_transcripts
+    )
+
+
+def _active_export_job(db: Session, evaluation_id: UUID):
+    from app.models.database import CallImportEvaluationExport
+
+    return (
+        db.query(CallImportEvaluationExport)
+        .filter(
+            CallImportEvaluationExport.evaluation_id == evaluation_id,
+            CallImportEvaluationExport.status.in_(("pending", "running")),
+        )
+        .first()
+    )
+
+
+def _enqueue_evaluation_export(job_id: str) -> None:
+    from app.workers.tasks.call_import_bulk_ops import (
+        export_call_import_evaluation_task,
+    )
+
+    export_call_import_evaluation_task.delay(job_id)
+
+
+def _export_job_response(job, *, with_download_urls: bool = False):
+    from app.models.schemas import (
+        CallImportEvaluationExportJobResponse,
+        CallImportEvaluationExportPart,
+    )
+    from app.services.call_imports.evaluation_export import EXPORT_URL_TTL_SECONDS
+    from app.services.storage.blob_storage_service import blob_storage_service
+
+    parts = []
+    raw_parts = job.parts if isinstance(job.parts, list) else []
+    for item in raw_parts:
+        if not isinstance(item, dict):
+            continue
+        download_url = None
+        key = item.get("s3_key")
+        filename = item.get("filename") or "export.csv.gz"
+        if (
+            with_download_urls
+            and job.status == "completed"
+            and key
+            and blob_storage_service.is_enabled()
+        ):
+            download_url = blob_storage_service.generate_presigned_url_by_key(
+                key,
+                expiration=EXPORT_URL_TTL_SECONDS,
+                response_content_disposition=f'attachment; filename="{filename}"',
+            )
+        parts.append(
+            CallImportEvaluationExportPart(
+                part=int(item.get("part") or 0),
+                filename=filename,
+                row_count=int(item.get("row_count") or 0),
+                byte_size=int(item.get("byte_size") or 0),
+                download_url=download_url,
+            )
+        )
+    return CallImportEvaluationExportJobResponse(
+        id=job.id,
+        evaluation_id=job.evaluation_id,
+        status=job.status,
+        format=job.format,
+        include_transcripts=bool(job.include_transcripts),
+        error_message=job.error_message,
+        parts=parts,
     )
 
 
@@ -4560,12 +4579,26 @@ async def cancel_call_import_evaluation(
     target_count = count_evaluation_cancel_targets(db, eval_id, mode="abort")
     if target_count == 0:
         from app.services.call_imports.bulk_ops import (
-            _sweep_evaluation_diarisation_cancel,
+            count_inflight_diarisation_for_evaluation,
         )
 
-        swept = _sweep_evaluation_diarisation_cancel(db, eval_id)
-        if swept:
-            db.commit()
+        inflight_diarisation = count_inflight_diarisation_for_evaluation(
+            db,
+            eval_id,
+            evaluation.call_import_id,
+        )
+        if inflight_diarisation == 0:
+            return CallImportEvaluationBulkActionResponse(
+                accepted=True,
+                target_count=0,
+                evaluation_id=eval_id,
+            )
+        _claim_evaluation_bulk_operation(eval_id, "abort")
+        from app.workers.tasks.call_import_bulk_ops import (
+            cancel_call_import_evaluation_task,
+        )
+
+        cancel_call_import_evaluation_task.delay(str(eval_id), mode="abort")
         return CallImportEvaluationBulkActionResponse(
             accepted=True,
             target_count=0,
@@ -5738,13 +5771,29 @@ def _generate_and_persist_tldr_summary(
                 organization_id=organization_id,
                 db=db,
                 temperature=0.4,
-                max_tokens=1400,
+                max_tokens=4096,
             )
+            if llm_result.get("truncated"):
+                llm_result = llm_service.generate_response(
+                    messages=messages,
+                    llm_provider=provider_enum,
+                    llm_model=model_str,
+                    organization_id=organization_id,
+                    db=db,
+                    temperature=0.2,
+                    max_tokens=8192,
+                )
     except Exception as e:
         logger.error(f"[CallImportInsights] LLM call failed: {e}")
         raise HTTPException(
             status_code=502, detail=f"LLM call failed: {e}"
         ) from e
+
+    if llm_result.get("truncated"):
+        raise HTTPException(
+            status_code=502,
+            detail="Insights response was cut off before it finished. Try again.",
+        )
 
     total = int(evaluation.total_rows or 0)
     summary = _parse_insights_response(llm_result.get("text", ""))
@@ -6234,9 +6283,9 @@ def _enqueue_prompt_improvements_job(
 
 
 def _load_eval_rows(db: Session, evaluation_id: UUID) -> List[CallImportEvaluationRow]:
-    from app.db_sharding.eval_rows import load_evaluation_rows_for_run
+    from app.db_sharding.scatter_gather import load_evaluation_score_rows
 
-    return load_evaluation_rows_for_run(db, evaluation_id)
+    return load_evaluation_score_rows(db, evaluation_id)
 
 
 def _count_completed_eval_rows(db: Session, evaluation_id: UUID) -> int:
@@ -6989,28 +7038,56 @@ async def generate_call_import_evaluation_prompt_improvements(
 
     from app.services.call_import_prompt_improvements import is_imported_agent
     from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
+    from app.services.platform_import_imported_agent import resolve_imported_agent_for_call_import
+
+    call_import = _require_import(db, call_import_id, organization_id)
+    imported_agent_id = body.imported_agent_id
+    if imported_agent_id is None:
+        linked = resolve_imported_agent_for_call_import(db, call_import, principal)
+        if linked is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No imported agent is linked to this import. Select an imported agent "
+                    "or use a single-agent platform import."
+                ),
+            )
+        imported_agent_id = linked.id
 
     imported_agent = (
         db.query(PromptPartial)
         .filter(
-            PromptPartial.id == body.imported_agent_id,
+            PromptPartial.id == imported_agent_id,
             PromptPartial.organization_id == organization_id,
             PromptPartial.workspace_id == workspace_id,
         )
         .first()
     )
     if imported_agent is None or not is_imported_agent(imported_agent):
-        raise HTTPException(
-            status_code=404,
-            detail="Imported agent not found in the active workspace",
+        from app.services.platform_import_imported_agent import (
+            relink_evaluation_imported_agent,
+            resolve_imported_agent_for_call_import,
         )
+
+        recovered = resolve_imported_agent_for_call_import(db, call_import, principal)
+        if recovered is None or not is_imported_agent(recovered):
+            raise HTTPException(
+                status_code=404,
+                detail="Imported agent not found in the active workspace",
+            )
+        imported_agent = recovered
+        imported_agent_id = recovered.id
+        if isinstance(evaluation.prompt_improvements, dict):
+            relink_evaluation_imported_agent(evaluation, recovered)
+            stamp_evaluation_actor(evaluation, principal)
+            db.commit()
 
     if not body.regenerate and not body.force:
         cached = _prompt_improvements_payload(evaluation)
         if (
             cached is not None
             and cached.status in {"running", "completed"}
-            and cached.imported_agent_id == str(body.imported_agent_id)
+            and cached.imported_agent_id == str(imported_agent_id)
         ):
             return cached
 
@@ -7020,7 +7097,7 @@ async def generate_call_import_evaluation_prompt_improvements(
 
     _enqueue_prompt_improvements_job(
         evaluation,
-        imported_agent_id=body.imported_agent_id,
+        imported_agent_id=imported_agent_id,
         imported_agent_name=imported_agent.name,
         provider=provider_enum.value,
         model=model_str,
@@ -7033,9 +7110,123 @@ async def generate_call_import_evaluation_prompt_improvements(
     db.refresh(evaluation)
     return _prompt_improvements_payload(evaluation) or EvaluationPromptImprovementsState(
         status="running",
-        imported_agent_id=str(body.imported_agent_id),
+        imported_agent_id=str(imported_agent_id),
         imported_agent_name=imported_agent.name,
     )
+
+
+def _load_evaluation_for_prompt_push(
+    db: Session,
+    call_import_id: UUID,
+    eval_id: UUID,
+    organization_id: UUID,
+) -> tuple[CallImport, CallImportEvaluation]:
+    call_import = _require_import(db, call_import_id, organization_id)
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="Call import evaluation not found")
+    return call_import, evaluation
+
+
+@router.patch(
+    "/{eval_id}/prompt-improvements/review",
+    response_model=EvaluationPromptImprovementsState,
+    operation_id="reviewCallImportEvaluationPromptImprovement",
+)
+async def review_call_import_evaluation_prompt_improvement(
+    call_import_id: UUID,
+    eval_id: UUID,
+    body: PromptImprovementReviewUpdate,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> EvaluationPromptImprovementsState:
+    del api_key
+    from app.services.call_import_prompt_push import PromptPushError, set_suggestion_review
+
+    _, evaluation = _load_evaluation_for_prompt_push(db, call_import_id, eval_id, organization_id)
+    try:
+        set_suggestion_review(evaluation, body.suggestion_id, body.review_status, body.edited_text)
+    except PromptPushError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    stamp_evaluation_actor(evaluation, principal)
+    db.commit()
+    db.refresh(evaluation)
+    return _prompt_improvements_payload(evaluation) or EvaluationPromptImprovementsState(status="idle")
+
+
+@router.get(
+    "/{eval_id}/prompt-improvements/push-preview",
+    response_model=PromptPushPreviewResponse,
+    operation_id="previewCallImportEvaluationPromptPush",
+)
+async def preview_call_import_evaluation_prompt_push(
+    call_import_id: UUID,
+    eval_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+) -> PromptPushPreviewResponse:
+    del api_key
+    from app.services.call_import_prompt_push import PromptPushError, preview_evaluation_push
+
+    call_import, evaluation = _load_evaluation_for_prompt_push(
+        db, call_import_id, eval_id, organization_id
+    )
+    try:
+        payload = preview_evaluation_push(
+            db, evaluation, call_import, organization_id, workspace_id
+        )
+    except PromptPushError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return PromptPushPreviewResponse(**payload)
+
+
+@router.post(
+    "/{eval_id}/prompt-improvements/push",
+    response_model=PromptPushResponse,
+    operation_id="pushCallImportEvaluationPrompt",
+)
+async def push_call_import_evaluation_prompt(
+    call_import_id: UUID,
+    eval_id: UUID,
+    body: PromptPushConfirm,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> PromptPushResponse:
+    del api_key
+    from app.services.call_import_prompt_push import PromptPushError, push_evaluation_prompt
+
+    call_import, evaluation = _load_evaluation_for_prompt_push(
+        db, call_import_id, eval_id, organization_id
+    )
+    try:
+        row = push_evaluation_prompt(
+            db,
+            evaluation,
+            call_import,
+            organization_id,
+            workspace_id,
+            body.confirm,
+            principal,
+            push_to_live=body.push_to_live,
+        )
+    except PromptPushError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return row
 
 
 # ---------------------------------------------------------------------------
@@ -8781,47 +8972,85 @@ async def delete_call_import_evaluation_row(
 # like "just fix it" instead of "fail again immediately".
 
 
+def source_retry_assignments(
+    source_row: CallImportRow,
+    *,
+    transcribe_overwrite: bool,
+) -> dict:
+    """Columns a retry should write. Empty when the source row is already reusable."""
+    from app.api.v1.routes.call_imports import _is_stuck_pending_import_row
+    from app.db_sharding.scatter_gather import row_text_present
+
+    changes: dict = {}
+    if (getattr(source_row, "celery_task_id", None) or "").strip():
+        changes["celery_task_id"] = None
+
+    no_audio = not (getattr(source_row, "recording_s3_key", None) or "").strip()
+    status = getattr(source_row, "status", None)
+    requeue = no_audio and status in (
+        CallImportRowStatus.FAILED,
+        CallImportRowStatus.PROCESSING,
+    )
+    if no_audio and status == CallImportRowStatus.PENDING:
+        requeue = _is_stuck_pending_import_row(source_row)
+    if requeue:
+        if status != CallImportRowStatus.PENDING:
+            changes["status"] = CallImportRowStatus.PENDING
+        if getattr(source_row, "error_message", None) is not None:
+            changes["error_message"] = None
+        if (getattr(source_row, "attempts", 0) or 0) != 0:
+            changes["attempts"] = 0
+
+    has_dia = row_text_present(
+        source_row, "diarised_transcript", "diarised_transcript_char_length"
+    )
+    if transcribe_overwrite and has_dia:
+        changes["diarised_transcript"] = None
+        has_dia = False
+
+    dia_status = (
+        getattr(source_row, "diarised_transcript_status", None) or ""
+    ).strip().lower()
+    if has_dia and not transcribe_overwrite:
+        if dia_status != "completed":
+            changes["diarised_transcript_status"] = "completed"
+        if getattr(source_row, "diarised_transcript_error", None) is not None:
+            changes["diarised_transcript_error"] = None
+        return changes
+
+    if dia_status in {"failed", "pending", "running", "idle"}:
+        if dia_status != "idle":
+            changes["diarised_transcript_status"] = "idle"
+        if getattr(source_row, "diarised_transcript_error", None) is not None:
+            changes["diarised_transcript_error"] = None
+    return changes
+
+
 def _prepare_source_row_for_retry(
     source_row: CallImportRow,
     *,
     transcribe_overwrite: bool,
 ) -> None:
     """Clear stale diarisation markers so retry dispatch can re-run the pipeline."""
-    source_row.celery_task_id = None
+    for column, value in source_retry_assignments(
+        source_row,
+        transcribe_overwrite=transcribe_overwrite,
+    ).items():
+        setattr(source_row, column, value)
 
-    # Re-fetch recordings when a prior import failed or stalled without S3 audio.
-    # Mirrors retry_failed_call_import_rows so eval retry can re-enqueue imports.
-    from app.api.v1.routes.call_imports import _is_stuck_pending_import_row
 
-    if (
-        source_row.status
-        in (
-            CallImportRowStatus.FAILED,
-            CallImportRowStatus.PROCESSING,
-        )
-        and not (source_row.recording_s3_key or "").strip()
-    ) or (
-        _is_stuck_pending_import_row(source_row)
-        and not (source_row.recording_s3_key or "").strip()
-    ):
-        source_row.status = CallImportRowStatus.PENDING
-        source_row.error_message = None
-        source_row.attempts = 0
-
-    if transcribe_overwrite and (source_row.diarised_transcript or "").strip():
-        source_row.diarised_transcript = None
-
-    has_dia = bool((source_row.diarised_transcript or "").strip())
-    dia_status = (source_row.diarised_transcript_status or "").strip().lower()
-
-    if has_dia and not transcribe_overwrite:
-        source_row.diarised_transcript_status = "completed"
-        source_row.diarised_transcript_error = None
-        return
-
-    if dia_status in {"failed", "pending", "running", "idle"}:
-        source_row.diarised_transcript_status = "idle"
-        source_row.diarised_transcript_error = None
+def _metric_scores_for_retry(existing, metric_ids: Optional[List[UUID]]) -> dict:
+    """Full retry clears every score. A metric subset removes only those keys."""
+    if not metric_ids:
+        return {}
+    scores = existing if isinstance(existing, dict) else {}
+    target_keys = {str(mid).lower() for mid in metric_ids}
+    return {
+        key: value
+        for key, value in scores.items()
+        if _is_metric_scores_meta_key(str(key))
+        or str(key).lower() not in target_keys
+    }
 
 
 def _reset_eval_row_for_retry(
@@ -8829,6 +9058,7 @@ def _reset_eval_row_for_retry(
     *,
     metric_ids: Optional[List[UUID]] = None,
     skip_revoke: bool = False,
+    skip_chain: bool = False,
 ) -> None:
     """Wipe per-row state so the worker can re-run it cleanly.
 
@@ -8856,26 +9086,21 @@ def _reset_eval_row_for_retry(
             pass
     eval_row.status = "pending"
     eval_row.error_message = None
-    if metric_ids:
-        # Strip ONLY the targeted metric keys. Both string and UUID
-        # forms can appear in ``metric_scores`` depending on which
-        # code path wrote the dict, so we normalise to lower-case
-        # strings for the comparison.
-        existing = (
-            eval_row.metric_scores if isinstance(eval_row.metric_scores, dict) else {}
-        )
-        target_keys = {str(mid).lower() for mid in metric_ids}
-        eval_row.metric_scores = {
-            key: value
-            for key, value in existing.items()
-            if _is_metric_scores_meta_key(str(key))
-            or str(key).lower() not in target_keys
-        }
-    else:
-        eval_row.metric_scores = {}
+    eval_row.metric_scores = _metric_scores_for_retry(
+        eval_row.metric_scores,
+        metric_ids,
+    )
     eval_row.started_at = None
     eval_row.finished_at = None
+    task_id = (eval_row.celery_task_id or "").strip()
     eval_row.celery_task_id = None
+    if skip_chain or not task_id:
+        return
+    from app.workers.tasks.evaluate_call_import_row_audio import (
+        clear_eval_audio_chain,
+    )
+
+    clear_eval_audio_chain(str(eval_row.id))
 
 
 def _enqueue_eval_rows_with_optional_transcribe(
@@ -9220,78 +9445,22 @@ def _gather_retry_targets(
             include_completed=include_completed,
         )
 
-    eval_rows_query = db.query(CallImportEvaluationRow).filter(
-        CallImportEvaluationRow.evaluation_id == evaluation.id
+    from app.db_sharding.eval_rows import _collect_retry_targets_on_session
+
+    targets, skipped, found = _collect_retry_targets_on_session(
+        db,
+        evaluation,
+        requested_ids,
+        include_completed=include_completed,
     )
-
-    targets: List[Tuple[CallImportEvaluationRow, CallImportRow]] = []
-    skipped: List[CallImportEvaluationRetrySkippedItem] = []
-
-    if requested_ids is None:
-        if include_completed:
-            # "Retry everything" path used by the metric-subset re-run
-            # UI. Still skip in-flight rows below so we don't trample
-            # work the worker is actively doing.
-            candidate_rows = eval_rows_query.filter(
-                CallImportEvaluationRow.status.in_(["failed", "completed"])
-            ).all()
-        else:
-            candidate_rows = eval_rows_query.filter(
-                CallImportEvaluationRow.status == "failed"
-            ).all()
-    else:
-        requested_set = set(requested_ids)
-        candidate_rows = eval_rows_query.filter(
-            CallImportEvaluationRow.id.in_(requested_set)
-        ).all()
-        found_ids = {row.id for row in candidate_rows}
-        for missing in requested_set - found_ids:
+    if requested_ids is not None:
+        for missing in set(requested_ids) - found:
             skipped.append(
                 CallImportEvaluationRetrySkippedItem(
                     eval_row_id=missing,
                     reason="unknown",
                 )
             )
-
-    if not candidate_rows:
-        return targets, skipped
-
-    source_row_ids = [row.call_import_row_id for row in candidate_rows]
-    source_rows = (
-        db.query(CallImportRow)
-        .filter(CallImportRow.id.in_(source_row_ids))
-        .all()
-    )
-    source_by_id = {row.id: row for row in source_rows}
-
-    for eval_row in candidate_rows:
-        if eval_row.status in {"pending", "running"}:
-            skipped.append(
-                CallImportEvaluationRetrySkippedItem(
-                    eval_row_id=eval_row.id,
-                    reason="in_progress",
-                )
-            )
-            continue
-        if eval_row.status == "completed" and not include_completed:
-            skipped.append(
-                CallImportEvaluationRetrySkippedItem(
-                    eval_row_id=eval_row.id,
-                    reason="completed",
-                )
-            )
-            continue
-        source_row = source_by_id.get(eval_row.call_import_row_id)
-        if source_row is None:
-            skipped.append(
-                CallImportEvaluationRetrySkippedItem(
-                    eval_row_id=eval_row.id,
-                    reason="source_row_missing",
-                )
-            )
-            continue
-        targets.append((eval_row, source_row))
-
     return targets, skipped
 
 

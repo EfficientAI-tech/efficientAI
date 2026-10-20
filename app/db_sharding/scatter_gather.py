@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, TypeVar, TYPE_CHECKING
+from typing import Callable, Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple, TypeVar, TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import case, func
-from sqlalchemy.orm import Session, load_only
+from sqlalchemy import Integer, case, cast, func, or_
+from sqlalchemy.orm import Session, defer, load_only, with_expression
 
 from app.db_sharding.pool_manager import db_pool_manager
 from app.db_sharding.sessions import is_sharding_enabled
@@ -204,6 +204,197 @@ def count_call_import_rows_filtered(
     return total
 
 
+class SliceCount(NamedTuple):
+    slice_id: int
+    shard_id: str
+    count: int
+
+
+class SlicePageWindow(NamedTuple):
+    shard_id: str
+    slice_id: int
+    local_offset: int
+    limit: int
+
+
+def plan_slice_page(
+    slices: Sequence[SliceCount],
+    *,
+    offset: int,
+    limit: int,
+    descending: bool = False,
+) -> List[SlicePageWindow]:
+    """Windows that cover ``offset``/``limit`` without reading other slices.
+
+    Counts already include holes, so a slice of 500 row-index values with
+    one deleted row contributes 499. The local offset is applied inside
+    that slice in row_index order.
+    """
+    if limit <= 0:
+        return []
+    ordered = sorted(
+        slices,
+        key=lambda item: (int(item.slice_id), item.shard_id),
+        reverse=descending,
+    )
+    remaining_offset = max(0, int(offset))
+    remaining = int(limit)
+    windows: List[SlicePageWindow] = []
+    for item in ordered:
+        if remaining <= 0:
+            break
+        count = int(item.count or 0)
+        if count <= 0:
+            continue
+        if remaining_offset >= count:
+            remaining_offset -= count
+            continue
+        take = min(remaining, count - remaining_offset)
+        windows.append(
+            SlicePageWindow(
+                item.shard_id,
+                int(item.slice_id),
+                remaining_offset,
+                take,
+            )
+        )
+        remaining -= take
+        remaining_offset = 0
+    return windows
+
+
+_ROW_TEXT_ATTRS = (
+    "transcript",
+    "diarised_transcript",
+    "diarised_segments",
+    "diarised_prompt",
+    "raw_columns",
+)
+
+
+def defer_call_import_row_text():
+    """Keep list queries from selecting transcript bodies."""
+    return tuple(defer(getattr(CallImportRow, name)) for name in _ROW_TEXT_ATTRS)
+
+
+def _row_chunk_size() -> int:
+    router = db_pool_manager.router
+    if router is None:
+        return 500
+    return max(1, int(router.row_chunk_size))
+
+
+def _slice_id_expr(chunk: int):
+    return cast(func.floor(CallImportRow.row_index / chunk), Integer)
+
+
+def _collect_import_slice_counts(
+    catalog_db: Session,
+    call_import_id: UUID,
+    *,
+    search_term: str = "",
+    diarised_status_filter: Optional[str] = None,
+) -> List[SliceCount]:
+    chunk = _row_chunk_size()
+    slice_expr = _slice_id_expr(chunk)
+    shard_ids = shard_ids_for_import(catalog_db, call_import_id)
+
+    def count_shard(db: Session, shard_id: str) -> List[SliceCount]:
+        query = db.query(slice_expr, func.count(CallImportRow.id)).filter(
+            CallImportRow.call_import_id == call_import_id
+        )
+        query = _apply_call_import_row_filters(
+            query,
+            search_term=search_term,
+            diarised_status_filter=diarised_status_filter,
+        )
+        counts: List[SliceCount] = []
+        for slice_id, count in query.group_by(slice_expr).all():
+            if int(count or 0) <= 0 or slice_id is None:
+                continue
+            counts.append(SliceCount(int(slice_id), shard_id, int(count)))
+        return counts
+
+    collected: List[SliceCount] = []
+    for part in scatter_gather_on_shards(shard_ids, count_shard):
+        collected.extend(part)
+    return collected
+
+
+def _load_call_import_slice_window(
+    shard_id: str,
+    call_import_id: UUID,
+    window: SlicePageWindow,
+    *,
+    search_term: str = "",
+    diarised_status_filter: Optional[str] = None,
+    descending: bool = False,
+) -> List[CallImportRow]:
+    chunk = _row_chunk_size()
+    lo = window.slice_id * chunk
+    hi = lo + chunk
+    factory = db_pool_manager.shard_session_factory(shard_id)
+    db = factory()
+    try:
+        query = (
+            db.query(CallImportRow)
+            .options(*defer_call_import_row_text())
+            .filter(
+                CallImportRow.call_import_id == call_import_id,
+                CallImportRow.row_index >= lo,
+                CallImportRow.row_index < hi,
+            )
+        )
+        query = _apply_call_import_row_filters(
+            query,
+            search_term=search_term,
+            diarised_status_filter=diarised_status_filter,
+        )
+        order = (
+            CallImportRow.row_index.desc()
+            if descending
+            else CallImportRow.row_index.asc()
+        )
+        rows = (
+            query.order_by(order)
+            .offset(window.local_offset)
+            .limit(window.limit)
+            .all()
+        )
+        for row in rows:
+            db.expunge(row)
+        return rows
+    finally:
+        db.close()
+
+
+def _legacy_call_import_rows_page(
+    catalog_db: Session,
+    call_import_id: UUID,
+    *,
+    search_term: str = "",
+    diarised_status_filter: Optional[str] = None,
+    offset: int,
+    limit: int,
+) -> List[CallImportRow]:
+    query = (
+        catalog_db.query(CallImportRow)
+        .options(*defer_call_import_row_text())
+        .filter(CallImportRow.call_import_id == call_import_id)
+    )
+    query = _apply_call_import_row_filters(
+        query,
+        search_term=search_term,
+        diarised_status_filter=diarised_status_filter,
+    )
+    return (
+        query.order_by(CallImportRow.row_index.asc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+
 def fetch_call_import_rows_filtered_page(
     catalog_db: Session,
     call_import_id: UUID,
@@ -213,13 +404,47 @@ def fetch_call_import_rows_filtered_page(
     offset: int,
     limit: int,
 ) -> List[CallImportRow]:
-    merged = _merged_call_import_rows_for_import(
+    if limit <= 0:
+        return []
+    if not is_sharding_enabled():
+        return _legacy_call_import_rows_page(
+            catalog_db,
+            call_import_id,
+            search_term=search_term,
+            diarised_status_filter=diarised_status_filter,
+            offset=offset,
+            limit=limit,
+        )
+
+    slices = _collect_import_slice_counts(
         catalog_db,
         call_import_id,
         search_term=search_term,
         diarised_status_filter=diarised_status_filter,
     )
-    return merged[offset : offset + limit]
+    if not slices:
+        return _legacy_call_import_rows_page(
+            catalog_db,
+            call_import_id,
+            search_term=search_term,
+            diarised_status_filter=diarised_status_filter,
+            offset=offset,
+            limit=limit,
+        )
+
+    windows = plan_slice_page(slices, offset=offset, limit=limit)
+    rows: List[CallImportRow] = []
+    for window in windows:
+        rows.extend(
+            _load_call_import_slice_window(
+                window.shard_id,
+                call_import_id,
+                window,
+                search_term=search_term,
+                diarised_status_filter=diarised_status_filter,
+            )
+        )
+    return merge_rows_by_index(rows)
 
 
 def list_call_import_row_ids_filtered(
@@ -229,13 +454,35 @@ def list_call_import_row_ids_filtered(
     search_term: str = "",
     diarised_status_filter: Optional[str] = None,
 ) -> List[UUID]:
-    merged = _merged_call_import_rows_for_import(
-        catalog_db,
-        call_import_id,
-        search_term=search_term,
-        diarised_status_filter=diarised_status_filter,
-    )
-    return [row.id for row in merged if row.id is not None]
+    """Matching row ids in row_index order. Does not load transcript bodies."""
+
+    def _ids_from(db: Session) -> List[Tuple[UUID, int]]:
+        query = db.query(CallImportRow.id, CallImportRow.row_index).filter(
+            CallImportRow.call_import_id == call_import_id
+        )
+        query = _apply_call_import_row_filters(
+            query,
+            search_term=search_term,
+            diarised_status_filter=diarised_status_filter,
+        )
+        return [(row_id, int(row_index or 0)) for row_id, row_index in query.all()]
+
+    if not is_sharding_enabled():
+        pairs = _ids_from(catalog_db)
+    else:
+        shard_ids = shard_ids_for_import(catalog_db, call_import_id)
+
+        def load_shard(db: Session, _shard_id: str) -> List[Tuple[UUID, int]]:
+            return _ids_from(db)
+
+        pairs = []
+        for part in scatter_gather_on_shards(shard_ids, load_shard):
+            pairs.extend(part)
+        if not pairs:
+            pairs = _ids_from(catalog_db)
+
+    pairs.sort(key=lambda pair: pair[1])
+    return [row_id for row_id, _row_index in pairs if row_id is not None]
 
 
 def pending_eval_workspaces(
@@ -384,6 +631,94 @@ def _evaluations_with_pending_mono(db: Session, workspace_id: UUID) -> List[UUID
     return sorted({row[0] for row in rows if row[0] is not None})
 
 
+def _text_char_length(column):
+    return func.length(func.trim(func.coalesce(column, "")))
+
+
+def dispatch_eval_row_options():
+    """Columns the eval dispatcher reads or writes. Skips metric_scores."""
+    return (
+        load_only(
+            CallImportEvaluationRow.id,
+            CallImportEvaluationRow.evaluation_id,
+            CallImportEvaluationRow.call_import_row_id,
+            CallImportEvaluationRow.status,
+            CallImportEvaluationRow.celery_task_id,
+            CallImportEvaluationRow.error_message,
+            CallImportEvaluationRow.finished_at,
+        ),
+    )
+
+
+def retry_source_row_options():
+    """Retry columns plus text lengths. Does not load transcript bodies."""
+    return (
+        load_only(
+            CallImportRow.id,
+            CallImportRow.call_import_id,
+            CallImportRow.row_index,
+            CallImportRow.status,
+            CallImportRow.celery_task_id,
+            CallImportRow.recording_s3_key,
+            CallImportRow.recording_url,
+            CallImportRow.error_message,
+            CallImportRow.attempts,
+            CallImportRow.diarised_transcript_status,
+            CallImportRow.diarised_transcript_error,
+        ),
+        with_expression(
+            CallImportRow.transcript_char_length,
+            _text_char_length(CallImportRow.transcript),
+        ),
+        with_expression(
+            CallImportRow.diarised_transcript_char_length,
+            _text_char_length(CallImportRow.diarised_transcript),
+        ),
+    )
+
+
+def dispatch_source_row_options():
+    """Columns the eval dispatcher reads or writes, plus text lengths."""
+    return (
+        load_only(
+            CallImportRow.id,
+            CallImportRow.call_import_id,
+            CallImportRow.row_index,
+            CallImportRow.status,
+            CallImportRow.celery_task_id,
+            CallImportRow.recording_s3_key,
+            CallImportRow.recording_url,
+            CallImportRow.error_message,
+            CallImportRow.diarised_transcript_status,
+            CallImportRow.diarised_transcript_error,
+        ),
+        with_expression(
+            CallImportRow.transcript_char_length,
+            _text_char_length(CallImportRow.transcript),
+        ),
+        with_expression(
+            CallImportRow.diarised_transcript_char_length,
+            _text_char_length(CallImportRow.diarised_transcript),
+        ),
+    )
+
+
+def row_text_present(row, column: str, length_attr: str) -> bool:
+    """True when a text column is non-blank, without loading a deferred body."""
+    length = getattr(row, length_attr, None)
+    if isinstance(length, int) and not isinstance(length, bool):
+        return length > 0
+    state = getattr(row, "_sa_instance_state", None)
+    if state is None:
+        return bool((getattr(row, column, None) or "").strip())
+    from sqlalchemy.orm.base import NEVER_SET, NO_VALUE
+
+    loaded = state.attrs[column].loaded_value
+    if loaded is NEVER_SET or loaded is NO_VALUE:
+        return False
+    return bool((loaded or "").strip())
+
+
 def pending_eval_row_triples(
     catalog_db: Session,
     evaluation_id: UUID,
@@ -417,6 +752,7 @@ def pending_eval_row_triples(
                 CallImportEvaluation,
                 CallImportEvaluation.id == CallImportEvaluationRow.evaluation_id,
             )
+            .options(*dispatch_eval_row_options(), *dispatch_source_row_options())
             .filter(
                 CallImportEvaluation.id == evaluation_id,
                 CallImportEvaluation.status != "cancelled",
@@ -442,6 +778,7 @@ def pending_eval_row_triples(
                     CallImportRow,
                     CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
                 )
+                .options(*dispatch_eval_row_options(), *dispatch_source_row_options())
                 .filter(
                     CallImportEvaluationRow.evaluation_id == evaluation_id,
                     CallImportEvaluationRow.status == "pending",
@@ -576,19 +913,13 @@ def fetch_call_import_rows_page(
     offset: int,
     limit: int,
 ) -> List[CallImportRow]:
-    """Scatter-gather row list merged by row_index."""
-    if not is_sharding_enabled():
-        return (
-            catalog_db.query(CallImportRow)
-            .filter(CallImportRow.call_import_id == call_import_id)
-            .order_by(CallImportRow.row_index.asc())
-            .offset(offset)
-            .limit(limit)
-            .all()
-        )
-
-    merged = _merged_call_import_rows_for_import(catalog_db, call_import_id)
-    return merged[offset : offset + limit]
+    """One page of import rows, merged by row_index."""
+    return fetch_call_import_rows_filtered_page(
+        catalog_db,
+        call_import_id,
+        offset=offset,
+        limit=limit,
+    )
 
 
 def _load_call_import_rows_scatter(
@@ -741,6 +1072,150 @@ def aggregate_diarised_transcript_counts(
         ):
             if isinstance(status_value, str):
                 merged[status_value] = int(count or 0)
+    return merged
+
+
+def _production_transcript_present():
+    return (
+        func.length(func.btrim(func.coalesce(CallImportRow.transcript, ""))) > 0
+    )
+
+
+def _diarised_transcript_present():
+    return (
+        func.length(
+            func.btrim(func.coalesce(CallImportRow.diarised_transcript, ""))
+        )
+        > 0
+    )
+
+
+def _transcript_coverage_on_session(
+    db: Session, call_import_id: UUID
+) -> Tuple[int, int, Dict[str, int]]:
+    """Return (total, with_transcript, source_counts) using length checks."""
+
+    def base():
+        return db.query(CallImportRow).filter(
+            CallImportRow.call_import_id == call_import_id
+        )
+
+    total = int(base().with_entities(func.count(CallImportRow.id)).scalar() or 0)
+    prod = _production_transcript_present()
+    diar = _diarised_transcript_present()
+    with_transcript = int(
+        base()
+        .filter(or_(prod, diar))
+        .with_entities(func.count(CallImportRow.id))
+        .scalar()
+        or 0
+    )
+    source_expr = func.coalesce(
+        func.nullif(CallImportRow.transcript_source, ""),
+        "csv",
+    )
+    source_counts: Dict[str, int] = {}
+    for source, count in (
+        base()
+        .filter(prod)
+        .with_entities(source_expr, func.count(CallImportRow.id))
+        .group_by(source_expr)
+        .all()
+    ):
+        if source is None:
+            continue
+        source_counts[str(source)] = source_counts.get(str(source), 0) + int(count or 0)
+    diarised_count = int(
+        base().filter(diar).with_entities(func.count(CallImportRow.id)).scalar() or 0
+    )
+    if diarised_count:
+        source_counts["diarised"] = (
+            source_counts.get("diarised", 0) + diarised_count
+        )
+    return total, with_transcript, source_counts
+
+
+def aggregate_transcript_coverage(
+    catalog_db: Session,
+    call_import_id: UUID,
+) -> Tuple[int, int, int, Dict[str, int]]:
+    """Batch transcript coverage without loading transcript bodies.
+
+    Returns ``(total, with_transcript, without_transcript, source_counts)``.
+    """
+    if not is_sharding_enabled():
+        total, with_transcript, sources = _transcript_coverage_on_session(
+            catalog_db, call_import_id
+        )
+        return total, with_transcript, total - with_transcript, sources
+
+    total = 0
+    with_transcript = 0
+    sources: Dict[str, int] = {}
+    shard_ids = shard_ids_for_import(catalog_db, call_import_id)
+
+    def cover_shard(db: Session, _shard_id: str):
+        return _transcript_coverage_on_session(db, call_import_id)
+
+    for part_total, part_with, part_sources in scatter_gather_on_shards(
+        shard_ids, cover_shard
+    ):
+        total += int(part_total)
+        with_transcript += int(part_with)
+        for key, value in part_sources.items():
+            sources[key] = sources.get(key, 0) + int(value)
+    if total == 0:
+        total, with_transcript, sources = _transcript_coverage_on_session(
+            catalog_db, call_import_id
+        )
+    return total, with_transcript, total - with_transcript, sources
+
+
+_EVAL_SCORE_COLUMNS = (
+    CallImportEvaluationRow.id,
+    CallImportEvaluationRow.evaluation_id,
+    CallImportEvaluationRow.call_import_row_id,
+    CallImportEvaluationRow.status,
+    CallImportEvaluationRow.metric_scores,
+    CallImportEvaluationRow.error_message,
+    CallImportEvaluationRow.started_at,
+    CallImportEvaluationRow.finished_at,
+    CallImportEvaluationRow.created_at,
+    CallImportEvaluationRow.updated_at,
+)
+
+
+def load_evaluation_score_rows(
+    catalog_db: Session,
+    evaluation_id: UUID,
+) -> List[CallImportEvaluationRow]:
+    """Eval rows with scores and status. Does not join source transcripts."""
+    def load(db: Session) -> List[CallImportEvaluationRow]:
+        rows = (
+            db.query(CallImportEvaluationRow)
+            .options(load_only(*_EVAL_SCORE_COLUMNS))
+            .filter(CallImportEvaluationRow.evaluation_id == evaluation_id)
+            .all()
+        )
+        for row in rows:
+            db.expunge(row)
+        return rows
+
+    if not is_sharding_enabled():
+        return load(catalog_db)
+
+    merged: List[CallImportEvaluationRow] = []
+    router = db_pool_manager.router
+    assert router is not None
+    for shard_id in router.shard_ids:
+        factory = db_pool_manager.shard_session_factory(shard_id)
+        shard_db = factory()
+        try:
+            merged.extend(load(shard_db))
+        finally:
+            shard_db.close()
+    if not merged:
+        return load(catalog_db)
     return merged
 
 

@@ -109,11 +109,13 @@ def _shard_write_without_catalog_fks(shard_db: Session) -> None:
     """Allow row inserts on shards when parent rows live on catalog only."""
     if not _shard_db_is_postgresql(shard_db):
         return
-    shard_db.execute(text("SET session_replication_role = replica"))
+    shard_db.execute(text("SET LOCAL session_replication_role = replica"))
 
 
 def _reset_shard_write_role(shard_db: Session) -> None:
     if not _shard_db_is_postgresql(shard_db):
+        return
+    if not shard_db.in_transaction():
         return
     shard_db.execute(text("SET session_replication_role = DEFAULT"))
 
@@ -142,6 +144,51 @@ def flush_shard_row_session(shard_db: Session) -> None:
 def commit_shard_row_session(shard_db: Session) -> None:
     with shard_row_write_context(shard_db):
         shard_db.commit()
+
+
+class ShardWriteSessions:
+    """One open session per shard, reused across chunks of one import."""
+
+    def __init__(self) -> None:
+        self._by_shard: dict[str, Session] = {}
+
+    def session_for(self, shard_id: str) -> Session:
+        existing = self._by_shard.get(shard_id)
+        if existing is not None:
+            return existing
+        factory = db_pool_manager.shard_session_factory(shard_id)
+        session = factory()
+        self._by_shard[shard_id] = session
+        return session
+
+    def rollback_open(self) -> None:
+        """Undo the uncommitted chunk. Earlier commits on these sessions stay."""
+        for shard_db in self._by_shard.values():
+            try:
+                shard_db.rollback()
+            except Exception:
+                pass
+
+    def close_all(self) -> None:
+        for shard_db in list(self._by_shard.values()):
+            try:
+                _reset_shard_write_role(shard_db)
+            except Exception:
+                pass
+            try:
+                shard_db.close()
+            except Exception:
+                pass
+        self._by_shard.clear()
+
+
+class ShardChunkWriteError(Exception):
+    """A chunk failed after earlier chunks on this write were already committed."""
+
+    def __init__(self, committed: int, cause: BaseException):
+        super().__init__(str(cause))
+        self.committed = committed
+        self.cause = cause
 
 
 def commit_pending_shard_sessions(sessions: List[Session]) -> None:
@@ -177,8 +224,14 @@ def bulk_insert_mappings_on_shards(
     *,
     orm_class=CallImportRow,
     defer_commit: bool = False,
+    on_conflict_do_nothing: bool = False,
+    shard_sessions: Optional[ShardWriteSessions] = None,
 ) -> tuple[int, List[Session]]:
     """Insert row mappings on the correct shard sessions; catalog_db unused when legacy.
+
+    When ``shard_sessions`` is set, each shard reuses one session and the chunk
+    is committed immediately. A failure rolls back only that open chunk and
+    raises ``ShardChunkWriteError`` with the count already committed.
 
     When ``defer_commit`` is true, rows are flushed on each shard but not committed
     until ``commit_pending_shard_sessions`` runs after the catalog commit succeeds.
@@ -196,22 +249,39 @@ def bulk_insert_mappings_on_shards(
     inserted = 0
     pending: List[Session] = []
     for shard_id, shard_mappings in buckets.items():
-        factory = db_pool_manager.shard_session_factory(shard_id)
-        shard_db = factory()
+        if shard_sessions is not None:
+            shard_db = shard_sessions.session_for(shard_id)
+            owns_session = False
+        else:
+            factory = db_pool_manager.shard_session_factory(shard_id)
+            shard_db = factory()
+            owns_session = True
         try:
             _shard_write_without_catalog_fks(shard_db)
-            shard_db.bulk_insert_mappings(RowModel, shard_mappings)
-            if defer_commit:
+            if on_conflict_do_nothing:
+                from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+                table = RowModel.__table__
+                stmt = pg_insert(table).values(shard_mappings)
+                stmt = stmt.on_conflict_do_nothing(index_elements=["id"])
+                shard_db.execute(stmt)
+            else:
+                shard_db.bulk_insert_mappings(RowModel, shard_mappings)
+            if shard_sessions is not None:
+                commit_shard_row_session(shard_db)
+            elif defer_commit:
                 flush_shard_row_session(shard_db)
                 pending.append(shard_db)
             else:
                 shard_db.commit()
             inserted += len(shard_mappings)
-        except Exception:
+        except Exception as exc:
             shard_db.rollback()
+            if shard_sessions is not None:
+                raise ShardChunkWriteError(inserted, exc) from exc
             raise
         finally:
-            if not defer_commit:
+            if owns_session and not defer_commit:
                 try:
                     _reset_shard_write_role(shard_db)
                 except Exception:
@@ -256,6 +326,7 @@ def bulk_insert_evaluation_rows_on_shards(
     workspace_id: UUID,
     index_by_source_id: dict[UUID, int],
     defer_commit: bool = False,
+    shard_sessions: Optional[ShardWriteSessions] = None,
 ) -> tuple[int, List[Session]]:
     """Insert eval-row stubs on the same shard as each source import row."""
     from app.models.database import CallImportEvaluationRow as EvalRowModel
@@ -291,22 +362,31 @@ def bulk_insert_evaluation_rows_on_shards(
             index_by_source_id=index_by_source_id,
         )
         for shard_id, shard_mappings in buckets.items():
-            factory = db_pool_manager.shard_session_factory(shard_id)
-            shard_db = factory()
+            if shard_sessions is not None:
+                shard_db = shard_sessions.session_for(shard_id)
+                owns_session = False
+            else:
+                factory = db_pool_manager.shard_session_factory(shard_id)
+                shard_db = factory()
+                owns_session = True
             try:
                 _shard_write_without_catalog_fks(shard_db)
                 shard_db.bulk_insert_mappings(EvalRowModel, shard_mappings)
-                if defer_commit:
+                if shard_sessions is not None:
+                    commit_shard_row_session(shard_db)
+                elif defer_commit:
                     flush_shard_row_session(shard_db)
                     pending.append(shard_db)
                 else:
                     shard_db.commit()
                 inserted += len(shard_mappings)
-            except Exception:
+            except Exception as exc:
                 shard_db.rollback()
+                if shard_sessions is not None:
+                    raise ShardChunkWriteError(inserted, exc) from exc
                 raise
             finally:
-                if not defer_commit:
+                if owns_session and not defer_commit:
                     try:
                         _reset_shard_write_role(shard_db)
                     except Exception:
@@ -352,12 +432,51 @@ def locate_call_import_row(
     raise LookupError(f"call_import_row {rid} not found on any shard")
 
 
+def _load_eval_row_on_shard(
+    eid: UUID,
+    shard_id: str,
+) -> Optional[
+    Tuple[Session, Optional[Session], CallImportEvaluationRow, CallImportRow, str]
+]:
+    """Open one shard. None when that shard does not hold the row."""
+    from app.models.database import CallImportEvaluationRow
+
+    router = db_pool_manager.router
+    if router is None or shard_id not in router.shard_ids:
+        return None
+    factory = db_pool_manager.shard_session_factory(shard_id)
+    shard_db = factory()
+    try:
+        row = (
+            shard_db.query(CallImportEvaluationRow, CallImportRow)
+            .join(
+                CallImportRow,
+                CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
+            )
+            .filter(CallImportEvaluationRow.id == eid)
+            .first()
+        )
+        if row is None:
+            shard_db.close()
+            return None
+        eval_row, source_row = row
+        catalog_db = open_catalog_session()
+        return shard_db, catalog_db, eval_row, source_row, shard_id
+    except Exception:
+        shard_db.close()
+        raise
+
+
 def locate_call_import_evaluation_row(
     eval_row_id: UUID | str,
+    *,
+    shard_id: str | None = None,
 ) -> Tuple[Session, Optional[Session], CallImportEvaluationRow, CallImportRow, str]:
     """
     Find eval + source rows. Returns
     (row_db, catalog_db, eval_row, source_row, shard_id).
+
+    ``shard_id`` opens that shard only. A miss falls through to the full scan.
     """
     from app.database import SessionLocal
     from app.models.database import CallImportEvaluationRow
@@ -379,6 +498,11 @@ def locate_call_import_evaluation_row(
             raise LookupError(f"call_import_evaluation_row {eid} not found")
         eval_row, source_row = row
         return db, db, eval_row, source_row, "legacy"
+
+    if shard_id and shard_id != "legacy":
+        hinted = _load_eval_row_on_shard(eid, shard_id)
+        if hinted is not None:
+            return hinted
 
     router = db_pool_manager.router
     assert router is not None

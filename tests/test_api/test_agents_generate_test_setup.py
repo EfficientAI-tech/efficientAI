@@ -27,19 +27,19 @@ def _sample_generation_payload():
     }
 
 
-def test_generate_test_prompt(authenticated_client, monkeypatch, make_ai_provider):
-    from importlib import import_module
+def _patch_generation_llm(monkeypatch, generate_response):
+    # Patch the instance this module already bound. A later reload of
+    # app.services.ai.llm_service replaces the module singleton only.
+    from app.services.testing.agent_test_setup_generation import llm_service
 
-    llm_service_module = import_module("app.services.ai.llm_service")
+    monkeypatch.setattr(llm_service, "generate_response", generate_response)
+
+
+def test_generate_test_prompt(authenticated_client, monkeypatch, make_ai_provider):
     make_ai_provider(provider="openai")
 
     llm_response = json.dumps(_sample_generation_payload())
-
-    monkeypatch.setattr(
-        llm_service_module.llm_service,
-        "generate_response",
-        lambda **_kwargs: {"text": llm_response},
-    )
+    _patch_generation_llm(monkeypatch, lambda **_kwargs: {"text": llm_response})
 
     response = authenticated_client.post(
         "/api/v1/agents/generate-test-prompt",
@@ -61,9 +61,6 @@ def test_generate_test_prompt(authenticated_client, monkeypatch, make_ai_provide
 
 
 def test_generate_scenarios_from_prompt(authenticated_client, monkeypatch, make_ai_provider):
-    from importlib import import_module
-
-    llm_service_module = import_module("app.services.ai.llm_service")
     make_ai_provider(provider="openai")
 
     llm_response = [
@@ -73,11 +70,8 @@ def test_generate_scenarios_from_prompt(authenticated_client, monkeypatch, make_
             "goal": "Obtain refund confirmation",
         }
     ]
-
-    monkeypatch.setattr(
-        llm_service_module.llm_service,
-        "generate_response",
-        lambda **_kwargs: {"text": json.dumps(llm_response)},
+    _patch_generation_llm(
+        monkeypatch, lambda **_kwargs: {"text": json.dumps(llm_response)}
     )
 
     response = authenticated_client.post(
@@ -96,9 +90,6 @@ def test_generate_scenarios_from_prompt(authenticated_client, monkeypatch, make_
 
 
 def test_generate_test_setup_runs_both_stages(authenticated_client, monkeypatch, make_ai_provider):
-    from importlib import import_module
-
-    llm_service_module = import_module("app.services.ai.llm_service")
     make_ai_provider(provider="openai")
 
     scenario_json = [
@@ -117,7 +108,7 @@ def test_generate_test_setup_runs_both_stages(authenticated_client, monkeypatch,
             return {"text": json.dumps(_sample_generation_payload())}
         return {"text": json.dumps(scenario_json)}
 
-    monkeypatch.setattr(llm_service_module.llm_service, "generate_response", fake_generate)
+    _patch_generation_llm(monkeypatch, fake_generate)
 
     response = authenticated_client.post(
         "/api/v1/agents/generate-test-setup",

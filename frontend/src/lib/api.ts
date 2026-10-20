@@ -56,6 +56,7 @@ import type {
   CallImportPreviewResponse,
   CallImportEvaluation,
   CallImportEvaluationBaselineCandidatesResponse,
+  CallImportEvaluationExportJob,
   CallImportEvaluationPdfReport,
   CallImportEvaluationPdfReportListResponse,
   CallImportEvaluationLLMOverride,
@@ -73,6 +74,7 @@ import type {
   CallImportTranscribeRequest,
   CallImportTranscribeResponse,
   CallImportRetryFailedRowsResponse,
+  PlatformImportProgress,
   Workspace,
   LLMGenerationConfig,
   TestAgent,
@@ -2618,6 +2620,93 @@ class ApiClient {
     })
   }
 
+  async previewPlatformCallImport(payload: {
+    voice_integration_id: string
+    window_start: string
+    window_end: string
+    window_timezone?: string
+    dataset?: string
+    filters?: {
+      agent_ids?: string[]
+      min_duration_seconds?: number
+      speed?: string
+      import_provider_transcript?: boolean
+      medium?: 'voice' | 'chat'
+      agents?: Array<{ id: string; name: string; medium?: string | null }>
+    }
+  }): Promise<{
+    recordings_in_window: number
+    recordings_count_complete: boolean
+    count_pages_scanned?: number
+    discovery_slices?: number
+    sample_count: number
+    samples: Array<{
+      conversation_id: string
+      agent_id?: string | null
+      started_at?: string | null
+      status?: string | null
+    }>
+  }> {
+    const response = await this.client.post('/api/v1/call-imports/platform/preview', payload)
+    return response.data
+  }
+
+  async createPlatformCallImport(payload: {
+    voice_integration_id: string
+    window_start: string
+    window_end: string
+    window_timezone?: string
+    name?: string
+    dataset?: string
+    max_calls?: number
+    filters?: {
+      agent_ids?: string[]
+      min_duration_seconds?: number
+      speed?: string
+      import_provider_transcript?: boolean
+      medium?: 'voice' | 'chat'
+      agents?: Array<{ id: string; name: string; medium?: string | null }>
+    }
+  }, idempotencyKey?: string): Promise<{ id: string; status: string; discovery_status?: string }> {
+    const response = await this.client.post('/api/v1/call-imports/platform', payload, {
+      headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+    })
+    return response.data
+  }
+
+  async pausePlatformImport(importId: string): Promise<{ status: string }> {
+    const response = await this.client.post(`/api/v1/call-imports/platform/${importId}/pause`)
+    return response.data
+  }
+
+  async resumePlatformImport(importId: string): Promise<{ status: string }> {
+    const response = await this.client.post(`/api/v1/call-imports/platform/${importId}/resume`)
+    return response.data
+  }
+
+  async retryPlatformDiscovery(importId: string): Promise<{ status: string }> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/platform/${importId}/retry-discovery`,
+    )
+    return response.data
+  }
+
+  async listPlatformImportAgents(
+    integrationId: string,
+  ): Promise<Array<{ id: string; name: string; medium?: string | null }>> {
+    const response = await this.client.get('/api/v1/call-imports/platform/agents', {
+      params: { integration_id: integrationId },
+    })
+    return response.data
+  }
+
+  async getPlatformImportProgress(importId: string): Promise<PlatformImportProgress> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/platform/${importId}/progress`,
+    )
+    return response.data
+  }
+
   async listCallImports(
     params: {
       page?: number
@@ -2661,6 +2750,13 @@ class ApiClient {
     } = {}
   ): Promise<CallImportDetail> {
     const response = await this.client.get(`/api/v1/call-imports/${id}`, { params })
+    return response.data
+  }
+
+  async getCallImportRow(id: string, rowId: string): Promise<CallImportRow> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${id}/rows/${rowId}`,
+    )
     return response.data
   }
 
@@ -2880,7 +2976,7 @@ class ApiClient {
     callImportId: string,
     evaluationId: string,
     data: {
-      imported_agent_id: string
+      imported_agent_id?: string
       regenerate?: boolean
       force?: boolean
       provider?: string
@@ -2891,6 +2987,45 @@ class ApiClient {
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/prompt-improvements`,
       data,
+    )
+    return response.data
+  }
+
+  async reviewCallImportEvaluationPromptImprovement(
+    callImportId: string,
+    evaluationId: string,
+    data: {
+      suggestion_id: string
+      review_status: 'pending' | 'accepted' | 'rejected'
+      edited_text?: string | null
+    },
+  ): Promise<import('../types/api').EvaluationPromptImprovementsState> {
+    const response = await this.client.patch(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/prompt-improvements/review`,
+      data,
+    )
+    return response.data
+  }
+
+  async previewCallImportEvaluationPromptPush(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<import('../types/api').PromptPushPreview> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/prompt-improvements/push-preview`,
+    )
+    return response.data
+  }
+
+  async pushCallImportEvaluationPrompt(
+    callImportId: string,
+    evaluationId: string,
+    confirm: string,
+    options?: { pushToLive?: boolean },
+  ): Promise<import('../types/api').PromptPushRecord> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/prompt-improvements/push`,
+      { confirm, push_to_live: options?.pushToLive ?? true },
     )
     return response.data
   }
@@ -3613,14 +3748,37 @@ class ApiClient {
     return response.data
   }
 
-  async exportCallImportEvaluation(
+  async getCallImportEvaluationRow(
+    callImportId: string,
+    evaluationId: string,
+    rowId: string,
+  ): Promise<CallImportEvaluationRow> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/rows/${rowId}`,
+    )
+    return response.data
+  }
+
+  async startCallImportEvaluationExport(
     callImportId: string,
     evaluationId: string,
     format: 'csv' | 'xlsx' = 'csv',
-  ): Promise<Blob> {
-    const response = await this.client.get(
+    includeTranscripts = true,
+  ): Promise<CallImportEvaluationExportJob> {
+    const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/export`,
-      { params: { format }, responseType: 'blob' },
+      { format, include_transcripts: includeTranscripts },
+    )
+    return response.data
+  }
+
+  async getCallImportEvaluationExport(
+    callImportId: string,
+    evaluationId: string,
+    jobId: string,
+  ): Promise<CallImportEvaluationExportJob> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/export-jobs/${jobId}`,
     )
     return response.data
   }
@@ -6114,12 +6272,10 @@ class ApiClient {
       description?: string | null
       content?: string
       change_summary?: string
+      tags?: string[]
     },
   ): Promise<import('../types/api').ImportedAgent> {
-    const response = await this.client.put(`/api/v1/prompt-partials/${partialId}`, {
-      ...data,
-      tags: ['__imported_agent__'],
-    })
+    const response = await this.client.put(`/api/v1/prompt-partials/${partialId}`, data)
     return response.data
   }
 
@@ -6140,7 +6296,7 @@ class ApiClient {
 
   async updatePromptPartial(partialId: string, data: {
     name?: string
-    description?: string
+    description?: string | null
     content?: string
     tags?: string[]
     change_summary?: string
@@ -6165,6 +6321,28 @@ class ApiClient {
 
   async revertPromptPartial(partialId: string, versionNumber: number): Promise<any> {
     const response = await this.client.post(`/api/v1/prompt-partials/${partialId}/revert/${versionNumber}`)
+    return response.data
+  }
+
+  async previewPromptPartialVersionPush(
+    partialId: string,
+    versionNumber: number,
+  ): Promise<import('../types/api').PromptVersionPushPreview> {
+    const response = await this.client.get(
+      `/api/v1/prompt-partials/${partialId}/versions/${versionNumber}/push-preview`,
+    )
+    return response.data
+  }
+
+  async pushPromptPartialVersion(
+    partialId: string,
+    versionNumber: number,
+    confirm: string,
+  ): Promise<import('../types/api').PromptPushRecord> {
+    const response = await this.client.post(
+      `/api/v1/prompt-partials/${partialId}/versions/${versionNumber}/push`,
+      { confirm },
+    )
     return response.data
   }
 

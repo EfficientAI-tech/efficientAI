@@ -2,12 +2,15 @@ import { useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  Blocks,
   ChevronLeft,
   ChevronRight,
+  Download,
   FileAudio,
   FileSpreadsheet,
   Layers,
   Phone,
+  Activity,
   RefreshCw,
   Trash2,
   Upload,
@@ -24,9 +27,16 @@ import StatusBadge from '../../components/shared/StatusBadge'
 import CallImportProgressBar from './components/CallImportProgressBar'
 import UploadAudioModal from './components/UploadAudioModal'
 import UploadCsvModal from './components/UploadCsvModal'
+import ImportPlatformModal from './components/ImportPlatformModal'
+import PlatformImportProgressDock, {
+  usePinPlatformImport,
+} from './components/PlatformImportProgressDock'
+import { usePlatformImportProgressStore } from '../../store/platformImportProgressStore'
+import { platformImportLabel } from './platformImportLabel'
 import { itemsOf } from '../../lib/safeData'
 
 const PAGE_SIZE = 20
+const LIST_POLL_MS = 60_000
 
 const STATUS_OPTIONS: Array<{ label: string; value: '' | CallImportStatus }> = [
   { label: 'All statuses', value: '' },
@@ -40,12 +50,13 @@ const STATUS_OPTIONS: Array<{ label: string; value: '' | CallImportStatus }> = [
   { label: 'Deleting', value: 'deleting' },
 ]
 
-type UploadTab = 'datasets' | 'audio'
+type UploadTab = 'datasets' | 'audio' | 'platform'
 
 export default function CallImports() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
+  const pinPlatformImport = usePinPlatformImport()
   // Active workspace is part of every workspace-scoped queryKey so a
   // workspace switch produces a clean cache miss instead of leaking
   // rows from the previously-active workspace.
@@ -57,6 +68,7 @@ export default function CallImports() {
   const [activeTab, setActiveTab] = useState<UploadTab>('datasets')
   const [showUpload, setShowUpload] = useState(false)
   const [showAudioUpload, setShowAudioUpload] = useState(false)
+  const [showPlatformImport, setShowPlatformImport] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<CallImport | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
 
@@ -97,7 +109,12 @@ export default function CallImports() {
       ...(statusFilter ? { status: statusFilter } : {}),
       ...(datasetFilter ? { dataset: datasetFilter } : {}),
       ...(tagFilter.length > 0 ? { tag_id: tagFilter } : {}),
-      source_format: activeTab === 'audio' ? 'audio' : '__non_audio__',
+      source_format:
+        activeTab === 'audio'
+          ? 'audio'
+          : activeTab === 'platform'
+            ? 'platform'
+            : '__non_audio__',
     }),
     [page, statusFilter, datasetFilter, tagFilter, activeTab],
   )
@@ -107,14 +124,17 @@ export default function CallImports() {
     queryFn: () => apiClient.listCallImports(queryParams),
     refetchInterval: (query) => {
       const items = itemsOf<CallImport>(query.state.data)
-      const hasActive = items.some(
+      const hasDeleting = items.some((i: CallImport) => i.status === 'deleting')
+      if (hasDeleting) return LIST_POLL_MS
+      const active = items.filter(
         (i: CallImport) => i.status === 'pending' || i.status === 'processing',
       )
-      const hasDeleting = items.some(
-        (i: CallImport) => i.status === 'deleting',
+      if (active.length === 0) return false
+      const watched = new Set(
+        usePlatformImportProgressStore.getState().watches.map((watch) => watch.id),
       )
-      if (hasDeleting) return 3000
-      return hasActive ? 5000 : false
+      const uncovered = active.filter((item) => !watched.has(item.id))
+      return uncovered.length > 0 ? LIST_POLL_MS : false
     },
   })
 
@@ -127,37 +147,56 @@ export default function CallImports() {
       <ToastContainer />
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Call Imports</h1>
-          <p className="mt-2 text-sm text-gray-600">
-            Upload datasets from CSV / Excel, or add manual call recordings
-            directly and use the same diarisation and evaluation tools.
-          </p>
+          <h1 className="text-3xl font-bold text-gray-900">Imports</h1>
+          {activeTab !== 'platform' && (
+            <p className="mt-2 text-sm text-gray-600">
+              {activeTab === 'audio'
+                ? 'Upload recordings directly for diarisation and evaluation.'
+                : 'Upload CSV or Excel datasets, map columns, and import call recordings.'}
+            </p>
+          )}
         </div>
         <div className="flex gap-3">
-          <Link to="/call-imports/schemas">
-            <Button
-              variant="ghost"
-              leftIcon={<Layers className="h-5 w-5" />}
-            >
-              Manage Schemas
-            </Button>
-          </Link>
-          <Link to="/call-imports/tags">
-            <Button
-              variant="ghost"
-              leftIcon={<TagIcon className="h-5 w-5" />}
-            >
-              Manage Tags
-            </Button>
-          </Link>
+          {activeTab === 'datasets' && (
+            <>
+              <Link to="/call-imports/schemas">
+                <Button
+                  variant="ghost"
+                  leftIcon={<Layers className="h-5 w-5" />}
+                >
+                  Manage Schemas
+                </Button>
+              </Link>
+              <Link to="/call-imports/tags">
+                <Button
+                  variant="ghost"
+                  leftIcon={<TagIcon className="h-5 w-5" />}
+                >
+                  Manage Tags
+                </Button>
+              </Link>
+            </>
+          )}
           <Button
             variant="primary"
-            onClick={() =>
-              activeTab === 'audio' ? setShowAudioUpload(true) : setShowUpload(true)
+            onClick={() => {
+              if (activeTab === 'audio') setShowAudioUpload(true)
+              else if (activeTab === 'platform') setShowPlatformImport(true)
+              else setShowUpload(true)
+            }}
+            leftIcon={
+              activeTab === 'platform' ? (
+                <Download className="h-5 w-5" />
+              ) : (
+                <Upload className="h-5 w-5" />
+              )
             }
-            leftIcon={<Upload className="h-5 w-5" />}
           >
-            {activeTab === 'audio' ? 'Upload Audio' : 'Upload CSV'}
+            {activeTab === 'audio'
+              ? 'Upload recording'
+              : activeTab === 'platform'
+                ? 'Import data'
+                : 'Upload CSV'}
           </Button>
           <Button
             variant="secondary"
@@ -199,7 +238,22 @@ export default function CallImports() {
           }`}
         >
           <FileAudio className="h-4 w-4" />
-          Call Imports / Uploads
+          Manual Upload
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setActiveTab('platform')
+            setPage(1)
+          }}
+          className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+            activeTab === 'platform'
+              ? 'bg-primary-50 text-primary-700'
+              : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+          }`}
+        >
+          <Blocks className="h-4 w-4" />
+          Existing platforms
         </button>
       </div>
 
@@ -307,8 +361,12 @@ export default function CallImports() {
             )}
           </div>
           <p className="text-sm text-gray-500">
-            {total} {activeTab === 'audio' ? 'manual upload' : 'dataset import'}
-            {total === 1 ? '' : 's'}
+            {total}{' '}
+            {activeTab === 'audio'
+              ? `manual upload${total === 1 ? '' : 's'}`
+              : activeTab === 'platform'
+                ? `platform import${total === 1 ? '' : 's'}`
+                : `dataset import${total === 1 ? '' : 's'}`}
           </p>
         </div>
 
@@ -319,28 +377,42 @@ export default function CallImports() {
           </div>
         ) : items.length === 0 ? (
           <div className="text-center py-12">
-            <Phone className="h-12 w-12 mx-auto mb-3 text-gray-300" />
+            {activeTab === 'platform' ? (
+              <Blocks className="h-12 w-12 mx-auto mb-3 text-gray-300" />
+            ) : (
+              <Phone className="h-12 w-12 mx-auto mb-3 text-gray-300" />
+            )}
             <p className="text-gray-500 mb-3">
               {statusFilter
                 ? 'No imports match this filter.'
                 : activeTab === 'audio'
-                  ? 'No manual audio uploads yet.'
-                  : 'No dataset uploads yet.'}
+                  ? 'No manual uploads yet.'
+                  : activeTab === 'platform'
+                    ? 'No platform imports yet.'
+                    : 'No dataset uploads yet.'}
             </p>
             {!statusFilter && (
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() =>
-                  activeTab === 'audio'
-                    ? setShowAudioUpload(true)
-                    : setShowUpload(true)
+                onClick={() => {
+                  if (activeTab === 'audio') setShowAudioUpload(true)
+                  else if (activeTab === 'platform') setShowPlatformImport(true)
+                  else setShowUpload(true)
+                }}
+                leftIcon={
+                  activeTab === 'platform' ? (
+                    <Download className="h-4 w-4" />
+                  ) : (
+                    <Upload className="h-4 w-4" />
+                  )
                 }
-                leftIcon={<Upload className="h-4 w-4" />}
               >
                 {activeTab === 'audio'
                   ? 'Upload your first recording'
-                  : 'Upload your first CSV'}
+                  : activeTab === 'platform'
+                    ? 'Import data'
+                    : 'Upload your first CSV'}
               </Button>
             )}
           </div>
@@ -383,8 +455,18 @@ export default function CallImports() {
                   >
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm font-medium text-gray-900 truncate max-w-xs">
-                        {item.original_filename || '(unnamed)'}
+                        {item.source_format === 'platform'
+                          ? platformImportLabel(item)
+                          : item.original_filename || '(unnamed)'}
                       </div>
+                      {item.source_format === 'platform' &&
+                        item.window_start &&
+                        item.window_end && (
+                          <div className="text-xs text-gray-500 mt-0.5">
+                            {new Date(item.window_start).toLocaleDateString()} –{' '}
+                            {new Date(item.window_end).toLocaleDateString()}
+                          </div>
+                        )}
                       <div className="text-xs text-gray-400 font-mono mt-0.5">
                         {item.id.slice(0, 8)}
                       </div>
@@ -393,12 +475,32 @@ export default function CallImports() {
                       {item.source_format === 'audio' ? (
                         <span className="inline-flex items-center gap-1 normal-case text-gray-700">
                           <FileAudio className="h-3.5 w-3.5" />
-                          Manual upload
+                          Manual Upload
                         </span>
-                      ) : item.provider || (
-                        <span className="text-gray-400 italic normal-case">
-                          —
+                      ) : item.source_format === 'platform' ? (
+                        <span className="inline-flex flex-col normal-case">
+                          <span>{item.provider || 'platform'}</span>
+                          {item.discovery_status === 'failed' ? (
+                            <span className="text-xs text-red-600 font-normal">
+                              Discovery failed
+                            </span>
+                          ) : item.discovery_status &&
+                            !['completed', 'capped', 'partial'].includes(
+                              item.discovery_status,
+                            ) &&
+                            (item.status === 'processing' ||
+                              item.status === 'pending') ? (
+                            <span className="text-xs text-amber-600 font-normal">
+                              Discovering…
+                            </span>
+                          ) : null}
                         </span>
+                      ) : (
+                        item.provider || (
+                          <span className="text-gray-400 italic normal-case">
+                            —
+                          </span>
+                        )
                       )}
                     </td>
                     <td className="px-6 py-4 align-top">
@@ -464,6 +566,20 @@ export default function CallImports() {
                         >
                           View
                         </Link>
+                        {item.source_format === 'platform' &&
+                          !isDeleting &&
+                          (item.status === 'processing' || item.status === 'pending') && (
+                          <button
+                            type="button"
+                            className="text-gray-500 hover:text-primary-600 transition-colors"
+                            title="Track live import progress"
+                            onClick={() => {
+                              pinPlatformImport(item.id, platformImportLabel(item))
+                            }}
+                          >
+                            <Activity className="h-4 w-4" />
+                          </button>
+                        )}
                         <button
                           type="button"
                           aria-label={`Delete ${item.original_filename || 'import'}`}
@@ -520,6 +636,13 @@ export default function CallImports() {
       </div>
 
       <UploadCsvModal open={showUpload} onClose={() => setShowUpload(false)} />
+      <ImportPlatformModal
+        open={showPlatformImport}
+        onClose={() => setShowPlatformImport(false)}
+        onImportStarted={() => {
+          queryClient.invalidateQueries({ queryKey: ['call-imports'] })
+        }}
+      />
       <UploadAudioModal
         open={showAudioUpload}
         onClose={() => setShowAudioUpload(false)}
@@ -531,14 +654,12 @@ export default function CallImports() {
         description={(() => {
           if (!pendingDelete) return ''
           const name = pendingDelete.original_filename || '(unnamed)'
-          const total = pendingDelete.total_rows
-          const completed = pendingDelete.completed_rows
           const inFlight =
             pendingDelete.status === 'pending' ||
             pendingDelete.status === 'processing' ||
             pendingDelete.status === 'deleting'
           const lines = [
-            `“${name}” will be permanently deleted, along with all ${total} row record${total === 1 ? '' : 's'} and ${completed} stored recording${completed === 1 ? '' : 's'} in S3.`,
+            `“${name}” will be permanently deleted, along with all of its recordings.`,
             inFlight
               ? 'This batch is still processing — pending tasks will be revoked before deletion.'
               : '',
@@ -549,6 +670,7 @@ export default function CallImports() {
         })()}
         confirmLabel="Delete"
         cancelLabel="Cancel"
+        confirmPhrase="confirm"
         variant="danger"
         isLoading={deleteMutation.isPending}
         onConfirm={() => {
@@ -560,6 +682,7 @@ export default function CallImports() {
           setDeleteError(null)
         }}
       />
+      <PlatformImportProgressDock />
     </div>
   )
 }

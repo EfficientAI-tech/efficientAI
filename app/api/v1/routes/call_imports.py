@@ -86,6 +86,7 @@ from app.models.schemas import (
     CallImportTranscribeResponse,
     CallImportUpdate,
     CallImportUploadResponse,
+    PlatformImportAgentRef,
 )
 
 
@@ -141,6 +142,115 @@ def _normalize_import_display_name(raw: Optional[str]) -> Optional[str]:
     return cleaned[:512]
 
 
+def _imported_agent_partial_id(call_import: CallImport):
+    from app.services.platform_import_imported_agent import linked_partial_id
+
+    return linked_partial_id(call_import)
+
+
+def _platform_agent_refs(call_import: CallImport) -> list:
+    """Agent id and name saved with a platform import, for later eval and prompt work."""
+    raw = getattr(call_import, "platform_filters", None) or {}
+    if not isinstance(raw, dict):
+        return []
+    refs = []
+    for agent in raw.get("agents") or []:
+        if not isinstance(agent, dict):
+            continue
+        agent_id = str(agent.get("id") or "").strip()
+        if not agent_id:
+            continue
+        medium = agent.get("medium") or raw.get("medium")
+        refs.append(
+            {
+                "id": agent_id,
+                "name": str(agent.get("name") or agent_id),
+                "medium": str(medium).strip().lower() if medium else None,
+            }
+        )
+    if refs:
+        return refs
+    medium = raw.get("medium")
+    for agent_id in raw.get("agent_ids") or []:
+        text = str(agent_id or "").strip()
+        if not text:
+            continue
+        refs.append(
+            {
+                "id": text,
+                "name": text,
+                "medium": str(medium).strip().lower() if medium else None,
+            }
+        )
+    return refs
+
+
+_agent_name_lookup_after: Dict[str, float] = {}
+
+
+def _remember_platform_agent_names(db: Session, call_import: CallImport) -> None:
+    """Fill in display names for imports that only stored the provider agent id."""
+    import time
+
+    refs = _platform_agent_refs(call_import)
+    if not refs or not call_import.voice_integration_id:
+        return
+    if all(ref["name"] and ref["name"] != ref["id"] for ref in refs):
+        return
+    lookup_key = str(call_import.id)
+    now = time.time()
+    if _agent_name_lookup_after.get(lookup_key, 0) > now:
+        return
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.core.encryption import decrypt_api_key
+    from app.models.database import Integration
+    from app.services.voice_providers import get_voice_provider
+
+    integration = (
+        db.query(Integration)
+        .filter(Integration.id == call_import.voice_integration_id)
+        .first()
+    )
+    if integration is None or not integration.api_key:
+        return
+    try:
+        from app.api.v1.routes.platform_call_imports import _list_import_agents
+
+        api_key = decrypt_api_key(integration.api_key)
+        provider_cls = get_voice_provider(integration.platform)
+        if (integration.platform or "").lower() == "elevenlabs":
+            client = provider_cls(api_key, base_url=integration.api_base_url)
+        else:
+            client = provider_cls(api_key)
+        listed = _list_import_agents(client, integration.platform)
+    except Exception:
+        _agent_name_lookup_after[lookup_key] = time.time() + 300
+        return
+    by_id = {row.id: row for row in listed}
+    updated = []
+    changed = False
+    for ref in refs:
+        match = by_id.get(ref["id"])
+        name = ref["name"]
+        medium = ref.get("medium")
+        if match is not None and match.name and match.name != ref["id"]:
+            name = match.name
+        if match is not None and match.medium:
+            medium = match.medium
+        if name != ref["name"] or medium != ref.get("medium"):
+            changed = True
+        updated.append({"id": ref["id"], "name": name, "medium": medium})
+    if not changed:
+        _agent_name_lookup_after[lookup_key] = time.time() + 300
+        return
+    filters = dict(call_import.platform_filters or {})
+    filters["agents"] = updated
+    call_import.platform_filters = filters
+    flag_modified(call_import, "platform_filters")
+    db.commit()
+
+
 def _serialize_call_import(
     db: Session,
     call_import: CallImport,
@@ -176,6 +286,25 @@ def _serialize_call_import(
     failed = min(int(call_import.failed_rows or 0), total) if total else int(
         call_import.failed_rows or 0
     )
+    # Shard rows are the live count. The catalog counter lags during download.
+    source = (getattr(call_import, "source_format", None) or "").lower()
+    batch_status = (
+        call_import.status.value
+        if isinstance(call_import.status, CallImportStatus)
+        else str(call_import.status or "")
+    )
+    if source == "platform" and batch_status in {"pending", "processing"}:
+        from app.services.call_imports.bulk_ops import (
+            _aggregate_import_row_status_counts,
+        )
+
+        agg_total, agg_completed, agg_failed, _, _ = (
+            _aggregate_import_row_status_counts(db, call_import.id)
+        )
+        if agg_total > 0:
+            total = agg_total
+            completed = agg_completed
+            failed = agg_failed
     if user_emails is None:
         user_emails = emails_for_user_ids(
             db, user_ids_from_call_imports([call_import])
@@ -186,8 +315,14 @@ def _serialize_call_import(
     base = CallImportResponse.model_validate(call_import)
     return base.model_copy(
         update={
+            "total_rows": total,
             "completed_rows": completed,
             "failed_rows": failed,
+            "platform_agents": [
+                PlatformImportAgentRef.model_validate(ref)
+                for ref in _platform_agent_refs(call_import)
+            ],
+            "imported_agent_partial_id": _imported_agent_partial_id(call_import),
             "latest_evaluation_status": _latest_evaluation_status(
                 db, call_import.id
             ),
@@ -862,9 +997,9 @@ def _apply_schema_mapping(
                 (p for p in parameters if p.name == rec_url_param_name),
                 None,
             )
-            if rec_param is not None and _parameter_is_required(rec_param):
+            if rec_param is not None:
                 rec_raw = (row.get(rec_canonical) or "").strip()
-                if not rec_raw:
+                if _parameter_is_required(rec_param) and not rec_raw:
                     skipped.append(
                         CallImportParseSkip(
                             source_row=source_row,
@@ -876,7 +1011,7 @@ def _apply_schema_mapping(
                         )
                     )
                     continue
-                if not _recording_url_cell_is_valid_http(rec_raw):
+                if rec_raw and not _recording_url_cell_is_valid_http(rec_raw):
                     skipped.append(
                         CallImportParseSkip(
                             source_row=source_row,
@@ -903,8 +1038,26 @@ def _apply_schema_mapping(
                 param_type = CallImportParameterType(param.type)
             except ValueError:
                 param_type = CallImportParameterType.TEXT
+            raw_cell = row.get(canonical) or ""
+            if (
+                param_type == CallImportParameterType.RECORDING_URL
+                and (raw_cell or "").strip()
+                and not _recording_url_cell_is_valid_http(raw_cell)
+            ):
+                skipped.append(
+                    CallImportParseSkip(
+                        source_row=source_row,
+                        reason="invalid_recording_url",
+                        message=(
+                            f"Row {source_row}: value for '{param.name}' is not a "
+                            "valid recording URL (must start with http:// or https://)."
+                        ),
+                    )
+                )
+                row_skipped = True
+                break
             coerced = _coerce_parameter_value(
-                row.get(canonical) or "",
+                raw_cell,
                 param_type,
                 row_idx=idx,
                 param_name=param.name,
@@ -1408,6 +1561,29 @@ def _is_manual_audio_call_import(call_import: CallImport) -> bool:
     return (call_import.source_format or "").lower() == "audio"
 
 
+def _is_platform_call_import(call_import: CallImport) -> bool:
+    return (call_import.source_format or "").lower() == "platform"
+
+
+def platform_import_hydration_complete(call_import: CallImport) -> bool:
+    if not _is_platform_call_import(call_import):
+        return True
+    discovery = (call_import.discovery_status or "").lower()
+    if discovery not in {"completed", "capped", "failed", "partial"}:
+        return False
+    from sqlalchemy.orm import object_session
+
+    from app.services.call_imports.bulk_ops import _aggregate_import_row_status_counts
+
+    db = object_session(call_import)
+    if db is None:
+        return False
+    _total, _completed, _failed, pending, processing = _aggregate_import_row_status_counts(
+        db, call_import.id
+    )
+    return pending == 0 and processing == 0
+
+
 def _validate_diarised_eval_recording_ready(
     parameters: List[CallImportSchemaParameter],
     parameter_mapping: Dict[str, Any],
@@ -1478,6 +1654,14 @@ def _resolve_telephony_integration(
     return integration
 
 
+_STUCK_PENDING_ERROR_MARKERS = (
+    "rejected credentials",
+    "telephony credentials rejected",
+    "auth failed",
+    "recording fetch failed after",
+)
+
+
 def _is_stuck_pending_import_row(row: CallImportRow) -> bool:
     """True when a pending row exhausted retries or hit credential errors."""
     from app.models.enums import CallImportRowStatus
@@ -1487,13 +1671,7 @@ def _is_stuck_pending_import_row(row: CallImportRow) -> bool:
     if (row.attempts or 0) > 0:
         return True
     message = (row.error_message or "").lower()
-    auth_indicators = (
-        "rejected credentials",
-        "telephony credentials rejected",
-        "auth failed",
-        "recording fetch failed after",
-    )
-    return any(indicator in message for indicator in auth_indicators)
+    return any(marker in message for marker in _STUCK_PENDING_ERROR_MARKERS)
 
 
 def _validate_telephony_credentials_live(
@@ -2749,7 +2927,10 @@ async def list_call_imports(
     source_filter = (source_format or "").strip().lower()
     if source_filter == "__non_audio__":
         query = query.filter(
-            or_(CallImport.source_format.is_(None), CallImport.source_format != "audio")
+            or_(
+                CallImport.source_format.is_(None),
+                CallImport.source_format.notin_(["audio", "platform"]),
+            )
         )
     elif source_filter:
         query = query.filter(func.lower(CallImport.source_format) == source_filter)
@@ -3053,6 +3234,21 @@ async def get_call_import_detail(
             db.commit()
             db.refresh(call_import)
 
+    if (
+        (call_import.source_format or "") == "platform"
+        and _imported_agent_partial_id(call_import) is None
+    ):
+        from app.services.platform_import_imported_agent import (
+            ensure_imported_agent_for_platform_import,
+        )
+
+        try:
+            if ensure_imported_agent_for_platform_import(db, call_import, None):
+                db.commit()
+                db.refresh(call_import)
+        except Exception:
+            db.rollback()
+
     search_term = (q or "").strip()
     diarised_status_filter = (diarised_status or "").strip() or None
     filtered_total_rows: Optional[int] = None
@@ -3118,8 +3314,11 @@ async def get_call_import_detail(
             rows_query = rows_query.filter(
                 CallImportRow.diarised_transcript_status == diarised_status_filter
             )
+        from app.db_sharding.scatter_gather import defer_call_import_row_text
+
         rows = (
-            rows_query.order_by(CallImportRow.row_index)
+            rows_query.options(*defer_call_import_row_text())
+            .order_by(CallImportRow.row_index)
             .offset(row_offset)
             .limit(row_limit)
             .all()
@@ -3146,15 +3345,23 @@ async def get_call_import_detail(
             if isinstance(status_value, str):
                 diarised_status_counts[status_value] = int(count or 0)
 
+    if (call_import.source_format or "").lower() == "platform":
+        _remember_platform_agent_names(db, call_import)
     detail = CallImportDetailResponse.model_validate(
         _serialize_call_import(db, call_import).model_dump()
     )
-    detail.rows = [CallImportRowResponse.model_validate(r) for r in rows]
+    detail.rows = [_call_import_row_list_response(r) for r in rows]
     detail.filtered_total_rows = filtered_total_rows
     detail.diarised_pending_rows = diarised_status_counts.get("pending", 0)
     detail.diarised_running_rows = diarised_status_counts.get("running", 0)
     detail.diarised_completed_rows = diarised_status_counts.get("completed", 0)
     detail.diarised_failed_rows = diarised_status_counts.get("failed", 0)
+    if (call_import.source_format or "").lower() == "platform":
+        from app.services.call_imports.platform_import_progress import (
+            build_platform_import_progress,
+        )
+
+        detail.platform_progress = build_platform_import_progress(db, call_import)
     return detail
 
 
@@ -3386,6 +3593,44 @@ async def delete_call_import(
     )
 
 
+def _call_import_row_list_response(row: CallImportRow) -> CallImportRowResponse:
+    """List payload. Transcript text is loaded by the single-row GET."""
+    return CallImportRowResponse(
+        id=row.id,
+        row_index=row.row_index,
+        conversation_id=row.conversation_id,
+        recording_url=row.recording_url,
+        recording_date=row.recording_date,
+        transcript=None,
+        transcript_source=row.transcript_source,
+        transcript_provider=row.transcript_provider,
+        transcript_model=row.transcript_model,
+        transcript_status=row.transcript_status,
+        transcript_error=row.transcript_error,
+        transcribed_at=row.transcribed_at,
+        diarised_transcript=None,
+        diarised_transcript_provider=row.diarised_transcript_provider,
+        diarised_transcript_model=row.diarised_transcript_model,
+        diarised_transcript_status=row.diarised_transcript_status,
+        diarised_transcript_error=row.diarised_transcript_error,
+        diarised_at=row.diarised_at,
+        diarised_llm_provider=row.diarised_llm_provider,
+        diarised_llm_model=row.diarised_llm_model,
+        diarised_prompt=None,
+        diarised_segments=None,
+        diarised_speaker_swap=bool(row.diarised_speaker_swap),
+        status=row.status,
+        recording_s3_key=row.recording_s3_key,
+        recording_content_type=row.recording_content_type,
+        recording_size_bytes=row.recording_size_bytes,
+        error_message=row.error_message,
+        attempts=row.attempts,
+        raw_columns=None,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
 def _locate_call_import_row_or_404(
     catalog_db: Session,
     *,
@@ -3424,6 +3669,53 @@ def _locate_call_import_row_or_404(
         )
     extra_catalog = located_catalog if located_catalog is not row_db else None
     return row_db, row, extra_catalog
+
+
+@router.get(
+    "/{call_import_id}/rows/{row_id}",
+    response_model=CallImportRowResponse,
+    operation_id="getCallImportRow",
+)
+async def get_call_import_row(
+    call_import_id: UUID,
+    row_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportRowResponse:
+    """One import row, including transcript text omitted from the list."""
+    del api_key
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    if not is_sharding_enabled():
+        row = (
+            db.query(CallImportRow)
+            .filter(
+                CallImportRow.id == row_id,
+                CallImportRow.call_import_id == call_import_id,
+                CallImportRow.organization_id == organization_id,
+            )
+            .first()
+        )
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Call import row not found",
+            )
+        return CallImportRowResponse.model_validate(row)
+
+    from app.db_sharding.row_ops import close_row_sessions
+
+    row_db, row, extra_catalog = _locate_call_import_row_or_404(
+        db,
+        call_import_id=call_import_id,
+        row_id=row_id,
+        organization_id=organization_id,
+    )
+    try:
+        return CallImportRowResponse.model_validate(row)
+    finally:
+        close_row_sessions(row_db, extra_catalog)
 
 
 @router.delete(
@@ -3584,52 +3876,33 @@ async def retry_failed_call_import_rows(
         else:
             call_import.provider = None
             call_import.telephony_integration_id = None
-        db.flush()
+        stamp_call_import_actor(call_import, principal)
+        db.commit()
 
-    candidate_rows = (
-        db.query(CallImportRow)
-        .filter(
-            CallImportRow.call_import_id == call_import.id,
-            CallImportRow.status.in_(
-                (CallImportRowStatus.FAILED, CallImportRowStatus.PENDING)
-            ),
-        )
-        .order_by(CallImportRow.row_index.asc())
-        .all()
+    from app.services.call_imports.bulk_ops import (
+        mark_import_rows_enqueue_failed,
+        requeue_failed_import_rows,
     )
-    retryable_rows = [
-        row
-        for row in candidate_rows
-        if row.status == CallImportRowStatus.FAILED
-        or _is_stuck_pending_import_row(row)
-    ]
-    if not retryable_rows:
+    from app.workers.concurrency.fair_import_dispatch import (
+        schedule_fair_import_dispatch,
+    )
+
+    reset_ids = requeue_failed_import_rows(db, call_import.id)
+    if not reset_ids:
         return CallImportRetryFailedRowsResponse(
             requeued=0,
             enqueue_failed=0,
             skipped=0,
         )
 
-    from app.workers.concurrency.fair_import_dispatch import (
-        schedule_fair_import_dispatch,
-    )
-
-    # Reset rows to pending BEFORE enqueue so the UI reflects "retry in
-    # progress" immediately even if the worker queue is backlogged.
-    for row in retryable_rows:
-        row.status = CallImportRowStatus.PENDING
-        row.error_message = None
-        row.celery_task_id = None
-        row.attempts = 0
-
-    db.flush()
     _recompute_call_import_counters(db, call_import)
-    stamp_call_import_actor(call_import, principal)
+    if payload is None:
+        stamp_call_import_actor(call_import, principal)
     db.commit()
 
     try:
         schedule_fair_import_dispatch(max_workspace_turns=999)
-        requeued = len(retryable_rows)
+        requeued = len(reset_ids)
         enqueue_failed = 0
         skipped = 0
     except Exception as exc:  # noqa: BLE001
@@ -3638,17 +3911,12 @@ async def retry_failed_call_import_rows(
             call_import.id,
         )
         requeued = 0
-        enqueue_failed = len(retryable_rows)
-        skipped = 0
-        for row in retryable_rows:
-            db.refresh(row)
-            if row.status != CallImportRowStatus.PENDING:
-                skipped += 1
-                enqueue_failed -= 1
-                continue
-            row.status = CallImportRowStatus.FAILED
-            row.error_message = f"Failed to enqueue retry: {exc}"
-        db.flush()
+        enqueue_failed, skipped = mark_import_rows_enqueue_failed(
+            db,
+            call_import.id,
+            reset_ids,
+            f"Failed to enqueue retry: {exc}",
+        )
         _recompute_call_import_counters(db, call_import)
         db.commit()
 
@@ -4246,11 +4514,7 @@ async def get_call_import_insights(
 
     del api_key
 
-    from app.models.database import (
-        CallImportEvaluation,
-        CallImportEvaluationRow,
-        Metric,
-    )
+    from app.models.database import CallImportEvaluation, Metric
 
     call_import = (
         db.query(CallImport)
@@ -4266,31 +4530,17 @@ async def get_call_import_insights(
             detail="Call import not found",
         )
 
-    rows = (
-        db.query(CallImportRow)
-        .filter(CallImportRow.call_import_id == call_import_id)
-        .all()
+    from app.db_sharding.scatter_gather import (
+        aggregate_transcript_coverage,
+        load_evaluation_score_rows,
     )
-    # A row "has a transcript" if EITHER the production (CSV) or the
-    # diarised (worker) column is populated — the insights tile reports
-    # the union so users see total coverage regardless of which source
-    # produced the value.
-    rows_with_transcript = sum(
-        1
-        for r in rows
-        if (r.transcript or "").strip()
-        or (r.diarised_transcript or "").strip()
-    )
-    rows_without_transcript = len(rows) - rows_with_transcript
-    source_counts: Dict[str, int] = {}
-    for r in rows:
-        has_production = bool((r.transcript or "").strip())
-        has_diarised = bool((r.diarised_transcript or "").strip())
-        if has_production:
-            key = r.transcript_source or "csv"
-            source_counts[key] = source_counts.get(key, 0) + 1
-        if has_diarised:
-            source_counts["diarised"] = source_counts.get("diarised", 0) + 1
+
+    (
+        total_rows,
+        rows_with_transcript,
+        rows_without_transcript,
+        source_counts,
+    ) = aggregate_transcript_coverage(db, call_import_id)
 
     evaluations = (
         db.query(CallImportEvaluation)
@@ -4315,11 +4565,7 @@ async def get_call_import_insights(
     metric_latest: Dict[str, CallImportMetricAggregate] = {}
 
     for evaluation in evaluations:
-        eval_rows = (
-            db.query(CallImportEvaluationRow)
-            .filter(CallImportEvaluationRow.evaluation_id == evaluation.id)
-            .all()
-        )
+        eval_rows = load_evaluation_score_rows(db, evaluation.id)
         aggregates = _compute_metric_aggregates(db, evaluation, eval_rows)
         for agg in aggregates:
             if agg.metric_id not in metric_meta:
@@ -4373,7 +4619,7 @@ async def get_call_import_insights(
 
     return CallImportInsightsResponse(
         call_import_id=call_import_id,
-        total_rows=len(rows),
+        total_rows=total_rows,
         rows_with_transcript=rows_with_transcript,
         rows_without_transcript=rows_without_transcript,
         transcript_source_counts=source_counts,

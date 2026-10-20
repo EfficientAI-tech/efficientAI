@@ -710,8 +710,9 @@ def start_worker_all(config: str, loglevel: str, media_port: Optional[int]):
     type=int,
     help=(
         "Concurrency for the imports+diarization+evaluations worker "
-        "(default: 12; thread pool). Use lower values (8–12) when DB sharding "
-        "is enabled; 32 threads can exhaust per-shard SQLAlchemy pools."
+        "(default: 12; thread pool). Each shard basket follows this number, "
+        "plus a little spare, unless database.sharding pool_size and "
+        "max_overflow are both set."
     ),
 )
 @click.option(
@@ -1003,6 +1004,22 @@ def start_all(
 
         if imports_worker:
             from app.workers.config import IMPORTS_WORKER_QUEUES
+
+            try:
+                import redis as redis_lib
+
+                from app.config import settings as app_settings
+
+                legacy_q = redis_lib.from_url(app_settings.REDIS_URL, decode_responses=True)
+                backlog = int(legacy_q.llen("platform-imports") or 0)
+                if backlog > 0:
+                    click.echo(
+                        f"⚠️  {backlog} Celery task(s) still on legacy queue "
+                        f"'platform-imports' (worker consumes this list to drain them).",
+                        err=True,
+                    )
+            except Exception:
+                pass
 
             worker_imports_process = _spawn_worker(
                 [

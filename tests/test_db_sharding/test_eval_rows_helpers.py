@@ -29,16 +29,12 @@ def test_load_evaluation_rows_delegates_to_pairs():
 def test_count_evaluation_rows_by_status():
     catalog_db = MagicMock()
     evaluation_id = uuid4()
-    r1 = MagicMock(status="completed")
-    r2 = MagicMock(status="failed")
+    catalog_db.query.return_value.filter.return_value.filter.return_value.scalar.return_value = 1
 
-    with patch(
-        "app.db_sharding.eval_rows.load_evaluation_row_pairs",
-        return_value=[(r1, MagicMock()), (r2, MagicMock())],
-    ):
-        assert (
-            count_evaluation_rows_for_run(
-                catalog_db, evaluation_id, statuses=["completed"]
-            )
-            == 1
+    assert (
+        count_evaluation_rows_for_run(
+            catalog_db, evaluation_id, statuses=["completed"]
         )
+        == 1
+    )
+    catalog_db.query.return_value.filter.return_value.filter.assert_called()

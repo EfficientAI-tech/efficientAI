@@ -21,7 +21,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import query_expression, relationship
 from sqlalchemy.sql import func
 import uuid
 import enum
@@ -1863,6 +1863,7 @@ class PromptPartial(Base):
     created_by = Column(String, nullable=True)
 
     versions = relationship("PromptPartialVersion", back_populates="prompt_partial", cascade="all, delete-orphan", order_by="PromptPartialVersion.version.desc()")
+    pushes = relationship("PromptPush", back_populates="prompt_partial", cascade="all, delete-orphan", order_by="PromptPush.created_at.desc()")
 
 
 class PromptPartialVersion(Base):
@@ -1890,6 +1891,29 @@ class PromptPartialVersion(Base):
     __table_args__ = (
         UniqueConstraint('prompt_partial_id', 'version', name='uq_prompt_partial_version'),
     )
+
+
+class PromptPush(Base):
+    """Audit row for a live provider prompt push. The prompt body stays on PromptPartialVersion."""
+
+    __tablename__ = "prompt_pushes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    workspace_id = Column(UUID(as_uuid=True), ForeignKey("workspaces.id", ondelete="RESTRICT"), nullable=False, index=True)
+    prompt_partial_id = Column(UUID(as_uuid=True), ForeignKey("prompt_partials.id", ondelete="CASCADE"), nullable=False, index=True)
+    prompt_version = Column(Integer, nullable=False)
+    provider = Column(String(50), nullable=False)
+    external_agent_id = Column(String(255), nullable=False)
+    external_agent_name = Column(String(255), nullable=True)
+    integration_id = Column(UUID(as_uuid=True), ForeignKey("integrations.id", ondelete="SET NULL"), nullable=True)
+    evaluation_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    pushed_by = Column(String, nullable=True)
+    status = Column(String(20), nullable=False)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    prompt_partial = relationship("PromptPartial", back_populates="pushes")
 
 
 class CustomTTSVoice(Base):
@@ -2318,6 +2342,26 @@ class CallImport(Base):
     )
     error_message = Column(Text, nullable=True)
 
+    voice_integration_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("integrations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    platform_filters = Column(JSON, nullable=False, default=dict)
+    window_start = Column(DateTime(timezone=True), nullable=True)
+    window_end = Column(DateTime(timezone=True), nullable=True)
+    window_timezone = Column(String(64), nullable=True)
+    discovery_status = Column(String(32), nullable=True)
+    max_calls = Column(Integer, nullable=True)
+    next_row_index = Column(Integer, nullable=False, default=0)
+    skip_counts = Column(JSON, nullable=False, default=dict)
+    skip_samples = Column(JSON, nullable=False, default=list)
+    paused_at = Column(DateTime(timezone=True), nullable=True)
+    pause_reason = Column(Text, nullable=True)
+    billed_at = Column(DateTime(timezone=True), nullable=True)
+    last_progress_at = Column(DateTime(timezone=True), nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -2338,6 +2382,64 @@ class CallImport(Base):
         back_populates="call_import",
         cascade="all, delete-orphan",
     )
+
+
+class CallImportDiscoverySlice(Base):
+    """Time slice for platform historical import discovery."""
+
+    __tablename__ = "call_import_discovery_slices"
+
+    call_import_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_imports.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    slice_id = Column(Integer, primary_key=True)
+    slice_start = Column(DateTime(timezone=True), nullable=False)
+    slice_end = Column(DateTime(timezone=True), nullable=False)
+    cursor = Column(Text, nullable=True)
+    agent_id = Column(String(255), nullable=True)
+    status = Column(String(32), nullable=False, default="pending")
+    listed = Column(Integer, nullable=False, default=0)
+    accepted = Column(Integer, nullable=False, default=0)
+    attempts = Column(Integer, nullable=False, default=0)
+    error = Column(Text, nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class PlatformConversationLedger(Base):
+    """One ledger row per conversation inside a single import."""
+
+    __tablename__ = "platform_conversation_ledger"
+    __table_args__ = (
+        UniqueConstraint(
+            "call_import_id",
+            "conversation_id",
+            name="uq_platform_ledger_import_conversation",
+        ),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    provider = Column(String(50), nullable=False)
+    conversation_id = Column(String(255), nullable=False)
+    call_import_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_imports.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    row_id = Column(UUID(as_uuid=True), nullable=False)
+    row_index = Column(Integer, nullable=False)
+    state = Column(String(32), nullable=False, default="reserved")
+    recording_date = Column(Date, nullable=True)
+    raw_columns = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class CallImportShardSlice(Base):
@@ -2434,6 +2536,8 @@ class CallImportRow(Base):
     # Evaluations can be configured to score against either column
     # (see ``CallImportEvaluation.transcript_source``).
     diarised_transcript = Column(Text, nullable=True)
+    transcript_char_length = query_expression()
+    diarised_transcript_char_length = query_expression()
     # Provider/model the diarisation worker used. Surfaced in the UI
     # as "Diarised via deepgram/nova-2" next to the diarised
     # transcript section.
@@ -2515,6 +2619,8 @@ class CallImportRow(Base):
     error_message = Column(Text, nullable=True)
     attempts = Column(Integer, nullable=False, default=0)
     celery_task_id = Column(String(255), nullable=True)
+    dispatched_at = Column(DateTime(timezone=True), nullable=True)
+    download_started_at = Column(DateTime(timezone=True), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -3041,6 +3147,58 @@ class CallImportEvaluationPdfReport(Base):
     created_by = Column(String, nullable=True)
     created_by_user_id = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class CallImportEvaluationExport(Base):
+    """Background CSV/XLSX export for one evaluation run."""
+
+    __tablename__ = "call_import_evaluation_exports"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    evaluation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_import_evaluations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    call_import_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_imports.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    organization_id = Column(
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    format = Column(String(8), nullable=False, default="csv")
+    include_transcripts = Column(Boolean, nullable=False, default=False)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    error_message = Column(Text, nullable=True)
+    parts = Column(JSONB, nullable=False, default=list)
+    claim_token = Column(String(36), nullable=True)
+    heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+
+
+# One active export per evaluation. A full unique index would block the next
+# download after the first job finishes, and SQLite turns postgresql_where
+# into that full index, so this DDL is postgres-only.
+event.listen(
+    CallImportEvaluationExport.__table__,
+    "after_create",
+    DDL(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_call_import_evaluation_exports_active "
+        "ON call_import_evaluation_exports (evaluation_id) "
+        "WHERE status IN ('pending', 'running')"
+    ).execute_if(dialect="postgresql"),
+)
 
 
 # ---------------------------------------------------------------------------

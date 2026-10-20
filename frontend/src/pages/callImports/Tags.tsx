@@ -81,7 +81,7 @@ export default function CallImportTagsPage() {
           className="inline-flex items-center gap-1 text-sm text-primary-600 hover:text-primary-700"
         >
           <ArrowLeft className="h-4 w-4" />
-          Back to Call Imports
+          Back to Imports
         </Link>
         <Button
           variant="primary"

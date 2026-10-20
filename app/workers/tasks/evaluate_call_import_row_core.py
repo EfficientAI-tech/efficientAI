@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, List, Optional
 from uuid import UUID
 
-from sqlalchemy import case, func, or_, update
+from sqlalchemy import and_, case, func, or_, update
 from sqlalchemy.orm import Session
 
 from app.models.database import (
@@ -44,6 +44,105 @@ _PROD_KEYWORDS: tuple[str, ...] = (
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def claim_eval_row_for_task(
+    row_db: Session,
+    eval_row: CallImportEvaluationRow,
+    task_id: str | None,
+    predecessor_task_id: str | None = None,
+) -> bool:
+    """Mark the row running for this task.
+
+    A second Celery task for the same row loses the update and must not
+    call the model. The dispatcher writes ``celery_task_id`` while the
+    row is still pending, so the match is on that id. The audio phase may
+    hand a running row to the LLM task it just queued; that successor
+    matches ``predecessor_task_id`` until the new id is stored.
+    """
+    cleaned = (task_id or "").strip()
+    predecessor = (predecessor_task_id or "").strip()
+    filters = [
+        CallImportEvaluationRow.id == eval_row.id,
+        CallImportEvaluationRow.status.in_(("pending", "running")),
+    ]
+    if cleaned:
+        # Pending with no id can be taken once. Running only matches its task id.
+        owner_match = [
+            and_(
+                CallImportEvaluationRow.status == "pending",
+                CallImportEvaluationRow.celery_task_id.is_(None),
+            ),
+            CallImportEvaluationRow.celery_task_id == cleaned,
+        ]
+        if predecessor and predecessor != cleaned:
+            owner_match.append(
+                and_(
+                    CallImportEvaluationRow.status == "running",
+                    CallImportEvaluationRow.celery_task_id == predecessor,
+                )
+            )
+        filters.append(or_(*owner_match))
+    else:
+        filters.append(CallImportEvaluationRow.status == "pending")
+    values: dict[str, Any] = {
+        "status": "running",
+        "error_message": None,
+        "started_at": func.coalesce(CallImportEvaluationRow.started_at, now_utc()),
+    }
+    if cleaned:
+        values["celery_task_id"] = cleaned
+    result = row_db.execute(
+        update(CallImportEvaluationRow).where(*filters).values(**values)
+    )
+    if result.rowcount != 1:
+        row_db.rollback()
+        return False
+    row_db.commit()
+    row_db.refresh(eval_row)
+    return True
+
+
+_EXECUTION_TTL_SECONDS = 15 * 60
+
+
+def _execution_key(task_id: str) -> str:
+    return f"eval:execution:{task_id}"
+
+
+def acquire_eval_execution(task_id: str | None) -> bool:
+    """True when this delivery may call the model.
+
+    A second delivery of the same task id loses. Redis errors allow the
+    call so a lock outage does not skip a row that nobody else is scoring.
+    """
+    cleaned = (task_id or "").strip()
+    if not cleaned:
+        return True
+    try:
+        from app.workers.concurrency.limits import _get_redis
+
+        acquired = _get_redis().set(
+            _execution_key(cleaned),
+            "1",
+            nx=True,
+            ex=_EXECUTION_TTL_SECONDS,
+        )
+    except Exception:
+        return True
+    return bool(acquired)
+
+
+def release_eval_execution(task_id: str | None) -> None:
+    cleaned = (task_id or "").strip()
+    if not cleaned:
+        return
+    try:
+        from app.workers.concurrency.limits import _get_redis
+
+        _get_redis().delete(_execution_key(cleaned))
+    except Exception:
+        return
 
 
 def as_json_dict(value: Any) -> dict:
@@ -446,6 +545,26 @@ def reconcile_evaluation_counters(
     clear_eval_progress_redis(evaluation.id)
 
 
+def _should_confirm_eval_finished(
+    evaluation_id: UUID,
+    expected_in_progress: int,
+) -> bool:
+    """Whether to compare parent counters with the live row count.
+
+    Mid-run the increment is enough. Confirm when the counter says the run
+    is down to the last row, and when this task is the only one still in
+    flight. A lost parent commit can leave the counter above 1 after every
+    row is already terminal; that last task still has to close and bill.
+    An inflight of 0 means this caller has no tracked slot, so it is not
+    treated as the closer.
+    """
+    if expected_in_progress <= 1:
+        return True
+    from app.workers.concurrency.limits import read_job_inflight
+
+    return read_job_inflight(evaluation_id) == 1
+
+
 def _count_in_progress_rows(db: Session, evaluation_id: UUID) -> int:
     """Count rows still pending or running (cheap indexed query)."""
     from app.db_sharding.sessions import is_sharding_enabled
@@ -511,20 +630,40 @@ def commit_terminal_row_and_rollup(
     previous_row_status: str,
     catalog_db: Session | None = None,
 ) -> None:
+    from contextlib import nullcontext
+
+    from app.db_sharding.row_ops import shard_row_write_context
+
     parent_db = catalog_db if catalog_db is not None and catalog_db is not row_db else row_db
-    if (eval_row.status or "").lower() == "completed":
-        source_row = (
-            row_db.query(CallImportRow)
-            .filter(CallImportRow.id == eval_row.call_import_row_id)
-            .first()
+    # Shard FK points at the catalogue evaluation; skip it for this write.
+    write_ctx = (
+        shard_row_write_context(row_db) if parent_db is not row_db else nullcontext()
+    )
+    with write_ctx:
+        transition = row_db.execute(
+            update(CallImportEvaluationRow)
+            .where(
+                CallImportEvaluationRow.id == eval_row.id,
+                CallImportEvaluationRow.status.in_(("pending", "running")),
+            )
+            .values(status=eval_row.status)
         )
-        maybe_bill_completed_eval_row_flexprice(
-            row_db,
-            evaluation,
-            eval_row,
-            source_row=source_row,
-        )
-    row_db.commit()
+        if transition.rowcount != 1:
+            row_db.rollback()
+            return
+        if (eval_row.status or "").lower() == "completed":
+            source_row = (
+                row_db.query(CallImportRow)
+                .filter(CallImportRow.id == eval_row.call_import_row_id)
+                .first()
+            )
+            maybe_bill_completed_eval_row_flexprice(
+                row_db,
+                evaluation,
+                eval_row,
+                source_row=source_row,
+            )
+        row_db.commit()
     if parent_db is not row_db:
         evaluation = (
             parent_db.query(CallImportEvaluation)
@@ -587,7 +726,9 @@ def rollup_parent(
             - int(evaluation.completed_rows or 0)
             - int(evaluation.failed_rows or 0)
         )
-        if expected_in_progress != _count_in_progress_rows(db, evaluation_id):
+        if _should_confirm_eval_finished(
+            evaluation_id, expected_in_progress
+        ) and expected_in_progress != _count_in_progress_rows(db, evaluation_id):
             reconcile_evaluation_counters(db, evaluation)
             db.refresh(evaluation)
 
@@ -687,8 +828,14 @@ def categorize_row_metrics(
     list[Metric],
     dict[str, dict[str, Any]],
 ]:
-    production_transcript = (source_row.transcript or "").strip()
-    diarised_transcript = (source_row.diarised_transcript or "").strip()
+    from app.db_sharding.scatter_gather import row_text_present
+
+    production_transcript = row_text_present(
+        source_row, "transcript", "transcript_char_length"
+    )
+    diarised_transcript = row_text_present(
+        source_row, "diarised_transcript", "diarised_transcript_char_length"
+    )
     recording_s3_key = (source_row.recording_s3_key or "").strip() or None
     has_audio = recording_s3_key is not None
     return categorize_metrics(

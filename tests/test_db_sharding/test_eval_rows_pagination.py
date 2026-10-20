@@ -4,14 +4,29 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 from app.db_sharding.eval_rows import fetch_evaluation_row_pairs_page
 
+_IDS = [uuid4() for _ in range(4)]
+
 
 def _pair(row_index: int, status: str = "completed"):
-    eval_row = SimpleNamespace(status=status, metric_scores={})
+    eval_row = SimpleNamespace(
+        id=_IDS[row_index],
+        status=status,
+        metric_scores={},
+    )
     source_row = SimpleNamespace(row_index=row_index, conversation_id=f"c-{row_index}")
     return eval_row, source_row
+
+
+def _query_returning(pairs):
+    query = MagicMock()
+    query.options.return_value = query
+    query.filter.return_value = query
+    query.all.return_value = pairs
+    return query
 
 
 @patch("app.db_sharding.eval_rows.is_sharding_enabled", return_value=True)
@@ -22,13 +37,9 @@ def test_fetch_page_unbounded_sort_loads_all_shard_rows(
     _mock_count,
     _mock_sharding,
 ):
-    """Non-row_index sorts must not truncate per-shard results."""
-    shard_a = MagicMock()
-    shard_b = MagicMock()
-    shard_a.all.return_value = [_pair(0, "failed"), _pair(1, "failed")]
-    shard_b.all.return_value = [_pair(2, "completed"), _pair(3, "completed")]
-    shard_a.limit.return_value = shard_a
-    shard_b.limit.return_value = shard_b
+    """Non-row_index sorts merge every shard, then keep one page."""
+    shard_a = _query_returning([_pair(0, "failed"), _pair(1, "failed")])
+    shard_b = _query_returning([_pair(2, "completed"), _pair(3, "completed")])
 
     mock_pool_manager.router.shard_ids = ["shard-a", "shard-b"]
     session_a = MagicMock()
@@ -68,19 +79,31 @@ def test_fetch_page_bounded_sort_limits_each_shard(
     _mock_count,
     _mock_sharding,
 ):
-    shard_a = MagicMock()
-    shard_a.all.return_value = [_pair(0), _pair(1)]
-    shard_a.limit.return_value = shard_a
+    """row_index pages read the slice window, not every row on the shard."""
+    count_query = MagicMock()
+    count_query.order_by.return_value = count_query
+    count_query.with_entities.return_value = count_query
+    count_query.group_by.return_value = count_query
+    count_query.all.return_value = [(0, 4)]
+
+    page_query = MagicMock()
+    page_query.options.return_value = page_query
+    page_query.filter.return_value = page_query
+    page_query.order_by.return_value = page_query
+    page_query.offset.return_value = page_query
+    page_query.limit.return_value = page_query
+    page_query.all.return_value = [_pair(0), _pair(1)]
 
     mock_pool_manager.router.shard_ids = ["shard-a"]
     session = MagicMock()
     mock_pool_manager.shard_session_factory.side_effect = lambda _shard_id: (
         lambda: session
     )
+    queries = iter((count_query, page_query))
 
     total, rows = fetch_evaluation_row_pairs_page(
         MagicMock(),
-        lambda _session: shard_a,
+        lambda _session: next(queries),
         page=1,
         page_size=2,
         sort_key=lambda pair: int(pair[1].row_index or 0),
@@ -89,4 +112,6 @@ def test_fetch_page_bounded_sort_limits_each_shard(
 
     assert total == 4
     assert len(rows) == 2
-    shard_a.limit.assert_called_once_with(2)
+    count_query.group_by.assert_called_once()
+    page_query.limit.assert_called_once_with(2)
+    page_query.offset.assert_called_once_with(0)

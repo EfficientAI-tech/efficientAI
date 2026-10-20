@@ -332,3 +332,47 @@ def bulk_delete_call_import_rows_task(
         return {"deleted": deleted}
     finally:
         db.close()
+
+
+@celery_app.task(name="deferred_call_import_rollup", queue="import-control")
+def deferred_call_import_rollup_task(call_import_id: str) -> dict:
+    """Force parent status rollup after debounced window (trailing completion)."""
+    db = SessionLocal()
+    try:
+        parent = db.query(CallImport).filter(CallImport.id == UUID(call_import_id)).first()
+        if parent is None:
+            return {"status": "missing"}
+        from app.services.call_imports.debounced_rollup import schedule_debounced_import_rollup
+
+        schedule_debounced_import_rollup(db, parent, force=True)
+        db.commit()
+        return {"status": "rolled_up"}
+    finally:
+        db.close()
+
+
+@celery_app.task(
+    name="export_call_import_evaluation",
+    bind=True,
+    max_retries=30,
+    soft_time_limit=6 * 60 * 60,
+    time_limit=6 * 60 * 60 + 120,
+)
+def export_call_import_evaluation_task(self, job_id: str) -> dict:
+    """Write an evaluation export to blob storage off the API thread.
+
+    The app-wide limit is 30 minutes, which is shorter than a large export.
+    A redelivered copy waits until the current claim's heartbeat expires,
+    then takes the job instead of acknowledging the delivery and stopping.
+    """
+    db = SessionLocal()
+    try:
+        from app.services.call_imports.evaluation_export import execute_evaluation_export
+
+        result = execute_evaluation_export(db, UUID(job_id))
+    finally:
+        db.close()
+    retry_after = result.get("retry_after_seconds")
+    if retry_after:
+        raise self.retry(countdown=int(retry_after))
+    return result

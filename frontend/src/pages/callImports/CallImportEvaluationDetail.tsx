@@ -1,7 +1,7 @@
 import { type ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
   AlertTriangle,
@@ -76,6 +76,7 @@ import type {
   CallImportEvaluation,
   DiscoveredMetric,
   CallImportEvaluationBulkActionResponse,
+  CallImportEvaluationExportPart,
   CallImportEvaluationBaselineCandidate,
   CallImportEvaluationRetryResponse,
   CallImportEvaluationRow,
@@ -287,8 +288,20 @@ const ROWS_PAGE_SIZE = 50
 const EVAL_PROGRESS_POLL_MS = 3000
 const EVAL_PROGRESS_POLL_LARGE_MS = 10000
 const EVAL_LARGE_ROW_THRESHOLD = 5000
-const ROWS_REFETCH_WHILE_RUNNING_MS = 20000
 
+function evaluationRowsPollMs(
+  evaluation:
+    | { status?: string; total_rows?: number; bulk_operation?: unknown }
+    | undefined,
+): number | false {
+  if (!evaluation) return false
+  if (evaluation.bulk_operation) return EVALUATION_BULK_OPERATION_POLL_MS
+  if (evaluation.status !== 'pending' && evaluation.status !== 'running') return false
+  const totalRows = evaluation.total_rows ?? 0
+  return totalRows > EVAL_LARGE_ROW_THRESHOLD
+    ? EVAL_PROGRESS_POLL_LARGE_MS
+    : EVAL_PROGRESS_POLL_MS
+}
 const USER_INSIGHTS_SAMPLE_SIZE_OPTIONS = [50, 100, 150, 200, 300, 500] as const
 const DEFAULT_USER_INSIGHTS_SAMPLE_SIZE = 200
 
@@ -396,6 +409,13 @@ function SortableHeader({
   )
 }
 
+function exportReadyHint(rowCount: number): string {
+  if (rowCount <= 5000) return 'Usually ready in under a minute.'
+  const minutes = Math.max(1, Math.round(rowCount / 25000))
+  const unit = minutes === 1 ? 'minute' : 'minutes'
+  return `A file this size usually takes about ${minutes} ${unit}.`
+}
+
 export default function CallImportEvaluationDetail() {
   const { id, evalId } = useParams<{ id: string; evalId: string }>()
   const navigate = useNavigate()
@@ -458,6 +478,9 @@ export default function CallImportEvaluationDetail() {
   const [deleteEvalOpen, setDeleteEvalOpen] = useState(false)
   const [downloadMenuOpen, setDownloadMenuOpen] = useState(false)
   const downloadMenuRef = useRef<HTMLDivElement>(null)
+  const exportPollRef = useRef(0)
+  const [exportPreparing, setExportPreparing] = useState(false)
+  const [exportParts, setExportParts] = useState<CallImportEvaluationExportPart[]>([])
   const [pdfReportMenuOpen, setPdfReportMenuOpen] = useState(false)
   const pdfReportMenuRef = useRef<HTMLDivElement>(null)
   const [pdfReportOpen, setPdfReportOpen] = useState(false)
@@ -960,16 +983,97 @@ export default function CallImportEvaluationDetail() {
         evaluationQuery.data?.status === 'completed' ||
         evaluationQuery.data?.status === 'partial' ||
         evaluationQuery.data?.status === 'failed'),
-    refetchInterval: () => {
-      if (evaluationQuery.data?.bulk_operation) {
-        return EVALUATION_BULK_OPERATION_POLL_MS
-      }
-      if (evaluationQuery.data?.status === 'running') {
-        return ROWS_REFETCH_WHILE_RUNNING_MS
-      }
-      return false
-    },
+    staleTime: 60_000,
+    placeholderData: keepPreviousData,
+    refetchInterval: () => evaluationRowsPollMs(evaluationQuery.data),
   })
+
+  const { data: detailRowFull } = useQuery({
+    queryKey: [
+      'call-import-evaluation-rows',
+      activeWorkspaceId,
+      id,
+      evalId,
+      'row',
+      detailRow?.id,
+    ],
+    queryFn: () =>
+      apiClient.getCallImportEvaluationRow(id!, evalId!, detailRow!.id),
+    enabled: !!id && !!evalId && !!detailRow?.id,
+    staleTime: 60_000,
+    refetchInterval: () => evaluationRowsPollMs(evaluationQuery.data),
+  })
+
+  useEffect(() => {
+    if (!id || !evalId || !rowsQuery.data) return
+    if (page * ROWS_PAGE_SIZE >= rowsQuery.data.total) return
+    const nextPage = page + 1
+    void queryClient.prefetchQuery({
+      queryKey: [
+        'call-import-evaluation-rows',
+        activeWorkspaceId,
+        id,
+        evalId,
+        nextPage,
+        searchQuery,
+        statusFilter,
+        metricFilter?.metricId,
+        metricFilter?.value,
+        classificationMetricFilter?.metricId,
+        classificationMetricFilter?.yesNo,
+        classificationMetricFilter?.choice,
+        classificationMetricFilter?.level,
+        flowFilter?.parentId,
+        flowFilter?.nodeId,
+        flowFilter?.targetNodeId,
+        discoveredFilter?.parentId,
+        discoveredFilter?.labelKey,
+        discoveredFilter?.anyDiscovered,
+        sortBy,
+        sortDir,
+      ],
+      queryFn: () =>
+        apiClient.listCallImportEvaluationRows(id, evalId, {
+          page: nextPage,
+          page_size: ROWS_PAGE_SIZE,
+          q: searchQuery || undefined,
+          status: statusFilter || undefined,
+          metric_id:
+            classificationMetricFilter?.metricId || metricFilter?.metricId,
+          metric_value: classificationMetricFilter
+            ? undefined
+            : metricFilter?.value,
+          classification_yes_no: classificationMetricFilter?.yesNo || undefined,
+          classification_choice:
+            classificationMetricFilter?.choice || undefined,
+          classification_level: classificationMetricFilter?.level || undefined,
+          flow_parent_id: flowFilter?.parentId,
+          flow_node: flowFilter?.nodeId,
+          flow_edge_target: flowFilter?.targetNodeId || undefined,
+          discovered_parent_id: discoveredFilter?.parentId,
+          discovered_label_key: discoveredFilter?.labelKey,
+          has_discovered: discoveredFilter?.anyDiscovered || undefined,
+          sort_by: sortBy || undefined,
+          sort_dir: sortBy ? sortDir : undefined,
+        }),
+      staleTime: 60_000,
+    })
+  }, [
+    id,
+    evalId,
+    page,
+    rowsQuery.data,
+    searchQuery,
+    statusFilter,
+    metricFilter,
+    classificationMetricFilter,
+    flowFilter,
+    discoveredFilter,
+    sortBy,
+    sortDir,
+    activeWorkspaceId,
+    queryClient,
+  ])
 
   useEffect(() => {
     if (!detailRow) return
@@ -978,6 +1082,20 @@ export default function CallImportEvaluationDetail() {
       setDetailRow(null)
     }
   }, [rowsQuery.data?.items, detailRow])
+
+  const evaluationRowsLive = evaluationRowsPollMs(evaluationQuery.data) !== false
+  const evaluationRowsWereLive = useRef(false)
+  useEffect(() => {
+    if (evaluationRowsLive) {
+      evaluationRowsWereLive.current = true
+      return
+    }
+    if (!evaluationRowsWereLive.current || !id || !evalId) return
+    evaluationRowsWereLive.current = false
+    void queryClient.invalidateQueries({
+      queryKey: ['call-import-evaluation-rows', activeWorkspaceId, id, evalId],
+    })
+  }, [evaluationRowsLive, id, evalId, activeWorkspaceId, queryClient])
 
   const pdfReportsQuery = useQuery({
     queryKey: ['call-import-evaluation-pdf-reports', activeWorkspaceId, id, evalId],
@@ -1026,6 +1144,7 @@ export default function CallImportEvaluationDetail() {
         vizBaselineEvaluationId,
       ),
     enabled: !!id && !!evalId && resultsTab === 'visualizations',
+    staleTime: 60_000,
     refetchInterval: () => {
       const status = evaluationQuery.data?.status
       return status === 'pending' || status === 'running' ? 5000 : false
@@ -1539,6 +1658,12 @@ export default function CallImportEvaluationDetail() {
 
   const callImport = callImportQuery.data
   const evaluation = evaluationQuery.data
+  const platformAgentLabel =
+    (callImport?.source_format || '').toLowerCase() === 'platform'
+      ? (callImport?.platform_agents || []).length === 0
+        ? 'All agents'
+        : (callImport?.platform_agents || []).map((agent) => agent.name).join(', ')
+      : null
 
   const runMetricIds: string[] = evaluation?.selected_metric_ids ?? []
   const retryClassificationIds = runMetricIds.filter((mid) =>
@@ -1971,19 +2096,42 @@ export default function CallImportEvaluationDetail() {
   const handleExport = async (format: 'csv' | 'xlsx') => {
     if (!id || !evalId) return
     setDownloadMenuOpen(false)
+    const pollId = exportPollRef.current + 1
+    exportPollRef.current = pollId
+    setExportPreparing(true)
+    setExportParts([])
     try {
-      const blob = await apiClient.exportCallImportEvaluation(id, evalId, format)
-      const url = window.URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = `call-import-${id}-evaluation-${evalId}.${format}`
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      window.URL.revokeObjectURL(url)
-    } catch (e) {
+      let job = await apiClient.startCallImportEvaluationExport(
+        id,
+        evalId,
+        format,
+        true,
+      )
+      while (job.status === 'pending' || job.status === 'running') {
+        if (exportPollRef.current !== pollId) return
+        await new Promise((resolve) => setTimeout(resolve, 2000))
+        if (exportPollRef.current !== pollId) return
+        job = await apiClient.getCallImportEvaluationExport(id, evalId, job.id)
+      }
+      if (exportPollRef.current !== pollId) return
+      if (job.status === 'failed') {
+        alert(job.error_message || 'Export failed')
+        return
+      }
+      const ready = (job.parts || []).filter((part) => part.download_url)
+      if (ready.length === 1 && ready[0].download_url) {
+        window.location.assign(ready[0].download_url)
+      } else if (ready.length > 1) {
+        setExportParts(ready)
+      } else {
+        alert(job.error_message || 'Export finished without a download link')
+      }
+    } catch (e: any) {
       console.error('Failed to export evaluation', e)
-      alert(`Failed to export evaluation ${format.toUpperCase()}`)
+      const detail = e?.response?.data?.detail
+      alert(typeof detail === 'string' ? detail : `Failed to export evaluation ${format.toUpperCase()}`)
+    } finally {
+      if (exportPollRef.current === pollId) setExportPreparing(false)
     }
   }
 
@@ -2506,6 +2654,12 @@ export default function CallImportEvaluationDetail() {
   }, [downloadMenuOpen])
 
   useEffect(() => {
+    return () => {
+      exportPollRef.current += 1
+    }
+  }, [])
+
+  useEffect(() => {
     if (!pdfReportMenuOpen) return
     const handleClickOutside = (event: MouseEvent) => {
       if (
@@ -2762,9 +2916,14 @@ export default function CallImportEvaluationDetail() {
                 />
               }
               onClick={() => setDownloadMenuOpen((prev) => !prev)}
-              disabled={!rowsQuery.data?.items?.length}
+              disabled={!rowsQuery.data?.items?.length || exportPreparing}
+              title={
+                exportPreparing
+                  ? `Preparing download. ${exportReadyHint(evaluation?.total_rows ?? 0)}`
+                  : exportReadyHint(evaluation?.total_rows ?? 0)
+              }
             >
-              Download
+              {exportPreparing ? 'Preparing download…' : 'Download'}
             </Button>
             {downloadMenuOpen && (
               <div
@@ -2774,6 +2933,7 @@ export default function CallImportEvaluationDetail() {
                 <button
                   type="button"
                   className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
+                  title={exportReadyHint(evaluation?.total_rows ?? 0)}
                   onClick={() => handleExport('csv')}
                   role="menuitem"
                 >
@@ -2781,12 +2941,31 @@ export default function CallImportEvaluationDetail() {
                 </button>
                 <button
                   type="button"
-                  className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
+                  className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 disabled:text-gray-400"
                   onClick={() => handleExport('xlsx')}
+                  disabled={(evaluation?.total_rows ?? 0) > 1048576}
+                  title={
+                    (evaluation?.total_rows ?? 0) > 1048576
+                      ? 'Excel cannot open a sheet this long. Download the CSV instead.'
+                      : exportReadyHint(evaluation?.total_rows ?? 0)
+                  }
                   role="menuitem"
                 >
                   Download as Excel
                 </button>
+              </div>
+            )}
+            {exportParts.length > 1 && !downloadMenuOpen && (
+              <div className="absolute right-0 z-20 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
+                {exportParts.map((part) => (
+                  <a
+                    key={part.part}
+                    href={part.download_url || undefined}
+                    className="block px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
+                  >
+                    Part {part.part}
+                  </a>
+                ))}
               </div>
             )}
           </div>
@@ -2888,6 +3067,12 @@ export default function CallImportEvaluationDetail() {
                   ? 'Evaluated on Diarised transcript'
                   : 'Evaluated on Production transcript'}
               </span>
+              {platformAgentLabel && (
+                <span className="shrink-0">
+                  Agent:{' '}
+                  <span className="font-medium text-gray-800">{platformAgentLabel}</span>
+                </span>
+              )}
               <EvaluationAuditMeta
                 inline
                 showTimestamps={false}
@@ -3134,41 +3319,51 @@ export default function CallImportEvaluationDetail() {
               metric{displayMetrics.length === 1 ? '' : 's'}.
             </p>
           </div>
-          <div className="inline-flex border border-gray-200 rounded-lg p-1 bg-gray-50">
+          <div
+            className="inline-flex rounded-md border border-amber-300 bg-amber-50/80 p-0.5"
+            role="tablist"
+            aria-label="Row results view"
+          >
             <button
               type="button"
+              role="tab"
+              aria-selected={resultsTab === 'table'}
               onClick={() => setResultsTab('table')}
-              className={`px-3 py-1.5 text-xs font-medium rounded transition ${
+              className={`inline-flex items-center rounded px-2.5 py-1 text-[13px] font-medium transition ${
                 resultsTab === 'table'
-                  ? 'bg-white text-primary-700 shadow-sm'
+                  ? 'bg-white text-amber-950 shadow-sm'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              <Table className="h-3.5 w-3.5 inline mr-1 -mt-0.5" />
+              <Table className="mr-1 h-3.5 w-3.5 shrink-0" />
               Table
             </button>
             <button
               type="button"
+              role="tab"
+              aria-selected={resultsTab === 'visualizations'}
               onClick={() => setResultsTab('visualizations')}
-              className={`px-3 py-1.5 text-xs font-medium rounded transition ${
+              className={`inline-flex items-center rounded px-2.5 py-1 text-[13px] font-medium transition ${
                 resultsTab === 'visualizations'
-                  ? 'bg-white text-primary-700 shadow-sm'
+                  ? 'bg-white text-amber-950 shadow-sm'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              <BarChart3 className="h-3.5 w-3.5 inline mr-1 -mt-0.5" />
+              <BarChart3 className="mr-1 h-3.5 w-3.5 shrink-0" />
               Visualizations
             </button>
             <button
               type="button"
+              role="tab"
+              aria-selected={resultsTab === 'flow'}
               onClick={() => setResultsTab('flow')}
-              className={`px-3 py-1.5 text-xs font-medium rounded transition ${
+              className={`inline-flex items-center rounded px-2.5 py-1 text-[13px] font-medium transition ${
                 resultsTab === 'flow'
-                  ? 'bg-white text-primary-700 shadow-sm'
+                  ? 'bg-white text-amber-950 shadow-sm'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              <Workflow className="h-3.5 w-3.5 inline mr-1 -mt-0.5" />
+              <Workflow className="mr-1 h-3.5 w-3.5 shrink-0" />
               Flow
             </button>
           </div>
@@ -3751,13 +3946,19 @@ export default function CallImportEvaluationDetail() {
                 }
                 return (
                   <div className="space-y-6">
-                    <div className="inline-flex border border-gray-200 rounded-lg p-1 bg-gray-50 w-fit">
+                    <div
+                      className="inline-flex w-fit rounded-md border border-amber-300 bg-amber-50/80 p-0.5"
+                      role="tablist"
+                      aria-label="Visualization sections"
+                    >
                       <button
                         type="button"
+                        role="tab"
+                        aria-selected={visualizationSubtab === 'quality'}
                         onClick={() => setVisualizationSubtab('quality')}
-                        className={`px-3 py-1.5 text-xs font-medium rounded transition ${
+                        className={`rounded px-2.5 py-1 text-[13px] font-medium transition ${
                           visualizationSubtab === 'quality'
-                            ? 'bg-white text-primary-700 shadow-sm'
+                            ? 'bg-white text-amber-950 shadow-sm'
                             : 'text-gray-600 hover:text-gray-900'
                         }`}
                       >
@@ -3765,10 +3966,12 @@ export default function CallImportEvaluationDetail() {
                       </button>
                       <button
                         type="button"
+                        role="tab"
+                        aria-selected={visualizationSubtab === 'aiInsights'}
                         onClick={() => setVisualizationSubtab('aiInsights')}
-                        className={`px-3 py-1.5 text-xs font-medium rounded transition ${
+                        className={`rounded px-2.5 py-1 text-[13px] font-medium transition ${
                           visualizationSubtab === 'aiInsights'
-                            ? 'bg-white text-primary-700 shadow-sm'
+                            ? 'bg-white text-amber-950 shadow-sm'
                             : 'text-gray-600 hover:text-gray-900'
                         }`}
                       >
@@ -3776,10 +3979,12 @@ export default function CallImportEvaluationDetail() {
                       </button>
                       <button
                         type="button"
+                        role="tab"
+                        aria-selected={visualizationSubtab === 'clusters'}
                         onClick={() => setVisualizationSubtab('clusters')}
-                        className={`px-3 py-1.5 text-xs font-medium rounded transition ${
+                        className={`rounded px-2.5 py-1 text-[13px] font-medium transition ${
                           visualizationSubtab === 'clusters'
-                            ? 'bg-white text-primary-700 shadow-sm'
+                            ? 'bg-white text-amber-950 shadow-sm'
                             : 'text-gray-600 hover:text-gray-900'
                         }`}
                       >
@@ -3787,10 +3992,12 @@ export default function CallImportEvaluationDetail() {
                       </button>
                       <button
                         type="button"
+                        role="tab"
+                        aria-selected={visualizationSubtab === 'improvements'}
                         onClick={() => setVisualizationSubtab('improvements')}
-                        className={`px-3 py-1.5 text-xs font-medium rounded transition ${
+                        className={`rounded px-2.5 py-1 text-[13px] font-medium transition ${
                           visualizationSubtab === 'improvements'
-                            ? 'bg-white text-primary-700 shadow-sm'
+                            ? 'bg-white text-amber-950 shadow-sm'
                             : 'text-gray-600 hover:text-gray-900'
                         }`}
                       >
@@ -3921,6 +4128,10 @@ export default function CallImportEvaluationDetail() {
                         clustersState={metricClustersQuery.data ?? null}
                         improvementsState={promptImprovementsQuery.data ?? null}
                         isLoading={promptImprovementsQuery.isLoading}
+                        linkedImportedAgentPartialId={
+                          callImport?.imported_agent_partial_id ?? null
+                        }
+                        platformAgentLabel={platformAgentLabel}
                         onGenerated={() => {
                           queryClient.invalidateQueries({
                             queryKey: [
@@ -4497,12 +4708,16 @@ export default function CallImportEvaluationDetail() {
                   setEvalPanelTab(tabId as CallImportEvaluationRowSidePanelTabId)
                 }
               >
-                <CallImportEvaluationRowSidePanelContent
-                  row={detailRow}
-                  activeTab={evalPanelTab}
-                  displayMetrics={displayMetrics}
-                  parentMetrics={parentMetrics}
-                />
+                {detailRowFull ? (
+                  <CallImportEvaluationRowSidePanelContent
+                    row={detailRowFull}
+                    activeTab={evalPanelTab}
+                    displayMetrics={displayMetrics}
+                    parentMetrics={parentMetrics}
+                  />
+                ) : (
+                  <p className="text-sm text-gray-500">Loading row…</p>
+                )}
               </CallRowSidePanel>
               ) : null
             }
