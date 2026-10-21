@@ -73,7 +73,7 @@ export default function KnowledgeBaseDetail() {
     <div className="h-full flex flex-col bg-white">
       <ToastContainer />
       <div className="border-b border-gray-200 px-6 py-4 flex items-center gap-4">
-        <Link to="/knowledge-bases" className="text-gray-500 hover:text-gray-800">
+        <Link to="/tools?tab=knowledge-bases" className="text-gray-500 hover:text-gray-800">
           <ArrowLeft className="h-5 w-5" />
         </Link>
         <div className="flex-1 min-w-0">

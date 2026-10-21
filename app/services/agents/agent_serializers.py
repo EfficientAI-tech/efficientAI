@@ -8,12 +8,18 @@ from sqlalchemy.orm import Session
 
 from app.models.database import Agent
 from app.models.schemas import AgentResponse
-from app.services.knowledge_bases.agent_links import get_agent_knowledge_base_ids
+from app.services.knowledge_bases.agent_links import KB_ROLE_TEST, get_agent_knowledge_base_ids
 
 
 def agent_to_response(db: Session, agent: Agent) -> AgentResponse:
-    kb_ids = get_agent_knowledge_base_ids(db, agent_id=agent.id)
-    return AgentResponse.model_validate(agent).model_copy(update={"knowledge_base_ids": kb_ids})
+    return AgentResponse.model_validate(agent).model_copy(
+        update={
+            "knowledge_base_ids": get_agent_knowledge_base_ids(db, agent_id=agent.id),
+            "test_knowledge_base_ids": get_agent_knowledge_base_ids(
+                db, agent_id=agent.id, role=KB_ROLE_TEST
+            ),
+        }
+    )
 
 
 def agents_to_responses(db: Session, agents: Iterable[Agent]) -> List[AgentResponse]:

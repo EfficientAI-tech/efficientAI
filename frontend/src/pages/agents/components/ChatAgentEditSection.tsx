@@ -63,6 +63,7 @@ const stubFormData = (
   voice_ai_agent_id: formData.voice_ai_agent_id,
   silence_hangup_secs: 15,
   knowledge_base_ids: [],
+  test_knowledge_base_ids: [],
 })
 
 export default function ChatAgentEditSection({

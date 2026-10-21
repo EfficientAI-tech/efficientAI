@@ -8,6 +8,21 @@ interface AgentKnowledgeBasesPanelProps {
   knowledgeBases: KnowledgeBaseSummary[]
   onChange?: (ids: string[]) => void
   compact?: boolean
+  /** Which side these bases serve; each side has its own list. */
+  side?: 'production' | 'test'
+}
+
+const SIDE_COPY = {
+  production: {
+    title: 'Production agent knowledge bases',
+    compact: 'Searched by the agent under test when it answers.',
+    full: 'Document libraries the production agent searches during chat simulation, telephony, and eval runs.',
+  },
+  test: {
+    title: 'Test agent knowledge bases',
+    compact: 'Facts the simulated customer can look up (order details, account data).',
+    full: 'Document libraries the simulated customer searches during chat simulation and the voice playground. Independent of the production agent.',
+  },
 }
 
 export default function AgentKnowledgeBasesPanel({
@@ -16,26 +31,26 @@ export default function AgentKnowledgeBasesPanel({
   knowledgeBases,
   onChange,
   compact = false,
+  side = 'production',
 }: AgentKnowledgeBasesPanelProps) {
   const attached = knowledgeBases.filter((kb) => attachedIds.includes(kb.id))
+  const copy = SIDE_COPY[side]
 
   return (
     <div className={compact ? 'space-y-2' : 'space-y-4'}>
       <div>
         <h3 className={compact ? 'text-sm font-semibold text-gray-900' : 'text-base font-semibold text-gray-900'}>
-          Knowledge bases
+          {copy.title}
         </h3>
         <p className={`text-gray-500 mt-0.5 ${compact ? 'text-xs' : 'text-sm'}`}>
-          {compact
-            ? 'Optional RAG libraries for production and test chat legs.'
-            : 'Document libraries used for RAG during chat simulation, playground voice, telephony, and internal eval runs.'}
+          {compact ? copy.compact : copy.full}
         </p>
       </div>
 
       {knowledgeBases.length === 0 ? (
         <p className="text-sm text-gray-500">
           No knowledge bases in this workspace yet.{' '}
-          <Link to="/knowledge-bases" className="text-primary-700 hover:underline">
+          <Link to="/tools?tab=knowledge-bases" className="text-primary-700 hover:underline">
             Create one
           </Link>
           .

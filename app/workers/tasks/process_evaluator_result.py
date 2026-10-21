@@ -346,12 +346,24 @@ def evaluate_transcript_metrics(
         agent=agent,
         metric_ids=metric_ids,
     )
+    from app.services.metrics.evaluation_scope import applicable_metrics
+
+    agent_id = getattr(agent, "id", None) if agent is not None else None
+    scenario_id = getattr(scenario, "id", None) if scenario is not None else None
+    metrics = applicable_metrics(
+        metrics, agent_id=agent_id, scenario_id=scenario_id, db=db
+    )
     llm_metrics, _audio_metrics, metric_scores = _categorize_metrics(metrics, has_audio=False)
     transcription = result.transcription or ""
+    from app.services.harbor.tool_checks import format_tool_calls_for_judge
+
+    call_data_in = result.call_data if isinstance(result.call_data, dict) else {}
+    tool_section = format_tool_calls_for_judge(call_data_in.get("tool_calls"))
+    judge_transcription = f"{transcription}\n\n{tool_section}" if tool_section else transcription
     if llm_metrics and transcription:
         try:
             llm_scores, _ = _evaluate_llm_metrics_grouped(
-                transcription=transcription,
+                transcription=judge_transcription,
                 llm_metrics=llm_metrics,
                 ai_providers=ai_providers,
                 organization_id=result.organization_id,
@@ -845,6 +857,16 @@ def process_evaluator_result_task(self, result_id: str):
                     organization_id=result.organization_id,
                     agent=agent,
                     metric_ids=getattr(evaluator, "metric_ids", None),
+                )
+                from app.services.metrics.evaluation_scope import applicable_metrics
+
+                agent_id = getattr(agent, "id", None) if agent is not None else None
+                scenario_id = getattr(scenario, "id", None) if scenario is not None else None
+                enabled_metrics = applicable_metrics(
+                    enabled_metrics,
+                    agent_id=agent_id,
+                    scenario_id=scenario_id,
+                    db=db,
                 )
 
                 has_audio = bool(result.audio_s3_key)

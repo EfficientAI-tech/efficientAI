@@ -37,6 +37,7 @@ def create_knowledge_base_inject_processor(
     agent_id: str,
     kb_notifier: Any = None,
     min_query_chars: int = 12,
+    role: str = "production",
 ):
     """Return a FrameProcessor placed after STT and before the user context aggregator."""
     imports = None
@@ -83,6 +84,7 @@ def create_knowledge_base_inject_processor(
                     workspace_id=ws_uuid,
                     agent_id=agent_uuid,
                     query=query,
+                    role=role,
                 )
             finally:
                 db.close()

@@ -216,6 +216,10 @@ export function singleFormFromMetricClipboard(
     allow_discovery: !!payload.allow_discovery,
     compare_transcripts: !!payload.compare_transcripts,
     scope: targetScope,
+    scenario_scope_mode: 'all' as const,
+    scenario_link_ids: [] as string[],
+    agent_scope_mode: 'all' as const,
+    agent_link_ids: [] as string[],
   }
 }
 
@@ -242,5 +246,9 @@ export function categoryFormFromMetricClipboard(
             example: (child.example || '').trim(),
           }))
         : [{ local_id: newChildLocalId(), name: '', description: '', example: '' }],
+    scenario_scope_mode: 'all' as const,
+    scenario_link_ids: [] as string[],
+    agent_scope_mode: 'all' as const,
+    agent_link_ids: [] as string[],
   }
 }

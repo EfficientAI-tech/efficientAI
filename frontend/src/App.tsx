@@ -31,7 +31,8 @@ import Personas from './pages/personas/Personas'
 import Scenarios from './pages/scenarios/Scenarios'
 
 // Knowledge bases
-import { KnowledgeBases, KnowledgeBaseDetail } from './pages/knowledgeBases'
+import { KnowledgeBaseDetail } from './pages/knowledgeBases'
+import { ToolsHub } from './pages/toolConnections'
 
 // Metrics
 import MetricsLayout from './pages/metrics/MetricsLayout'
@@ -198,8 +199,9 @@ function App() {
           <Route path="personas" element={<Personas />} />
           <Route path="customer-prompts" element={<Navigate to="/personas" replace />} />
           <Route path="scenarios" element={<Scenarios />} />
-          <Route path="knowledge-bases" element={<KnowledgeBases />} />
+          <Route path="knowledge-bases" element={<Navigate to="/tools?tab=knowledge-bases" replace />} />
           <Route path="knowledge-bases/:id" element={<KnowledgeBaseDetail />} />
+          <Route path="tools" element={<ToolsHub />} />
           <Route path="metrics" element={<Navigate to="/metrics-management" replace />} />
           <Route path="integrations" element={<Integrations />} />
           <Route path="telephony-numbers" element={<TelephonyNumbers />} />

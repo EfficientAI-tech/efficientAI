@@ -910,12 +910,25 @@ class LLMService:
                 names,
             )
 
-        return {
+        usage = getattr(response, "usage", None)
+        result: Dict[str, Any] = {
             "text": text or "",
             "tool_calls": tool_calls,
             "model": llm_model,
+            "usage": {
+                "prompt_tokens": getattr(usage, "prompt_tokens", 0) if usage else 0,
+                "completion_tokens": getattr(usage, "completion_tokens", 0) if usage else 0,
+                "total_tokens": getattr(usage, "total_tokens", 0) if usage else 0,
+            },
             "raw_response": response,
         }
+        _record_generate_response_usage(
+            result,
+            llm_model=llm_model,
+            organization_id=organization_id,
+            raw_response=response,
+        )
+        return result
 
 
 def _stream_completion(

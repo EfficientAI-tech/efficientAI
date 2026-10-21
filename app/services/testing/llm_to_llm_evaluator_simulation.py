@@ -180,7 +180,7 @@ def _generate_test_customer_turn(
     llm_config: Optional[dict],
     credential_id: Optional[UUID],
 ) -> tuple[str, list[dict[str, Any]]]:
-    """Simulated customer turn; uses knowledge-base tools when the agent has ready docs."""
+    """Simulated customer turn; uses the test agent's knowledge bases when they have ready docs."""
     leg_label = "Simulated customer (test agent LLM)"
     kb_tool_calls: list[dict[str, Any]] = []
     workspace_id = agent.workspace_id
@@ -188,9 +188,10 @@ def _generate_test_customer_turn(
         from app.services.knowledge_bases.chat_tools import (
             generate_production_reply_with_knowledge_tools,
         )
+        from app.services.knowledge_bases.agent_links import KB_ROLE_TEST
         from app.services.knowledge_bases.retrieval import agent_has_ready_knowledge
 
-        if agent_has_ready_knowledge(db, agent_id=agent.id):
+        if agent_has_ready_knowledge(db, agent_id=agent.id, role=KB_ROLE_TEST):
             try:
                 text, kb_tool_calls = generate_production_reply_with_knowledge_tools(
                     db,
@@ -203,6 +204,7 @@ def _generate_test_customer_turn(
                     llm_config=llm_config,
                     credential_id=credential_id,
                     task_defaults=_SIMULATION_TASK_DEFAULTS,
+                    simulated_caller=True,
                 )
             except RuntimeError as exc:
                 raise RuntimeError(
@@ -305,12 +307,15 @@ class TextConversation:
     exchanges: int = 0
     max_turns: int = 0
     production_leg_meta: dict[str, Any] = field(default_factory=dict)
+    # Production-agent tool calls across all turns, each stamped with ``turn_index``.
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
     test_kb_tool_calls: list[dict[str, Any]] = field(default_factory=list)
     test_llm_source: str = ""
 
 
 # Called after every appended turn with the transcript entry and LLM/endpoint latency in seconds.
-OnTurn = Callable[[dict[str, str], float], None]
+# Production entries carry a ``tool_calls`` list when the agent called tools that turn.
+OnTurn = Callable[[dict[str, Any], float], None]
 
 
 def run_text_conversation(
@@ -348,9 +353,28 @@ def run_text_conversation(
     if isinstance(scenario.required_info, dict):
         scenario_first_message = scenario.required_info.get("first_message")
     conn_type = normalized_chat_connection_type(agent)
+    production_toolset = None
+    if not uses_live_production_leg(agent):
+        from app.services.tools.toolset import build_agent_toolset, scenario_mock_responses
 
-    def _append(speaker: str, text: str, started: float) -> None:
-        entry = {"speaker": speaker, "text": text}
+        production_toolset = build_agent_toolset(
+            db,
+            agent=agent,
+            organization_id=organization_id,
+            llm_model=(production_llm_override.model if production_llm_override else None)
+            or agent.main_llm_model,
+            mock_responses=scenario_mock_responses(scenario),
+        )
+
+    def _append(
+        speaker: str,
+        text: str,
+        started: float,
+        tool_calls: Optional[list[dict[str, Any]]] = None,
+    ) -> None:
+        entry: dict[str, Any] = {"speaker": speaker, "text": text}
+        if tool_calls:
+            entry["tool_calls"] = tool_calls
         transcript.append(entry)
         if on_turn is not None:
             on_turn(entry, time.monotonic() - started)
@@ -392,6 +416,7 @@ def run_text_conversation(
                         provider_state=provider_chat_state,
                         evaluator_result=evaluator_result,
                         llm_override=production_llm_override,
+                        toolset=production_toolset,
                     )
             except Exception as exc:
                 leg = (
@@ -403,8 +428,13 @@ def run_text_conversation(
                     str(leg),
                     f"Production chat leg failed ({leg}): {exc}",
                 ) from exc
+            turn_tool_calls = [
+                {**call, "turn_index": len(transcript)}
+                for call in leg_meta.pop("tool_calls", None) or []
+            ]
+            conversation.tool_calls.extend(turn_tool_calls)
             conversation.production_leg_meta.update(leg_meta)
-            _append("Speaker 2", agent_text, started)
+            _append("Speaker 2", agent_text, started, turn_tool_calls)
             conversation.exchanges += 1
             if _should_end_conversation(agent_text, turn_index=conversation.exchanges):
                 break
@@ -433,6 +463,8 @@ def run_text_conversation(
             if _should_end_conversation(caller_text, turn_index=conversation.exchanges):
                 break
     finally:
+        if production_toolset is not None:
+            production_toolset.close()
         try:
             close_provider_chat_session(
                 db,
@@ -483,6 +515,11 @@ def write_conversation_to_result(
         "messages": transcript,
         "partial": conversation.exchanges < conversation.max_turns,
     }
+    if conversation.tool_calls:
+        call_data["tool_calls"] = conversation.tool_calls
+        call_data["knowledge_base_tool_calls"] = [
+            call for call in conversation.tool_calls if call.get("provider") == "knowledge_base"
+        ]
     if conversation.test_kb_tool_calls:
         call_data["test_agent_knowledge_base_tool_calls"] = conversation.test_kb_tool_calls
     if extra_call_data:

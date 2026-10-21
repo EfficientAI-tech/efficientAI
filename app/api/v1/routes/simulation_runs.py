@@ -39,8 +39,10 @@ from app.services.harbor.success_criteria import (
     criteria_to_storage,
     validate_metric_success_criteria,
 )
+from app.services.harbor.trial_store import llm_override
+from app.services.testing.simulation_llms import describe_simulation_llms
 
-router = APIRouter(prefix="/simulation-runs", tags=["simulation-runs"])
+router =APIRouter(prefix="/simulation-runs", tags=["simulation-runs"])
 
 
 def _generate_unique_run_id(db: Session) -> str:
@@ -157,6 +159,14 @@ def _create_and_queue(
         production_llm_model=payload.production_llm_model,
         test_llm_provider=payload.test_llm_provider,
         test_llm_model=payload.test_llm_model,
+        resolved_llms=describe_simulation_llms(
+            db,
+            agent=agent,
+            production_override=llm_override(
+                payload.production_llm_provider, payload.production_llm_model
+            ),
+            test_override=llm_override(payload.test_llm_provider, payload.test_llm_model),
+        ),
         status=SimulationRunStatus.QUEUED.value,
         expected_trials=len(set(payload.scenario_ids))
         * len(set(payload.persona_ids))
@@ -236,6 +246,8 @@ def _trial_response(
     model=SimulationTrialResponse,
     **extra,
 ):
+    call_data = result.call_data if isinstance(result.call_data, dict) else {}
+    tool_calls = [c for c in call_data.get("tool_calls") or [] if isinstance(c, dict)]
     return model(
         id=result.id,
         result_id=result.result_id,
@@ -251,6 +263,9 @@ def _trial_response(
         turns=len(result.speaker_segments or []),
         metric_scores=result.metric_scores,
         error_message=result.error_message,
+        tool_call_count=len(tool_calls),
+        tool_error_count=sum(1 for c in tool_calls if c.get("status") == "error"),
+        tool_expectations_met=(call_data.get("tool_evaluation") or {}).get("all_expectations_met"),
         created_at=result.created_at,
         updated_at=result.updated_at,
         **extra,
@@ -331,6 +346,9 @@ def get_simulation_trial(
         speaker_segments=result.speaker_segments,
         call_analysis=call_data.get("call_analysis"),
         trajectory=_load_trajectory(run, result),
+        tool_calls=call_data.get("tool_calls"),
+        tool_evaluation=call_data.get("tool_evaluation"),
+        llms=call_data.get("llms"),
     )
 
 

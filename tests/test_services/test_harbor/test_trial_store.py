@@ -6,7 +6,7 @@ import pytest
 
 import app.services.agents.chat_production_leg as prod_mod
 import app.services.testing.llm_to_llm_evaluator_simulation as sim_mod
-from app.models.database import EvaluatorResult
+from app.models.database import EvaluatorResult, Metric
 from app.models.enums import EvaluatorResultStatus
 from app.services.harbor.trial_store import TrialRefs, run_trial_conversation, score_trial
 
@@ -207,8 +207,90 @@ def test_score_trial_with_success_criteria(
     assert result.reward == 0.0
 
 
+def test_score_trial_filters_inapplicable_success_criteria(
+    db_session, sim_rows, fake_llms, tmp_path, monkeypatch
+):
+    from app.models.database import Scenario
+    from app.services.metrics.scenario_scope import replace_metric_scenarios
+
+    other = Scenario(
+        organization_id=sim_rows.scenario.organization_id,
+        workspace_id=sim_rows.scenario.workspace_id,
+        agent_id=sim_rows.agent.id,
+        name="Other flow",
+        description="Unrelated scenario",
+    )
+    scoped = Metric(
+        organization_id=sim_rows.metric.organization_id,
+        workspace_id=sim_rows.metric.workspace_id,
+        name="Scoped only",
+        description="Only for other",
+        metric_type="boolean",
+    )
+    db_session.add_all([other, scoped])
+    db_session.flush()
+    replace_metric_scenarios(
+        db_session,
+        organization_id=sim_rows.metric.organization_id,
+        metric=scoped,
+        scenario_ids=[other.id],
+    )
+    sim_rows.run.metric_ids = [str(sim_rows.metric.id), str(scoped.id)]
+    sim_rows.run.metric_success_criteria = [
+        {"metric_id": str(sim_rows.metric.id), "kind": "rating", "op": "gte", "threshold": 0.7},
+        {"metric_id": str(scoped.id), "kind": "boolean", "success_when": "yes"},
+    ]
+    db_session.commit()
+    run_trial_conversation(
+        db_session,
+        refs=_refs(sim_rows),
+        trajectory_path=tmp_path / "t3.json",
+        production_override=None,
+        test_override=None,
+    )
+
+    def _fake_eval(db, *, result, agent, persona, scenario, metric_ids=None):
+        return {
+            str(sim_rows.metric.id): {
+                "value": 0.9,
+                "type": "rating",
+                "metric_name": sim_rows.metric.name,
+            }
+        }, [sim_rows.metric]
+
+    monkeypatch.setattr(
+        "app.workers.tasks.process_evaluator_result.evaluate_transcript_metrics", _fake_eval
+    )
+    _rewards, details = score_trial(
+        db_session,
+        simulation_run_id=sim_rows.run.id,
+        trial_name="refund__abc123",
+        pass_threshold=0.7,
+    )
+    assert details["passed"] is True
+    assert str(scoped.id) not in (details.get("metric_scores") or {})
+
+
 def test_score_trial_without_transcript_raises(db_session, sim_rows):
     with pytest.raises(ValueError, match="No transcript"):
         score_trial(
             db_session, simulation_run_id=sim_rows.run.id, trial_name="missing", pass_threshold=0.7
         )
+
+
+def test_trial_records_llms_for_both_sides(db_session, sim_rows, fake_llms, tmp_path):
+    from app.services.harbor.trial_store import llm_override
+
+    run_trial_conversation(
+        db_session,
+        refs=_refs(sim_rows),
+        trajectory_path=tmp_path / "t.json",
+        production_override=llm_override("anthropic", "claude-sonnet-5-5"),
+        test_override=None,
+    )
+    result = db_session.query(EvaluatorResult).filter_by(simulation_run_id=sim_rows.run.id).one()
+    llms = result.call_data["llms"]
+    assert llms["production"]["label"] == "anthropic/claude-sonnet-5-5"
+    assert llms["production"]["source_label"] == "run override"
+    assert llms["test"]["label"] == "openai/gpt-4.1-mini"
+    assert llms["test"]["source_label"] == "agent test LLM"

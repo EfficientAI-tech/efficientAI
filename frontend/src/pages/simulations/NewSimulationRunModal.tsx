@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, ChevronLeft, ChevronRight, Play, X } from 'lucide-react'
@@ -9,7 +9,13 @@ import { isFullLlmToLlmChatConnection } from '../../lib/chatConnectionCapabiliti
 import { metricListSurfaceForAgentMedium } from '../../lib/metricSurfaces'
 import { connectionTypeLabel } from '../agents/components/create/chatAgentFormUtils'
 import Button from '../../components/Button'
-import EvaluatorMetricPicker from '../evaluators/components/EvaluatorMetricPicker'
+import SimulationMetricPicker from './SimulationMetricPicker'
+import {
+  formatMetricScopeLabel,
+  isGoldenMetric,
+  scenariosWithNoApplicableMetrics,
+  syncSimulationMetricSelection,
+} from './simulationMetricScope'
 import EvaluatorLlmPicker from '../evaluators/components/EvaluatorLlmPicker'
 import {
   normalizeSelectedMetricIds,
@@ -114,6 +120,11 @@ export default function NewSimulationRunModal({ isOpen, onClose, agent, initialS
     queryFn: () => apiClient.listScenarios(0, 500, agent.id),
     enabled: isOpen,
   })
+  const { data: toolCatalog = [] } = useQuery({
+    queryKey: ['agent-tool-catalog', agent.id],
+    queryFn: () => apiClient.getAgentToolCatalog(agent.id),
+    enabled: isOpen && !liveChatProduction,
+  })
   const { data: allPersonas = [] } = useQuery<PersonaRow[]>({
     queryKey: ['personas'],
     queryFn: () => apiClient.listPersonas(0, 500),
@@ -138,6 +149,8 @@ export default function NewSimulationRunModal({ isOpen, onClose, agent, initialS
   const [scenarioIds, setScenarioIds] = useState<string[]>([])
   const [personaIds, setPersonaIds] = useState<string[]>([])
   const [metricIds, setMetricIds] = useState<string[]>([])
+  const [goldenOptOut, setGoldenOptOut] = useState<Set<string>>(() => new Set())
+  const prevScenarioIdsRef = useRef<string[]>([])
   const [criteria, setCriteria] = useState<MetricSuccessCriterion[]>([])
   const [attempts, setAttempts] = useState(3)
   const [concurrency, setConcurrency] = useState(4)
@@ -155,6 +168,8 @@ export default function NewSimulationRunModal({ isOpen, onClose, agent, initialS
     setError(null)
     setName('')
     setMetricIds([])
+    setGoldenOptOut(new Set())
+    prevScenarioIdsRef.current = []
     setCriteria([])
     setAttempts(3)
     setConcurrency(4)
@@ -184,6 +199,42 @@ export default function NewSimulationRunModal({ isOpen, onClose, agent, initialS
   useEffect(() => {
     setCriteria((prev) => syncCriteriaWithMetrics(metricRows, normalizedMetricIds, prev))
   }, [normalizedMetricIds, metricRows])
+
+  const scenarioNameById = useMemo(
+    () => new Map(scenarios.map((s) => [s.id, s.name])),
+    [scenarios],
+  )
+
+  useEffect(() => {
+    if (!isOpen || metricRows.length === 0) return
+    const added = scenarioIds.filter((id) => !prevScenarioIdsRef.current.includes(id))
+    prevScenarioIdsRef.current = scenarioIds
+    setMetricIds((prev) =>
+      syncSimulationMetricSelection(
+        prev,
+        metricRows,
+        agentMedium,
+        agent.id,
+        scenarioIds,
+        goldenOptOut,
+        added,
+      ),
+    )
+  }, [isOpen, scenarioIds, metricRows, agentMedium, goldenOptOut, agent.id])
+
+  const emptyScenarioNames = useMemo(
+    () =>
+      scenariosWithNoApplicableMetrics(
+        scenarios.filter((s) => scenarioIds.includes(s.id)),
+        metricRows,
+        agentMedium,
+        normalizedMetricIds,
+        agent.id,
+      ),
+    [scenarios, scenarioIds, metricRows, agentMedium, normalizedMetricIds, agent.id],
+  )
+
+  const agentNameById = useMemo(() => new Map([[agent.id, agent.name]]), [agent.id, agent.name])
 
   const productionLegSummary = useMemo(() => {
     if (!isChat) return null
@@ -320,13 +371,20 @@ export default function NewSimulationRunModal({ isOpen, onClose, agent, initialS
             <div>
               <h4 className="mb-1 text-sm font-medium text-gray-700">Metrics to evaluate</h4>
               <p className="mb-3 text-xs text-gray-500">
-                Choose which metrics to score. You will set pass/fail rules for each on the next step.
+                Golden metrics apply to every trial. Agent-specific metrics are linked to this
+                agent. Pass/fail rules are configured on the next step.
               </p>
-              <EvaluatorMetricPicker
-                selectedMetricIds={metricIds}
-                onChange={setMetricIds}
+              <SimulationMetricPicker
+                metricRows={metricRows}
                 agentMedium={agentMedium}
-                fluidHeight
+                runAgentId={agent.id}
+                selectedScenarioIds={scenarioIds}
+                scenarioNameById={scenarioNameById}
+                agentNameById={agentNameById}
+                selectedMetricIds={metricIds}
+                goldenOptOut={goldenOptOut}
+                onGoldenOptOutChange={setGoldenOptOut}
+                onChange={setMetricIds}
               />
             </div>
           ) : null}
@@ -337,6 +395,7 @@ export default function NewSimulationRunModal({ isOpen, onClose, agent, initialS
               selectedMetricIds={normalizedMetricIds}
               criteria={criteria}
               onChange={setCriteria}
+              scenarioNameById={scenarioNameById}
             />
           ) : null}
 
@@ -423,12 +482,30 @@ export default function NewSimulationRunModal({ isOpen, onClose, agent, initialS
                 <p className="mt-2 text-xs text-gray-500">
                   Each trial passes only when every metric below meets its success rule.
                 </p>
+                {toolCatalog.length ? (
+                  <p className="mt-2 text-xs text-gray-600">
+                    Production agent tools: {toolCatalog.filter((t) => t.simulation_behavior === 'live').length} live,{' '}
+                    {toolCatalog.filter((t) => t.simulation_behavior === 'mocked').length} mocked
+                    <span className="text-gray-500"> ({toolCatalog.map((t) => t.name).join(', ')})</span>
+                  </p>
+                ) : null}
+                {emptyScenarioNames.length > 0 ? (
+                  <p className="mt-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-800">
+                    No selected metrics apply to: {emptyScenarioNames.join(', ')}. Those scenarios will not
+                    be scored.
+                  </p>
+                ) : null}
                 <ul className="mt-3 space-y-2 text-sm">
                   {criteria.map((c) => {
                     const metric = metricById.get(c.metric_id)
                     return (
                       <li key={c.metric_id} className="border-t border-gray-200 pt-2 first:border-0 first:pt-0">
                         <span className="font-medium text-gray-900">{metric?.name ?? c.metric_id}</span>
+                        {metric && !isGoldenMetric(metric) ? (
+                          <span className="mt-0.5 block text-xs text-gray-500">
+                            Scored only on: {formatMetricScopeLabel(metric, scenarioNameById)}
+                          </span>
+                        ) : null}
                         <span className="mt-0.5 block text-xs text-gray-600">
                           {metric ? formatCriterionSummary(c, metric) : '—'}
                         </span>

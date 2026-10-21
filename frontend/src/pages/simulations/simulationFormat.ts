@@ -1,4 +1,4 @@
-import type { SimulationRunStatus } from '../../types/api'
+import type { SimulationRun, SimulationRunStatus } from '../../types/api'
 
 export const ACTIVE_RUN_STATUSES: SimulationRunStatus[] = ['queued', 'preparing', 'running', 'ingesting']
 
@@ -14,6 +14,17 @@ export function formatScore(value?: number | null): string {
   return value === null || value === undefined ? '—' : value.toFixed(2)
 }
 
+/** Model label for one side of a run; older runs only stored overrides. */
+export function runLlmLabel(run: SimulationRun, side: 'production' | 'test'): string {
+  const resolved = run.resolved_llms?.[side]
+  if (resolved) return resolved.label
+  const [provider, model] =
+    side === 'production'
+      ? [run.production_llm_provider, run.production_llm_model]
+      : [run.test_llm_provider, run.test_llm_model]
+  return model ? `${provider}/${model}` : 'Agent default'
+}
+
 export function formatDuration(start?: string | null, end?: string | null): string {
   if (!start) return '—'
   const ms = (end ? new Date(end).getTime() : Date.now()) - new Date(start).getTime()
@@ -23,13 +34,16 @@ export function formatDuration(start?: string | null, end?: string | null): stri
   return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`
 }
 
-// Sequential single-hue (blue) ramp for reward magnitude: light = low, dark = high.
-const REWARD_RAMP = ['#cde2fb', '#9ec5f4', '#6da7ec', '#3987e5', '#256abf', '#184f95']
+// Sequential ramp in the platform's yellow (tailwind primary-100 → primary-800):
+// light yellow = low reward, dark yellow = high. Text flips to white on the two
+// darkest steps, where white keeps ≥4.5:1 contrast.
+const REWARD_RAMP = ['#fef9c3', '#fef08a', '#fde047', '#eab308', '#a16207', '#854d0e']
 
 export function rewardCellStyle(reward?: number | null): { background: string; color: string } {
   if (reward === null || reward === undefined) return { background: '#f3f4f6', color: '#6b7280' }
   const idx = Math.min(REWARD_RAMP.length - 1, Math.floor(reward * REWARD_RAMP.length))
-  return { background: REWARD_RAMP[idx], color: idx >= 3 ? '#ffffff' : '#111827' }
+  return { background: REWARD_RAMP[idx], color: idx >= 4 ? '#ffffff' : '#111827' }
 }
 
-export const REWARD_BAR_COLOR = '#2a78d6'
+// primary-600, the platform's dark yellow.
+export const REWARD_BAR_COLOR = '#ca8a04'

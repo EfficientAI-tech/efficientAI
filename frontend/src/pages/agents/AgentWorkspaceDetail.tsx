@@ -87,6 +87,7 @@ function agentToFormData(agent: NonNullable<Awaited<ReturnType<typeof apiClient.
     voice_ai_agent_id: agent.voice_ai_agent_id || '',
     provider_prompt: agent.provider_prompt || '',
     knowledge_base_ids: agent.knowledge_base_ids || [],
+    test_knowledge_base_ids: agent.test_knowledge_base_ids || [],
   }
 }
 
@@ -106,6 +107,7 @@ interface FormData {
   voice_ai_agent_id: string
   provider_prompt: string
   knowledge_base_ids: string[]
+  test_knowledge_base_ids: string[]
 }
 
 interface AgentWorkspaceDetailProps {
@@ -164,6 +166,7 @@ export default function AgentWorkspaceDetail({
     voice_ai_agent_id: '',
     provider_prompt: '',
     knowledge_base_ids: [],
+    test_knowledge_base_ids: [],
   })
   const [chatConnection, setChatConnection] = useState<ChatConnectionForm>({
     connectionType: 'internal_llm',
@@ -325,6 +328,7 @@ export default function AgentWorkspaceDetail({
       }
 
       payload.knowledge_base_ids = data.knowledge_base_ids
+      payload.test_knowledge_base_ids = data.test_knowledge_base_ids
 
       return apiClient.updateAgent(agentRouteId!, payload)
     },

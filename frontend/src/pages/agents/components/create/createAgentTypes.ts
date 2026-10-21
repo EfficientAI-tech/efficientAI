@@ -22,6 +22,7 @@ export interface CreateAgentFormData {
   voice_ai_agent_id: string
   silence_hangup_secs: number
   knowledge_base_ids: string[]
+  test_knowledge_base_ids: string[]
 }
 
 export const DEFAULT_CREATE_AGENT_FORM: CreateAgentFormData = {
@@ -38,6 +39,7 @@ export const DEFAULT_CREATE_AGENT_FORM: CreateAgentFormData = {
   voice_ai_agent_id: '',
   silence_hangup_secs: 15,
   knowledge_base_ids: [],
+  test_knowledge_base_ids: [],
 }
 
 export const TELEPHONY_STEPS = [

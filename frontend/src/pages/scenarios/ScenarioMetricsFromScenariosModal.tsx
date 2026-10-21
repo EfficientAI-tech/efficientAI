@@ -272,6 +272,14 @@ export default function ScenarioMetricsFromScenariosModal({
 
   const pushMetric = async (draft: ScenarioMetricWorkflowDraft) => {
     if (!draft.metric || draft.metricPushed) return
+    if (!promptAgentId) {
+      showToast('Select an agent before adding generated metrics', 'error')
+      return
+    }
+    if (!draft.sourceScenarioId) {
+      showToast('This metric draft is missing a scenario link', 'error')
+      return
+    }
     const agentName = promptAgent?.name?.trim() || 'Agent'
     const metric = draft.metric
     const tags = mergeRequiredMetricTags(metric.tags, agentName)
@@ -292,6 +300,8 @@ export default function ScenarioMetricsFromScenariosModal({
             : undefined,
         tags,
         scope: 'workspace',
+        agent_ids: [promptAgentId],
+        scenario_ids: draft.sourceScenarioId ? [draft.sourceScenarioId] : undefined,
       })
       await queryClient.invalidateQueries({ queryKey: ['metrics'] })
       setDrafts((prev) =>
@@ -299,7 +309,10 @@ export default function ScenarioMetricsFromScenariosModal({
           item.id === draft.id ? { ...item, metricPushed: true, metric: { ...metric, tags } } : item
         )
       )
-      showToast(`Added metric "${metric.name}" to Metrics`, 'success')
+      showToast(
+        `Added metric "${metric.name}" (linked to ${agentName} and this scenario).`,
+        'success',
+      )
     } catch (error: any) {
       showToast(`Failed to add metric: ${error.response?.data?.detail || error.message}`, 'error')
     } finally {

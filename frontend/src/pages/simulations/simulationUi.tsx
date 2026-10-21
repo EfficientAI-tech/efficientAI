@@ -4,9 +4,9 @@ import { isRunActive } from './simulationFormat'
 
 const STATUS_STYLES: Record<SimulationRunStatus, { label: string; className: string }> = {
   queued: { label: 'Queued', className: 'bg-gray-100 text-gray-700' },
-  preparing: { label: 'Preparing', className: 'bg-blue-50 text-blue-700' },
-  running: { label: 'Running', className: 'bg-blue-50 text-blue-700' },
-  ingesting: { label: 'Scoring', className: 'bg-blue-50 text-blue-700' },
+  preparing: { label: 'Preparing', className: 'bg-primary-50 text-primary-800' },
+  running: { label: 'Running', className: 'bg-primary-100 text-primary-800' },
+  ingesting: { label: 'Scoring', className: 'bg-primary-100 text-primary-800' },
   completed: { label: 'Completed', className: 'bg-green-50 text-green-700' },
   failed: { label: 'Failed', className: 'bg-red-50 text-red-700' },
   cancelled: { label: 'Cancelled', className: 'bg-gray-100 text-gray-600' },

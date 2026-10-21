@@ -36,7 +36,7 @@ import {
   Github,
   Sparkles,
   Upload,
-  BookOpen,
+  Wrench,
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { Info, X } from 'lucide-react'
@@ -66,7 +66,7 @@ const navigationSections: NavSection[] = [
       { name: 'Agents', href: '/agents', icon: Bot },
       { name: 'Personas', href: '/personas', icon: Users },
       { name: 'Scenarios', href: '/scenarios', icon: FileText },
-      { name: 'Knowledge Bases', href: '/knowledge-bases', icon: BookOpen },
+      { name: 'Tools', href: '/tools', icon: Wrench },
     ],
   },
   {
@@ -158,6 +158,10 @@ function getFlattenedNavItems(): NavItem[] {
 }
 
 function isNavItemActive(href: string, pathname: string): boolean {
+  if (href === '/tools') {
+    // Knowledge bases live under Tools; their detail pages keep the Tools item lit.
+    return pathname === href || pathname.startsWith('/knowledge-bases')
+  }
   if (href === '/metrics-management') {
     return (
       pathname === href || pathname.startsWith('/metrics-management/')
@@ -488,7 +492,7 @@ function SidebarContent({
   }
 
   const isSectionActive = (section: NavSection) => {
-    return section.items.some(item => location.pathname === item.href)
+    return section.items.some(item => isNavItemActive(item.href, location.pathname))
   }
 
   if (collapsed) {

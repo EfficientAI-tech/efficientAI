@@ -20,6 +20,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
 import { AIProvider, ModelProvider } from '../../types/api'
+import type { ExpectedToolCall } from '../../types/api'
 import { getProviderLabel, getProviderLogo } from '../../config/providers'
 import LLMAdvancedOptionsPanel from '../../components/providers/LLMAdvancedOptionsPanel'
 import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
@@ -36,6 +37,7 @@ import MarkdownEditor from '../../components/shared/MarkdownEditor'
 import ScenarioMarkdownView from './ScenarioMarkdownView'
 import ScenariosAgentSidebar from './ScenariosAgentSidebar'
 import ScenariosListPanel from './ScenariosListPanel'
+import ExpectedToolCallsField from './ExpectedToolCallsField'
 import type { Scenario, AgentOption } from './scenarioTypes'
 import ScenarioAgentMediumTabs from './ScenarioAgentMediumTabs'
 import ScenarioMetricsFromScenariosModal from './ScenarioMetricsFromScenariosModal'
@@ -65,6 +67,8 @@ interface GeneratedScenarioDraft {
   description: string
   goal?: string
   plannedMetricType: PlannedScenarioMetricType
+  /** Set after the scenario row exists in the DB (save or metric push). */
+  savedScenarioId?: string
   metric?: GeneratedScenarioMetricDraft
   metricPushed?: boolean
 }
@@ -117,6 +121,7 @@ export default function Scenarios() {
     agent_id: '',
     description: '',
     required_info: {} as Record<string, string>,
+    expected_tool_calls: [] as ExpectedToolCall[],
   })
 
   const renderModal = (content: ReactNode) => {
@@ -385,8 +390,7 @@ export default function Scenarios() {
   }, [showProviderDropdown, showMetricProviderDropdown])
 
   const createMutation = useMutation({
-    mutationFn: (data: { name: string; agent_id?: string | null; description?: string; required_info: Record<string, string> }) =>
-      apiClient.createScenario(data),
+    mutationFn: (data: Parameters<typeof apiClient.createScenario>[0]) => apiClient.createScenario(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['scenarios'] })
       showToast('Scenario created successfully!', 'success')
@@ -420,7 +424,7 @@ export default function Scenarios() {
   })
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: { name: string; agent_id?: string | null; description?: string; required_info: Record<string, string> } }) =>
+    mutationFn: ({ id, data }: { id: string; data: Parameters<typeof apiClient.updateScenario>[1] }) =>
       apiClient.updateScenario(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['scenarios'] })
@@ -463,6 +467,7 @@ export default function Scenarios() {
       agent_id: '',
       description: '',
       required_info: {},
+      expected_tool_calls: [],
     })
   }
 
@@ -477,6 +482,7 @@ export default function Scenarios() {
       agent_id: formData.agent_id || undefined,
       description: formData.description || undefined,
       required_info: formData.required_info || {},
+      expected_tool_calls: formData.expected_tool_calls.length ? formData.expected_tool_calls : null,
     })
   }
 
@@ -653,8 +659,38 @@ export default function Scenarios() {
     }
   }
 
+  const scenarioPayloadFromDraft = (draft: GeneratedScenarioDraft) => {
+    const required_info: Record<string, string> = {}
+    if (draft.goal?.trim()) required_info.goal = draft.goal.trim()
+    return {
+      name: draft.name.trim(),
+      agent_id: selectedAgentIdForGeneration || undefined,
+      description: draft.description?.trim() || undefined,
+      required_info,
+    }
+  }
+
+  const persistDraftScenarioIfNeeded = async (
+    draft: GeneratedScenarioDraft,
+  ): Promise<string> => {
+    if (draft.savedScenarioId) return draft.savedScenarioId
+    const created = await apiClient.createScenario(scenarioPayloadFromDraft(draft))
+    const scenarioId = String(created.id)
+    setGeneratedScenarioDrafts((prev) =>
+      prev.map((item) =>
+        item.id === draft.id ? { ...item, savedScenarioId: scenarioId } : item,
+      ),
+    )
+    await queryClient.invalidateQueries({ queryKey: ['scenarios'] })
+    return scenarioId
+  }
+
   const pushMetricForDraft = async (draft: GeneratedScenarioDraft) => {
     if (!draft.metric || draft.metricPushed) return
+    if (!selectedAgentIdForGeneration) {
+      showToast('Select an agent before adding generated metrics', 'error')
+      return
+    }
     const selectedAgent = availableAgents.find((a) => a.id === selectedAgentIdForGeneration)
     const agentName = selectedAgent?.name?.trim() || 'Agent'
     const metric = draft.metric
@@ -662,6 +698,7 @@ export default function Scenarios() {
 
     setPushingMetricDraftIds((prev) => new Set(prev).add(draft.id))
     try {
+      const scenarioId = await persistDraftScenarioIfNeeded(draft)
       await apiClient.createMetric({
         name: metric.name.trim(),
         description: metric.description.trim() || undefined,
@@ -676,6 +713,8 @@ export default function Scenarios() {
             : undefined,
         tags,
         scope: 'workspace',
+        agent_ids: [selectedAgentIdForGeneration],
+        scenario_ids: [scenarioId],
       })
       await queryClient.invalidateQueries({ queryKey: ['metrics'] })
       setGeneratedScenarioDrafts((prev) =>
@@ -683,7 +722,10 @@ export default function Scenarios() {
           item.id === draft.id ? { ...item, metricPushed: true, metric: { ...metric, tags } } : item
         )
       )
-      showToast(`Added metric "${metric.name}" to Metrics`, 'success')
+      showToast(
+        `Added metric "${metric.name}" (linked to ${agentName} and this scenario).`,
+        'success',
+      )
     } catch (error: any) {
       showToast(`Failed to add metric: ${error.response?.data?.detail || error.message}`, 'error')
     } finally {
@@ -703,12 +745,12 @@ export default function Scenarios() {
 
     setSavingDraftIds((prev) => new Set(prev).add(draft.id))
     try {
-      await apiClient.createScenario({
-        name: draft.name.trim(),
-        agent_id: selectedAgentIdForGeneration || undefined,
-        description: draft.description?.trim() || undefined,
-        required_info: draft.goal ? { goal: draft.goal } : {},
-      })
+      const payload = scenarioPayloadFromDraft(draft)
+      if (draft.savedScenarioId) {
+        await apiClient.updateScenario(draft.savedScenarioId, payload)
+      } else {
+        await apiClient.createScenario(payload)
+      }
       queryClient.invalidateQueries({ queryKey: ['scenarios'] })
       showToast(`Saved scenario "${draft.name}"`, 'success')
       removeGeneratedDraft(draft.id)
@@ -853,6 +895,7 @@ export default function Scenarios() {
       agent_id: scenario.agent_id || '',
       description: scenario.description || '',
       required_info: scenario.required_info,
+      expected_tool_calls: scenario.expected_tool_calls ?? [],
     })
     setShowEditModal(true)
   }
@@ -872,6 +915,7 @@ export default function Scenarios() {
         agent_id: formData.agent_id || null,
         description: formData.description || undefined,
         required_info: formData.required_info,
+        expected_tool_calls: formData.expected_tool_calls.length ? formData.expected_tool_calls : null,
       },
     })
   }
@@ -1772,6 +1816,11 @@ export default function Scenarios() {
                       placeholder="Describe what this scenario tests... (markdown supported)"
                     />
                   </div>
+                  <ExpectedToolCallsField
+                    agentId={formData.agent_id || null}
+                    value={formData.expected_tool_calls}
+                    onChange={(expected_tool_calls) => setFormData({ ...formData, expected_tool_calls })}
+                  />
                   <div className="flex gap-3 pt-4">
                     <Button
                       type="button"
@@ -1962,6 +2011,11 @@ export default function Scenarios() {
                     placeholder="Describe what this scenario tests... (markdown supported)"
                   />
                 </div>
+                <ExpectedToolCallsField
+                  agentId={formData.agent_id || null}
+                  value={formData.expected_tool_calls}
+                  onChange={(expected_tool_calls) => setFormData({ ...formData, expected_tool_calls })}
+                />
                 <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg space-y-3">
                   <div className="flex items-center gap-2">
                     <Sparkles className="h-4 w-4 text-amber-600" />

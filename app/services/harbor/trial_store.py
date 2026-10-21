@@ -25,13 +25,15 @@ from app.models.enums import ModelProvider
 from app.services.agents.chat_llm_config import ResolvedSimulationLlm
 from app.services.agents.chat_production_leg import uses_live_production_leg
 from app.services.evaluators.evaluator_run_service import generate_unique_result_id
-from app.services.harbor.rewards import AGGREGATE_REWARD_KEY, compute_rewards
+from app.services.harbor.rewards import AGGREGATE_REWARD_KEY, compute_rewards, metric_reward_key
+from app.services.harbor.tool_checks import check_tool_calls
 from app.services.live_entity_storage import sync_evaluator_result
 from app.services.testing.llm_to_llm_evaluator_simulation import (
     TextConversation,
     run_text_conversation,
     write_conversation_to_result,
 )
+from app.services.testing.simulation_llms import describe_simulation_llms
 from app.services.testing.simulation_prompts import build_agent_system_prompt
 from app.services.usage.context import (
     LLMUsageContext,
@@ -73,6 +75,34 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _atif_tool_fields(step_id: int, tool_calls: list[dict[str, Any]]) -> dict[str, Any]:
+    """ATIF ``tool_calls`` + ``observation`` for one agent step from our call records."""
+    atif_calls: list[dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
+    for index, call in enumerate(tool_calls, start=1):
+        call_id = str(call.get("call_id") or f"call_{step_id}_{index}")
+        atif_calls.append(
+            {
+                "tool_call_id": call_id,
+                "function_name": str(call.get("tool") or "unknown"),
+                "arguments": call.get("arguments") or {},
+                "extra": {
+                    "provider": call.get("provider"),
+                    "status": call.get("status"),
+                    "latency_ms": call.get("latency_ms"),
+                },
+            }
+        )
+        results.append(
+            {
+                "source_call_id": call_id,
+                "content": call.get("result_preview") or "",
+                "extra": {"status": call.get("status")},
+            }
+        )
+    return {"tool_calls": atif_calls, "observation": {"results": results}}
+
+
 class TrajectoryWriter:
     """Writes an ATIF trajectory (user = test agent, agent = production agent) after every turn."""
 
@@ -82,15 +112,25 @@ class TrajectoryWriter:
         self.extra = extra
         self.steps: list[dict[str, Any]] = []
 
-    def add(self, source: str, message: str, *, latency_seconds: Optional[float] = None) -> None:
+    def add(
+        self,
+        source: str,
+        message: str,
+        *,
+        latency_seconds: Optional[float] = None,
+        tool_calls: Optional[list[dict[str, Any]]] = None,
+    ) -> None:
+        step_id = len(self.steps) + 1
         step: dict[str, Any] = {
-            "step_id": len(self.steps) + 1,
+            "step_id": step_id,
             "timestamp": _now_iso(),
             "source": source,
             "message": message,
         }
         if source == "agent" and self.model_name:
             step["model_name"] = self.model_name
+        if source == "agent" and tool_calls:
+            step.update(_atif_tool_fields(step_id, tool_calls))
         if latency_seconds is not None:
             step["extra"] = {"latency_ms": round(latency_seconds * 1000)}
         self.steps.append(step)
@@ -220,11 +260,22 @@ def run_trial_conversation(
         writer.add("system", build_agent_system_prompt(agent))
 
     conversation = TextConversation()
-    trial_call_data = {"simulation_run_id": str(run.id), "harbor_trial_name": refs.trial_name}
+    trial_call_data = {
+        "simulation_run_id": str(run.id),
+        "harbor_trial_name": refs.trial_name,
+        "llms": describe_simulation_llms(
+            db, agent=agent, production_override=production_override, test_override=test_override
+        ),
+    }
 
-    def _on_turn(entry: dict[str, str], latency_seconds: float) -> None:
+    def _on_turn(entry: dict[str, Any], latency_seconds: float) -> None:
         source = "agent" if entry["speaker"] == "Speaker 2" else "user"
-        writer.add(source, entry["text"], latency_seconds=latency_seconds)
+        writer.add(
+            source,
+            entry["text"],
+            latency_seconds=latency_seconds,
+            tool_calls=entry.get("tool_calls"),
+        )
         write_conversation_to_result(
             result, conversation, agent=agent, extra_call_data=trial_call_data
         )
@@ -298,6 +349,41 @@ def score_trial(
     )
     criteria = (run.metric_success_criteria if run else None) or []
     if criteria:
+        from app.models.database import Metric
+        from app.services.metrics.evaluation_scope import (
+            load_agent_link_map,
+            load_scenario_link_map,
+            metric_applies_to_agent,
+            metric_applies_to_scenario,
+        )
+
+        parent_ids = {UUID(str(c["metric_id"])) for c in criteria if c.get("metric_id")}
+        parents = (
+            db.query(Metric)
+            .filter(
+                Metric.id.in_(parent_ids),
+                Metric.organization_id == result.organization_id,
+            )
+            .all()
+        )
+        agent_link_map = load_agent_link_map(db, parent_ids)
+        scenario_link_map = load_scenario_link_map(db, parent_ids)
+        parents_by_id = {p.id: p for p in parents}
+        criteria = [
+            c
+            for c in criteria
+            if metric_applies_to_agent(
+                parents_by_id[UUID(str(c["metric_id"]))],
+                result.agent_id,
+                link_map=agent_link_map,
+            )
+            and metric_applies_to_scenario(
+                parents_by_id[UUID(str(c["metric_id"]))],
+                result.scenario_id,
+                link_map=scenario_link_map,
+            )
+        ]
+    if criteria:
         from app.services.harbor.success_criteria import (
             _load_metric_context,
             apply_success_criteria,
@@ -315,13 +401,34 @@ def score_trial(
         )
         _, rewards, metric_ids_by_key = compute_rewards(metric_scores, metrics)
         result.passed = trial_passed
-        result.error_message = None if aggregate is not None else "No gating metrics for this trial"
+        result.error_message = (
+            None if aggregate is not None else "No metrics apply to this trial"
+        )
     else:
         aggregate, rewards, metric_ids_by_key = compute_rewards(metric_scores, metrics)
         result.passed = aggregate is not None and aggregate >= pass_threshold
         result.error_message = (
-            None if aggregate is not None else "No scorable metrics for this trial"
+            None if aggregate is not None else "No metrics apply to this trial"
         )
+
+    tool_report = check_tool_calls(
+        (result.call_data or {}).get("tool_calls"),
+        getattr(scenario, "expected_tool_calls", None),
+    )
+    taken = {AGGREGATE_REWARD_KEY, *rewards}
+    for name, value in tool_report.rewards().items():
+        rewards[metric_reward_key(name, taken)] = value
+    if tool_report.has_expectations:
+        # Expected tool calls gate the pass; with no scorable metrics they are the score.
+        if aggregate is None:
+            aggregate = tool_report.expectation_score
+            result.error_message = None
+            result.passed = tool_report.all_expectations_met
+        else:
+            result.passed = bool(result.passed) and tool_report.all_expectations_met
+    call_data = dict(result.call_data or {})
+    call_data["tool_evaluation"] = tool_report.as_dict()
+    result.call_data = call_data
 
     result.metric_scores = metric_scores
     flag_modified(result, "metric_scores")
@@ -342,5 +449,6 @@ def score_trial(
         "passed": result.passed,
         "metric_ids": metric_ids_by_key,
         "metric_scores": metric_scores,
+        "tool_evaluation": tool_report.as_dict(),
     }
     return {AGGREGATE_REWARD_KEY: aggregate if aggregate is not None else 0.0, **rewards}, details

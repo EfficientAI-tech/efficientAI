@@ -376,6 +376,7 @@ export default function CreateAgentModal({
         }
         applyTestAgentLlmPayload(payload, chatConnection, aiProviders)
         payload.knowledge_base_ids = data.knowledge_base_ids
+        payload.test_knowledge_base_ids = data.test_knowledge_base_ids
       }
 
       if (createPath === 'chat') {

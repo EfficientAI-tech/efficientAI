@@ -9,6 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.models.database import AgentKnowledgeBase
+from app.services.knowledge_bases.agent_links import KB_ROLE_PRODUCTION
 from app.services.knowledge_bases.embedding_config import EmbeddingProfile
 from app.services.knowledge_bases.embeddings import embed_texts
 from app.services.knowledge_bases.embeddings_catalog import (
@@ -21,32 +22,38 @@ TOP_K = 5
 DEFAULT_MIN_SCORE = 0.32
 
 
-def agent_has_ready_knowledge(db: Session, *, agent_id: UUID) -> bool:
+def agent_has_ready_knowledge(
+    db: Session, *, agent_id: UUID, role: str = KB_ROLE_PRODUCTION
+) -> bool:
     row = db.execute(
         text(
             """
             SELECT 1
             FROM agent_knowledge_bases akb
             JOIN knowledge_documents kd ON kd.knowledge_base_id = akb.knowledge_base_id
-            WHERE akb.agent_id = :agent_id AND kd.status = 'ready'
+            WHERE akb.agent_id = :agent_id AND akb.role = :role AND kd.status = 'ready'
             LIMIT 1
             """
         ),
-        {"agent_id": str(agent_id)},
+        {"agent_id": str(agent_id), "role": role},
     ).first()
     return row is not None
 
 
-def list_agent_knowledge_base_ids(db: Session, *, agent_id: UUID) -> List[UUID]:
+def list_agent_knowledge_base_ids(
+    db: Session, *, agent_id: UUID, role: str = KB_ROLE_PRODUCTION
+) -> List[UUID]:
     rows = (
         db.query(AgentKnowledgeBase.knowledge_base_id)
-        .filter(AgentKnowledgeBase.agent_id == agent_id)
+        .filter(AgentKnowledgeBase.agent_id == agent_id, AgentKnowledgeBase.role == role)
         .all()
     )
     return [row[0] for row in rows]
 
 
-def _agent_embedding_profiles(db: Session, *, agent_id: UUID) -> List[EmbeddingProfile]:
+def _agent_embedding_profiles(
+    db: Session, *, agent_id: UUID, role: str = KB_ROLE_PRODUCTION
+) -> List[EmbeddingProfile]:
     rows = db.execute(
         text(
             """
@@ -56,11 +63,12 @@ def _agent_embedding_profiles(db: Session, *, agent_id: UUID) -> List[EmbeddingP
                 kb.embedding_credential_id
             FROM agent_knowledge_bases akb
             JOIN knowledge_bases kb ON kb.id = akb.knowledge_base_id
-            WHERE akb.agent_id = :agent_id
+            WHERE akb.agent_id = :agent_id AND akb.role = :role
             """
         ),
         {
             "agent_id": str(agent_id),
+            "role": role,
             "default_provider": DEFAULT_EMBEDDING_PROVIDER,
             "default_model": DEFAULT_EMBEDDING_MODEL,
         },
@@ -100,13 +108,14 @@ def search_knowledge_base(
     query: str,
     top_k: int = TOP_K,
     min_score: Optional[float] = None,
+    role: str = KB_ROLE_PRODUCTION,
 ) -> List[Dict[str, Any]]:
     query = (query or "").strip()
     if not query:
         return []
     threshold = DEFAULT_MIN_SCORE if min_score is None else min_score
     merged: List[Dict[str, Any]] = []
-    for profile in _agent_embedding_profiles(db, agent_id=agent_id):
+    for profile in _agent_embedding_profiles(db, agent_id=agent_id, role=role):
         vectors = embed_texts(
             db,
             organization_id=organization_id,
@@ -132,6 +141,7 @@ def search_knowledge_base(
                 JOIN knowledge_documents kd ON kd.knowledge_base_id = kb.id
                 JOIN knowledge_chunks kc ON kc.document_id = kd.id
                 WHERE akb.agent_id = :agent_id
+                  AND akb.role = :role
                   AND akb.organization_id = :organization_id
                   AND akb.workspace_id = :workspace_id
                   AND kd.status = 'ready'
@@ -145,6 +155,7 @@ def search_knowledge_base(
             ),
             {
                 "agent_id": str(agent_id),
+                "role": role,
                 "organization_id": str(organization_id),
                 "workspace_id": str(workspace_id),
                 "embedding": embedding_literal,

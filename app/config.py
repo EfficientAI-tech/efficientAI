@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     BLOB_STORAGE_PROVIDER: str = "s3"  # "s3", "gcs", or "azure"
     # Harbor simulation runs: exported tasks + job dirs (one subdir per run)
     HARBOR_WORK_DIR: str = "./.data/harbor"
+    # Tool connections: stdio MCP servers run a command on the worker, so they are
+    # off unless the deployment is single-tenant / self-hosted.
+    TOOL_CONNECTIONS_ALLOW_STDIO: bool = False
+    TOOL_CALL_TIMEOUT_SECONDS: float = 30.0
 
     # S3 Configuration
     S3_ENABLED: bool = False

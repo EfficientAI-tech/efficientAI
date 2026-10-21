@@ -1,9 +1,12 @@
+import type { ExpectedToolCall } from '../../types/api'
+
 export interface Scenario {
   id: string
   name: string
   agent_id?: string | null
   description: string | null
   required_info: Record<string, string>
+  expected_tool_calls?: ExpectedToolCall[] | null
   created_at: string
   updated_at: string
   created_by?: string | null

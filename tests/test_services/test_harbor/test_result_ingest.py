@@ -73,8 +73,16 @@ def test_compute_summary_kpis(db_session, sim_rows):
     # The only combo has a failed trial, so it isn't "finished" for consistency.
     assert summary["pass_all_rate"] is None
     assert summary["metrics"] == [
-        {"metric_id": str(sim_rows.metric.id), "name": "Empathy", "mean": 0.7, "n": 2}
+        {
+            "metric_id": str(sim_rows.metric.id),
+            "name": "Empathy",
+            "mean": 0.7,
+            "n": 2,
+            "agent_ids": [],
+            "scenario_ids": [],
+        }
     ]
+    assert summary["golden_mean_reward"] == 0.7
     [combo] = summary["combos"]
     assert combo["attempts"] == 3 and combo["passed"] == 1
     assert combo["scenario_name"] == "Refund for late order"

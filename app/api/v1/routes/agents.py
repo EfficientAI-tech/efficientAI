@@ -911,17 +911,27 @@ async def create_agent(
         except Exception as e:
             logger.warning(f"[Agents] Best-effort provider prompt sync failed on create: {e}")
 
-    if agent.knowledge_base_ids:
-        from app.services.knowledge_bases.agent_links import replace_agent_knowledge_bases
+    if agent.knowledge_base_ids or agent.test_knowledge_base_ids:
+        from app.services.knowledge_bases.agent_links import (
+            KB_ROLE_PRODUCTION,
+            KB_ROLE_TEST,
+            replace_agent_knowledge_bases,
+        )
 
         try:
-            replace_agent_knowledge_bases(
-                db,
-                agent=db_agent,
-                organization_id=organization_id,
-                workspace_id=workspace_id,
-                knowledge_base_ids=agent.knowledge_base_ids,
-            )
+            for role, kb_ids in (
+                (KB_ROLE_PRODUCTION, agent.knowledge_base_ids),
+                (KB_ROLE_TEST, agent.test_knowledge_base_ids),
+            ):
+                if kb_ids:
+                    replace_agent_knowledge_bases(
+                        db,
+                        agent=db_agent,
+                        organization_id=organization_id,
+                        workspace_id=workspace_id,
+                        knowledge_base_ids=kb_ids,
+                        role=role,
+                    )
             db.commit()
             db.refresh(db_agent)
         except ValueError as exc:
@@ -1132,6 +1142,7 @@ async def update_agent(
 
     update_data = agent_update.model_dump(exclude_unset=True, exclude_none=False)
     kb_ids_update = update_data.pop("knowledge_base_ids", None)
+    test_kb_ids_update = update_data.pop("test_knowledge_base_ids", None)
 
     if "chat_connection_config" in update_data:
         conn_for_storage = update_data.get("chat_connection_type") or db_agent.chat_connection_type
@@ -1243,17 +1254,27 @@ async def update_agent(
         if chat_err:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=chat_err)
     
-    if kb_ids_update is not None:
-        from app.services.knowledge_bases.agent_links import replace_agent_knowledge_bases
+    if kb_ids_update is not None or test_kb_ids_update is not None:
+        from app.services.knowledge_bases.agent_links import (
+            KB_ROLE_PRODUCTION,
+            KB_ROLE_TEST,
+            replace_agent_knowledge_bases,
+        )
 
         try:
-            replace_agent_knowledge_bases(
-                db,
-                agent=db_agent,
-                organization_id=organization_id,
-                workspace_id=workspace_id,
-                knowledge_base_ids=kb_ids_update,
-            )
+            for role, kb_ids in (
+                (KB_ROLE_PRODUCTION, kb_ids_update),
+                (KB_ROLE_TEST, test_kb_ids_update),
+            ):
+                if kb_ids is not None:
+                    replace_agent_knowledge_bases(
+                        db,
+                        agent=db_agent,
+                        organization_id=organization_id,
+                        workspace_id=workspace_id,
+                        knowledge_base_ids=kb_ids,
+                        role=role,
+                    )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

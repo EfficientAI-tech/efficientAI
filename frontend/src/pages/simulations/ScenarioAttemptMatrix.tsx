@@ -19,7 +19,7 @@ interface Row {
   finished: number
 }
 
-/** Rows = scenario × persona, columns = attempts; cell shade = reward (sequential blue). */
+/** Rows = scenario × persona, columns = attempts; cell shade = reward (light → dark yellow). */
 export default function ScenarioAttemptMatrix({ trials, nAttempts, onSelect, selectedTrialId }: Props) {
   const rows = useMemo(() => {
     const map = new Map<string, Row>()
@@ -97,7 +97,7 @@ export default function ScenarioAttemptMatrix({ trials, nAttempts, onSelect, sel
                       title={`${row.scenarioName} · attempt ${a}\nScore ${formatScore(trial.reward)} · ${
                         trial.status === 'failed' ? 'error' : trial.passed ? 'pass' : trial.passed === false ? 'fail' : 'running'
                       } · ${trial.turns} turns`}
-                      className={`mx-auto flex h-9 w-16 items-center justify-center gap-1 rounded-md text-xs font-medium tabular-nums ring-offset-1 transition hover:ring-2 hover:ring-gray-400 ${
+                      className={`mx-auto flex h-9 w-16 items-center justify-center gap-1 rounded-md border border-black/5 text-xs font-medium tabular-nums ring-offset-1 transition hover:ring-2 hover:ring-gray-400 ${
                         selectedTrialId === trial.id ? 'ring-2 ring-gray-900' : ''
                       }`}
                       style={{ background: style.background, color: style.color }}
@@ -123,7 +123,7 @@ export default function ScenarioAttemptMatrix({ trials, nAttempts, onSelect, sel
         <span>Score</span>
         <span>0</span>
         {[0.05, 0.25, 0.4, 0.6, 0.75, 0.95].map((v) => (
-          <span key={v} className="h-3 w-6 rounded-sm" style={{ background: rewardCellStyle(v).background }} />
+          <span key={v} className="h-3 w-6 rounded-sm border border-black/5" style={{ background: rewardCellStyle(v).background }} />
         ))}
         <span>1</span>
         <span className="ml-3 inline-flex items-center gap-1">

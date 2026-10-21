@@ -11,12 +11,14 @@ import {
   getEnabledChildren,
   type MetricRow,
 } from '../evaluators/components/metricSelectionUtils'
+import { formatMetricScopeLabel, isGoldenMetric } from './simulationMetricScope'
 
 interface Props {
   metrics: MetricRow[]
   selectedMetricIds: string[]
   criteria: MetricSuccessCriterion[]
   onChange: (next: MetricSuccessCriterion[]) => void
+  scenarioNameById?: Map<string, string>
 }
 
 function patchCriterion(
@@ -370,6 +372,7 @@ export default function MetricSuccessCriteriaStep({
   selectedMetricIds,
   criteria,
   onChange,
+  scenarioNameById = new Map(),
 }: Props) {
   const flat = flattenMetrics(metrics)
   const byId = new Map(flat.map((m) => [m.id, m]))
@@ -392,6 +395,11 @@ export default function MetricSuccessCriteriaStep({
             <div className="mb-3">
               <h4 className="text-sm font-semibold text-gray-900">{metric.name}</h4>
               <p className="text-xs capitalize text-gray-500">{kindLabel.replace(/_/g, ' ')}</p>
+              {!isGoldenMetric(metric) ? (
+                <p className="mt-1 text-xs text-gray-500">
+                  Scored only on: {formatMetricScopeLabel(metric, scenarioNameById)}
+                </p>
+              ) : null}
             </div>
             <CriterionCard
               metric={metric}

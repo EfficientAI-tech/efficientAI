@@ -183,7 +183,7 @@ def _document_counts(db: Session, kb_id: UUID) -> tuple[int, int, int]:
 
 def _linked_agent_count(db: Session, kb_id: UUID) -> int:
     return (
-        db.query(func.count(AgentKnowledgeBase.agent_id))
+        db.query(func.count(func.distinct(AgentKnowledgeBase.agent_id)))
         .filter(AgentKnowledgeBase.knowledge_base_id == kb_id)
         .scalar()
         or 0

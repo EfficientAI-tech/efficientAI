@@ -669,10 +669,48 @@ class Scenario(Base):
     name = Column(String, nullable=False)
     description = Column(String)
     required_info = Column(JSON)
+    # Tool-use expectations checked on simulation trials; see app/services/harbor/tool_checks.py
+    expected_tool_calls = Column(JSON, nullable=True)
     
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     created_by = Column(String)
+
+
+class MetricScenarioAssignment(Base):
+    """Many-to-many: metric scored only on linked scenarios (empty = golden / all)."""
+
+    __tablename__ = "metric_scenarios"
+
+    metric_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("metrics.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    scenario_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("scenarios.id", ondelete="CASCADE"),
+        primary_key=True,
+        index=True,
+    )
+
+
+class MetricAgentAssignment(Base):
+    """Many-to-many: metric scored only on linked agents (empty = golden / all)."""
+
+    __tablename__ = "metric_agents"
+
+    metric_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("metrics.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    agent_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        primary_key=True,
+        index=True,
+    )
 
 
 class KnowledgeBase(Base):
@@ -748,6 +786,59 @@ class KnowledgeChunk(Base):
     created_at = Column(DateTime, server_default=func.now())
 
 
+class ToolConnection(Base):
+    """An external tool source an agent can call: MCP server, HTTP tools or Postgres.
+
+    ``secrets`` is a Fernet-encrypted JSON object (headers, env vars, DSN); it is
+    never returned by the API. ``cached_tools`` is the tool list from the last
+    successful test, so building an agent's toolset needs no network round-trip.
+    """
+
+    __tablename__ = "tool_connections"
+    __table_args__ = (UniqueConstraint("workspace_id", "slug", name="uq_tool_connections_workspace_slug"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    name = Column(String(255), nullable=False)
+    # Prefix for this connection's tool names (``slack__search_messages``).
+    slug = Column(String(64), nullable=False)
+    connection_type = Column(String(32), nullable=False)  # mcp | http | postgres
+    preset = Column(String(64), nullable=True)  # slack | notion | gdrive | postgres | ...
+    config = Column(JSON, nullable=False, default=dict)
+    secrets = Column(Text, nullable=True)
+    # live | mock_writes | mock_all — how calls behave inside simulations.
+    simulation_mode = Column(String(16), nullable=False, default="mock_writes")
+    cached_tools = Column(JSON, nullable=True)
+    last_tested_at = Column(DateTime(timezone=True), nullable=True)
+    last_error = Column(Text, nullable=True)
+    created_by = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AgentToolConnection(Base):
+    """Tool connections attached to a production agent; ``enabled_tools`` NULL = all."""
+
+    __tablename__ = "agent_tool_connections"
+
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), primary_key=True)
+    tool_connection_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("tool_connections.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    workspace_id = Column(UUID(as_uuid=True), ForeignKey("workspaces.id", ondelete="RESTRICT"), nullable=False)
+    enabled_tools = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class AgentKnowledgeBase(Base):
     __tablename__ = "agent_knowledge_bases"
 
@@ -757,6 +848,8 @@ class AgentKnowledgeBase(Base):
         ForeignKey("knowledge_bases.id", ondelete="CASCADE"),
         primary_key=True,
     )
+    # "production" = the agent under test; "test" = the simulated customer.
+    role = Column(String(16), primary_key=True, nullable=False, default="production")
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     workspace_id = Column(
         UUID(as_uuid=True),
@@ -1204,6 +1297,16 @@ class Metric(Base):
         remote_side=[id],
         backref="children",
     )
+    scoped_scenarios = relationship(
+        "Scenario",
+        secondary="metric_scenarios",
+        lazy="selectin",
+    )
+    scoped_agents = relationship(
+        "Agent",
+        secondary="metric_agents",
+        lazy="selectin",
+    )
 
     # When true, the LLM-judge is asked to also return a short free-form
     # rationale alongside the value (stored under ``metric_scores[id].rationale``).
@@ -1339,6 +1442,8 @@ class SimulationRun(Base):
     production_llm_model = Column(String(255), nullable=True)
     test_llm_provider = Column(String(64), nullable=True)
     test_llm_model = Column(String(255), nullable=True)
+    # {"production": {...}, "test": {...}} resolved at creation; see app/services/testing/simulation_llms.py
+    resolved_llms = Column(JSON, nullable=True)
 
     status = Column(String(20), nullable=False, default=SimulationRunStatus.QUEUED.value, index=True)
     expected_trials = Column(Integer, nullable=False, default=0)

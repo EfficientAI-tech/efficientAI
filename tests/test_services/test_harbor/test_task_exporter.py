@@ -40,6 +40,54 @@ def test_export_tasks_rejects_missing_scenarios(db_session, sim_rows, harbor_wor
         export_tasks(db_session, run=sim_rows.run, agent=sim_rows.agent, metrics=[])
 
 
+def test_export_tasks_per_scenario_rubric(db_session, sim_rows, harbor_work_dir):
+    from app.models.database import Metric, Scenario
+    from app.services.metrics.scenario_scope import replace_metric_scenarios
+
+    scenario_b = Scenario(
+        organization_id=sim_rows.agent.organization_id,
+        workspace_id=sim_rows.agent.workspace_id,
+        agent_id=sim_rows.agent.id,
+        name="Billing dispute",
+        description="Customer disputes a charge.",
+    )
+    only_b = Metric(
+        organization_id=sim_rows.metric.organization_id,
+        workspace_id=sim_rows.metric.workspace_id,
+        name="Offered credit",
+        description="Did the agent offer account credit?",
+        metric_type="boolean",
+    )
+    db_session.add_all([scenario_b, only_b])
+    db_session.flush()
+    replace_metric_scenarios(
+        db_session,
+        organization_id=sim_rows.metric.organization_id,
+        metric=only_b,
+        scenario_ids=[scenario_b.id],
+    )
+    sim_rows.run.scenario_ids = [str(sim_rows.scenario.id), str(scenario_b.id)]
+    db_session.commit()
+
+    tasks = export_tasks(
+        db_session,
+        run=sim_rows.run,
+        agent=sim_rows.agent,
+        metrics=[sim_rows.metric, only_b],
+    )
+    assert len(tasks) == 2
+    rubrics = {
+        t.scenario_id: tomllib.loads((t.path / "tests" / "rubric.toml").read_text())
+        for t in tasks
+    }
+    ids_a = {c["id"] for c in rubrics[sim_rows.scenario.id]["criterion"]}
+    ids_b = {c["id"] for c in rubrics[scenario_b.id]["criterion"]}
+    assert str(sim_rows.metric.id) in ids_a
+    assert str(only_b.id) not in ids_a
+    assert str(only_b.id) in ids_b
+    assert str(sim_rows.metric.id) in ids_b
+
+
 def test_exported_task_loads_in_harbor(db_session, sim_rows, harbor_work_dir):
     task_mod = pytest.importorskip("harbor.models.task.task")
     [task] = export_tasks(

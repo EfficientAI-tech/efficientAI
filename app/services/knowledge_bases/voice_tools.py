@@ -9,6 +9,7 @@ from efficientai.adapters.schemas.function_schema import FunctionSchema
 from efficientai.adapters.schemas.tools_schema import ToolsSchema
 
 from app.database import SessionLocal
+from app.services.knowledge_bases.agent_links import KB_ROLE_PRODUCTION
 from app.services.knowledge_bases.retrieval import format_search_results_for_tool, search_knowledge_base
 from app.services.knowledge_bases.tool_call_logging import KnowledgeBaseVoiceNotifier
 from app.services.knowledge_bases.tool_schema import search_knowledge_base_tool_definition
@@ -22,6 +23,7 @@ def register_voice_bundle_knowledge_tools(
     workspace_id: str,
     agent_id: str,
     kb_notifier: KnowledgeBaseVoiceNotifier | None = None,
+    role: str = KB_ROLE_PRODUCTION,
 ) -> None:
     """Attach search_knowledge_base to the bundle LLM context."""
     org_uuid = UUID(organization_id)
@@ -47,6 +49,7 @@ def register_voice_bundle_knowledge_tools(
                 workspace_id=ws_uuid,
                 agent_id=agent_uuid,
                 query=query,
+                role=role,
             )
             text = format_search_results_for_tool(hits)
         finally:

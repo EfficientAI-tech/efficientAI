@@ -153,8 +153,12 @@ def generate_production_chat_reply(
     provider_state: ProviderChatState,
     evaluator_result: Optional[Any] = None,
     llm_override: Optional[ResolvedSimulationLlm] = None,
+    toolset: Optional[Any] = None,
 ) -> tuple[str, dict[str, Any]]:
     """Return assistant text and metadata to merge into evaluator call_data.
+
+    ``toolset`` (``app.services.tools.toolset.Toolset``) is built from the agent when
+    not given; multi-turn callers pass one in to reuse it across turns.
 
     ``llm_override`` replaces the agent's main LLM on the internal-LLM leg only
     (live connections always use the customer's own endpoint).
@@ -329,21 +333,23 @@ def generate_production_chat_reply(
     )
     agent_system = build_agent_system_prompt(agent)
     messages = _agent_messages(agent_system, transcript)
-    kb_tool_calls: list[dict] = []
+    tool_records: list = []
+    owns_toolset = toolset is None
     try:
-        from app.services.knowledge_bases.retrieval import agent_has_ready_knowledge
-        from app.services.knowledge_bases.chat_tools import (
-            generate_production_reply_with_knowledge_tools,
-        )
+        from app.services.knowledge_bases.chat_tools import with_knowledge_base_instructions
+        from app.services.tools.loop import run_tool_loop
+        from app.services.tools.toolset import build_agent_toolset
 
-        workspace_id = agent.workspace_id
-        if workspace_id and agent_has_ready_knowledge(db, agent_id=agent.id):
-            text, kb_tool_calls = generate_production_reply_with_knowledge_tools(
+        if owns_toolset:
+            toolset = build_agent_toolset(
+                db, agent=agent, organization_id=organization_id, llm_model=main_llm.model
+            )
+        if toolset:
+            text, tool_records = run_tool_loop(
                 db,
+                toolset=toolset,
+                messages=with_knowledge_base_instructions(messages),
                 organization_id=organization_id,
-                workspace_id=workspace_id,
-                agent_id=agent.id,
-                messages=messages,
                 llm_provider=main_llm.provider,
                 llm_model=main_llm.model,
                 llm_config=main_llm.llm_config,
@@ -366,11 +372,14 @@ def generate_production_chat_reply(
         raise RuntimeError(
             f"Production-side LLM simulation failed ({main_llm.source}): {exc}"
         ) from exc
+    finally:
+        if owns_toolset and toolset is not None:
+            toolset.close()
     text = (text or "").strip()
     if not text:
         raise ValueError("Production LLM returned an empty message")
     meta["production_leg"] = "internal_llm_sim"
     meta["main_llm_source"] = main_llm.source
-    if kb_tool_calls:
-        meta["knowledge_base_tool_calls"] = kb_tool_calls
+    # This turn's calls only; the simulation loop accumulates them across turns.
+    meta["tool_calls"] = [record.as_dict() for record in tool_records]
     return text, meta

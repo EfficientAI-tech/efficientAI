@@ -960,6 +960,7 @@ def _build_session_api_app():
         settings,
         telephony,
         test_agents,
+        tool_connections,
         voice_agent,
         voice_playground,
         voicebundles,
@@ -984,6 +985,7 @@ def _build_session_api_app():
     app.include_router(evaluator_suites.router, prefix="/api/v1")
     app.include_router(personas.router, prefix="/api/v1")
     app.include_router(scenarios.router, prefix="/api/v1")
+    app.include_router(tool_connections.router, prefix="/api/v1")
     app.include_router(settings.router, prefix="/api/v1")
     app.include_router(iam.router, prefix="/api/v1")
     app.include_router(audio.router, prefix="/api/v1")

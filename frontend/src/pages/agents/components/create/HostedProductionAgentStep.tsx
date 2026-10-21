@@ -161,6 +161,7 @@ export default function HostedProductionAgentStep({
           <AgentKnowledgeBasesPanel
             compact
             mode="edit"
+            side="production"
             attachedIds={formData.knowledge_base_ids}
             knowledgeBases={knowledgeBases}
             onChange={(ids) => onFormChange({ knowledge_base_ids: ids })}

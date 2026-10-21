@@ -11,6 +11,7 @@ from app.api.v1.routes import (
     scenarios,
     knowledge_bases,
     simulation_runs,
+    tool_connections,
     iam,
     profile,
     integrations,
@@ -75,6 +76,7 @@ api_router.include_router(agents.router)
 api_router.include_router(personas.router)
 api_router.include_router(scenarios.router)
 api_router.include_router(knowledge_bases.router)
+api_router.include_router(tool_connections.router)
 api_router.include_router(simulation_runs.router)
 api_router.include_router(iam.router)
 api_router.include_router(profile.router)

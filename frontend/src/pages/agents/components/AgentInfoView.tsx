@@ -44,6 +44,7 @@ import ProductionAgentSubTabNav, {
   type ProductionAgentSubTab,
 } from './ProductionAgentSubTabNav'
 import AgentKnowledgeBasesPanel from './AgentKnowledgeBasesPanel'
+import AgentToolConnectionsPanel from './AgentToolConnectionsPanel'
 import type { KnowledgeBaseSummary } from '../../knowledgeBases/knowledgeBaseTypes'
 import {
   PRODUCTION_FIRST_MESSAGE_OPTIONS,
@@ -131,6 +132,7 @@ export default function AgentInfoView({
   const [productionAgentSubTab, setProductionAgentSubTab] =
     useState<ProductionAgentSubTab>('prompt')
   const attachedKnowledgeBaseIds = agent.knowledge_base_ids ?? []
+  const attachedTestKnowledgeBaseIds = agent.test_knowledge_base_ids ?? []
 
   const linkedBundle = agent.voice_bundle_id
     ? voiceBundles.find((v) => v.id === agent.voice_bundle_id)
@@ -496,7 +498,8 @@ export default function AgentInfoView({
           {testAgentSubTab === 'knowledge_bases' && (
             <AgentKnowledgeBasesPanel
               mode="view"
-              attachedIds={attachedKnowledgeBaseIds}
+              side="test"
+              attachedIds={attachedTestKnowledgeBaseIds}
               knowledgeBases={knowledgeBases}
             />
           )}
@@ -615,7 +618,8 @@ export default function AgentInfoView({
         {testAgentSubTab === 'knowledge_bases' && (
           <AgentKnowledgeBasesPanel
             mode="view"
-            attachedIds={attachedKnowledgeBaseIds}
+            side="test"
+            attachedIds={attachedTestKnowledgeBaseIds}
             knowledgeBases={knowledgeBases}
           />
         )}
@@ -642,10 +646,13 @@ export default function AgentInfoView({
       {productionAgentSubTab === 'knowledge_bases' && (
         <AgentKnowledgeBasesPanel
           mode="view"
+          side="production"
           attachedIds={attachedKnowledgeBaseIds}
           knowledgeBases={knowledgeBases}
         />
       )}
+
+      {productionAgentSubTab === 'tools' && <AgentToolConnectionsPanel agentId={agent.id} />}
 
       {productionAgentSubTab === 'prompt' && (
     <div className="space-y-6">

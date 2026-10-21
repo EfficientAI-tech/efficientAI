@@ -615,7 +615,10 @@ export interface TestAgent {
   test_llm_credential_id?: string | null
   chat_connection_config?: Record<string, unknown> | null
   chat_eval_mode?: string | null
+  /** Production agent's knowledge bases. */
   knowledge_base_ids?: string[]
+  /** Test agent's (simulated customer's) knowledge bases. */
+  test_knowledge_base_ids?: string[]
   created_at: string
   updated_at: string
 }
@@ -2459,6 +2462,8 @@ export interface SimulationRunMetricSummary {
   mean: number
   n: number
   pass_rate?: number
+  scenario_ids?: string[]
+  agent_ids?: string[]
 }
 
 export interface SimulationRunComboSummary {
@@ -2469,6 +2474,29 @@ export interface SimulationRunComboSummary {
   attempts: number
   passed: number
   mean_reward?: number | null
+  tool_errors?: number
+  tool_expectations_failed?: number
+}
+
+export interface SimulationRunToolRow {
+  tool: string
+  provider?: string | null
+  calls: number
+  errors: number
+  mocked: number
+  error_rate: number
+  avg_latency_ms?: number | null
+  trials: number
+}
+
+export interface SimulationRunToolSummary {
+  total_calls: number
+  errored_calls: number
+  success_rate?: number | null
+  trials_with_calls: number
+  expectations_checked: number
+  expectations_met_rate?: number | null
+  tools: SimulationRunToolRow[]
 }
 
 export interface SimulationRunSummary {
@@ -2479,16 +2507,33 @@ export interface SimulationRunSummary {
   uses_success_criteria?: boolean
   pass_rate?: number | null
   mean_reward?: number | null
+  golden_mean_reward?: number | null
   pass_all_rate?: number | null
   pass_any_rate?: number | null
   avg_turns?: number | null
   metrics: SimulationRunMetricSummary[]
   combos: SimulationRunComboSummary[]
+  tools?: SimulationRunToolSummary | null
   harbor?: {
     n_errored_trials?: number | null
     n_retries?: number | null
     exception_stats?: Record<string, string[]>
   } | null
+}
+
+/** What answered on one side of a simulation (resolved when the run was created). */
+export interface SimulationSideLlm {
+  kind: 'llm' | 'live'
+  provider?: string | null
+  model?: string | null
+  source: string
+  label: string
+  source_label: string
+}
+
+export interface SimulationLlms {
+  production?: SimulationSideLlm | null
+  test?: SimulationSideLlm | null
 }
 
 export interface SimulationRun {
@@ -2507,6 +2552,7 @@ export interface SimulationRun {
   production_llm_model?: string | null
   test_llm_provider?: string | null
   test_llm_model?: string | null
+  resolved_llms?: SimulationLlms | null
   status: SimulationRunStatus
   expected_trials: number
   completed_trials: number
@@ -2594,8 +2640,47 @@ export interface SimulationTrial {
   turns: number
   metric_scores?: Record<string, SimulationTrialMetricScore> | null
   error_message?: string | null
+  tool_call_count?: number
+  tool_error_count?: number
+  tool_expectations_met?: boolean | null
   created_at?: string | null
   updated_at?: string | null
+}
+
+export type SimulationToolCallStatus = 'ok' | 'error' | 'mocked'
+
+/** One production-agent tool call (``call_data.tool_calls``). */
+export interface SimulationToolCall {
+  call_id?: string | null
+  tool: string
+  provider: string
+  arguments: Record<string, unknown>
+  status: SimulationToolCallStatus
+  result_preview: string
+  latency_ms: number
+  side?: 'production' | 'test'
+  turn_index?: number | null
+  error?: string | null
+  hit_count?: number
+  documents?: string[]
+}
+
+export interface SimulationToolExpectationResult extends ExpectedToolCall {
+  satisfied: boolean
+  matched_calls: number
+  reason?: string | null
+}
+
+export interface SimulationToolEvaluation {
+  total_calls: number
+  errored_calls: number
+  success_rate?: number | null
+  kb_calls: number
+  kb_hit_rate?: number | null
+  expectations: SimulationToolExpectationResult[]
+  expectation_score?: number | null
+  all_expectations_met?: boolean | null
+  forbidden_violations: number
 }
 
 export interface SimulationTrajectoryStep {
@@ -2605,10 +2690,91 @@ export interface SimulationTrajectoryStep {
   timestamp?: string
   model_name?: string
   extra?: { latency_ms?: number } & Record<string, unknown>
+  tool_calls?: Array<{
+    tool_call_id: string
+    function_name: string
+    arguments: Record<string, unknown>
+    extra?: { provider?: string; status?: SimulationToolCallStatus; latency_ms?: number } | null
+  }>
+  observation?: { results: Array<{ source_call_id?: string | null; content?: string | null }> }
 }
 
 export interface SimulationTrialDetail extends SimulationTrial {
   speaker_segments?: Array<{ speaker: string; text: string }> | null
   call_analysis?: { call_summary?: string; user_sentiment?: string; call_successful?: boolean } | null
   trajectory?: { steps: SimulationTrajectoryStep[] } | null
+  tool_calls?: SimulationToolCall[] | null
+  tool_evaluation?: SimulationToolEvaluation | null
+  llms?: SimulationLlms | null
+}
+
+export type ToolConnectionType = 'mcp' | 'http' | 'postgres'
+export type ToolSimulationMode = 'live' | 'mock_writes' | 'mock_all'
+export type ToolSideEffect = 'read' | 'write'
+
+export interface ToolConnectionTool {
+  name: string
+  exposed_name: string
+  description?: string | null
+  side_effect: ToolSideEffect
+  input_schema?: Record<string, unknown> | null
+}
+
+/** External tool source (MCP server, HTTP API, Postgres) attachable to production agents. */
+export interface ToolConnection {
+  id: string
+  name: string
+  slug: string
+  connection_type: ToolConnectionType
+  preset?: string | null
+  config: Record<string, unknown>
+  simulation_mode: ToolSimulationMode
+  /** Names of stored secrets (e.g. ``headers.Authorization``); values are never returned. */
+  secret_keys: string[]
+  tools: ToolConnectionTool[]
+  last_tested_at?: string | null
+  last_error?: string | null
+  agent_count: number
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface ToolConnectionSecrets {
+  headers?: Record<string, string>
+  env?: Record<string, string>
+  dsn?: string
+}
+
+export interface ToolConnectionCreate {
+  name: string
+  connection_type: ToolConnectionType
+  preset?: string | null
+  config: Record<string, unknown>
+  secrets?: ToolConnectionSecrets
+  simulation_mode: ToolSimulationMode
+}
+
+export interface AgentToolConnectionLink {
+  tool_connection_id: string
+  /** Raw tool names; null = every tool of the connection. */
+  enabled_tools?: string[] | null
+}
+
+export interface AgentToolCatalogEntry {
+  name: string
+  description?: string | null
+  source: string
+  side_effect: ToolSideEffect
+  simulation_behavior: 'live' | 'mocked'
+}
+
+/** Tool-use expectation on a scenario, checked on every simulation trial. */
+export interface ExpectedToolCall {
+  tool: string
+  args_contains?: Record<string, string>
+  min_calls?: number
+  max_calls?: number | null
+  must_succeed?: boolean
+  forbidden?: boolean
+  mock_response?: unknown
 }

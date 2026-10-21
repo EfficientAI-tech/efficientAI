@@ -775,12 +775,18 @@ async def run_voice_bundle_fastapi(
 
             from app.database import SessionLocal
             from app.services.knowledge_bases.prompt import append_knowledge_base_instructions
+            from app.services.knowledge_bases.agent_links import (
+                KB_ROLE_PRODUCTION,
+                KB_ROLE_TEST,
+            )
             from app.services.knowledge_bases.retrieval import agent_has_ready_knowledge
 
+            # Telephony runs the production agent; the playground bundle plays the caller.
+            kb_role = KB_ROLE_PRODUCTION if telephony_mode else KB_ROLE_TEST
             kb_db = SessionLocal()
             try:
                 use_kb_tools = agent_has_ready_knowledge(
-                    kb_db, agent_id=UUID(agent_id)
+                    kb_db, agent_id=UUID(agent_id), role=kb_role
                 )
             finally:
                 kb_db.close()
@@ -846,6 +852,7 @@ async def run_voice_bundle_fastapi(
                 workspace_id=str(workspace_id),
                 agent_id=str(agent_id),
                 kb_notifier=kb_notifier,
+                role=kb_role,
             )
             kb_inject_processor = create_knowledge_base_inject_processor(
                 context,
@@ -853,6 +860,7 @@ async def run_voice_bundle_fastapi(
                 workspace_id=str(workspace_id),
                 agent_id=str(agent_id),
                 kb_notifier=kb_notifier,
+                role=kb_role,
             )
             logger.info("[KnowledgeBase] voice_bundle auto-inject processor enabled")
 

@@ -15,6 +15,13 @@ import type {
   GenerateTestSetupParams,
 } from '../types/agentTestSetupGeneration'
 import type {
+  AgentToolCatalogEntry,
+  AgentToolConnectionLink,
+  ExpectedToolCall,
+  ToolConnection,
+  ToolConnectionCreate,
+  ToolConnectionSecrets,
+  ToolSimulationMode,
   AudioFile,
   Evaluation,
   EvaluationCreate,
@@ -1800,6 +1807,7 @@ class ApiClient {
     agent_id?: string | null
     description?: string | null
     required_info: Record<string, string>
+    expected_tool_calls?: ExpectedToolCall[] | null
   }): Promise<any> {
     const response = await this.client.post('/api/v1/scenarios', data)
     return response.data
@@ -1810,6 +1818,7 @@ class ApiClient {
     agent_id?: string | null
     description?: string | null
     required_info?: Record<string, string>
+    expected_tool_calls?: ExpectedToolCall[] | null
   }): Promise<any> {
     const response = await this.client.put(`/api/v1/scenarios/${scenarioId}`, data)
     return response.data
@@ -1927,6 +1936,56 @@ class ApiClient {
 
   async deleteKnowledgeBase(knowledgeBaseId: string): Promise<void> {
     await this.client.delete(`/api/v1/knowledge-bases/${knowledgeBaseId}`)
+  }
+
+  async listToolConnections(): Promise<ToolConnection[]> {
+    const response = await this.client.get('/api/v1/tool-connections')
+    return response.data
+  }
+
+  async createToolConnection(data: ToolConnectionCreate): Promise<ToolConnection> {
+    const response = await this.client.post('/api/v1/tool-connections', data)
+    return response.data
+  }
+
+  async updateToolConnection(
+    connectionId: string,
+    data: {
+      name?: string
+      config?: Record<string, unknown>
+      secrets?: ToolConnectionSecrets
+      simulation_mode?: ToolSimulationMode
+    },
+  ): Promise<ToolConnection> {
+    const response = await this.client.patch(`/api/v1/tool-connections/${connectionId}`, data)
+    return response.data
+  }
+
+  async testToolConnection(connectionId: string): Promise<ToolConnection> {
+    const response = await this.client.post(`/api/v1/tool-connections/${connectionId}/test`)
+    return response.data
+  }
+
+  async deleteToolConnection(connectionId: string): Promise<void> {
+    await this.client.delete(`/api/v1/tool-connections/${connectionId}`)
+  }
+
+  async getAgentToolConnections(agentId: string): Promise<AgentToolConnectionLink[]> {
+    const response = await this.client.get(`/api/v1/tool-connections/agents/${agentId}/links`)
+    return response.data
+  }
+
+  async updateAgentToolConnections(
+    agentId: string,
+    links: AgentToolConnectionLink[],
+  ): Promise<AgentToolConnectionLink[]> {
+    const response = await this.client.put(`/api/v1/tool-connections/agents/${agentId}/links`, { links })
+    return response.data
+  }
+
+  async getAgentToolCatalog(agentId: string): Promise<AgentToolCatalogEntry[]> {
+    const response = await this.client.get(`/api/v1/tool-connections/agents/${agentId}/catalog`)
+    return response.data
   }
 
   async uploadKnowledgeDocument(knowledgeBaseId: string, file: File): Promise<any> {
@@ -5162,6 +5221,8 @@ class ApiClient {
      * their parent's scope.
      */
     scope?: 'workspace' | 'organization'
+    scenario_ids?: string[]
+    agent_ids?: string[]
   }): Promise<any> {
     const response = await this.client.post('/api/v1/metrics', data)
     return response.data
@@ -5206,6 +5267,8 @@ class ApiClient {
      * in every workspace of the org.
      */
     scope?: 'workspace' | 'organization'
+    scenario_ids?: string[]
+    agent_ids?: string[]
   }): Promise<any> {
     const response = await this.client.post(
       '/api/v1/metrics/with-children',
@@ -5783,6 +5846,8 @@ class ApiClient {
     selection_mode?: 'single_choice' | 'multi_label' | null
     /** Only honored on multi_label parents; backend 400s otherwise. */
     allow_discovery?: boolean
+    scenario_ids?: string[]
+    agent_ids?: string[]
   }): Promise<any> {
     const response = await this.client.put(`/api/v1/metrics/${metricId}`, data)
     return response.data

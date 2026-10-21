@@ -2,8 +2,9 @@ import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { ExternalLink, X } from 'lucide-react'
 import { apiClient } from '../../lib/api'
-import type { SimulationTrialDetail } from '../../types/api'
+import type { SimulationToolCall, SimulationTrialDetail } from '../../types/api'
 import { PassBadge } from './simulationUi'
+import { ToolCallCard, ToolEvaluationSection } from './ToolCallCard'
 import { formatScore } from './simulationFormat'
 
 interface Props {
@@ -22,6 +23,16 @@ function transcriptTurns(trial: SimulationTrialDetail) {
     text: s.text,
     latencyMs: undefined as number | undefined,
   }))
+}
+
+/** Production tool calls keyed by the transcript index of the reply they fed. */
+function toolCallsByTurn(trial: SimulationTrialDetail) {
+  const byTurn = new Map<number, SimulationToolCall[]>()
+  for (const call of trial.tool_calls ?? []) {
+    if (call.turn_index === null || call.turn_index === undefined) continue
+    byTurn.set(call.turn_index, [...(byTurn.get(call.turn_index) ?? []), call])
+  }
+  return byTurn
 }
 
 function scoreLabel(score: { value: unknown; error?: string; skipped?: string }): string {
@@ -44,6 +55,7 @@ export default function TrialTranscriptDrawer({ runId, trialId, onClose }: Props
   })
 
   if (!trialId) return null
+  const toolCalls = trial ? toolCallsByTurn(trial) : new Map<number, SimulationToolCall[]>()
 
   return (
     <div className="fixed inset-y-0 right-0 z-[9000] flex w-full max-w-xl flex-col border-l border-gray-200 bg-white shadow-2xl">
@@ -77,6 +89,25 @@ export default function TrialTranscriptDrawer({ runId, trialId, onClose }: Props
             </Link>
           </div>
 
+          {trial.llms ? (
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-lg border border-gray-200 px-3 py-2 text-xs">
+              <dt className="text-gray-500">Production agent</dt>
+              <dd className="font-mono text-gray-900">
+                {trial.llms.production?.label ?? '—'}
+                {trial.llms.production ? (
+                  <span className="ml-1 font-sans text-gray-500">({trial.llms.production.source_label})</span>
+                ) : null}
+              </dd>
+              <dt className="text-gray-500">Test agent</dt>
+              <dd className="font-mono text-gray-900">
+                {trial.llms.test?.label ?? '—'}
+                {trial.llms.test ? (
+                  <span className="ml-1 font-sans text-gray-500">({trial.llms.test.source_label})</span>
+                ) : null}
+              </dd>
+            </dl>
+          ) : null}
+
           {trial.error_message ? (
             <p className="whitespace-pre-wrap rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{trial.error_message}</p>
           ) : null}
@@ -107,6 +138,8 @@ export default function TrialTranscriptDrawer({ runId, trialId, onClose }: Props
             </section>
           ) : null}
 
+          {trial.tool_evaluation ? <ToolEvaluationSection evaluation={trial.tool_evaluation} /> : null}
+
           {trial.call_analysis?.call_summary ? (
             <section>
               <h4 className="mb-1 text-sm font-semibold text-gray-900">Summary</h4>
@@ -118,17 +151,24 @@ export default function TrialTranscriptDrawer({ runId, trialId, onClose }: Props
             <h4 className="mb-2 text-sm font-semibold text-gray-900">Conversation</h4>
             <div className="space-y-2">
               {transcriptTurns(trial).map((turn, idx) => (
-                <div key={idx} className={`flex ${turn.role === 'agent' ? 'justify-end' : 'justify-start'}`}>
-                  <div
-                    className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${
-                      turn.role === 'agent' ? 'bg-primary-50 text-gray-900' : 'bg-gray-100 text-gray-900'
-                    }`}
-                  >
-                    <div className="mb-0.5 text-[11px] font-medium text-gray-500">
-                      {turn.role === 'agent' ? 'Production agent' : 'Test agent'}
-                      {turn.latencyMs !== undefined ? ` · ${(turn.latencyMs / 1000).toFixed(1)}s` : ''}
+                <div key={idx} className="space-y-1.5">
+                  {(toolCalls.get(idx) ?? []).map((call, callIdx) => (
+                    <div key={call.call_id ?? callIdx} className="ml-auto max-w-[85%]">
+                      <ToolCallCard call={call} />
                     </div>
-                    <p className="whitespace-pre-wrap">{turn.text}</p>
+                  ))}
+                  <div className={`flex ${turn.role === 'agent' ? 'justify-end' : 'justify-start'}`}>
+                    <div
+                      className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${
+                        turn.role === 'agent' ? 'bg-primary-50 text-gray-900' : 'bg-gray-100 text-gray-900'
+                      }`}
+                    >
+                      <div className="mb-0.5 text-[11px] font-medium text-gray-500">
+                        {turn.role === 'agent' ? 'Production agent' : 'Test agent'}
+                        {turn.latencyMs !== undefined ? ` · ${(turn.latencyMs / 1000).toFixed(1)}s` : ''}
+                      </div>
+                      <p className="whitespace-pre-wrap">{turn.text}</p>
+                    </div>
                   </div>
                 </div>
               ))}

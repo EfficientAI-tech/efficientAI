@@ -22,6 +22,13 @@ from app.models.database import (
     SimulationRun,
 )
 from app.services.harbor.rewards import normalize_metric_score
+from app.services.metrics.evaluation_scope import (
+    is_fully_golden,
+    is_golden_scope,
+    load_agent_link_map,
+    load_scenario_link_map,
+    scope_metric_id,
+)
 
 LOCAL_ARTIFACT_PREFIX = "local:"
 _UNFINISHED_STATUSES = frozenset(
@@ -78,6 +85,72 @@ def fail_unfinished_trials(results: Iterable[EvaluatorResult], reason: str) -> N
             result.error_message = result.error_message or reason
 
 
+def _trial_tool_calls(result: EvaluatorResult) -> list[dict[str, Any]]:
+    data = result.call_data if isinstance(result.call_data, dict) else {}
+    return [c for c in data.get("tool_calls") or [] if isinstance(c, dict)]
+
+
+def _tool_expectations_met(result: EvaluatorResult) -> Optional[bool]:
+    data = result.call_data if isinstance(result.call_data, dict) else {}
+    return (data.get("tool_evaluation") or {}).get("all_expectations_met")
+
+
+def compute_tool_summary(results: list[EvaluatorResult]) -> Optional[dict[str, Any]]:
+    """Run-level tool-use KPIs plus a per-tool breakdown; ``None`` when no tools were used."""
+    per_tool: dict[str, dict[str, Any]] = {}
+    for r in results:
+        for call in _trial_tool_calls(r):
+            tool = call.get("tool") or "unknown"
+            row = per_tool.setdefault(
+                tool,
+                {
+                    "tool": tool,
+                    "provider": call.get("provider"),
+                    "calls": 0,
+                    "errors": 0,
+                    "mocked": 0,
+                    "latencies": [],
+                    "trials": set(),
+                },
+            )
+            row["calls"] += 1
+            row["errors"] += call.get("status") == "error"
+            row["mocked"] += call.get("status") == "mocked"
+            if call.get("latency_ms") is not None:
+                row["latencies"].append(call["latency_ms"])
+            row["trials"].add(r.id)
+    checked = [m for m in (_tool_expectations_met(r) for r in results) if m is not None]
+    if not per_tool and not checked:
+        return None
+    total = sum(row["calls"] for row in per_tool.values())
+    errors = sum(row["errors"] for row in per_tool.values())
+    tools = [
+        {
+            "tool": row["tool"],
+            "provider": row["provider"],
+            "calls": row["calls"],
+            "errors": row["errors"],
+            "mocked": row["mocked"],
+            "error_rate": round(row["errors"] / row["calls"], 4),
+            "avg_latency_ms": round(mean(row["latencies"])) if row["latencies"] else None,
+            "trials": len(row["trials"]),
+        }
+        for row in per_tool.values()
+    ]
+    tools.sort(key=lambda t: (-t["error_rate"], -t["calls"]))
+    return {
+        "total_calls": total,
+        "errored_calls": errors,
+        "success_rate": round((total - errors) / total, 4) if total else None,
+        "trials_with_calls": sum(1 for r in results if _trial_tool_calls(r)),
+        "expectations_checked": len(checked),
+        "expectations_met_rate": (
+            round(sum(1 for m in checked if m) / len(checked), 4) if checked else None
+        ),
+        "tools": tools,
+    }
+
+
 def compute_summary(
     db: Session, run: SimulationRun, results: list[EvaluatorResult]
 ) -> dict[str, Any]:
@@ -104,6 +177,9 @@ def compute_summary(
         if metric_ids
         else []
     )
+    scope_ids = {scope_metric_id(m) for m in metrics}
+    agent_link_map = load_agent_link_map(db, scope_ids)
+    scenario_link_map = load_scenario_link_map(db, scope_ids)
     uses_criteria = bool(run.metric_success_criteria)
     criteria_metric_ids = (
         {str(c.get("metric_id")) for c in (run.metric_success_criteria or [])}
@@ -121,6 +197,7 @@ def compute_summary(
                     passes.append(bool(entry.get("passed")))
             if passes:
                 pass_rate = round(sum(1 for p in passes if p) / len(passes), 4)
+                scope_id = scope_metric_id(metric)
                 metric_rows.append(
                     {
                         "metric_id": mid,
@@ -128,6 +205,16 @@ def compute_summary(
                         "mean": pass_rate,
                         "pass_rate": pass_rate,
                         "n": len(passes),
+                        "agent_ids": (
+                            []
+                            if is_golden_scope(agent_link_map, scope_id)
+                            else [str(a) for a in sorted(agent_link_map.get(scope_id, ()))]
+                        ),
+                        "scenario_ids": (
+                            []
+                            if is_golden_scope(scenario_link_map, scope_id)
+                            else [str(s) for s in sorted(scenario_link_map.get(scope_id, ()))]
+                        ),
                     }
                 )
             continue
@@ -140,15 +227,44 @@ def compute_summary(
             if v is not None
         ]
         if values:
+            scope_id = scope_metric_id(metric)
             metric_rows.append(
                 {
                     "metric_id": str(metric.id),
                     "name": metric.name,
                     "mean": round(mean(values), 4),
                     "n": len(values),
+                    "agent_ids": (
+                        []
+                        if is_golden_scope(agent_link_map, scope_id)
+                        else [str(a) for a in sorted(agent_link_map.get(scope_id, ()))]
+                    ),
+                    "scenario_ids": (
+                        []
+                        if is_golden_scope(scenario_link_map, scope_id)
+                        else [str(s) for s in sorted(scenario_link_map.get(scope_id, ()))]
+                    ),
                 }
             )
     metric_rows.sort(key=lambda m: m["mean"])
+
+    golden_trial_means: list[float] = []
+    for r in scored:
+        golden_values = [
+            v
+            for v in (
+                normalize_metric_score((r.metric_scores or {}).get(str(metric.id)), metric)
+                for metric in metrics
+                if is_fully_golden(
+                    scope_metric_id(metric),
+                    agent_link_map=agent_link_map,
+                    scenario_link_map=scenario_link_map,
+                )
+            )
+            if v is not None
+        ]
+        if golden_values:
+            golden_trial_means.append(round(mean(golden_values), 4))
 
     scenario_names = (
         {
@@ -178,6 +294,12 @@ def compute_summary(
                 "attempts": len(rs),
                 "passed": sum(1 for r in rs if r.passed),
                 "mean_reward": round(mean(rewards), 4) if rewards else None,
+                "tool_errors": sum(
+                    1 for r in rs for c in _trial_tool_calls(r) if c.get("status") == "error"
+                ),
+                "tool_expectations_failed": sum(
+                    1 for r in rs if _tool_expectations_met(r) is False
+                ),
             }
         )
     combo_rows.sort(key=lambda c: (c["mean_reward"] is None, c["mean_reward"] or 0))
@@ -191,6 +313,9 @@ def compute_summary(
         "uses_success_criteria": uses_criteria,
         "pass_rate": round(sum(1 for r in scored if r.passed) / len(scored), 4) if scored else None,
         "mean_reward": round(mean(r.reward for r in scored), 4) if scored else None,
+        "golden_mean_reward": (
+            round(mean(golden_trial_means), 4) if golden_trial_means else None
+        ),
         "pass_all_rate": (
             round(
                 sum(1 for rs in finished_combos if all(r.passed for r in rs))
@@ -212,6 +337,7 @@ def compute_summary(
         "avg_turns": round(mean(turns), 2) if turns else None,
         "metrics": metric_rows,
         "combos": combo_rows,
+        "tools": compute_tool_summary(results),
     }
 
 

@@ -28,7 +28,8 @@ function embeddingLabel(kb: KnowledgeBaseSummary): string {
   return `${providerName} / ${model}`
 }
 
-export default function KnowledgeBases() {
+/** ``embedded``: rendered as a tab of the Tools page, which supplies the page title. */
+export default function KnowledgeBases({ embedded = false }: { embedded?: boolean }) {
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
   const [showUpload, setShowUpload] = useState(false)
@@ -52,12 +53,15 @@ export default function KnowledgeBases() {
       <ToastContainer />
       <div className="border-b border-gray-200 px-6 py-4 flex items-center justify-between">
         <div>
-          <div className="flex items-center gap-2">
-            <BookOpen className="h-5 w-5 text-primary-600" />
-            <h1 className="text-xl font-semibold text-gray-900">Knowledge Bases</h1>
-          </div>
-          <p className="text-sm text-gray-500 mt-1">
-            Upload document libraries for simulation RAG — attach them to agents under Production Agent.
+          {!embedded ? (
+            <div className="flex items-center gap-2">
+              <BookOpen className="h-5 w-5 text-primary-600" />
+              <h1 className="text-xl font-semibold text-gray-900">Knowledge Bases</h1>
+            </div>
+          ) : null}
+          <p className={`text-sm text-gray-500 ${embedded ? '' : 'mt-1'}`}>
+            Document libraries the production and test agents search during simulations — attach them per side on
+            each agent.
           </p>
         </div>
         <Button onClick={() => setShowUpload(true)} leftIcon={<Upload className="h-4 w-4" />}>

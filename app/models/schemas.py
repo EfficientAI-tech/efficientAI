@@ -241,7 +241,9 @@ class AgentCreate(BaseModel):
         le=600,
         description="End live calls after this many seconds of silence (0 disables)",
     )
+    # Production agent's knowledge bases; the test agent has its own list.
     knowledge_base_ids: Optional[List[UUID]] = None
+    test_knowledge_base_ids: Optional[List[UUID]] = None
 
     @field_validator('phone_number')
     @classmethod
@@ -367,6 +369,7 @@ class AgentUpdate(BaseModel):
     prompt_variables: Optional[Dict[str, str]] = None
     silence_hangup_secs: Optional[int] = Field(default=None, ge=0, le=600)
     knowledge_base_ids: Optional[List[UUID]] = None
+    test_knowledge_base_ids: Optional[List[UUID]] = None
 
     @model_validator(mode='after')
     def validate_voice_config(self):
@@ -567,6 +570,7 @@ class AgentResponse(BaseModel):
     )
     provider_prompt_synced_at: Optional[datetime] = None
     knowledge_base_ids: List[UUID] = Field(default_factory=list)
+    test_knowledge_base_ids: List[UUID] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -830,12 +834,25 @@ class GeneratePersonaPromptResponse(BaseModel):
 
 # Scenario Schemas
 
+class ExpectedToolCall(BaseModel):
+    """One tool-use expectation checked on simulation trials."""
+    tool: str = Field(..., min_length=1, max_length=255)
+    args_contains: Dict[str, str] = Field(default_factory=dict)
+    min_calls: int = Field(1, ge=1, le=50)
+    max_calls: Optional[int] = Field(None, ge=0, le=50)
+    must_succeed: bool = False
+    forbidden: bool = False
+    # Returned instead of running the tool (simulations only).
+    mock_response: Optional[Any] = None
+
+
 class ScenarioCreate(BaseModel):
     """Schema for creating a new scenario"""
     name: str = Field(..., min_length=1, max_length=255)
     agent_id: Optional[UUID] = None
     description: Optional[str] = None
     required_info: Dict[str, str] = Field(default_factory=dict)
+    expected_tool_calls: Optional[List[ExpectedToolCall]] = None
 
 
 class ScenarioUpdate(BaseModel):
@@ -844,6 +861,7 @@ class ScenarioUpdate(BaseModel):
     agent_id: Optional[UUID] = None
     description: Optional[str] = None
     required_info: Optional[Dict[str, str]] = None
+    expected_tool_calls: Optional[List[ExpectedToolCall]] = None
 
 
 class ScenarioResponse(BaseModel):
@@ -853,6 +871,7 @@ class ScenarioResponse(BaseModel):
     agent_id: Optional[UUID]
     description: Optional[str]
     required_info: Dict[str, str]
+    expected_tool_calls: Optional[List[ExpectedToolCall]] = None
     created_at: datetime
     updated_at: datetime
 
@@ -2206,6 +2225,10 @@ class MetricCreate(BaseModel):
     # Ignored when ``parent_metric_id`` is set (children inherit the
     # parent's scope unconditionally).
     scope: MetricScope = "workspace"
+    # Empty or omitted = golden (scored on every scenario). Non-empty = only these scenarios.
+    scenario_ids: Optional[List[UUID]] = Field(default=None)
+    # Empty or omitted = golden (scored for every agent). Non-empty = only these agents.
+    agent_ids: Optional[List[UUID]] = Field(default=None)
 
     @model_validator(mode='after')
     def validate_compare_transcripts_exclusions(self):
@@ -2314,6 +2337,8 @@ class MetricCreateWithChildren(BaseModel):
     # the whole category subtree is shared across every workspace in
     # the org.
     scope: MetricScope = "workspace"
+    scenario_ids: Optional[List[UUID]] = Field(default=None)
+    agent_ids: Optional[List[UUID]] = Field(default=None)
 
 
 class MetricUpdate(BaseModel):
@@ -2342,6 +2367,9 @@ class MetricUpdate(BaseModel):
     # ``selection_mode`` when this is set to True, because the patch
     # body alone doesn't have enough context to validate cross-state.
     compare_transcripts: Optional[bool] = None
+    # ``None`` = leave links unchanged; ``[]`` = clear links (golden).
+    scenario_ids: Optional[List[UUID]] = None
+    agent_ids: Optional[List[UUID]] = None
 
     @model_validator(mode='after')
     def validate_compare_transcripts_exclusions(self):
@@ -2435,6 +2463,8 @@ class MetricResponse(BaseModel):
     promoted_from_draft_at: Optional[datetime] = None
     studio_notes: Optional[str] = None
     children: List["MetricResponse"] = Field(default_factory=list)
+    scenario_ids: List[UUID] = Field(default_factory=list)
+    agent_ids: List[UUID] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
     created_by: Optional[str]
@@ -6184,6 +6214,7 @@ class SimulationRunResponse(BaseModel):
     production_llm_model: Optional[str] = None
     test_llm_provider: Optional[str] = None
     test_llm_model: Optional[str] = None
+    resolved_llms: Optional[Dict[str, Any]] = None
     status: str
     expected_trials: int
     completed_trials: int
@@ -6214,6 +6245,9 @@ class SimulationTrialResponse(BaseModel):
     turns: int = 0
     metric_scores: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
+    tool_call_count: int = 0
+    tool_error_count: int = 0
+    tool_expectations_met: Optional[bool] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -6222,7 +6256,77 @@ class SimulationTrialDetailResponse(SimulationTrialResponse):
     speaker_segments: Optional[List[Dict[str, Any]]] = None
     call_analysis: Optional[Dict[str, Any]] = None
     trajectory: Optional[Dict[str, Any]] = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None
+    tool_evaluation: Optional[Dict[str, Any]] = None
+    llms: Optional[Dict[str, Any]] = None
 
 
 class SimulationArtifactsResponse(BaseModel):
     url: str
+
+
+# Tool connections (MCP servers, HTTP tools, Postgres) for production agents
+
+ToolConnectionType = Literal["mcp", "http", "postgres"]
+ToolSimulationMode = Literal["live", "mock_writes", "mock_all"]
+
+
+class ToolConnectionCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    connection_type: ToolConnectionType
+    preset: Optional[str] = Field(None, max_length=64)
+    config: Dict[str, Any] = Field(default_factory=dict)
+    # Write-only: {"headers": {...}, "env": {...}} or {"dsn": "..."}; never returned.
+    secrets: Optional[Dict[str, Any]] = None
+    simulation_mode: ToolSimulationMode = "mock_writes"
+
+
+class ToolConnectionUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    config: Optional[Dict[str, Any]] = None
+    # Merged into stored secrets; an empty string removes a key.
+    secrets: Optional[Dict[str, Any]] = None
+    simulation_mode: Optional[ToolSimulationMode] = None
+
+
+class ToolConnectionTool(BaseModel):
+    name: str
+    exposed_name: str
+    description: Optional[str] = None
+    side_effect: Literal["read", "write"]
+    input_schema: Optional[Dict[str, Any]] = None
+
+
+class ToolConnectionResponse(BaseModel):
+    id: UUID
+    name: str
+    slug: str
+    connection_type: str
+    preset: Optional[str] = None
+    config: Dict[str, Any] = Field(default_factory=dict)
+    simulation_mode: str
+    secret_keys: List[str] = Field(default_factory=list)
+    tools: List[ToolConnectionTool] = Field(default_factory=list)
+    last_tested_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+    agent_count: int = 0
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class AgentToolConnectionLink(BaseModel):
+    tool_connection_id: UUID
+    # Raw tool names from the connection; null = every tool.
+    enabled_tools: Optional[List[str]] = None
+
+
+class AgentToolConnectionsUpdate(BaseModel):
+    links: List[AgentToolConnectionLink] = Field(default_factory=list)
+
+
+class AgentToolCatalogEntry(BaseModel):
+    name: str
+    description: Optional[str] = None
+    source: str
+    side_effect: Literal["read", "write"]
+    simulation_behavior: Literal["live", "mocked"]

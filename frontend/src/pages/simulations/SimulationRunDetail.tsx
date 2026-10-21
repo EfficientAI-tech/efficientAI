@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Download, RotateCcw, Square } from 'lucide-react'
@@ -6,11 +6,11 @@ import { apiClient } from '../../lib/api'
 import { getApiErrorDetail } from '../../lib/authSession'
 import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
-import type { SimulationRun, SimulationTrial } from '../../types/api'
+import type { SimulationRun, SimulationRunToolSummary, SimulationTrial } from '../../types/api'
 import ScenarioAttemptMatrix from './ScenarioAttemptMatrix'
 import TrialTranscriptDrawer from './TrialTranscriptDrawer'
 import { PassBadge, RunStatusChip } from './simulationUi'
-import { REWARD_BAR_COLOR, formatDuration, formatPct, formatScore, isRunActive } from './simulationFormat'
+import { REWARD_BAR_COLOR, formatDuration, formatPct, formatScore, isRunActive, runLlmLabel } from './simulationFormat'
 
 function StatTile({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
@@ -22,7 +22,35 @@ function StatTile({ label, value, hint }: { label: string; value: string; hint?:
   )
 }
 
-function MetricBreakdown({ run }: { run: SimulationRun }) {
+/** Which model answered on each side; the source says where it came from (agent config, run override, …). */
+function RunLlms({ run }: { run: SimulationRun }) {
+  const sides = [
+    { side: 'production' as const, label: 'Production agent' },
+    { side: 'test' as const, label: 'Test agent' },
+  ]
+  return (
+    <dl className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-sm">
+      {sides.map(({ side, label }) => {
+        const resolved = run.resolved_llms?.[side]
+        return (
+          <div key={side} className="flex items-baseline gap-1.5">
+            <dt className="text-gray-500">{label}</dt>
+            <dd className="font-mono text-gray-900">{runLlmLabel(run, side)}</dd>
+            {resolved ? <dd className="text-xs text-gray-500">({resolved.source_label})</dd> : null}
+          </div>
+        )
+      })}
+    </dl>
+  )
+}
+
+function MetricBreakdown({
+  run,
+  scenarioNameById,
+}: {
+  run: SimulationRun
+  scenarioNameById: Map<string, string>
+}) {
   const metrics = run.summary?.metrics ?? []
   const usesCriteria =
     run.summary?.uses_success_criteria ?? Boolean(run.metric_success_criteria?.length)
@@ -34,17 +62,32 @@ function MetricBreakdown({ run }: { run: SimulationRun }) {
     <div className="space-y-2">
       {metrics.map((m) => {
         const value = usesCriteria ? (m.pass_rate ?? m.mean) : m.mean
+        const agentPart =
+          m.agent_ids?.length
+            ? `Agents: ${m.agent_ids.map((id) => id.slice(0, 8)).join(', ')}`
+            : 'All agents'
+        const scenarioPart =
+          m.scenario_ids?.length
+            ? m.scenario_ids.map((id) => scenarioNameById.get(id) || id.slice(0, 8)).join(', ')
+            : 'All scenarios'
+        const scopeLabel =
+          !m.agent_ids?.length && !m.scenario_ids?.length
+            ? 'All agents & scenarios'
+            : `${agentPart} · ${scenarioPart}`
         return (
           <div
             key={m.metric_id}
             className="grid grid-cols-[minmax(0,12rem)_1fr_3rem] items-center gap-3 text-sm"
             title={
               usesCriteria
-                ? `${m.name}: ${formatPct(value)} pass rate over ${m.n} trials`
-                : `${m.name}: ${formatScore(m.mean)} mean over ${m.n} trials`
+                ? `${m.name} (${scopeLabel}): ${formatPct(value)} pass rate over ${m.n} trials`
+                : `${m.name} (${scopeLabel}): ${formatScore(m.mean)} mean over ${m.n} trials`
             }
           >
-            <span className="truncate text-gray-700">{m.name}</span>
+            <span className="min-w-0 truncate text-gray-700">
+              <span className="block truncate">{m.name}</span>
+              <span className="block truncate text-[11px] text-gray-400">{scopeLabel}</span>
+            </span>
             <div className="relative h-3 rounded-sm bg-gray-100">
               <div className="h-3 rounded-sm" style={{ width: `${value * 100}%`, background: REWARD_BAR_COLOR }} />
               {!usesCriteria ? (
@@ -82,6 +125,15 @@ export default function SimulationRunDetail() {
     queryFn: () => apiClient.getSimulationRun(runId),
     refetchInterval: (query) => (query.state.data && isRunActive(query.state.data.status) ? 4000 : false),
   })
+  const { data: scenarioRows = [] } = useQuery({
+    queryKey: ['scenarios', 'agent', run?.agent_id],
+    queryFn: () => apiClient.listScenarios(0, 500, run!.agent_id),
+    enabled: Boolean(run?.agent_id),
+  })
+  const scenarioNameById = useMemo(
+    () => new Map(scenarioRows.map((s: { id: string; name: string }) => [s.id, s.name])),
+    [scenarioRows],
+  )
   const { data: trials = [] } = useQuery({
     queryKey: ['simulation-trials', runId],
     queryFn: () => apiClient.listSimulationTrials(runId),
@@ -148,10 +200,10 @@ export default function SimulationRunDetail() {
             </div>
             <p className="mt-1 text-sm text-gray-500">
               Run <span className="font-mono">{run.run_id}</span> · {run.scenario_ids.length} scenarios ×{' '}
-              {run.persona_ids.length} personas × {run.n_attempts} attempts · production model{' '}
-              {run.production_llm_model ? `${run.production_llm_provider}/${run.production_llm_model}` : 'agent default'} ·{' '}
+              {run.persona_ids.length} personas × {run.n_attempts} attempts ·{' '}
               {formatDuration(run.started_at, run.finished_at)}
             </p>
+            <RunLlms run={run} />
           </div>
           <div className="flex flex-wrap gap-2">
             {active ? (
@@ -235,6 +287,11 @@ export default function SimulationRunDetail() {
           }
         />
         <StatTile
+          label="Golden score"
+          value={formatScore(summary?.golden_mean_reward)}
+          hint="mean of golden metrics only, per trial"
+        />
+        <StatTile
           label="Consistency (pass^k)"
           value={run.n_attempts > 1 ? formatPct(summary?.pass_all_rate) : '—'}
           hint={run.n_attempts > 1 ? 'scenarios passing every attempt' : 'needs >1 attempt'}
@@ -246,6 +303,24 @@ export default function SimulationRunDetail() {
         />
         <StatTile label="Errored trials" value={String(summary?.n_failed ?? run.failed_trials)} hint="did not finish" />
         <StatTile label="Avg turns" value={summary?.avg_turns != null ? summary.avg_turns.toFixed(1) : '—'} />
+        {summary?.tools ? (
+          <>
+            <StatTile
+              label="Tool calls succeeded"
+              value={formatPct(summary.tools.success_rate)}
+              hint={`${summary.tools.total_calls} calls in ${summary.tools.trials_with_calls} trials`}
+            />
+            <StatTile
+              label="Tool expectations met"
+              value={formatPct(summary.tools.expectations_met_rate)}
+              hint={
+                summary.tools.expectations_checked
+                  ? `${summary.tools.expectations_checked} trials checked`
+                  : 'no scenario sets expected tool calls'
+              }
+            />
+          </>
+        ) : null}
       </div>
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-[2fr_1fr]">
@@ -260,9 +335,16 @@ export default function SimulationRunDetail() {
         </section>
         <section className="rounded-lg border border-gray-200 bg-white p-4">
           <h2 className="mb-3 text-sm font-semibold text-gray-900">Metric breakdown</h2>
-          <MetricBreakdown run={run} />
+          <MetricBreakdown run={run} scenarioNameById={scenarioNameById} />
         </section>
       </div>
+
+      {summary?.tools?.tools.length ? (
+        <section className="rounded-lg border border-gray-200 bg-white">
+          <h2 className="border-b border-gray-200 px-4 py-3 text-sm font-semibold text-gray-900">Tool calls</h2>
+          <ToolsTable tools={summary.tools} />
+        </section>
+      ) : null}
 
       <section className="rounded-lg border border-gray-200 bg-white">
         <h2 className="border-b border-gray-200 px-4 py-3 text-sm font-semibold text-gray-900">All trials</h2>
@@ -289,6 +371,7 @@ function TrialsTable({ trials, onSelect }: { trials: SimulationTrial[]; onSelect
             <th className="px-3 py-2">Result</th>
             <th className="px-3 py-2 text-right">Score</th>
             <th className="px-3 py-2 text-right">Turns</th>
+            <th className="px-3 py-2">Tools</th>
             <th className="px-3 py-2">Error</th>
           </tr>
         </thead>
@@ -303,9 +386,54 @@ function TrialsTable({ trials, onSelect }: { trials: SimulationTrial[]; onSelect
               </td>
               <td className="px-3 py-2 text-right tabular-nums">{formatScore(t.reward)}</td>
               <td className="px-3 py-2 text-right tabular-nums">{t.turns}</td>
+              <td className="whitespace-nowrap px-3 py-2 text-xs text-gray-700">
+                {t.tool_call_count ? `${t.tool_call_count} calls` : '—'}
+                {t.tool_error_count ? <span className="text-red-700"> · {t.tool_error_count} failed</span> : null}
+                {t.tool_expectations_met === false ? (
+                  <span className="text-red-700"> · expectations not met</span>
+                ) : null}
+              </td>
               <td className="max-w-xs truncate px-3 py-2 text-xs text-red-700" title={t.error_message ?? undefined}>
                 {t.error_message}
               </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+/** Per-tool reliability across the run, worst error rate first. */
+function ToolsTable({ tools }: { tools: SimulationRunToolSummary }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="min-w-full divide-y divide-gray-200 text-sm">
+        <thead className="bg-gray-50 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+          <tr>
+            <th className="px-3 py-2">Tool</th>
+            <th className="px-3 py-2">Source</th>
+            <th className="px-3 py-2 text-right">Calls</th>
+            <th className="px-3 py-2 text-right">Failed</th>
+            <th className="px-3 py-2 text-right">Mocked</th>
+            <th className="px-3 py-2 text-right">Avg latency</th>
+            <th className="px-3 py-2 text-right">Trials</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100">
+          {tools.tools.map((row) => (
+            <tr key={row.tool}>
+              <td className="px-3 py-2 font-mono text-gray-900">{row.tool}</td>
+              <td className="px-3 py-2 text-gray-700">{row.provider ?? '—'}</td>
+              <td className="px-3 py-2 text-right tabular-nums">{row.calls}</td>
+              <td className={`px-3 py-2 text-right tabular-nums ${row.errors ? 'text-red-700' : ''}`}>
+                {row.errors} ({formatPct(row.error_rate)})
+              </td>
+              <td className="px-3 py-2 text-right tabular-nums">{row.mocked}</td>
+              <td className="px-3 py-2 text-right tabular-nums">
+                {row.avg_latency_ms != null ? `${(row.avg_latency_ms / 1000).toFixed(1)}s` : '—'}
+              </td>
+              <td className="px-3 py-2 text-right tabular-nums">{row.trials}</td>
             </tr>
           ))}
         </tbody>

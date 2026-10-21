@@ -136,9 +136,10 @@ export default function HostedTestAgentStep({
           <AgentKnowledgeBasesPanel
             compact
             mode="edit"
-            attachedIds={formData.knowledge_base_ids}
+            side="test"
+            attachedIds={formData.test_knowledge_base_ids}
             knowledgeBases={knowledgeBases}
-            onChange={(ids) => onFormChange({ knowledge_base_ids: ids })}
+            onChange={(ids) => onFormChange({ test_knowledge_base_ids: ids })}
           />
           <p
             className={`text-xs ${

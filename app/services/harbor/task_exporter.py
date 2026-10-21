@@ -13,6 +13,12 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.database import Agent, Metric, Persona, Scenario, SimulationRun
+from app.services.metrics.evaluation_scope import (
+    applicable_metrics,
+    load_agent_link_map,
+    load_scenario_link_map,
+    scope_metric_id,
+)
 from app.services.testing.test_agent_simulation_prompt import (
     build_persona_description_for_bridge,
     build_test_agent_system_prompt,
@@ -156,10 +162,21 @@ def export_tasks(
 
     tasks_root = run_work_dir(run) / "tasks"
     shutil.rmtree(tasks_root, ignore_errors=True)
-    rubric = _rubric_toml(metrics)
+    scope_ids = {scope_metric_id(m) for m in metrics}
+    agent_link_map = load_agent_link_map(db, scope_ids)
+    scenario_link_map = load_scenario_link_map(db, scope_ids)
+    run_agent_id = UUID(str(run.agent_id)) if run.agent_id else None
 
     exported: list[ExportedTask] = []
     for scenario in sorted(scenarios, key=lambda s: str(s.name)):
+        scenario_metrics = applicable_metrics(
+            metrics,
+            agent_id=run_agent_id,
+            scenario_id=scenario.id,
+            agent_link_map=agent_link_map,
+            scenario_link_map=scenario_link_map,
+        )
+        rubric = _rubric_toml(scenario_metrics)
         for persona in sorted(personas, key=lambda p: str(p.name)):
             name = task_name_for(scenario, persona)
             if (tasks_root / name).exists():  # id-prefix collision; keep names unique

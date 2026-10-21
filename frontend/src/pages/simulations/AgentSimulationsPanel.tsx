@@ -6,7 +6,7 @@ import { apiClient } from '../../lib/api'
 import Button from '../../components/Button'
 import NewSimulationRunModal from './NewSimulationRunModal'
 import { RunStatusChip } from './simulationUi'
-import { formatDuration, formatPct, formatScore, isRunActive } from './simulationFormat'
+import { formatDuration, formatPct, formatScore, isRunActive, runLlmLabel } from './simulationFormat'
 
 interface Props {
   agent: {
@@ -63,7 +63,8 @@ export default function AgentSimulationsPanel({ agent }: Props) {
                 <th className="px-3 py-2 text-right">Progress</th>
                 <th className="px-3 py-2 text-right">Pass rate</th>
                 <th className="px-3 py-2 text-right">Mean score</th>
-                <th className="px-3 py-2">Production model</th>
+                <th className="px-3 py-2">Production LLM</th>
+                <th className="px-3 py-2">Test agent LLM</th>
                 <th className="px-3 py-2">Started</th>
                 <th className="px-3 py-2 text-right">Duration</th>
               </tr>
@@ -88,9 +89,8 @@ export default function AgentSimulationsPanel({ agent }: Props) {
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums">{formatPct(run.summary?.pass_rate)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{formatScore(run.summary?.mean_reward)}</td>
-                  <td className="px-3 py-2 text-gray-700">
-                    {run.production_llm_model ? `${run.production_llm_provider}/${run.production_llm_model}` : 'Agent default'}
-                  </td>
+                  <td className="px-3 py-2 font-mono text-xs text-gray-700">{runLlmLabel(run, 'production')}</td>
+                  <td className="px-3 py-2 font-mono text-xs text-gray-700">{runLlmLabel(run, 'test')}</td>
                   <td className="px-3 py-2 text-gray-500">
                     {run.started_at ? new Date(run.started_at).toLocaleString() : '—'}
                   </td>

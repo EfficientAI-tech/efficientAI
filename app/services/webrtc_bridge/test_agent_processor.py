@@ -559,17 +559,16 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
             and self.config.workspace_id
             and self.config.organization_id
         ):
-            from uuid import UUID
-
             from app.services.knowledge_bases.chat_tools import (
                 generate_production_reply_with_knowledge_tools,
             )
+            from app.services.knowledge_bases.agent_links import KB_ROLE_TEST
             from app.services.knowledge_bases.retrieval import agent_has_ready_knowledge
 
             agent_uuid = UUID(str(self.config.agent_id))
             org_uuid = UUID(str(self.config.organization_id))
             workspace_uuid = UUID(str(self.config.workspace_id))
-            if agent_has_ready_knowledge(self.config.db, agent_id=agent_uuid):
+            if agent_has_ready_knowledge(self.config.db, agent_id=agent_uuid, role=KB_ROLE_TEST):
 
                 def _kb_call() -> Dict[str, Any]:
                     text, _kb_log = generate_production_reply_with_knowledge_tools(
@@ -584,6 +583,7 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
                             allow_reasoning_override=allow_reasoning_override
                         ),
                         credential_id=UUID(str(credential_id)) if credential_id else None,
+                        simulated_caller=True,
                         task_defaults={
                             "temperature": kwargs.get("temperature", 0.7),
                             "max_tokens": kwargs.get("max_tokens"),

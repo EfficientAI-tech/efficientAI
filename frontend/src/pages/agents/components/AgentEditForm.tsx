@@ -23,6 +23,7 @@ import ProductionAgentSubTabNav, {
   type ProductionAgentSubTab,
 } from './ProductionAgentSubTabNav'
 import AgentKnowledgeBasesPanel from './AgentKnowledgeBasesPanel'
+import AgentToolConnectionsPanel from './AgentToolConnectionsPanel'
 import type { KnowledgeBaseSummary } from '../../knowledgeBases/knowledgeBaseTypes'
 import VoiceBundleDetailCard from './VoiceBundleDetailCard'
 import { resolveLLMModelsForCredential } from '../../../lib/llmModelOptions'
@@ -57,6 +58,7 @@ interface FormData {
   voice_ai_agent_id: string
   provider_prompt: string
   knowledge_base_ids: string[]
+  test_knowledge_base_ids: string[]
 }
 
 interface AgentEditFormProps {
@@ -769,9 +771,10 @@ export default function AgentEditForm({
           {testAgentSubTab === 'knowledge_bases' && (
             <AgentKnowledgeBasesPanel
               mode="edit"
-              attachedIds={formData.knowledge_base_ids}
+              side="test"
+              attachedIds={formData.test_knowledge_base_ids}
               knowledgeBases={knowledgeBases}
-              onChange={(ids) => onChange({ ...formData, knowledge_base_ids: ids })}
+              onChange={(ids) => onChange({ ...formData, test_knowledge_base_ids: ids })}
             />
           )}
         </div>
@@ -787,11 +790,14 @@ export default function AgentEditForm({
           {productionAgentSubTab === 'knowledge_bases' && (
             <AgentKnowledgeBasesPanel
               mode="edit"
+              side="production"
               attachedIds={formData.knowledge_base_ids}
               knowledgeBases={knowledgeBases}
               onChange={(ids) => onChange({ ...formData, knowledge_base_ids: ids })}
             />
           )}
+
+          {productionAgentSubTab === 'tools' && agentId && <AgentToolConnectionsPanel agentId={agentId} />}
 
           {productionAgentSubTab === 'prompt' && isChatAgent &&
         chatConnection &&
