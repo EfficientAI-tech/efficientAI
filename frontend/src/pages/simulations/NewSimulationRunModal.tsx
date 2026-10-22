@@ -28,6 +28,7 @@ import {
   formatCriterionSummary,
   syncCriteriaWithMetrics,
 } from './metricSuccessCriteriaUtils'
+import { formatLlmPair } from './simulationFormat'
 
 const STEPS = ['Scenarios & personas', 'Metrics', 'Success criteria', 'Settings & review'] as const
 
@@ -51,7 +52,9 @@ interface Props {
     name: string
     call_medium?: string | null
     chat_connection_type?: string | null
+    main_llm_provider?: string | null
     main_llm_model?: string | null
+    test_llm_provider?: string | null
     test_llm_model?: string | null
   }
   initialScenarioIds?: string[]
@@ -236,15 +239,43 @@ export default function NewSimulationRunModal({ isOpen, onClose, agent, initialS
 
   const agentNameById = useMemo(() => new Map([[agent.id, agent.name]]), [agent.id, agent.name])
 
-  const productionLegSummary = useMemo(() => {
-    if (!isChat) return null
-    if (hostedProduction) {
-      const prod = agent.main_llm_model?.trim() || 'not configured'
-      const test = agent.test_llm_model?.trim() || 'not configured'
-      return `Production answers with ${prod}. The test agent uses ${test}.`
+  const plannedLlms = useMemo(() => {
+    const testDefault = formatLlmPair(agent.test_llm_provider, agent.test_llm_model) || 'Not configured'
+    const test = overrideTest && testModel ? formatLlmPair(testProvider, testModel) || testModel : testDefault
+    if (liveChatProduction) {
+      return {
+        production: `Live endpoint (${connectionTypeLabel(agent.chat_connection_type)})`,
+        productionHint: 'The customer’s own agent answers. This run does not call a production LLM here.',
+        test,
+        testHint: overrideTest ? 'Run override' : 'Plays the simulated customer',
+      }
     }
-    return `Production answers through ${connectionTypeLabel(agent.chat_connection_type)}.`
-  }, [isChat, hostedProduction, agent.main_llm_model, agent.test_llm_model, agent.chat_connection_type])
+    const prodDefault =
+      formatLlmPair(agent.main_llm_provider, agent.main_llm_model) ||
+      (!isChat ? 'Voice bundle LLM' : 'Not configured')
+    const production =
+      overrideProduction && prodModel ? formatLlmPair(prodProvider, prodModel) || prodModel : prodDefault
+    return {
+      production,
+      productionHint: overrideProduction ? 'Run override · answers as the agent' : 'Answers as the agent under test',
+      test,
+      testHint: overrideTest ? 'Run override · plays the customer' : 'Plays the simulated customer',
+    }
+  }, [
+    isChat,
+    agent.chat_connection_type,
+    agent.main_llm_model,
+    agent.main_llm_provider,
+    agent.test_llm_model,
+    agent.test_llm_provider,
+    liveChatProduction,
+    overrideProduction,
+    overrideTest,
+    prodModel,
+    prodProvider,
+    testModel,
+    testProvider,
+  ])
 
   const trials = scenarioIds.length * personaIds.length * attempts
 
@@ -427,11 +458,18 @@ export default function NewSimulationRunModal({ isOpen, onClose, agent, initialS
                 </label>
               </div>
 
-              {productionLegSummary ? (
-                <p className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-sm text-gray-700">
-                  {productionLegSummary}
-                </p>
-              ) : null}
+              <dl className="grid gap-2 sm:grid-cols-2">
+                <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                  <dt className="text-xs font-medium text-gray-500">Production agent LLM</dt>
+                  <dd className="mt-0.5 font-mono text-sm text-gray-900">{plannedLlms.production}</dd>
+                  <dd className="text-[11px] text-gray-500">{plannedLlms.productionHint}</dd>
+                </div>
+                <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                  <dt className="text-xs font-medium text-gray-500">Test agent LLM</dt>
+                  <dd className="mt-0.5 font-mono text-sm text-gray-900">{plannedLlms.test}</dd>
+                  <dd className="text-[11px] text-gray-500">{plannedLlms.testHint}</dd>
+                </div>
+              </dl>
 
               <div className="space-y-3">
                 {!liveChatProduction ? (

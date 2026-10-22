@@ -14,15 +14,26 @@ export function formatScore(value?: number | null): string {
   return value === null || value === undefined ? '—' : value.toFixed(2)
 }
 
+export function formatLlmPair(provider?: string | null, model?: string | null): string | null {
+  const name = model?.trim()
+  if (!name) return null
+  const who = provider?.trim()
+  return who ? `${who}/${name}` : name
+}
+
 /** Model label for one side of a run; older runs only stored overrides. */
-export function runLlmLabel(run: SimulationRun, side: 'production' | 'test'): string {
+export function runLlmLabel(
+  run: SimulationRun,
+  side: 'production' | 'test',
+  fallback?: { provider?: string | null; model?: string | null },
+): string {
   const resolved = run.resolved_llms?.[side]
-  if (resolved) return resolved.label
+  if (resolved?.label) return resolved.label
   const [provider, model] =
     side === 'production'
       ? [run.production_llm_provider, run.production_llm_model]
       : [run.test_llm_provider, run.test_llm_model]
-  return model ? `${provider}/${model}` : 'Agent default'
+  return formatLlmPair(provider, model) || formatLlmPair(fallback?.provider, fallback?.model) || 'Not recorded'
 }
 
 export function formatDuration(start?: string | null, end?: string | null): string {

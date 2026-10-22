@@ -36,6 +36,7 @@ import VoiceBundleDetailCard from './VoiceBundleDetailCard'
 import ChatTestAgentLlmDetailCard, {
   chatTestAgentLlmConfigured,
 } from './ChatTestAgentLlmDetailCard'
+import ChatProductionLlmDetailCard from './ChatProductionLlmDetailCard'
 import AgentPromptVisualization from './AgentPromptVisualization'
 import Button from '../../../components/Button'
 import { agentProviderPromptTag } from './agentFlowchartUtils'
@@ -44,7 +45,7 @@ import ProductionAgentSubTabNav, {
   type ProductionAgentSubTab,
 } from './ProductionAgentSubTabNav'
 import AgentKnowledgeBasesPanel from './AgentKnowledgeBasesPanel'
-import AgentToolConnectionsPanel from './AgentToolConnectionsPanel'
+import ProductionAgentToolsSection from './ProductionAgentToolsSection'
 import type { KnowledgeBaseSummary } from '../../knowledgeBases/knowledgeBaseTypes'
 import {
   PRODUCTION_FIRST_MESSAGE_OPTIONS,
@@ -404,6 +405,16 @@ export default function AgentInfoView({
                 ) : (
                   <OverviewDetailRow label="Integration" value={voiceAiIntegrationLabel} />
                 )}
+                {isChatAgent && chatConn === 'internal_llm' ? (
+                  <OverviewDetailRow
+                    label="Production LLM"
+                    value={
+                      agent.main_llm_model
+                        ? `${agent.main_llm_provider || '?'} / ${agent.main_llm_model}`
+                        : OVERVIEW_NOT_CONFIGURED
+                    }
+                  />
+                ) : null}
                 {chatConn === 'provider_chat' || !isChatAgent ? (
                   <OverviewDetailRow
                     label="Provider agent ID"
@@ -628,6 +639,7 @@ export default function AgentInfoView({
   }
 
   const isChatProductionTab = isChatMedium(agent.call_medium)
+  const chatConnType = (agent.chat_connection_type || 'internal_llm').toLowerCase()
   const chatProdConnectionDisplay = isChatProductionTab
     ? resolveChatProductionConnectionFromAgent(agent, {
         telephonyConfigs,
@@ -643,19 +655,21 @@ export default function AgentInfoView({
         onChange={setProductionAgentSubTab}
       />
 
-      {productionAgentSubTab === 'knowledge_bases' && (
-        <AgentKnowledgeBasesPanel
+      {productionAgentSubTab === 'tools' && (
+        <ProductionAgentToolsSection
           mode="view"
-          side="production"
-          attachedIds={attachedKnowledgeBaseIds}
+          agentId={agent.id}
+          attachedKnowledgeBaseIds={attachedKnowledgeBaseIds}
           knowledgeBases={knowledgeBases}
         />
       )}
 
-      {productionAgentSubTab === 'tools' && <AgentToolConnectionsPanel agentId={agent.id} />}
-
       {productionAgentSubTab === 'prompt' && (
     <div className="space-y-6">
+      {isChatProductionTab && chatConnType === 'internal_llm' ? (
+        <ChatProductionLlmDetailCard agent={agent} />
+      ) : null}
+
       <div className="flex items-center justify-between gap-4">
         <div>
           <h3 className="text-lg font-semibold text-gray-900">

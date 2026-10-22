@@ -16,13 +16,14 @@ from loguru import logger
 from app.dependencies import get_db, get_organization_id, get_workspace_id, get_api_key
 from app.core.api_rate_limit import enforce_resource_create_rate_limit
 from app.core.oss_quotas import enforce_oss_quota
-from app.core.auth import Principal
+from app.core.auth import Principal, get_principal
 from app.services.billing.flexprice_service import record_agent_test_setup_generated
 from app.models.database import (
     Agent, ConversationEvaluation, TestAgentConversation, VoiceBundle,
     AIProvider, Integration, IntegrationPlatform, CallMediumEnum,
     Evaluator, EvaluatorResult, EvaluatorSuite, CallRecording, Scenario,
 )
+from app.services.agents.favorites import apply_favorite, favorite_agent_ids, set_favorite
 from sqlalchemy import and_
 from app.models.schemas import (
     AgentCreate,
@@ -942,12 +943,28 @@ async def create_agent(
     return agent_to_response(db, db_agent)
 
 
+class AgentFavoriteUpdate(BaseModel):
+    favorite: bool
+
+
+def _with_favorites(db: Session, agents: list, user_id: Optional[UUID]) -> list:
+    from app.services.agents.agent_serializers import agents_to_responses
+
+    responses = agents_to_responses(db, agents)
+    starred = favorite_agent_ids(db, user_id=user_id, agent_ids=[agent.id for agent in agents])
+    return [
+        apply_favorite(response, is_favorite=agent.id in starred)
+        for agent, response in zip(agents, responses)
+    ]
+
+
 @router.get("", response_model=List[AgentResponse])
 async def list_agents(
     skip: int = 0,
     limit: int = 100,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db)
 ):
     """Get list of all agents for the active workspace.
@@ -959,9 +976,7 @@ async def list_agents(
         Agent.organization_id == organization_id,
         Agent.workspace_id == workspace_id,
     ).offset(skip).limit(limit).all()
-    from app.services.agents.agent_serializers import agents_to_responses
-
-    return agents_to_responses(db, agents)
+    return _with_favorites(db, agents, principal.user_id)
 
 
 @router.get("/check-phone-assignment", response_model=AgentPhoneAssignmentCheckResponse)
@@ -1023,6 +1038,7 @@ async def get_agent(
     agent_id: str,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db)
 ):
     """Get a specific agent by ID (UUID) or agent_id (6-digit) within the active workspace."""
@@ -1048,9 +1064,45 @@ async def get_agent(
     
     if not agent:
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
-    from app.services.agents.agent_serializers import agent_to_response
+    return _with_favorites(db, [agent], principal.user_id)[0]
 
-    return agent_to_response(db, agent)
+
+@router.put("/{agent_id}/favorite", response_model=AgentResponse)
+def update_agent_favorite(
+    agent_id: str,
+    body: AgentFavoriteUpdate,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    """Star or unstar an agent for the signed-in user only."""
+    if principal.user_id is None:
+        raise HTTPException(status_code=400, detail="Sign in to save favorites")
+    try:
+        agent_uuid = UUID(agent_id)
+        agent = db.query(Agent).filter(
+            Agent.id == agent_uuid,
+            Agent.organization_id == organization_id,
+            Agent.workspace_id == workspace_id,
+        ).first()
+    except ValueError:
+        agent = db.query(Agent).filter(
+            Agent.agent_id == agent_id,
+            Agent.organization_id == organization_id,
+            Agent.workspace_id == workspace_id,
+        ).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+    set_favorite(
+        db,
+        user_id=principal.user_id,
+        agent_id=agent.id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        favorite=body.favorite,
+    )
+    return _with_favorites(db, [agent], principal.user_id)[0]
 
 
 @router.put("/{agent_id}", response_model=AgentResponse)

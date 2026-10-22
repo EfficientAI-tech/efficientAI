@@ -13,7 +13,7 @@ from app.services.ai.llm_service import llm_service
 from app.services.tools.base import TOOL_STATUS_ERROR, ToolCallRecord
 from app.services.tools.toolset import Toolset
 
-DEFAULT_MAX_TOOL_ROUNDS = 5
+DEFAULT_MAX_TOOL_ROUNDS = 8
 
 
 def _parse_arguments(raw: Any) -> tuple[dict[str, Any], Optional[str]]:
@@ -45,6 +45,7 @@ def run_tool_loop(
     """Return ``(reply_text, tool_call_records)``; tool failures go back to the model."""
     records: list[ToolCallRecord] = []
     working = list(messages)
+    empty_retries = 0
     for _ in range(max_rounds):
         result = llm_service.generate_response_with_tools(
             messages=working,
@@ -59,7 +60,16 @@ def run_tool_loop(
         )
         tool_calls = result.get("tool_calls")
         if not tool_calls:
-            return (result.get("text") or "").strip(), records
+            text = (result.get("text") or "").strip()
+            # length with no text means the output budget was used up (often by
+            # reasoning) before a reply or a tool call was finished. Try again
+            # instead of treating that as the customer's answer.
+            if text:
+                return text, records
+            if result.get("finish_reason") == "length" or empty_retries < 1:
+                empty_retries += 1
+                continue
+            return "", records
         working.append(
             {"role": "assistant", "content": result.get("text") or None, "tool_calls": tool_calls}
         )
@@ -90,6 +100,15 @@ def run_tool_loop(
                 records.append(record)
             working.append({"role": "tool", "tool_call_id": call.get("id"), "content": content})
 
+    working.append(
+        {
+            "role": "user",
+            "content": (
+                "Reply to the customer now in plain text, using the tool results above. "
+                "Do not call another tool."
+            ),
+        }
+    )
     final = llm_service.generate_response(
         messages=working,
         llm_provider=llm_provider,

@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Download, RotateCcw, Square } from 'lucide-react'
+import { ArrowLeft, Check, Download, Pencil, RotateCcw, Square, Trash2, X } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import { getApiErrorDetail } from '../../lib/authSession'
 import Button from '../../components/Button'
@@ -25,18 +25,18 @@ function StatTile({ label, value, hint }: { label: string; value: string; hint?:
 /** Which model answered on each side; the source says where it came from (agent config, run override, …). */
 function RunLlms({ run }: { run: SimulationRun }) {
   const sides = [
-    { side: 'production' as const, label: 'Production agent' },
-    { side: 'test' as const, label: 'Test agent' },
+    { side: 'production' as const, label: 'Production agent LLM', hint: 'Answers as the agent under test' },
+    { side: 'test' as const, label: 'Test agent LLM', hint: 'Plays the simulated customer' },
   ]
   return (
-    <dl className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-sm">
-      {sides.map(({ side, label }) => {
+    <dl className="mt-3 grid gap-2 sm:grid-cols-2">
+      {sides.map(({ side, label, hint }) => {
         const resolved = run.resolved_llms?.[side]
         return (
-          <div key={side} className="flex items-baseline gap-1.5">
-            <dt className="text-gray-500">{label}</dt>
-            <dd className="font-mono text-gray-900">{runLlmLabel(run, side)}</dd>
-            {resolved ? <dd className="text-xs text-gray-500">({resolved.source_label})</dd> : null}
+          <div key={side} className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+            <dt className="text-xs font-medium text-gray-500">{label}</dt>
+            <dd className="mt-0.5 font-mono text-sm text-gray-900">{runLlmLabel(run, side)}</dd>
+            <dd className="text-[11px] text-gray-500">{resolved?.source_label || hint}</dd>
           </div>
         )
       })}
@@ -119,12 +119,17 @@ export default function SimulationRunDetail() {
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
   const [selectedTrialId, setSelectedTrialId] = useState<string | null>(null)
+  const [editingName, setEditingName] = useState(false)
+  const [nameDraft, setNameDraft] = useState('')
 
   const { data: run, isLoading } = useQuery({
     queryKey: ['simulation-run', runId],
     queryFn: () => apiClient.getSimulationRun(runId),
     refetchInterval: (query) => (query.state.data && isRunActive(query.state.data.status) ? 4000 : false),
   })
+  useEffect(() => {
+    if (!editingName) setNameDraft(run?.name ?? '')
+  }, [run?.name, editingName])
   const { data: scenarioRows = [] } = useQuery({
     queryKey: ['scenarios', 'agent', run?.agent_id],
     queryFn: () => apiClient.listScenarios(0, 500, run!.agent_id),
@@ -153,6 +158,15 @@ export default function SimulationRunDetail() {
     },
     onError: (err) => showToast(getApiErrorDetail(err) || 'Failed to cancel run', 'error'),
   })
+  const deleteMutation = useMutation({
+    mutationFn: () => apiClient.deleteSimulationRun(runId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['simulation-runs'] })
+      showToast('Simulation run deleted', 'success')
+      navigate(`/agents/${run?.agent_id}?tab=simulations`)
+    },
+    onError: (err) => showToast(getApiErrorDetail(err) || 'Failed to delete run', 'error'),
+  })
   const rerunMutation = useMutation({
     mutationFn: (onlyFailed: boolean) => apiClient.rerunSimulationRun(runId, onlyFailed),
     onSuccess: (newRun) => {
@@ -160,6 +174,15 @@ export default function SimulationRunDetail() {
       navigate(`/simulations/${newRun.run_id}`)
     },
     onError: (err) => showToast(getApiErrorDetail(err) || 'Failed to start re-run', 'error'),
+  })
+  const renameMutation = useMutation({
+    mutationFn: (name: string) => apiClient.renameSimulationRun(runId, name.trim() || null),
+    onSuccess: () => {
+      setEditingName(false)
+      showToast('Run name updated', 'success')
+      invalidate()
+    },
+    onError: (err) => showToast(getApiErrorDetail(err) || 'Failed to rename run', 'error'),
   })
   const downloadMutation = useMutation({
     mutationFn: () => apiClient.downloadSimulationArtifacts(runId),
@@ -195,7 +218,65 @@ export default function SimulationRunDetail() {
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-3">
-              <h1 className="text-xl font-semibold text-gray-900">{run.name || `Simulation run ${run.run_id}`}</h1>
+              {editingName ? (
+                <form
+                  className="flex items-center gap-2"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    renameMutation.mutate(nameDraft)
+                  }}
+                >
+                  <input
+                    autoFocus
+                    value={nameDraft}
+                    maxLength={200}
+                    placeholder={`Simulation run ${run.run_id}`}
+                    onChange={(event) => setNameDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') {
+                        setNameDraft(run.name ?? '')
+                        setEditingName(false)
+                      }
+                    }}
+                    className="w-72 rounded-lg border border-gray-300 px-2 py-1 text-base font-semibold text-gray-900"
+                    aria-label="Simulation run name"
+                  />
+                  <button
+                    type="submit"
+                    disabled={renameMutation.isPending}
+                    className="rounded p-1 text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+                    aria-label="Save run name"
+                  >
+                    <Check className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNameDraft(run.name ?? '')
+                      setEditingName(false)
+                    }}
+                    className="rounded p-1 text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+                    aria-label="Cancel rename"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </form>
+              ) : (
+                <>
+                  <h1 className="text-xl font-semibold text-gray-900">
+                    {run.name || `Simulation run ${run.run_id}`}
+                  </h1>
+                  <button
+                    type="button"
+                    onClick={() => setEditingName(true)}
+                    className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                    aria-label="Rename simulation run"
+                    title="Rename"
+                  >
+                    <Pencil className="h-4 w-4" />
+                  </button>
+                </>
+              )}
               <RunStatusChip status={run.status} />
             </div>
             <p className="mt-1 text-sm text-gray-500">
@@ -216,7 +297,23 @@ export default function SimulationRunDetail() {
               >
                 {run.cancel_requested ? 'Cancelling…' : 'Cancel'}
               </Button>
-            ) : (
+            ) : null}
+            <Button
+              variant="outline"
+              leftIcon={<Trash2 className="h-4 w-4" />}
+              onClick={() => {
+                const stuck = active || run.cancel_requested
+                const msg = stuck
+                  ? 'This run may still be active or stuck cancelling. Delete it from the list anyway?'
+                  : 'Delete this simulation run and all its trials?'
+                if (window.confirm(msg)) deleteMutation.mutate()
+              }}
+              isLoading={deleteMutation.isPending}
+              className="text-red-700 hover:border-red-300 hover:bg-red-50"
+            >
+              Delete
+            </Button>
+            {!active ? (
               <>
                 {hasFailures ? (
                   <Button
@@ -237,7 +334,7 @@ export default function SimulationRunDetail() {
                   Re-run
                 </Button>
               </>
-            )}
+            ) : null}
             {run.has_artifacts ? (
               <Button
                 variant="outline"
@@ -351,7 +448,12 @@ export default function SimulationRunDetail() {
         <TrialsTable trials={trials} onSelect={(t) => setSelectedTrialId(t.id)} />
       </section>
 
-      <TrialTranscriptDrawer runId={runId} trialId={selectedTrialId} onClose={() => setSelectedTrialId(null)} />
+      <TrialTranscriptDrawer
+        runId={runId}
+        trialId={selectedTrialId}
+        fallbackLlms={run.resolved_llms}
+        onClose={() => setSelectedTrialId(null)}
+      />
       <ToastContainer />
     </div>
   )

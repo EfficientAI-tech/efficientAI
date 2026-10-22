@@ -571,6 +571,7 @@ class AgentResponse(BaseModel):
     provider_prompt_synced_at: Optional[datetime] = None
     knowledge_base_ids: List[UUID] = Field(default_factory=list)
     test_knowledge_base_ids: List[UUID] = Field(default_factory=list)
+    is_favorite: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -6194,6 +6195,20 @@ class SimulationRunCreate(BaseModel):
                     "metric_success_criteria must include exactly one rule per selected metric_id"
                 )
         return self
+
+
+class SimulationRunRename(BaseModel):
+    """New display name. Blank clears it back to the default run title."""
+
+    name: Optional[str] = Field(None, max_length=200)
+
+    @field_validator("name")
+    @classmethod
+    def _strip_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
 
 
 class SimulationRunResponse(BaseModel):

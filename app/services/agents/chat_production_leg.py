@@ -354,7 +354,7 @@ def generate_production_chat_reply(
                 llm_model=main_llm.model,
                 llm_config=main_llm.llm_config,
                 credential_id=main_llm.credential_id,
-                task_defaults={"temperature": 0.7, "max_tokens": 400},
+                task_defaults={"temperature": 0.7, "max_tokens": 1024},
             )
         else:
             result = llm_service.generate_response(

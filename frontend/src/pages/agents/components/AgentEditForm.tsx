@@ -23,7 +23,7 @@ import ProductionAgentSubTabNav, {
   type ProductionAgentSubTab,
 } from './ProductionAgentSubTabNav'
 import AgentKnowledgeBasesPanel from './AgentKnowledgeBasesPanel'
-import AgentToolConnectionsPanel from './AgentToolConnectionsPanel'
+import ProductionAgentToolsSection from './ProductionAgentToolsSection'
 import type { KnowledgeBaseSummary } from '../../knowledgeBases/knowledgeBaseTypes'
 import VoiceBundleDetailCard from './VoiceBundleDetailCard'
 import { resolveLLMModelsForCredential } from '../../../lib/llmModelOptions'
@@ -787,17 +787,15 @@ export default function AgentEditForm({
             onChange={setProductionAgentSubTab}
           />
 
-          {productionAgentSubTab === 'knowledge_bases' && (
-            <AgentKnowledgeBasesPanel
+          {productionAgentSubTab === 'tools' && (
+            <ProductionAgentToolsSection
               mode="edit"
-              side="production"
-              attachedIds={formData.knowledge_base_ids}
+              agentId={agentId}
+              attachedKnowledgeBaseIds={formData.knowledge_base_ids}
               knowledgeBases={knowledgeBases}
-              onChange={(ids) => onChange({ ...formData, knowledge_base_ids: ids })}
+              onKnowledgeBaseIdsChange={(ids) => onChange({ ...formData, knowledge_base_ids: ids })}
             />
           )}
-
-          {productionAgentSubTab === 'tools' && agentId && <AgentToolConnectionsPanel agentId={agentId} />}
 
           {productionAgentSubTab === 'prompt' && isChatAgent &&
         chatConnection &&

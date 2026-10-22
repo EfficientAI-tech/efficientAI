@@ -862,8 +862,16 @@ class LLMService:
         }
         if api_key is not None:
             call_kwargs["api_key"] = api_key
+        # Same thinking budget as generate_response. A 400-token cap on
+        # Gemini 2.5/3 is spent on reasoning, so the visible reply (or the
+        # tool call) comes back empty or cut off mid-sentence.
+        for key, value in _gemini_thinking_kwargs(llm_model).items():
+            call_kwargs.setdefault(key, value)
         if max_tokens:
-            call_kwargs["max_tokens"] = max_tokens
+            effective_max_tokens = max_tokens
+            if _gemini_family(llm_model) is not None and effective_max_tokens < 4096:
+                effective_max_tokens = 4096
+            call_kwargs["max_tokens"] = effective_max_tokens
         if config:
             call_kwargs.update(config)
 
@@ -883,6 +891,7 @@ class LLMService:
 
         message = response.choices[0].message if response.choices else None
         text = getattr(message, "content", None) if message else ""
+        finish_reason = response.choices[0].finish_reason if response.choices else None
         raw_tool_calls = getattr(message, "tool_calls", None) if message else None
         tool_calls = None
         if raw_tool_calls:
@@ -913,6 +922,7 @@ class LLMService:
         usage = getattr(response, "usage", None)
         result: Dict[str, Any] = {
             "text": text or "",
+            "finish_reason": finish_reason,
             "tool_calls": tool_calls,
             "model": llm_model,
             "usage": {

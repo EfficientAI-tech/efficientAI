@@ -1438,6 +1438,11 @@ class ApiClient {
     return response.data
   }
 
+  async setAgentFavorite(agentId: string, favorite: boolean): Promise<TestAgent> {
+    const response = await this.client.put(`/api/v1/agents/${agentId}/favorite`, { favorite })
+    return response.data
+  }
+
   async getAgent(agentId: string): Promise<TestAgent> {
     const response = await this.client.get(`/api/v1/agents/${agentId}`)
     return response.data
@@ -1859,9 +1864,18 @@ class ApiClient {
     return response.data
   }
 
+  async renameSimulationRun(runId: string, name: string | null): Promise<SimulationRun> {
+    const response = await this.client.patch(`/api/v1/simulation-runs/${runId}`, { name })
+    return response.data
+  }
+
   async cancelSimulationRun(runId: string): Promise<SimulationRun> {
     const response = await this.client.post(`/api/v1/simulation-runs/${runId}/cancel`)
     return response.data
+  }
+
+  async deleteSimulationRun(runId: string): Promise<void> {
+    await this.client.delete(`/api/v1/simulation-runs/${runId}`)
   }
 
   async rerunSimulationRun(runId: string, onlyFailed = false): Promise<SimulationRun> {

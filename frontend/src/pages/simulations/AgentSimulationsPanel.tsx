@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
-import { FlaskConical, Plus } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { FlaskConical, Plus, Trash2 } from 'lucide-react'
 import { apiClient } from '../../lib/api'
+import { getApiErrorDetail } from '../../lib/authSession'
 import Button from '../../components/Button'
+import { useToast } from '../../hooks/useToast'
 import NewSimulationRunModal from './NewSimulationRunModal'
 import { RunStatusChip } from './simulationUi'
-import { formatDuration, formatPct, formatScore, isRunActive, runLlmLabel } from './simulationFormat'
+import { formatDuration, formatLlmPair, formatPct, formatScore, isRunActive, runLlmLabel } from './simulationFormat'
 
 interface Props {
   agent: {
@@ -14,14 +16,27 @@ interface Props {
     name: string
     call_medium?: string | null
     chat_connection_type?: string | null
+    main_llm_provider?: string | null
     main_llm_model?: string | null
+    test_llm_provider?: string | null
     test_llm_model?: string | null
   }
 }
 
 export default function AgentSimulationsPanel({ agent }: Props) {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const { showToast, ToastContainer } = useToast()
   const [modalOpen, setModalOpen] = useState(false)
+
+  const deleteMutation = useMutation({
+    mutationFn: (runId: string) => apiClient.deleteSimulationRun(runId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['simulation-runs', agent.id] })
+      showToast('Simulation run deleted', 'success')
+    },
+    onError: (err) => showToast(getApiErrorDetail(err) || 'Failed to delete run', 'error'),
+  })
 
   const { data: runs = [], isLoading } = useQuery({
     queryKey: ['simulation-runs', agent.id],
@@ -31,6 +46,7 @@ export default function AgentSimulationsPanel({ agent }: Props) {
 
   return (
     <div className="space-y-4">
+      <ToastContainer />
       <div className="flex items-start justify-between gap-4">
         <div>
           <h3 className="text-base font-semibold text-gray-900">Simulation runs</h3>
@@ -42,6 +58,23 @@ export default function AgentSimulationsPanel({ agent }: Props) {
           New run
         </Button>
       </div>
+
+      <dl className="grid gap-2 sm:grid-cols-2">
+        <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+          <dt className="text-xs font-medium text-gray-500">Production agent LLM</dt>
+          <dd className="mt-0.5 font-mono text-sm text-gray-900">
+            {formatLlmPair(agent.main_llm_provider, agent.main_llm_model) || 'Not configured'}
+          </dd>
+          <dd className="text-[11px] text-gray-500">Answers as the agent under test, unless a run overrides it.</dd>
+        </div>
+        <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+          <dt className="text-xs font-medium text-gray-500">Test agent LLM</dt>
+          <dd className="mt-0.5 font-mono text-sm text-gray-900">
+            {formatLlmPair(agent.test_llm_provider, agent.test_llm_model) || 'Not configured'}
+          </dd>
+          <dd className="text-[11px] text-gray-500">Plays the simulated customer, unless a run overrides it.</dd>
+        </div>
+      </dl>
 
       {isLoading ? (
         <p className="text-sm text-gray-500">Loading runs…</p>
@@ -59,14 +92,15 @@ export default function AgentSimulationsPanel({ agent }: Props) {
             <thead className="bg-gray-50 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
               <tr>
                 <th className="px-3 py-2">Run</th>
+                <th className="px-3 py-2">Production agent LLM</th>
+                <th className="px-3 py-2">Test agent LLM</th>
                 <th className="px-3 py-2">Status</th>
                 <th className="px-3 py-2 text-right">Progress</th>
                 <th className="px-3 py-2 text-right">Pass rate</th>
                 <th className="px-3 py-2 text-right">Mean score</th>
-                <th className="px-3 py-2">Production LLM</th>
-                <th className="px-3 py-2">Test agent LLM</th>
                 <th className="px-3 py-2">Started</th>
                 <th className="px-3 py-2 text-right">Duration</th>
+                <th className="px-3 py-2 w-12" aria-label="Actions" />
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 bg-white">
@@ -81,6 +115,28 @@ export default function AgentSimulationsPanel({ agent }: Props) {
                     {run.name ? <span className="ml-2 text-gray-900">{run.name}</span> : null}
                   </td>
                   <td className="px-3 py-2">
+                    <div className="font-mono text-xs text-gray-900">
+                      {runLlmLabel(run, 'production', {
+                        provider: agent.main_llm_provider,
+                        model: agent.main_llm_model,
+                      })}
+                    </div>
+                    <div className="text-[11px] text-gray-500">
+                      {run.resolved_llms?.production?.source_label || 'Answers as the agent'}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="font-mono text-xs text-gray-900">
+                      {runLlmLabel(run, 'test', {
+                        provider: agent.test_llm_provider,
+                        model: agent.test_llm_model,
+                      })}
+                    </div>
+                    <div className="text-[11px] text-gray-500">
+                      {run.resolved_llms?.test?.source_label || 'Plays the customer'}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2">
                     <RunStatusChip status={run.status} />
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums text-gray-700">
@@ -89,13 +145,28 @@ export default function AgentSimulationsPanel({ agent }: Props) {
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums">{formatPct(run.summary?.pass_rate)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{formatScore(run.summary?.mean_reward)}</td>
-                  <td className="px-3 py-2 font-mono text-xs text-gray-700">{runLlmLabel(run, 'production')}</td>
-                  <td className="px-3 py-2 font-mono text-xs text-gray-700">{runLlmLabel(run, 'test')}</td>
                   <td className="px-3 py-2 text-gray-500">
                     {run.started_at ? new Date(run.started_at).toLocaleString() : '—'}
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums text-gray-500">
                     {formatDuration(run.started_at, run.finished_at)}
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    <button
+                      type="button"
+                      title="Delete run"
+                      className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-700"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        const stuck = isRunActive(run.status) || run.cancel_requested
+                        const msg = stuck
+                          ? 'This run may still be active or stuck cancelling. Delete it anyway?'
+                          : 'Delete this simulation run and all its trials?'
+                        if (window.confirm(msg)) deleteMutation.mutate(run.run_id)
+                      }}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
                   </td>
                 </tr>
               ))}

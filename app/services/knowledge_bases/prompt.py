@@ -7,6 +7,9 @@ KB_SYSTEM_APPENDIX = (
     "On voice calls, relevant document excerpts are retrieved automatically from what the "
     "other party says; you may also call search_knowledge_base when you need more detail. "
     "Prefer retrieved or tool results over guessing, and cite the document name when answering."
+    "\n\nWhen tools are available, look up what you need in as few calls as possible, "
+    "then answer the customer in plain text. Do not repeat list or describe calls once "
+    "you already have the rows you need."
 )
 
 # Playground / simulated caller: production speaks as "user"; caller must use injected passages.

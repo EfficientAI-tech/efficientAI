@@ -25,7 +25,10 @@ MAX_RESULT_CHARS = 12000
 POSTGRES_TOOLS = [
     {
         "name": "list_tables",
-        "description": "List the tables you can query, with their schema.",
+        "description": (
+            "List the tables you can query. Call this at most once per conversation, "
+            "then query. Do not call it again if you already know the table names."
+        ),
         "input_schema": {"type": "object", "properties": {}},
     },
     {
@@ -43,7 +46,8 @@ POSTGRES_TOOLS = [
         "name": "query",
         "description": (
             "Run one read-only SQL SELECT and get the rows back as JSON. "
-            "Always add a WHERE clause or LIMIT."
+            "Always add a WHERE clause or LIMIT. After the rows come back, "
+            "answer the customer instead of calling more tools."
         ),
         "input_schema": {
             "type": "object",

@@ -92,8 +92,9 @@ export default function KnowledgeBaseDetail() {
           <>
             <section>
               <p className="text-sm text-gray-500 mb-4">
-                Attach this base on <strong>Agents → Test Agent / Production Agent</strong> for
-                simulation RAG. Click a document to preview its contents.
+                Attach this base on <strong>Agents → Production Agent → Tools → Knowledge bases</strong> or{' '}
+                <strong>Test Agent → Knowledge Bases</strong> for simulation RAG. Click a document to preview its
+                contents.
               </p>
               {(data?.documents ?? []).length > 0 ? (
                 <div className="bg-white shadow rounded-lg overflow-hidden border border-gray-200">

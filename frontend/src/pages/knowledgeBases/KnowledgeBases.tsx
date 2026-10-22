@@ -60,8 +60,8 @@ export default function KnowledgeBases({ embedded = false }: { embedded?: boolea
             </div>
           ) : null}
           <p className={`text-sm text-gray-500 ${embedded ? '' : 'mt-1'}`}>
-            Document libraries the production and test agents search during simulations — attach them per side on
-            each agent.
+            Document libraries the production and test agents search during simulations — attach production bases
+            under Production Agent → Tools → Knowledge bases, and test bases on each agent’s Test Agent tab.
           </p>
         </div>
         <Button onClick={() => setShowUpload(true)} leftIcon={<Upload className="h-4 w-4" />}>

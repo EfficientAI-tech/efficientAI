@@ -82,7 +82,7 @@ export default function ToolConnections({ embedded = false }: { embedded?: boole
           ) : null}
           <p className={`text-sm text-gray-500 ${embedded ? '' : 'mt-1'}`}>
             Connect Slack, Notion, Google Drive, Postgres, MCP servers or your own APIs — then attach them to
-            agents under Production Agent → Tools.
+            agents under Production Agent → Tools → Connections.
           </p>
         </div>
         <Button variant="primary" leftIcon={<Plug className="h-4 w-4" />} onClick={() => setCreating(true)}>

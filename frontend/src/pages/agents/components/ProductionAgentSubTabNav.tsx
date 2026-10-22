@@ -1,8 +1,7 @@
-export type ProductionAgentSubTab = 'prompt' | 'knowledge_bases' | 'tools'
+export type ProductionAgentSubTab = 'prompt' | 'tools'
 
 const SUB_TABS: { id: ProductionAgentSubTab; label: string }[] = [
   { id: 'prompt', label: 'Prompt' },
-  { id: 'knowledge_bases', label: 'Knowledge Bases' },
   { id: 'tools', label: 'Tools' },
 ]
 

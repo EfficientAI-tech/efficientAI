@@ -617,6 +617,8 @@ export interface TestAgent {
   chat_eval_mode?: string | null
   /** Production agent's knowledge bases. */
   knowledge_base_ids?: string[]
+  /** True when the signed-in user starred this agent. Other people do not see it. */
+  is_favorite?: boolean
   /** Test agent's (simulated customer's) knowledge bases. */
   test_knowledge_base_ids?: string[]
   created_at: string

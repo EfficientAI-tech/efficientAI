@@ -25,6 +25,7 @@ from app.models.database import (
 )
 from app.models.schemas import (
     SimulationRunCreate,
+    SimulationRunRename,
     SimulationRunResponse,
     SimulationTrialDetailResponse,
     SimulationTrialResponse,
@@ -350,6 +351,40 @@ def get_simulation_trial(
         tool_evaluation=call_data.get("tool_evaluation"),
         llms=call_data.get("llms"),
     )
+
+
+@router.patch("/{run_ref}", response_model=SimulationRunResponse)
+def rename_simulation_run(
+    run_ref: str,
+    body: SimulationRunRename,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Change the display name. Does not affect trials or scores."""
+    run = _get_run(db, run_ref, organization_id, workspace_id)
+    run.name = body.name
+    db.commit()
+    db.refresh(run)
+    return _run_response(db, run)
+
+
+@router.delete("/{run_ref}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_simulation_run(
+    run_ref: str,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Remove a simulation run and its trials. Revokes an in-flight Celery task when possible."""
+    run = _get_run(db, run_ref, organization_id, workspace_id)
+    task_id = (run.celery_task_id or "").strip()
+    if task_id:
+        from app.services.call_imports.bulk_ops import _batch_revoke_celery_task_ids
+
+        _batch_revoke_celery_task_ids([task_id], terminate=True)
+    db.delete(run)
+    db.commit()
 
 
 @router.post("/{run_ref}/cancel", response_model=SimulationRunResponse)
