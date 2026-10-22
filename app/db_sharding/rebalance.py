@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db_sharding.pool_manager import db_pool_manager
+from app.db_sharding.registry import invalidate_slice_registry
 from app.db_sharding.row_ops import _reset_shard_write_role, _shard_write_without_catalog_fks
 from app.db_sharding.sessions import is_sharding_enabled
 from app.models.database import (
@@ -504,6 +505,7 @@ def _update_slice_registry(
             )
         )
     catalog_db.flush()
+    invalidate_slice_registry(call_import_id)
     logger.info(
         "Updated registry for call_import {} slices {} -> shard {}",
         call_import_id,

@@ -10,7 +10,7 @@ from typing import Any, List, Optional
 from uuid import UUID
 
 from sqlalchemy import and_, case, func, or_, update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from app.models.database import (
     CallImportEvaluation,
@@ -622,6 +622,55 @@ def _apply_parent_status_from_counters(
         evaluation.status = "partial"
 
 
+_EVALUATION_WORKER_COLUMNS = (
+    CallImportEvaluation.id,
+    CallImportEvaluation.call_import_id,
+    CallImportEvaluation.organization_id,
+    CallImportEvaluation.workspace_id,
+    CallImportEvaluation.status,
+    CallImportEvaluation.started_at,
+    CallImportEvaluation.finished_at,
+    CallImportEvaluation.error_message,
+    CallImportEvaluation.total_rows,
+    CallImportEvaluation.completed_rows,
+    CallImportEvaluation.failed_rows,
+    CallImportEvaluation.billed_completed_rows,
+    CallImportEvaluation.selected_metric_ids,
+    CallImportEvaluation.discover_new_metrics,
+    CallImportEvaluation.discovered_metric_aliases,
+    CallImportEvaluation.discovered_label_aliases,
+    CallImportEvaluation.metric_llm_overrides,
+    CallImportEvaluation.llm_provider,
+    CallImportEvaluation.llm_model,
+    CallImportEvaluation.llm_credential_id,
+    CallImportEvaluation.llm_config,
+    CallImportEvaluation.transcript_source,
+)
+
+_COUNTER_REFRESH_ATTRS = (
+    "completed_rows",
+    "failed_rows",
+    "total_rows",
+    "status",
+    "billed_completed_rows",
+    "started_at",
+    "finished_at",
+)
+
+
+def load_evaluation_for_worker(
+    db: Session,
+    evaluation_id: UUID,
+) -> CallImportEvaluation | None:
+    """Parent row for scoring. Omits cached insight JSON the worker never reads."""
+    return (
+        db.query(CallImportEvaluation)
+        .options(load_only(*_EVALUATION_WORKER_COLUMNS))
+        .filter(CallImportEvaluation.id == evaluation_id)
+        .first()
+    )
+
+
 def commit_terminal_row_and_rollup(
     row_db: Session,
     evaluation: CallImportEvaluation,
@@ -664,12 +713,14 @@ def commit_terminal_row_and_rollup(
                 source_row=source_row,
             )
         row_db.commit()
-    if parent_db is not row_db:
-        evaluation = (
-            parent_db.query(CallImportEvaluation)
-            .filter(CallImportEvaluation.id == evaluation.id)
-            .first()
+    if (eval_row.status or "").lower() == "completed":
+        from app.services.call_imports.discovered_running_cache import (
+            record_row_discoveries,
         )
+
+        record_row_discoveries(evaluation.id, eval_row.metric_scores)
+    if parent_db is not row_db:
+        evaluation = load_evaluation_for_worker(parent_db, evaluation.id)
         if evaluation is None:
             return
     rollup_parent(
@@ -702,7 +753,7 @@ def rollup_parent(
             new_row_status,
         )
         if completed_delta or failed_delta:
-            db.execute(
+            counter_update = (
                 update(CallImportEvaluation)
                 .where(CallImportEvaluation.id == evaluation_id)
                 .values(
@@ -711,6 +762,22 @@ def rollup_parent(
                     failed_rows=CallImportEvaluation.failed_rows + failed_delta,
                 )
             )
+            previous_completed = int(evaluation.completed_rows or 0)
+            previous_failed = int(evaluation.failed_rows or 0)
+            bind = db.get_bind()
+            if bind is not None and bind.dialect.name == "postgresql":
+                returned = db.execute(
+                    counter_update.returning(
+                        CallImportEvaluation.completed_rows,
+                        CallImportEvaluation.failed_rows,
+                    )
+                ).one()
+                evaluation.completed_rows = int(returned[0] or 0)
+                evaluation.failed_rows = int(returned[1] or 0)
+            else:
+                db.execute(counter_update)
+                evaluation.completed_rows = previous_completed + completed_delta
+                evaluation.failed_rows = previous_failed + failed_delta
             db.flush()
     else:
         reconcile_evaluation_counters(db, evaluation)
@@ -719,7 +786,8 @@ def rollup_parent(
 
     clear_eval_progress_redis(evaluation_id)
 
-    db.refresh(evaluation)
+    if previous_row_status is None or new_row_status is None:
+        db.refresh(evaluation, attribute_names=list(_COUNTER_REFRESH_ATTRS))
     if previous_row_status is not None and new_row_status is not None:
         expected_in_progress = (
             int(evaluation.total_rows or 0)
@@ -730,7 +798,7 @@ def rollup_parent(
             evaluation_id, expected_in_progress
         ) and expected_in_progress != _count_in_progress_rows(db, evaluation_id):
             reconcile_evaluation_counters(db, evaluation)
-            db.refresh(evaluation)
+            db.refresh(evaluation, attribute_names=list(_COUNTER_REFRESH_ATTRS))
 
     _apply_parent_status_from_counters(evaluation)
 
@@ -805,15 +873,51 @@ def load_enabled_metrics(
     if not metric_ids:
         return []
 
-    return (
-        db.query(Metric)
-        .filter(
-            Metric.organization_id == evaluation.organization_id,
-            Metric.id.in_(metric_ids),
-            Metric.enabled.is_(True),
-            or_(Metric.lifecycle.is_(None), Metric.lifecycle == "active"),
+    from app.workers.catalog_cache import cached_catalog_fetch
+
+    cache_key = (
+        f"{evaluation.organization_id}:"
+        + ",".join(sorted(str(mid) for mid in metric_ids))
+    )
+
+    def _load() -> list[Metric]:
+        rows = (
+            db.query(Metric)
+            .filter(
+                Metric.organization_id == evaluation.organization_id,
+                Metric.id.in_(metric_ids),
+                Metric.enabled.is_(True),
+                or_(Metric.lifecycle.is_(None), Metric.lifecycle == "active"),
+            )
+            .all()
         )
-        .all()
+        for row in rows:
+            db.expunge(row)
+        return rows
+
+    return list(cached_catalog_fetch("enabled_metrics", cache_key, _load))
+
+
+def load_active_ai_providers(db: Session, organization_id: UUID) -> list:
+    """Active org providers, cached so each scoring call does not re-read them."""
+    from app.models.database import AIProvider
+    from app.workers.catalog_cache import cached_catalog_fetch
+
+    def _load() -> list:
+        rows = (
+            db.query(AIProvider)
+            .filter(
+                AIProvider.organization_id == organization_id,
+                AIProvider.is_active.is_(True),
+            )
+            .all()
+        )
+        for row in rows:
+            db.expunge(row)
+        return rows
+
+    return list(
+        cached_catalog_fetch("active_ai_providers", str(organization_id), _load)
     )
 
 

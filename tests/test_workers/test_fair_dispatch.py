@@ -211,3 +211,81 @@ def test_dispatch_batch_job2_gets_rows_while_job1_has_backlog():
     assert eval_job2 in dispatched_evaluations
     assert dispatched_evaluations[0] == eval_job1
     assert dispatched_evaluations[1] == eval_job2
+
+
+def test_dispatch_loads_slice_registry_once_while_skipping_rows():
+    workspace_id = uuid4()
+    evaluation_id = uuid4()
+    call_import_id = uuid4()
+    evaluation = SimpleNamespace(
+        id=evaluation_id, status="running", call_import_id=call_import_id
+    )
+    rows = [
+        (
+            SimpleNamespace(id=uuid4(), status="pending", celery_task_id=None),
+            SimpleNamespace(id=uuid4(), row_index=index),
+            evaluation,
+        )
+        for index in range(3)
+    ]
+    attempts = {"count": 0}
+    fetches = {"count": 0}
+
+    def _pending_rows_for_evaluation(
+        _db, _evaluation_id, *, limit, shard_cache=None
+    ):
+        fetches["count"] += 1
+        if fetches["count"] > 1:
+            return []
+        return rows[:limit]
+
+    def _try_dispatch_single_row(**kwargs):
+        assert kwargs["slice_registry"] == {("cached", 0): "shard-a"}
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            return EvalDispatchOutcome("skip")
+        return EvalDispatchOutcome("dispatched")
+
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = SimpleNamespace(
+        id=call_import_id
+    )
+    with patch.object(
+        fair_dispatch_module,
+        "_evaluations_with_pending_rows",
+        return_value=[evaluation_id],
+    ), patch.object(
+        fair_dispatch_module,
+        "_pending_rows_for_evaluation",
+        side_effect=_pending_rows_for_evaluation,
+    ), patch.object(
+        fair_dispatch_module,
+        "_try_dispatch_single_row",
+        side_effect=_try_dispatch_single_row,
+    ), patch.object(
+        fair_dispatch_module,
+        "get_row_restricted_metrics",
+        return_value=None,
+    ), patch.object(
+        fair_dispatch_module,
+        "evaluation_transcribe_overwrite",
+        return_value=False,
+    ), patch.object(
+        fair_dispatch_module,
+        "clear_row_restricted_metrics",
+    ), patch(
+        "app.db_sharding.registry.load_slice_registry_for_import",
+        return_value={("cached", 0): "shard-a"},
+    ) as load_registry:
+        dispatched, hit_capacity, _backoff = (
+            fair_dispatch_module._dispatch_batch_for_workspace(
+                db,
+                workspace_id,
+                batch_size=4,
+            )
+        )
+
+    assert dispatched == 1
+    assert hit_capacity is False
+    assert attempts["count"] == 3
+    assert load_registry.call_count == 1

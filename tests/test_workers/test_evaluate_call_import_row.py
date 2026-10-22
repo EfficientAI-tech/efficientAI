@@ -2135,6 +2135,9 @@ def test_shard_score_save_skips_catalog_foreign_key(db_session, monkeypatch):
         def query(self, *_args, **_kwargs):
             return self
 
+        def options(self, *_args, **_kwargs):
+            return self
+
         def filter(self, *_args, **_kwargs):
             return self
 

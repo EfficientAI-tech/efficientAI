@@ -11,7 +11,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from app.db_sharding.pool_manager import db_pool_manager, open_catalog_session
-from app.db_sharding.registry import load_slice_registry_for_import
+from app.db_sharding.registry import (
+    invalidate_slice_registry,
+    load_slice_registry_for_import,
+)
 from app.db_sharding.sessions import is_sharding_enabled
 from app.models.database import CallImport, CallImportRow, CallImportShardSlice
 from app.models.database import CallImportEvaluationRow
@@ -31,15 +34,19 @@ def shard_id_for_row(
     catalog_db: Session,
     call_import_id: UUID,
     row_index: int,
+    *,
+    slice_registry: Optional[dict] = None,
 ) -> str:
     if not is_sharding_enabled():
         return "legacy"
-    router, registry = router_for_import(catalog_db, call_import_id)
+    router = db_pool_manager.router
+    if slice_registry is None:
+        router, slice_registry = router_for_import(catalog_db, call_import_id)
     assert router is not None
     return router.shard_id_for_row(
         call_import_id,
         row_index,
-        slice_registry=registry,
+        slice_registry=slice_registry or None,
     )
 
 
@@ -76,6 +83,7 @@ def register_shard_slices(
             )
         )
     catalog_db.flush()
+    invalidate_slice_registry(call_import_id)
 
 
 def partition_mappings_by_shard(

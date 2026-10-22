@@ -246,10 +246,12 @@ def evaluate_call_import_row_audio_task(
             source_row,
             _shard_id,
         ):
-            evaluation = (
-                catalog_db.query(CallImportEvaluation)
-                .filter(CallImportEvaluation.id == eval_row.evaluation_id)
-                .first()
+            from app.workers.tasks.evaluate_call_import_row_core import (
+                load_evaluation_for_worker,
+            )
+
+            evaluation = load_evaluation_for_worker(
+                catalog_db, eval_row.evaluation_id
             )
             if not evaluation:
                 eval_row.status = "failed"
@@ -456,10 +458,12 @@ def evaluate_call_import_row_audio_task(
                     )
                 )
                 rebind_evaluation_row_session(origin_row_db, row_db, catalog_db)
-                evaluation = (
-                    catalog_db.query(CallImportEvaluation)
-                    .filter(CallImportEvaluation.id == eval_row.evaluation_id)
-                    .first()
+                from app.workers.tasks.evaluate_call_import_row_core import (
+                    load_evaluation_for_worker,
+                )
+
+                evaluation = load_evaluation_for_worker(
+                    catalog_db, eval_row.evaluation_id
                 )
                 if evaluation is None:
                     return {"status": "failed", "reason": "evaluation_missing"}
