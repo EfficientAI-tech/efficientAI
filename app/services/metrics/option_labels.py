@@ -72,6 +72,15 @@ def canonical_enum_option(text: str, options: List[str]) -> Optional[str]:
     return None
 
 
+def enum_numeric_matches_ambiguous(text: str, options: List[str]) -> bool:
+    """True when more than one option could match numerically (skip loose fallbacks)."""
+    needle = text.strip()
+    if not needle:
+        return False
+    hits = [opt for opt in options if _numeric_option_same(needle, opt)]
+    return len(hits) > 1
+
+
 def _dedupe_labels(labels: List[str]) -> List[str]:
     seen: set[str] = set()
     out: List[str] = []

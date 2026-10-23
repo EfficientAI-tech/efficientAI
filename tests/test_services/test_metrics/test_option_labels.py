@@ -1,5 +1,6 @@
 from app.services.metrics.option_labels import (
     canonical_enum_option,
+    enum_numeric_matches_ambiguous,
     classification_choice_labels_from_config,
     classification_score_labels_from_config,
     coerce_custom_config_for_storage,
@@ -51,6 +52,7 @@ def test_canonical_enum_option_numeric_only_when_unambiguous():
     assert canonical_enum_option("1.0", ["1", "2", "3"]) == "1"
     assert canonical_enum_option("1", ["01", "1"]) == "1"
     assert canonical_enum_option("1.0", ["01", "1"]) is None
+    assert enum_numeric_matches_ambiguous("1.0", ["01", "1"])
 
 
 def test_classification_choice_from_list_criteria():
