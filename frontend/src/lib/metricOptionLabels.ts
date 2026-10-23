@@ -21,7 +21,7 @@ export function optionLabelFromRaw(opt: unknown): string | null {
   return null
 }
 
-export function enumOptionsToCsv(options: unknown[] | undefined | null): string {
+export function enumOptionsToCsv(options: unknown): string {
   if (!Array.isArray(options) || options.length === 0) return ''
   return options
     .map((opt) => optionLabelFromRaw(opt))
