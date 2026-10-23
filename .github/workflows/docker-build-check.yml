@@ -15,7 +15,6 @@ env:
   REGISTRY: ghcr.io
   API_IMAGE_NAME: ${{ github.repository }}-api
   WORKER_IMAGE_NAME: ${{ github.repository }}-worker
-  WORKER_HARBOR_IMAGE_NAME: ${{ github.repository }}-worker-harbor
 
 jobs:
   build-api:
@@ -140,11 +139,12 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.WORKER_HARBOR_IMAGE_NAME }}
+          # Same GHCR package as worker; tags end with -harbor (matches compose + release-and-publish).
+          images: ${{ env.REGISTRY }}/${{ env.WORKER_IMAGE_NAME }}
           tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch,suffix=-harbor
+            type=ref,event=pr,suffix=-harbor
+            type=raw,value=latest-harbor,enable={{is_default_branch}}
 
       - name: Build Harbor worker image (amd64 only for speed)
         uses: docker/build-push-action@v5
