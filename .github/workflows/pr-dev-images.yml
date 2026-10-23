@@ -21,6 +21,7 @@ env:
   REGISTRY: ghcr.io
   API_IMAGE_NAME: ${{ github.repository }}-api
   WORKER_IMAGE_NAME: ${{ github.repository }}-worker
+  WORKER_HARBOR_IMAGE_NAME: ${{ github.repository }}-worker-harbor
 
 permissions:
   contents: read
@@ -107,6 +108,14 @@ jobs:
             cache_scope: worker-pr-dev
             build_args: |
               INSTALL_EXTRAS=qualitative-voice
+          - service: worker-harbor
+            dockerfile: docker/Dockerfile.worker
+            image_name_var: WORKER_HARBOR_IMAGE_NAME
+            cache_scope: worker-harbor-pr-dev
+            build_args: |
+              PYTHON_VERSION=3.12
+              INSTALL_EXTRAS=harbor
+              TORCH_CPU_ONLY=false
 
     steps:
       - name: Checkout repository
@@ -117,11 +126,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${{ matrix.image_name_var }}" == "API_IMAGE_NAME" ]]; then
-            image_name="${API_IMAGE_NAME,,}"
-          else
-            image_name="${WORKER_IMAGE_NAME,,}"
-          fi
+          case "${{ matrix.image_name_var }}" in
+            API_IMAGE_NAME) image_name="${API_IMAGE_NAME,,}" ;;
+            WORKER_HARBOR_IMAGE_NAME) image_name="${WORKER_HARBOR_IMAGE_NAME,,}" ;;
+            *) image_name="${WORKER_IMAGE_NAME,,}" ;;
+          esac
           echo "name=$image_name" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
