@@ -108,11 +108,14 @@ def _apply_embedding_patch(
 
 
 def _queue_reindex_documents(db: Session, kb_id: UUID) -> int:
+    # Skip documents already ingesting: ingest_knowledge_document re-queues itself if
+    # the KB embedding profile changes mid-run; overlapping tasks caused duplicate chunks
+    # before per-document advisory locks (see ingest.py).
     docs = (
         db.query(KnowledgeDocument)
         .filter(
             KnowledgeDocument.knowledge_base_id == kb_id,
-            KnowledgeDocument.status.in_(("ready", "failed", "processing")),
+            KnowledgeDocument.status.in_(("ready", "failed")),
         )
         .all()
     )
