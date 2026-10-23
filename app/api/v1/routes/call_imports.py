@@ -2728,6 +2728,10 @@ async def upload_call_import_audio(
             start_row_index=0,
         )
         db.commit()
+        if is_sharding_enabled():
+            from app.db_sharding.registry import publish_slice_registry_change
+
+            publish_slice_registry_change(call_import.id)
     except Exception as exc:
         db.rollback()
         if uploaded_keys and s3_service.is_enabled():
@@ -2837,6 +2841,10 @@ async def append_call_import_audio(
             start_row_index=start_row_index,
         )
         db.commit()
+        if is_sharding_enabled():
+            from app.db_sharding.registry import publish_slice_registry_change
+
+            publish_slice_registry_change(call_import.id)
     except Exception as exc:
         db.rollback()
         if uploaded_keys and s3_service.is_enabled():

@@ -718,7 +718,11 @@ def commit_terminal_row_and_rollup(
             record_row_discoveries,
         )
 
-        record_row_discoveries(evaluation.id, eval_row.metric_scores)
+        record_row_discoveries(
+            evaluation.id,
+            eval_row.id,
+            eval_row.metric_scores,
+        )
     if parent_db is not row_db:
         evaluation = load_evaluation_for_worker(parent_db, evaluation.id)
         if evaluation is None:

@@ -905,6 +905,9 @@ def execute_call_import_materialization(
 
             register_shard_slices(db, call_import.id, row_count)
             db.commit()
+            from app.db_sharding.registry import publish_slice_registry_change
+
+            publish_slice_registry_change(call_import.id)
             shard_sessions = ShardWriteSessions()
             committed_rows, _pending = bulk_materialize_call_import_rows(
                 db,
@@ -1823,7 +1826,35 @@ def _write_retry_page(
         )
         clear_eval_audio_chains(chain_ids)
         session.commit()
+    _replace_discoveries_for_retry(page, metric_ids)
     _expunge_retry_page(session, page)
+
+
+def _replace_discoveries_for_retry(
+    page: List[Tuple[CallImportEvaluationRow, Optional[CallImportRow]]],
+    metric_ids: Optional[List[UUID]],
+) -> None:
+    """Drop this page's previous discoveries now that its scores were replaced."""
+    from app.api.v1.routes.call_import_evaluations import _metric_scores_for_retry
+    from app.services.call_imports.discovered_running_cache import (
+        record_row_discoveries,
+    )
+
+    for eval_row, _source_row in page:
+        evaluation_id = getattr(eval_row, "evaluation_id", None)
+        if evaluation_id is None or eval_row.id is None:
+            continue
+        scores = (
+            _metric_scores_for_retry(eval_row.metric_scores, metric_ids)
+            if metric_ids
+            else {}
+        )
+        record_row_discoveries(
+            evaluation_id,
+            eval_row.id,
+            scores,
+            force=True,
+        )
 
 
 def _persist_evaluation_retry_targets(

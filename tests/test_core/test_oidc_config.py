@@ -93,6 +93,14 @@ def test_validate_auth_requires_trusted_hosts_when_not_debug(monkeypatch):
     monkeypatch.setattr(settings, "TRUSTED_HOSTS_EXPLICIT", [])
     monkeypatch.setattr(settings, "TRUSTED_HOSTS_FROM_ENV", [])
     monkeypatch.setattr(settings, "AUTH_PROVIDERS", ["api_key"])
+    for name in (
+        "TWILIO_WEBHOOK_BASE_URL",
+        "TELNYX_WEBHOOK_BASE_URL",
+        "META_WHATSAPP_WEBHOOK_BASE_URL",
+        "PLIVO_WEBHOOK_BASE_URL",
+        "VOBIZ_WEBHOOK_BASE_URL",
+    ):
+        monkeypatch.setattr(settings, name, "")
     with pytest.raises(RuntimeError, match="TRUSTED_HOSTS"):
         validate_auth_configuration()
 
