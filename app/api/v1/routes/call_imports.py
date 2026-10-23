@@ -259,7 +259,7 @@ def _serialize_call_import(
 ) -> CallImportResponse:
     """Catalog parent fields; counters come from SQL rollup (not Redis merge)."""
     from app.services.call_imports.bulk_ops import (
-        _latest_evaluation_status,
+        _latest_evaluation_progress_for_ui,
         rollup_call_import_batch_status,
     )
     from app.services.call_imports.progress_counters import (
@@ -323,9 +323,7 @@ def _serialize_call_import(
                 for ref in _platform_agent_refs(call_import)
             ],
             "imported_agent_partial_id": _imported_agent_partial_id(call_import),
-            "latest_evaluation_status": _latest_evaluation_status(
-                db, call_import.id
-            ),
+            **_latest_evaluation_progress_for_ui(db, call_import.id),
             "created_by_email": created_email,
             "last_updated_by_email": updated_email,
         }
@@ -2730,6 +2728,10 @@ async def upload_call_import_audio(
             start_row_index=0,
         )
         db.commit()
+        if is_sharding_enabled():
+            from app.db_sharding.registry import publish_slice_registry_change
+
+            publish_slice_registry_change(call_import.id)
     except Exception as exc:
         db.rollback()
         if uploaded_keys and s3_service.is_enabled():
@@ -2839,6 +2841,10 @@ async def append_call_import_audio(
             start_row_index=start_row_index,
         )
         db.commit()
+        if is_sharding_enabled():
+            from app.db_sharding.registry import publish_slice_registry_change
+
+            publish_slice_registry_change(call_import.id)
     except Exception as exc:
         db.rollback()
         if uploaded_keys and s3_service.is_enabled():

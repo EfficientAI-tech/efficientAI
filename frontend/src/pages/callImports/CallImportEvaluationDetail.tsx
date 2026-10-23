@@ -834,6 +834,13 @@ export default function CallImportEvaluationDetail() {
     // so all three summary bars update without a hard refresh. Mirrors the
     // broader conditions on CallImportDetail plus active eval-run status.
     refetchInterval: (q) => {
+      const evaluation = queryClient.getQueryData(evaluationQueryKey) as
+        | {
+            status?: string
+            bulk_operation?: unknown
+            transcript_source?: string
+          }
+        | undefined
       const ci = q.state.data as
         | {
             status?: string
@@ -842,13 +849,16 @@ export default function CallImportEvaluationDetail() {
           }
         | undefined
       if (ci?.status === 'deleting') return 3000
+      if (
+        evaluation &&
+        evaluation.transcript_source !== 'diarised'
+      ) {
+        return false
+      }
       if (ci?.status === 'pending' || ci?.status === 'processing') return 5000
       const inFlight =
         (ci?.diarised_pending_rows ?? 0) + (ci?.diarised_running_rows ?? 0)
       if (inFlight > 0) return 4000
-      const evaluation = queryClient.getQueryData(evaluationQueryKey) as
-        | { status?: string; bulk_operation?: unknown }
-        | undefined
       if (evaluation?.bulk_operation) return EVALUATION_BULK_OPERATION_POLL_MS
       const evalStatus = evaluation?.status
       if (evalStatus === 'pending' || evalStatus === 'running') return 4000
@@ -3053,8 +3063,14 @@ export default function CallImportEvaluationDetail() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-            {callImport && (
+          <div
+            className={
+              evaluation.transcript_source === 'diarised'
+                ? 'grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3'
+                : 'grid grid-cols-1 gap-3 max-w-md'
+            }
+          >
+            {callImport && evaluation.transcript_source === 'diarised' && (
               <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-3 shadow-sm min-w-0">
                 <h3 className="text-sm font-semibold text-slate-900 mb-2.5 pb-2 border-b border-slate-200">
                   Recording import
@@ -3087,7 +3103,7 @@ export default function CallImportEvaluationDetail() {
               </div>
             )}
 
-            {callImport && (
+            {callImport && evaluation.transcript_source === 'diarised' && (
               <div className="rounded-lg border border-violet-200 bg-violet-50/50 p-3 shadow-sm min-w-0">
                 <div className="flex items-center justify-between gap-2 mb-2.5 pb-2 border-b border-violet-200">
                   <h3 className="text-sm font-semibold text-violet-950">

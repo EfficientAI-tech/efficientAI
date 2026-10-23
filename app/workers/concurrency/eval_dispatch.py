@@ -341,6 +341,7 @@ def _attach_sharded_eval_dispatch_rows(
     source_row: CallImportRow,
     *,
     shard_cache: ShardSessionCache | None = None,
+    slice_registry: dict | None = None,
 ) -> tuple[Session, CallImportEvaluationRow, CallImportRow, bool] | None:
     """Bind eval/source rows on a shard session without extra catalog connections."""
     from app.db_sharding.pool_manager import db_pool_manager
@@ -354,6 +355,7 @@ def _attach_sharded_eval_dispatch_rows(
         catalog_db,
         evaluation.call_import_id,
         int(source_row.row_index or 0),
+        slice_registry=slice_registry,
     )
     owns_session = shard_cache is None
     if shard_cache is not None:
@@ -418,6 +420,7 @@ def _try_dispatch_single_row(
     auto_transcribe: bool = True,
     call_import: CallImport | None = None,
     shard_cache: ShardSessionCache | None = None,
+    slice_registry: dict | None = None,
 ) -> EvalDispatchOutcome:
     """Dispatch one eval row (transcribe or evaluate).
 
@@ -443,6 +446,7 @@ def _try_dispatch_single_row(
         eval_row,
         source_row,
         shard_cache=shard_cache,
+        slice_registry=slice_registry,
     )
     if attached is None:
         return EvalDispatchOutcome("skip")

@@ -4,8 +4,9 @@ Migrations are tracked in a `schema_migrations` table to ensure they only run on
 """
 
 import sys
+import threading
 from pathlib import Path
-from typing import List, Set, Tuple
+from typing import List, Optional, Set, Tuple
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 import logging
@@ -388,6 +389,39 @@ def run_migrations():
             db.close()
 
     logger.info("=" * 60)
+
+
+_migration_status_lock = threading.Lock()
+# Cached only when the process is up to date. A pending result is never stored,
+# so the next request rechecks and unblocks after migrations finish.
+_migration_status_cached: Optional[Tuple[bool, List[str]]] = None
+
+
+def clear_migration_status_cache() -> None:
+    """Forget the middleware's cached migration status. Tests call this."""
+    global _migration_status_cached
+    with _migration_status_lock:
+        _migration_status_cached = None
+
+
+def check_migrations_status_cached() -> Tuple[bool, List[str]]:
+    """Migration status for request middleware.
+
+    The first request in a process runs the real check. An up-to-date result
+    is reused for the life of the process, so ordinary API calls do not
+    ``CREATE`` or ``SELECT`` ``schema_migrations``. A pending result is not
+    cached.
+    """
+    global _migration_status_cached
+    with _migration_status_lock:
+        cached = _migration_status_cached
+    if cached is not None and cached[0]:
+        return cached
+    status = check_migrations_status()
+    if status[0]:
+        with _migration_status_lock:
+            _migration_status_cached = status
+    return status
 
 
 def check_migrations_status() -> Tuple[bool, List[str]]:

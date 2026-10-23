@@ -1702,4 +1702,30 @@ def test_call_import_detail_includes_latest_evaluation_status(
 
     response = authenticated_client.get(f"/api/v1/call-imports/{call_import.id}")
     assert response.status_code == 200, response.text
-    assert response.json()["latest_evaluation_status"] == "completed"
+    body = response.json()
+    assert body["latest_evaluation_status"] == "completed"
+    assert body["latest_evaluation_transcript_source"] == "production"
+    assert body["latest_evaluation_total_rows"] == 1
+    assert body["latest_evaluation_completed_rows"] == 1
+    assert body["latest_evaluation_failed_rows"] == 0
+
+    listed = authenticated_client.get("/api/v1/call-imports", params={"page": 1, "page_size": 50})
+    assert listed.status_code == 200, listed.text
+    item = next(i for i in listed.json()["items"] if i["id"] == str(call_import.id))
+    assert item["latest_evaluation_completed_rows"] == 1
+    assert item["latest_evaluation_transcript_source"] == "production"
+
+
+def test_call_import_without_evaluation_has_null_latest_eval_progress(
+    authenticated_client, db_session, org_id, seed_org
+):
+    call_import, _rows = _make_call_import(db_session, org_id, rows=2)
+
+    response = authenticated_client.get(f"/api/v1/call-imports/{call_import.id}")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["latest_evaluation_status"] is None
+    assert body["latest_evaluation_transcript_source"] is None
+    assert body["latest_evaluation_total_rows"] is None
+    assert body["latest_evaluation_completed_rows"] is None
+    assert body["latest_evaluation_failed_rows"] is None

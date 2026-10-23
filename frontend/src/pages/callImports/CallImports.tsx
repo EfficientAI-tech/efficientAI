@@ -38,6 +38,36 @@ import { itemsOf } from '../../lib/safeData'
 const PAGE_SIZE = 20
 const LIST_POLL_MS = 60_000
 
+function callImportListProgress(item: CallImport): {
+  total: number
+  completed: number
+  failed: number
+  caption: string | null
+} {
+  const evalTotal = item.latest_evaluation_total_rows
+  if (evalTotal != null) {
+    const source = item.latest_evaluation_transcript_source
+    const label =
+      source === 'diarised'
+        ? 'Diarised'
+        : source === 'production'
+          ? 'Production'
+          : 'Evaluation'
+    return {
+      total: evalTotal,
+      completed: item.latest_evaluation_completed_rows ?? 0,
+      failed: item.latest_evaluation_failed_rows ?? 0,
+      caption: `Evaluation · ${label}`,
+    }
+  }
+  return {
+    total: item.total_rows,
+    completed: item.completed_rows,
+    failed: item.failed_rows,
+    caption: null,
+  }
+}
+
 const STATUS_OPTIONS: Array<{ label: string; value: '' | CallImportStatus }> = [
   { label: 'All statuses', value: '' },
   { label: 'Uploaded', value: 'uploaded' },
@@ -126,6 +156,12 @@ export default function CallImports() {
       const items = itemsOf<CallImport>(query.state.data)
       const hasDeleting = items.some((i: CallImport) => i.status === 'deleting')
       if (hasDeleting) return LIST_POLL_MS
+      const hasActiveEvaluation = items.some(
+        (i: CallImport) =>
+          i.latest_evaluation_status === 'pending' ||
+          i.latest_evaluation_status === 'running',
+      )
+      if (hasActiveEvaluation) return LIST_POLL_MS
       const active = items.filter(
         (i: CallImport) => i.status === 'pending' || i.status === 'processing',
       )
@@ -444,6 +480,7 @@ export default function CallImports() {
               <tbody className="bg-white divide-y divide-gray-200">
                 {items.map((item: CallImport) => {
                   const isDeleting = item.status === 'deleting'
+                  const listProgress = callImportListProgress(item)
                   return (
                   <tr
                     key={item.id}
@@ -534,11 +571,16 @@ export default function CallImports() {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <CallImportProgressBar
-                        total={item.total_rows}
-                        completed={item.completed_rows}
-                        failed={item.failed_rows}
+                        total={listProgress.total}
+                        completed={listProgress.completed}
+                        failed={listProgress.failed}
                         deleting={isDeleting}
                       />
+                      {listProgress.caption && !isDeleting && (
+                        <div className="mt-1 text-[10px] text-gray-500">
+                          {listProgress.caption}
+                        </div>
+                      )}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       {item.latest_evaluation_status ? (

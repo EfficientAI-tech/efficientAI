@@ -3873,6 +3873,31 @@ class CallImportResponse(BaseModel):
             "when any evaluation exists."
         ),
     )
+    latest_evaluation_transcript_source: Optional[str] = Field(
+        None,
+        description=(
+            "transcript_source of the most recent evaluation run, when any "
+            "evaluation exists."
+        ),
+    )
+    latest_evaluation_total_rows: Optional[int] = Field(
+        None,
+        description="total_rows of the most recent evaluation run.",
+    )
+    latest_evaluation_completed_rows: Optional[int] = Field(
+        None,
+        description=(
+            "completed_rows of the most recent evaluation run, including "
+            "unflushed Redis deltas."
+        ),
+    )
+    latest_evaluation_failed_rows: Optional[int] = Field(
+        None,
+        description=(
+            "failed_rows of the most recent evaluation run, including "
+            "unflushed Redis deltas."
+        ),
+    )
     created_at: datetime
     updated_at: datetime
     created_by_email: Optional[str] = None

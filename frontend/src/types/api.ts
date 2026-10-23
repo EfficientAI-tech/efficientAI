@@ -1266,6 +1266,10 @@ export interface CallImport {
   error_message: string | null
   /** Status of the most recent evaluation run, when any evaluation exists. */
   latest_evaluation_status?: string | null
+  latest_evaluation_transcript_source?: string | null
+  latest_evaluation_total_rows?: number | null
+  latest_evaluation_completed_rows?: number | null
+  latest_evaluation_failed_rows?: number | null
   created_at: string
   updated_at: string
   created_by_email?: string | null

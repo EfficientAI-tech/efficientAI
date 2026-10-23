@@ -21,7 +21,6 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.models.database import (
-    AIProvider,
     CallImportEvaluation,
     CallImportEvaluationRow,
     CallImportRow,
@@ -255,10 +254,12 @@ def evaluate_call_import_row_task(
                 logger.warning("CallImportEvaluationRow {} not found", eval_row_id)
                 return {"status": "skipped", "reason": "row_not_found"}
 
-            evaluation = (
-                catalog_db.query(CallImportEvaluation)
-                .filter(CallImportEvaluation.id == eval_row.evaluation_id)
-                .first()
+            from app.workers.tasks.evaluate_call_import_row_core import (
+                load_evaluation_for_worker,
+            )
+
+            evaluation = load_evaluation_for_worker(
+                catalog_db, eval_row.evaluation_id
             )
             if not evaluation:
                 logger.warning(
@@ -504,13 +505,12 @@ def evaluate_call_import_row_task(
                 )
                 transcript_metrics = []
 
-            ai_providers = (
-                catalog_db.query(AIProvider)
-                .filter(
-                    AIProvider.organization_id == evaluation.organization_id,
-                    AIProvider.is_active.is_(True),
-                )
-                .all()
+            from app.workers.tasks.evaluate_call_import_row_core import (
+                load_active_ai_providers,
+            )
+
+            ai_providers = load_active_ai_providers(
+                catalog_db, evaluation.organization_id
             )
 
             running_discovered_metrics: list = []
@@ -537,6 +537,7 @@ def evaluate_call_import_row_task(
                         evaluation.id,
                         organization_id=evaluation.organization_id,
                         alias_map=alias_map_metrics,
+                        from_cache=True,
                     )
                 from app.api.v1.routes.call_import_evaluations import (
                     _alias_map_for_parent,
@@ -566,6 +567,7 @@ def evaluate_call_import_row_task(
                             alias_map=_alias_map_for_parent(
                                 evaluation, parent_metric.id
                             ),
+                            from_cache=True,
                         )
                     )
 
@@ -652,10 +654,12 @@ def evaluate_call_import_row_task(
                     eval_row_id,
                 )
                 return {"status": "skipped", "reason": "row_not_found"}
-            evaluation = (
-                catalog_db.query(CallImportEvaluation)
-                .filter(CallImportEvaluation.id == eval_row.evaluation_id)
-                .first()
+            from app.workers.tasks.evaluate_call_import_row_core import (
+                load_evaluation_for_worker,
+            )
+
+            evaluation = load_evaluation_for_worker(
+                catalog_db, eval_row.evaluation_id
             )
             if not evaluation:
                 return {"status": "failed", "reason": "evaluation_missing"}
