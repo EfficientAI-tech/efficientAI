@@ -1,4 +1,5 @@
 import type { MetricSuccessCriterion, SimulationSuccessCriteriaKind } from '../../types/api'
+import { optionLabelFromRaw } from '../../lib/metricOptionLabels'
 import {
   flattenMetrics,
   getEnabledChildren,
@@ -6,12 +7,15 @@ import {
   type MetricRow,
 } from '../evaluators/components/metricSelectionUtils'
 
+/** Match backend ``infer_criterion_kind`` (success_criteria.py). */
 export function inferCriterionKind(metric: MetricRow): SimulationSuccessCriteriaKind {
-  if (metric.custom_data_type === 'classification') return 'classification'
+  const customType = (metric.custom_data_type || '').toLowerCase()
+  if (customType === 'classification') return 'classification'
   if (isCategorizationParent(metric)) {
-    return metric.selection_mode === 'multi_label' ? 'category_multi' : 'category_single'
+    const mode = (metric.selection_mode || '').toLowerCase()
+    return mode === 'multi_label' ? 'category_multi' : 'category_single'
   }
-  if (metric.custom_data_type === 'enum') return 'enum'
+  if (customType === 'enum') return 'enum'
   const t = (metric.metric_type || '').toLowerCase()
   if (t === 'boolean' || t === 'rating' || t === 'number' || t === 'text') return t
   return 'text'
@@ -189,30 +193,29 @@ export function formatCriterionSummary(criterion: MetricSuccessCriterion, metric
   }
 }
 
-/** Coerce API/LLM enum options (string or { value, description }) to display labels. */
+export { optionLabelFromRaw } from '../../lib/metricOptionLabels'
+
+function dedupeLabels(labels: string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const label of labels) {
+    const key = label.trim().toLowerCase()
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    out.push(label)
+  }
+  return out
+}
+
 export function enumLabelsFromMetric(metric: MetricRow): string[] {
   const raw = (metric.custom_config as { options?: unknown } | null)?.options
   if (!Array.isArray(raw)) return []
   const labels: string[] = []
   for (const opt of raw) {
-    if (typeof opt === 'string' && opt.trim()) {
-      labels.push(opt.trim())
-      continue
-    }
-    if (opt && typeof opt === 'object' && !Array.isArray(opt)) {
-      const o = opt as Record<string, unknown>
-      const label =
-        typeof o.value === 'string'
-          ? o.value
-          : typeof o.label === 'string'
-            ? o.label
-            : typeof o.name === 'string'
-              ? o.name
-              : ''
-      if (label.trim()) labels.push(label.trim())
-    }
+    const label = optionLabelFromRaw(opt)
+    if (label) labels.push(label)
   }
-  return labels
+  return dedupeLabels(labels)
 }
 
 export function displayMetricText(value: unknown): string | null {
@@ -228,24 +231,40 @@ export function displayMetricText(value: unknown): string | null {
 }
 
 export function successValueLabel(value: unknown): string {
-  if (typeof value === 'string') return value
-  if (value && typeof value === 'object') {
-    const o = value as Record<string, unknown>
-    if (typeof o.value === 'string') return o.value
-    if (typeof o.label === 'string') return o.label
-    if (typeof o.description === 'string') return o.description
-  }
+  const label = optionLabelFromRaw(value)
+  if (label != null) return label
   return String(value)
 }
 
 export function classificationChoiceOptions(metric: MetricRow): string[] {
-  const cfg = metric.custom_config as { choice?: { criteria?: Record<string, string> } } | null
-  return Object.keys(cfg?.choice?.criteria || {})
+  const cfg = metric.custom_config as {
+    choice?: { criteria?: Record<string, string> | unknown[] }
+  } | null
+  const criteria = cfg?.choice?.criteria
+  if (Array.isArray(criteria)) {
+    const labels: string[] = []
+    for (const item of criteria) {
+      const label = optionLabelFromRaw(item)
+      if (label) labels.push(label)
+    }
+    return dedupeLabels(labels)
+  }
+  if (criteria && typeof criteria === 'object') {
+    const labels: string[] = []
+    for (const key of Object.keys(criteria)) {
+      const label = optionLabelFromRaw(key)
+      if (label) labels.push(label)
+    }
+    return dedupeLabels(labels)
+  }
+  return []
 }
 
 export function classificationScoreLevels(metric: MetricRow): string[] {
   const cfg = metric.custom_config as { score?: { criteria?: unknown } } | null
   const levels = cfg?.score?.criteria
   if (!Array.isArray(levels)) return []
-  return levels.map((level) => successValueLabel(level)).filter(Boolean)
+  return dedupeLabels(
+    levels.map((level) => successValueLabel(level)).filter(Boolean),
+  )
 }

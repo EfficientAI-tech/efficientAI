@@ -22,7 +22,10 @@ from app.services.metrics.evaluation_scope import (
     replace_metric_scenarios,
     scenario_ids_for_response,
 )
-from app.services.metrics.option_labels import custom_config_for_api
+from app.services.metrics.option_labels import (
+    coerce_custom_config_for_storage,
+    custom_config_for_api,
+)
 from app.models.schemas import (
     MetricCreate,
     MetricCreateWithChildren,
@@ -354,7 +357,9 @@ def create_metric(
         supported_surfaces=metric_data.supported_surfaces or ["agent"],
         enabled_surfaces=enabled_surfaces,
         custom_data_type=metric_data.custom_data_type,
-        custom_config=metric_data.custom_config,
+        custom_config=coerce_custom_config_for_storage(
+            metric_data.custom_data_type, metric_data.custom_config
+        ),
         tags=metric_data.tags,
         capture_rationale=bool(metric_data.capture_rationale),
         parent_metric_id=metric_data.parent_metric_id,
@@ -486,7 +491,9 @@ def create_metric_draft(
         supported_surfaces=metric_data.supported_surfaces or ["agent"],
         enabled_surfaces=[],
         custom_data_type=metric_data.custom_data_type,
-        custom_config=metric_data.custom_config,
+        custom_config=coerce_custom_config_for_storage(
+            metric_data.custom_data_type, metric_data.custom_config
+        ),
         tags=metric_data.tags,
         capture_rationale=bool(metric_data.capture_rationale),
         parent_metric_id=metric_data.parent_metric_id,
@@ -1116,7 +1123,9 @@ def promote_discovered_metric(
         supported_surfaces=supported_surfaces,
         enabled_surfaces=enabled_surfaces,
         custom_data_type=custom_data_type,
-        custom_config=body.custom_config or None,
+        custom_config=coerce_custom_config_for_storage(
+            custom_data_type, body.custom_config or None
+        ),
         tags=None,
         # Standalone metric — rationale is per-metric (default true so
         # the LLM keeps producing rationales for promoted candidates,
@@ -1364,7 +1373,14 @@ def update_metric(
         metric.custom_data_type = metric_data.custom_data_type
 
     if metric_data.custom_config is not None:
-        metric.custom_config = metric_data.custom_config
+        effective_dtype = (
+            metric_data.custom_data_type
+            if metric_data.custom_data_type is not None
+            else metric.custom_data_type
+        )
+        metric.custom_config = coerce_custom_config_for_storage(
+            effective_dtype, metric_data.custom_config
+        )
 
     if metric_data.tags is not None:
         metric.tags = metric_data.tags
@@ -2046,6 +2062,8 @@ def generate_metric(
             }
         if custom_data_type == "boolean":
             custom_config = {}
+
+        custom_config = coerce_custom_config_for_storage(custom_data_type, custom_config)
 
     name = (parsed.get("name") or "Custom Metric").strip()[:60]
     existing = db.query(Metric).filter(

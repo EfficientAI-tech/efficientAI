@@ -183,6 +183,10 @@ def normalize_generated_metric_fields(
     name = (parsed.get("name") or "Scenario Metric").strip()[:60]
     description = (parsed.get("description") or "").strip()[:1000]
 
+    from app.services.metrics.option_labels import coerce_custom_config_for_storage
+
+    custom_config = coerce_custom_config_for_storage(custom_data_type, custom_config)
+
     return {
         "name": name,
         "description": description,

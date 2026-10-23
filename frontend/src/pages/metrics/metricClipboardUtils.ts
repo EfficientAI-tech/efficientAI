@@ -1,3 +1,5 @@
+import { enumOptionsToCsv } from '../../lib/metricOptionLabels'
+
 export type MetricClipboardScope = 'workspace' | 'organization'
 
 export interface MetricClipboardChild {
@@ -203,9 +205,7 @@ export function singleFormFromMetricClipboard(
       | 'enum'
       | 'number_range'
       | 'classification',
-    enum_options_csv: Array.isArray(payload.custom_config?.options)
-      ? (payload.custom_config.options as string[]).join(', ')
-      : '',
+    enum_options_csv: enumOptionsToCsv(payload.custom_config?.options),
     number_min: Number(payload.custom_config?.min ?? 0),
     number_max: Number(payload.custom_config?.max ?? 10),
     number_step: Number(payload.custom_config?.step ?? 1),

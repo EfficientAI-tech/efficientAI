@@ -171,6 +171,21 @@ def test_validate_enum_accepts_success_values_matching_object_options():
     _validate_rule_shape(rule, m, [])
 
 
+def test_validate_enum_accepts_numeric_option_labels_as_strings():
+    m = _metric(
+        name="Rating bucket",
+        metric_type="text",
+        custom_data_type="enum",
+        custom_config={"options": [1, 2, 3]},
+    )
+    rule = MetricSuccessCriterion(
+        metric_id=m.id,
+        kind="enum",
+        success_values=["2"],
+    )
+    _validate_rule_shape(rule, m, [])
+
+
 def test_validate_rejects_text_only(db_session, seed_org, default_workspace):
     org_id = seed_org.id
     from app.models.database import Metric

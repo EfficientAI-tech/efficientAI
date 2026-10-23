@@ -41,6 +41,7 @@ from app.services.harbor.success_criteria import (
 )
 from app.services.harbor.trial_store import llm_override
 from app.services.testing.simulation_llms import describe_simulation_llms
+from app.services.testing.simulation_run_naming import simulation_run_name_for_rerun
 
 router =APIRouter(prefix="/simulation-runs", tags=["simulation-runs"])
 
@@ -446,7 +447,9 @@ def rerun_simulation_run(
         rerun_metric_ids = [c.metric_id for c in rerun_criteria]
     payload = SimulationRunCreate(
         agent_id=run.agent_id,
-        name=f"{run.name or f'Run {run.run_id}'} (re-run{' failed' if only_failed else ''})",
+        name=simulation_run_name_for_rerun(
+            run.name, run.run_id, only_failed=only_failed
+        ),
         scenario_ids=scenario_ids,
         persona_ids=persona_ids,
         metric_ids=[UUID(str(m)) for m in rerun_metric_ids] if rerun_metric_ids else None,

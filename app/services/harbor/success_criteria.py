@@ -13,7 +13,9 @@ from app.services.classification_metric_scores import classification_facets_from
 from app.services.metric_classification_validation import is_classification_metric
 from app.services.metric_failure_policy import normalize_label
 from app.services.metrics.option_labels import (
+    classification_choice_labels_from_config,
     classification_score_labels_from_config,
+    enum_labels_equal,
     enum_option_labels_from_config,
 )
 
@@ -121,9 +123,8 @@ def criterion_passes(
         raw = entry.get("value")
         if raw is None:
             return False
-        normalized = normalize_label(str(raw))
-        allowed = {normalize_label(v) for v in (crit.get("success_values") or [])}
-        return normalized in allowed
+        allowed = crit.get("success_values") or []
+        return any(enum_labels_equal(str(raw), v) for v in allowed)
 
     if kind == "category_single":
         if _entry_failed(entry):
@@ -170,8 +171,8 @@ def criterion_passes(
             val = facets.get("choice")
             if not val:
                 return False
-            allowed = {normalize_label(v) for v in (choice.get("success_values") or [])}
-            if normalize_label(val) not in allowed:
+            success_vals = choice.get("success_values") or []
+            if not any(enum_labels_equal(val, v) for v in success_vals):
                 return False
         score_q = questions.get("score")
         if score_q:
@@ -179,8 +180,8 @@ def criterion_passes(
             level = facets.get("level")
             if not level:
                 return False
-            allowed = {normalize_label(v) for v in (score_q.get("success_values") or [])}
-            if normalize_label(level) not in allowed:
+            success_vals = score_q.get("success_values") or []
+            if not any(enum_labels_equal(level, v) for v in success_vals):
                 return False
         return used_any
 
@@ -341,7 +342,7 @@ def _validate_rule_shape(
         unknown = [
             v
             for v in rule.success_values
-            if normalize_label(v) not in {normalize_label(o) for o in options}
+            if not any(enum_labels_equal(v, o) for o in options)
         ]
         if unknown:
             raise ValueError(f"Enum metric '{metric.name}' has unknown success values: {unknown}")
@@ -376,21 +377,19 @@ def _validate_rule_shape(
                 raise ValueError(f"Classification noul for '{metric.name}' needs success_when")
         if questions.choice and _classification_block_enabled(cfg, "choice"):
             used += 1
-            opts = list((cfg.get("choice") or {}).get("criteria") or {})
+            opts = classification_choice_labels_from_config(cfg)
             if not questions.choice.success_values:
                 raise ValueError(f"Classification choice for '{metric.name}' needs success_values")
-            allowed = {normalize_label(o) for o in opts}
             for val in questions.choice.success_values:
-                if normalize_label(val) not in allowed:
+                if not any(enum_labels_equal(val, o) for o in opts):
                     raise ValueError(f"Classification choice unknown value '{val}'")
         if questions.score and _classification_block_enabled(cfg, "score"):
             used += 1
             levels = classification_score_labels_from_config(cfg)
             if not questions.score.success_values:
                 raise ValueError(f"Classification score for '{metric.name}' needs success_values")
-            allowed = {normalize_label(level) for level in levels}
             for val in questions.score.success_values:
-                if normalize_label(val) not in allowed:
+                if not any(enum_labels_equal(val, level) for level in levels):
                     raise ValueError(f"Classification score unknown level '{val}'")
         if used == 0:
             raise ValueError(

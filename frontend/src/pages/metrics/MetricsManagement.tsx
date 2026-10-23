@@ -30,6 +30,7 @@ import {
   Search,
 } from 'lucide-react'
 import { copyTextToClipboard, readTextFromClipboard } from '../../lib/clipboard'
+import { enumOptionsToCsv } from '../../lib/metricOptionLabels'
 import {
   categoryFormFromMetricClipboard,
   parseMetricClipboardPayload,
@@ -1070,7 +1071,7 @@ export default function MetricsManagement({
           (suggestion.enabled_surfaces as MetricSurface[]) || [fallbackSurface],
         custom_data_type: inferredCustomDataType,
         enum_options_csv:
-          !isText && Array.isArray(cfg.options) ? cfg.options.join(', ') : prev.enum_options_csv,
+          !isText && Array.isArray(cfg.options) ? enumOptionsToCsv(cfg.options) : prev.enum_options_csv,
         number_min: !isText ? Number(cfg.min ?? prev.number_min) : prev.number_min,
         number_max: !isText ? Number(cfg.max ?? prev.number_max) : prev.number_max,
         number_step: !isText ? Number(cfg.step ?? prev.number_step) : prev.number_step,
@@ -1415,7 +1416,7 @@ export default function MetricsManagement({
           : metric.metric_type === 'number'
             ? 'number_range'
             : 'boolean')) as CustomDataType,
-      enum_options_csv: Array.isArray(metric.custom_config?.options) ? metric.custom_config.options.join(', ') : '',
+      enum_options_csv: enumOptionsToCsv(metric.custom_config?.options),
       number_min: Number(metric.custom_config?.min ?? 0),
       number_max: Number(metric.custom_config?.max ?? 10),
       number_step: Number(metric.custom_config?.step ?? 1),
