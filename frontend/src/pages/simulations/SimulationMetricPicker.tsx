@@ -14,6 +14,7 @@ import {
   isGoldenMetric,
   scenarioMetricsForRun,
 } from './simulationMetricScope'
+import { displayMetricText } from './metricSuccessCriteriaUtils'
 
 interface Props {
   metricRows: MetricRow[]
@@ -64,9 +65,12 @@ function MetricCheckboxRow({
           <span className="text-sm font-semibold text-gray-900">{metric.name}</span>
         </div>
         {hint ? <p className="mt-0.5 text-xs text-gray-500">{hint}</p> : null}
-        {metric.description ? (
-          <p className="text-xs text-gray-500 mt-1 line-clamp-2">{metric.description}</p>
-        ) : null}
+        {(() => {
+          const desc = displayMetricText(metric.description)
+          return desc ? (
+            <p className="text-xs text-gray-500 mt-1 line-clamp-2">{desc}</p>
+          ) : null
+        })()}
         {isCategory && children.length > 0 ? (
           <p className="mt-1 text-[11px] text-gray-400">{children.length} labels</p>
         ) : null}

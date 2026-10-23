@@ -25,6 +25,7 @@ import type { MetricSuccessCriterion, ModelProvider, SimulationRun } from '../..
 import MetricSuccessCriteriaStep from './MetricSuccessCriteriaStep'
 import {
   criteriaStepValid,
+  displayMetricText,
   formatCriterionSummary,
   syncCriteriaWithMetrics,
 } from './metricSuccessCriteriaUtils'
@@ -385,7 +386,11 @@ export default function NewSimulationRunModal({ isOpen, onClose, agent, initialS
                 <div>
                   <h4 className="mb-1 text-sm font-medium text-gray-700">Scenarios</h4>
                   <CheckList
-                    items={scenarios.map((s) => ({ id: s.id, name: s.name, hint: s.description ?? undefined }))}
+                    items={scenarios.map((s) => ({
+                      id: s.id,
+                      name: s.name,
+                      hint: displayMetricText(s.description) ?? undefined,
+                    }))}
                     selected={scenarioIds}
                     onChange={setScenarioIds}
                     emptyText="No scenarios for this agent yet. Generate synthetic tests first."

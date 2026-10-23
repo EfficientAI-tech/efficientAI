@@ -160,10 +160,10 @@ export function formatCriterionSummary(criterion: MetricSuccessCriterion, metric
       return `Pass when score ${OP_LABEL[criterion.op || 'gte'] ?? '≥'} ${criterion.threshold ?? '—'}`
     case 'enum':
     case 'category_single':
-      return `Pass when: ${(criterion.success_values || []).join(', ') || '—'}`
+      return `Pass when: ${(criterion.success_values || []).map(successValueLabel).join(', ') || '—'}`
     case 'category_multi': {
       const children = getEnabledChildren(metric)
-      const byId = new Map(children.map((c) => [c.id, c.name]))
+      const byId = new Map(children.map((c) => [c.id, successValueLabel(c.name)]))
       const parts = (criterion.label_rules || []).map(
         (r) => `${byId.get(r.child_id) || r.child_id} must be ${r.expect === 'no' ? 'No' : 'Yes'}`,
       )
@@ -189,13 +189,63 @@ export function formatCriterionSummary(criterion: MetricSuccessCriterion, metric
   }
 }
 
+/** Coerce API/LLM enum options (string or { value, description }) to display labels. */
+export function enumLabelsFromMetric(metric: MetricRow): string[] {
+  const raw = (metric.custom_config as { options?: unknown } | null)?.options
+  if (!Array.isArray(raw)) return []
+  const labels: string[] = []
+  for (const opt of raw) {
+    if (typeof opt === 'string' && opt.trim()) {
+      labels.push(opt.trim())
+      continue
+    }
+    if (opt && typeof opt === 'object' && !Array.isArray(opt)) {
+      const o = opt as Record<string, unknown>
+      const label =
+        typeof o.value === 'string'
+          ? o.value
+          : typeof o.label === 'string'
+            ? o.label
+            : typeof o.name === 'string'
+              ? o.name
+              : ''
+      if (label.trim()) labels.push(label.trim())
+    }
+  }
+  return labels
+}
+
+export function displayMetricText(value: unknown): string | null {
+  if (value == null || value === '') return null
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (typeof value === 'object') {
+    const o = value as Record<string, unknown>
+    if (typeof o.value === 'string') return o.value
+    if (typeof o.description === 'string') return o.description
+  }
+  return null
+}
+
+export function successValueLabel(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (value && typeof value === 'object') {
+    const o = value as Record<string, unknown>
+    if (typeof o.value === 'string') return o.value
+    if (typeof o.label === 'string') return o.label
+    if (typeof o.description === 'string') return o.description
+  }
+  return String(value)
+}
+
 export function classificationChoiceOptions(metric: MetricRow): string[] {
   const cfg = metric.custom_config as { choice?: { criteria?: Record<string, string> } } | null
   return Object.keys(cfg?.choice?.criteria || {})
 }
 
 export function classificationScoreLevels(metric: MetricRow): string[] {
-  const cfg = metric.custom_config as { score?: { criteria?: string[] } } | null
+  const cfg = metric.custom_config as { score?: { criteria?: unknown } } | null
   const levels = cfg?.score?.criteria
-  return Array.isArray(levels) ? levels : []
+  if (!Array.isArray(levels)) return []
+  return levels.map((level) => successValueLabel(level)).filter(Boolean)
 }

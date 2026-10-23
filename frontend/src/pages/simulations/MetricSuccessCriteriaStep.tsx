@@ -3,8 +3,10 @@ import {
   classificationChoiceOptions,
   classificationScoreLevels,
   defaultCriterionForMetric,
+  enumLabelsFromMetric,
   inferCriterionKind,
   numberRange,
+  successValueLabel,
 } from './metricSuccessCriteriaUtils'
 import {
   flattenMetrics,
@@ -147,8 +149,8 @@ function CriterionCard({
   if (kind === 'enum' || kind === 'category_single') {
     const options =
       kind === 'enum'
-        ? ((metric.custom_config as { options?: string[] })?.options ?? [])
-        : getEnabledChildren(metric).map((c) => c.name)
+        ? enumLabelsFromMetric(metric)
+        : getEnabledChildren(metric).map((c) => successValueLabel(c.name))
     return (
       <div className="space-y-1">
         <p className="text-xs text-gray-500">Select one or more values that count as success.</p>
@@ -160,11 +162,16 @@ function CriterionCard({
             >
               <input
                 type="checkbox"
-                checked={(criterion.success_values || []).includes(opt)}
+                checked={(criterion.success_values || []).some(
+                  (v) => successValueLabel(v) === opt,
+                )}
                 onChange={() =>
                   onChange({
                     ...criterion,
-                    success_values: toggleInList(criterion.success_values || [], opt),
+                    success_values: toggleInList(
+                      (criterion.success_values || []).map(successValueLabel),
+                      opt,
+                    ),
                   })
                 }
               />
@@ -190,7 +197,9 @@ function CriterionCard({
           const expect = ruleFor(child.id)
           return (
             <div key={child.id} className="flex flex-wrap items-center gap-2">
-              <span className="min-w-[8rem] font-medium text-gray-800">{child.name}</span>
+              <span className="min-w-[8rem] font-medium text-gray-800">
+                {successValueLabel(child.name)}
+              </span>
               <select
                 value={expect ?? 'ignore'}
                 onChange={(e) => {
