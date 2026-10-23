@@ -119,6 +119,9 @@ def backfill_import(
 
     register_shard_slices(catalog_db, call_import_id, len(rows))
     catalog_db.commit()
+    from app.db_sharding.registry import publish_slice_registry_change
+
+    publish_slice_registry_change(call_import_id)
     return {
         "import_id": str(call_import_id),
         "catalog_rows": len(rows),

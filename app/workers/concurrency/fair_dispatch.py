@@ -349,6 +349,16 @@ def _dispatch_batch_for_workspace(
     skips = 0
     hit_capacity = False
     backoff_seconds = 0
+    slice_registries: dict[UUID, dict] = {}
+
+    def _slice_registry_for(call_import_id: UUID) -> dict:
+        cached = slice_registries.get(call_import_id)
+        if cached is None:
+            from app.db_sharding.registry import load_slice_registry_for_import
+
+            cached = load_slice_registry_for_import(db, call_import_id)
+            slice_registries[call_import_id] = cached
+        return cached
 
     while dispatched < batch_size and skips < len(evaluations):
         evaluation_id = evaluations[cursor]
@@ -390,6 +400,7 @@ def _dispatch_batch_for_workspace(
                 auto_transcribe=eval_auto_transcribe,
                 call_import=call_import,
                 shard_cache=shard_cache,
+                slice_registry=_slice_registry_for(evaluation.call_import_id),
             )
             if outcome.result == "dispatched":
                 clear_row_restricted_metrics(eval_row.id)

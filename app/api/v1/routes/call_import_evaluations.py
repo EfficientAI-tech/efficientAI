@@ -4832,6 +4832,11 @@ async def delete_call_import_evaluation(
 
     _revoke_pending_tasks(row)
 
+    from app.services.call_imports.discovered_running_cache import (
+        clear_discovered_running_cache,
+    )
+
+    clear_discovered_running_cache(eval_id)
     db.delete(row)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -7542,6 +7547,8 @@ def _get_running_discovered_labels(
     parent_metric_id: UUID,
     organization_id: Optional[UUID] = None,
     alias_map: Optional[Dict[str, str]] = None,
+    *,
+    from_cache: bool = False,
 ) -> List[Dict[str, Any]]:
     """Slug-deduped view of every discovered label seen in this eval so far.
 
@@ -7570,6 +7577,24 @@ def _get_running_discovered_labels(
     """
 
     parent_id_str = str(parent_metric_id)
+    aliases = alias_map or {}
+    if from_cache:
+        promoted_slugs: set[str] = set()
+        if organization_id is not None:
+            promoted_slugs = _promoted_child_slugs(
+                db, parent_metric_id, organization_id
+            )
+        from app.services.call_imports.discovered_running_cache import (
+            load_running_label_entries,
+            project_discovered_entries,
+        )
+
+        return project_discovered_entries(
+            load_running_label_entries(db, eval_id, parent_metric_id),
+            resolve_key=lambda raw: _resolve_alias(aliases, _slug_label(raw)),
+            promoted_slugs=promoted_slugs,
+        )
+
     from app.db_sharding.eval_rows import load_evaluation_rows_for_run
 
     eval_rows = load_evaluation_rows_for_run(db, eval_id)
@@ -7585,12 +7610,11 @@ def _get_running_discovered_labels(
     #    accepted), or
     #  * been merged INTO another slug (the "from" side of a merge) —
     #    those occurrences fold into the canonical target instead.
-    promoted_slugs: set[str] = set()
+    promoted_slugs = set()
     if organization_id is not None:
         promoted_slugs = _promoted_child_slugs(
             db, parent_metric_id, organization_id
         )
-    aliases = alias_map or {}
 
     by_key: Dict[str, Dict[str, Any]] = {}
     for (scores,) in rows:
@@ -7668,6 +7692,8 @@ def _get_running_discovered_metrics(
     eval_id: UUID,
     organization_id: Optional[UUID] = None,
     alias_map: Optional[Dict[str, str]] = None,
+    *,
+    from_cache: bool = False,
 ) -> List[Dict[str, Any]]:
     """Slug-deduped view of every discovered top-level metric in this eval.
 
@@ -7689,6 +7715,24 @@ def _get_running_discovered_metrics(
          "count": 12}
     """
 
+    aliases = alias_map or {}
+    if from_cache:
+        promoted_slugs: set[str] = set()
+        if organization_id is not None:
+            promoted_slugs = _promoted_top_level_metric_slugs(
+                db, organization_id
+            )
+        from app.services.call_imports.discovered_running_cache import (
+            load_running_metric_entries,
+            project_discovered_entries,
+        )
+
+        return project_discovered_entries(
+            load_running_metric_entries(db, eval_id),
+            resolve_key=lambda raw: _resolve_alias(aliases, _slug_label(raw)),
+            promoted_slugs=promoted_slugs,
+        )
+
     from app.db_sharding.eval_rows import load_evaluation_rows_for_run
 
     eval_rows = load_evaluation_rows_for_run(db, eval_id)
@@ -7698,7 +7742,7 @@ def _get_running_discovered_metrics(
         if row.status == CallImportRowStatus.COMPLETED.value
     ]
 
-    promoted_slugs: set[str] = set()
+    promoted_slugs = set()
     if organization_id is not None:
         promoted_slugs = _promoted_top_level_metric_slugs(
             db, organization_id

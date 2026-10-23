@@ -3,6 +3,20 @@
 from app.config import settings
 from app.core.security_settings import build_csp_policy_with_extras, resolve_trusted_hosts
 
+_WEBHOOK_BASE_URLS = (
+    "TWILIO_WEBHOOK_BASE_URL",
+    "TELNYX_WEBHOOK_BASE_URL",
+    "META_WHATSAPP_WEBHOOK_BASE_URL",
+    "PLIVO_WEBHOOK_BASE_URL",
+    "VOBIZ_WEBHOOK_BASE_URL",
+)
+
+
+def _clear_webhook_base_urls(monkeypatch) -> None:
+    """Local config.yml webhook URLs must not leak into these host lists."""
+    for name in _WEBHOOK_BASE_URLS:
+        monkeypatch.setattr(settings, name, "")
+
 
 def test_resolve_trusted_hosts_from_frontend_url_only(monkeypatch):
     monkeypatch.setattr(settings, "TRUSTED_HOSTS_AUTO_FROM_FRONTEND", True)
@@ -22,6 +36,7 @@ def test_resolve_trusted_hosts_no_wildcard_for_co_uk(monkeypatch):
     monkeypatch.setattr(settings, "PUBLIC_BASE_URL", "")
     monkeypatch.setattr(settings, "TRUSTED_HOSTS_EXPLICIT", [])
     monkeypatch.setattr(settings, "TRUSTED_HOSTS_FROM_ENV", [])
+    _clear_webhook_base_urls(monkeypatch)
     hosts = resolve_trusted_hosts()
     assert hosts == ["app.example.co.uk"]
 

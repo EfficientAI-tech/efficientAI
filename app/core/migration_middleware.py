@@ -8,14 +8,10 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
-from app.core.migrations import check_migrations_status
+from app.core.migrations import check_migrations_status_cached
 import logging
 
 logger = logging.getLogger(__name__)
-
-# Global flag to track if migrations have been checked on startup
-_migrations_checked = False
-_migrations_up_to_date = False
 
 
 def _migration_bypass_paths() -> list[str]:
@@ -48,8 +44,8 @@ class MigrationCheckMiddleware(BaseHTTPMiddleware):
         if request.url.path.startswith("/assets/"):
             return await call_next(request)
 
-        # Check migration status
-        is_up_to_date, pending = check_migrations_status()
+        # Check migration status. An up-to-date process does this once.
+        is_up_to_date, pending = check_migrations_status_cached()
 
         if not is_up_to_date:
             # Block API requests if migrations are pending

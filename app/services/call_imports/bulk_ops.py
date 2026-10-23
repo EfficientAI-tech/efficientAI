@@ -905,6 +905,9 @@ def execute_call_import_materialization(
 
             register_shard_slices(db, call_import.id, row_count)
             db.commit()
+            from app.db_sharding.registry import publish_slice_registry_change
+
+            publish_slice_registry_change(call_import.id)
             shard_sessions = ShardWriteSessions()
             committed_rows, _pending = bulk_materialize_call_import_rows(
                 db,
@@ -1091,6 +1094,55 @@ def _latest_evaluation_status(db: Session, call_import_id: UUID) -> Optional[str
         .first()
     )
     return row[0] if row else None
+
+
+def _latest_evaluation_progress_for_ui(
+    db: Session, call_import_id: UUID
+) -> dict[str, object]:
+    """Most recent evaluation counters for list/detail progress bars."""
+    from sqlalchemy.orm import load_only
+
+    from app.services.call_imports.progress_counters import merge_eval_counters_for_ui
+
+    row = (
+        db.query(CallImportEvaluation)
+        .options(
+            load_only(
+                CallImportEvaluation.id,
+                CallImportEvaluation.status,
+                CallImportEvaluation.transcript_source,
+                CallImportEvaluation.total_rows,
+                CallImportEvaluation.completed_rows,
+                CallImportEvaluation.failed_rows,
+            )
+        )
+        .filter(CallImportEvaluation.call_import_id == call_import_id)
+        .order_by(CallImportEvaluation.created_at.desc())
+        .first()
+    )
+    if row is None:
+        return {
+            "latest_evaluation_status": None,
+            "latest_evaluation_transcript_source": None,
+            "latest_evaluation_total_rows": None,
+            "latest_evaluation_completed_rows": None,
+            "latest_evaluation_failed_rows": None,
+        }
+    ui_completed_raw, ui_failed_raw = merge_eval_counters_for_ui(row)
+    total = int(row.total_rows or 0)
+    ui_completed = min(ui_completed_raw, total) if total else ui_completed_raw
+    ui_failed = min(ui_failed_raw, total) if total else ui_failed_raw
+    status = row.status
+    if hasattr(status, "value"):
+        status = status.value
+    transcript_source = row.transcript_source
+    return {
+        "latest_evaluation_status": status,
+        "latest_evaluation_transcript_source": transcript_source,
+        "latest_evaluation_total_rows": total,
+        "latest_evaluation_completed_rows": ui_completed,
+        "latest_evaluation_failed_rows": ui_failed,
+    }
 
 
 def rollup_call_import_batch_status(db: Session, call_import: CallImport) -> None:
@@ -1743,6 +1795,7 @@ def _write_retry_page(
 
     if not page:
         return
+    discovery_updates = _discovery_updates_for_retry(page, metric_ids)
     chain_ids = [
         str(eval_row.id)
         for eval_row, _source_row in page
@@ -1774,7 +1827,51 @@ def _write_retry_page(
         )
         clear_eval_audio_chains(chain_ids)
         session.commit()
+    _replace_discoveries_for_retry(discovery_updates)
     _expunge_retry_page(session, page)
+
+
+def _discovery_updates_for_retry(
+    page: List[Tuple[CallImportEvaluationRow, Optional[CallImportRow]]],
+    metric_ids: Optional[List[UUID]],
+) -> List[Tuple[UUID, UUID, dict]]:
+    """Copy ids and remaining scores while the page is still loaded.
+
+    ``commit`` expires these objects. Reading them afterwards selects each
+    row again, including a full retry whose replacement scores are empty.
+    """
+    from app.api.v1.routes.call_import_evaluations import _metric_scores_for_retry
+
+    updates: List[Tuple[UUID, UUID, dict]] = []
+    for eval_row, _source_row in page:
+        evaluation_id = getattr(eval_row, "evaluation_id", None)
+        row_id = getattr(eval_row, "id", None)
+        if evaluation_id is None or row_id is None:
+            continue
+        scores = (
+            _metric_scores_for_retry(eval_row.metric_scores, metric_ids)
+            if metric_ids
+            else {}
+        )
+        updates.append((evaluation_id, row_id, scores))
+    return updates
+
+
+def _replace_discoveries_for_retry(
+    updates: List[Tuple[UUID, UUID, dict]],
+) -> None:
+    """Drop this page's previous discoveries now that its scores were replaced."""
+    from app.services.call_imports.discovered_running_cache import (
+        record_row_discoveries,
+    )
+
+    for evaluation_id, row_id, scores in updates:
+        record_row_discoveries(
+            evaluation_id,
+            row_id,
+            scores,
+            force=True,
+        )
 
 
 def _persist_evaluation_retry_targets(

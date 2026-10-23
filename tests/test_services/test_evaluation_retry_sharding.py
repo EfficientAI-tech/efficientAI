@@ -280,6 +280,78 @@ def test_metric_retry_page_is_one_postgres_update():
     session.commit.assert_called_once()
 
 
+def test_retry_page_records_discoveries_without_rereading_rows():
+    from app.services.call_imports.bulk_ops import _write_retry_page
+
+    class _LoadedRow:
+        def __init__(self) -> None:
+            self._id = uuid4()
+            self._evaluation_id = uuid4()
+            self._celery_task_id = None
+            self._scores = {
+                "__discovered_metrics__": [{"key": "hold_time", "name": "Hold time"}]
+            }
+            self._expired = False
+            self.reads_after_expire: list[str] = []
+
+        def expire(self) -> None:
+            self._expired = True
+
+        def _read(self, name: str, value):
+            if self._expired:
+                self.reads_after_expire.append(name)
+            return value
+
+        @property
+        def id(self):
+            return self._read("id", self._id)
+
+        @property
+        def evaluation_id(self):
+            return self._read("evaluation_id", self._evaluation_id)
+
+        @property
+        def celery_task_id(self):
+            return self._read("celery_task_id", self._celery_task_id)
+
+        @property
+        def metric_scores(self):
+            return self._read("metric_scores", self._scores)
+
+    eval_row = _LoadedRow()
+    source_row = SimpleNamespace(
+        id=uuid4(),
+        status="completed",
+        celery_task_id=None,
+        recording_s3_key="audio/already-there.wav",
+        error_message=None,
+        attempts=0,
+        diarised_transcript=None,
+        diarised_transcript_status="completed",
+        diarised_transcript_error=None,
+    )
+    session = MagicMock()
+    session.commit.side_effect = eval_row.expire
+    recorded = []
+
+    def _record(*args, **kwargs):
+        recorded.append((args, kwargs))
+
+    with patch(
+        "app.services.call_imports.discovered_running_cache.record_row_discoveries",
+        _record,
+    ):
+        _write_retry_page(session, [(eval_row, source_row)])
+
+    assert recorded == [
+        (
+            (eval_row._evaluation_id, eval_row._id, {}),
+            {"force": True},
+        )
+    ]
+    assert eval_row.reads_after_expire == []
+
+
 def test_clean_source_row_is_not_rewritten_on_retry():
     from app.api.v1.routes.call_import_evaluations import source_retry_assignments
 
