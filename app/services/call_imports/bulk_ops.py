@@ -1795,6 +1795,7 @@ def _write_retry_page(
 
     if not page:
         return
+    discovery_updates = _discovery_updates_for_retry(page, metric_ids)
     chain_ids = [
         str(eval_row.id)
         for eval_row, _source_row in page
@@ -1826,32 +1827,48 @@ def _write_retry_page(
         )
         clear_eval_audio_chains(chain_ids)
         session.commit()
-    _replace_discoveries_for_retry(page, metric_ids)
+    _replace_discoveries_for_retry(discovery_updates)
     _expunge_retry_page(session, page)
 
 
-def _replace_discoveries_for_retry(
+def _discovery_updates_for_retry(
     page: List[Tuple[CallImportEvaluationRow, Optional[CallImportRow]]],
     metric_ids: Optional[List[UUID]],
-) -> None:
-    """Drop this page's previous discoveries now that its scores were replaced."""
-    from app.api.v1.routes.call_import_evaluations import _metric_scores_for_retry
-    from app.services.call_imports.discovered_running_cache import (
-        record_row_discoveries,
-    )
+) -> List[Tuple[UUID, UUID, dict]]:
+    """Copy ids and remaining scores while the page is still loaded.
 
+    ``commit`` expires these objects. Reading them afterwards selects each
+    row again, including a full retry whose replacement scores are empty.
+    """
+    from app.api.v1.routes.call_import_evaluations import _metric_scores_for_retry
+
+    updates: List[Tuple[UUID, UUID, dict]] = []
     for eval_row, _source_row in page:
         evaluation_id = getattr(eval_row, "evaluation_id", None)
-        if evaluation_id is None or eval_row.id is None:
+        row_id = getattr(eval_row, "id", None)
+        if evaluation_id is None or row_id is None:
             continue
         scores = (
             _metric_scores_for_retry(eval_row.metric_scores, metric_ids)
             if metric_ids
             else {}
         )
+        updates.append((evaluation_id, row_id, scores))
+    return updates
+
+
+def _replace_discoveries_for_retry(
+    updates: List[Tuple[UUID, UUID, dict]],
+) -> None:
+    """Drop this page's previous discoveries now that its scores were replaced."""
+    from app.services.call_imports.discovered_running_cache import (
+        record_row_discoveries,
+    )
+
+    for evaluation_id, row_id, scores in updates:
         record_row_discoveries(
             evaluation_id,
-            eval_row.id,
+            row_id,
             scores,
             force=True,
         )
