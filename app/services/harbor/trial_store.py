@@ -369,20 +369,28 @@ def score_trial(
         agent_link_map = load_agent_link_map(db, parent_ids)
         scenario_link_map = load_scenario_link_map(db, parent_ids)
         parents_by_id = {p.id: p for p in parents}
-        criteria = [
-            c
-            for c in criteria
-            if metric_applies_to_agent(
-                parents_by_id[UUID(str(c["metric_id"]))],
+        filtered: list[dict] = []
+        for c in criteria:
+            raw_id = c.get("metric_id")
+            if not raw_id:
+                continue
+            parent = parents_by_id.get(UUID(str(raw_id)))
+            if parent is None:
+                continue
+            if not metric_applies_to_agent(
+                parent,
                 result.agent_id,
                 link_map=agent_link_map,
-            )
-            and metric_applies_to_scenario(
-                parents_by_id[UUID(str(c["metric_id"]))],
+            ):
+                continue
+            if not metric_applies_to_scenario(
+                parent,
                 result.scenario_id,
                 link_map=scenario_link_map,
-            )
-        ]
+            ):
+                continue
+            filtered.append(c)
+        criteria = filtered
     if criteria:
         from app.services.harbor.success_criteria import (
             _load_metric_context,

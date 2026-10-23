@@ -457,6 +457,16 @@ def create_metric_draft(
     effective_metric_type = metric_data.metric_type
     if metric_data.parent_metric_id is not None:
         effective_metric_type = MetricType.BOOLEAN
+    if metric_data.parent_metric_id is not None and metric_data.scenario_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="Child metrics cannot have scenario links; set links on the parent.",
+        )
+    if metric_data.parent_metric_id is not None and metric_data.agent_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="Child metrics cannot have agent links; set links on the parent.",
+        )
 
     metric = Metric(
         organization_id=organization_id,
@@ -484,6 +494,28 @@ def create_metric_draft(
         studio_notes=metric_data.studio_notes,
     )
     db.add(metric)
+    db.flush()
+    if metric.parent_metric_id is None:
+        try:
+            replace_metric_scenarios(
+                db,
+                organization_id=organization_id,
+                metric=metric,
+                scenario_ids=(
+                    metric_data.scenario_ids if metric_data.scenario_ids is not None else []
+                ),
+            )
+            replace_metric_agents(
+                db,
+                organization_id=organization_id,
+                metric=metric,
+                agent_ids=(
+                    metric_data.agent_ids if metric_data.agent_ids is not None else []
+                ),
+            )
+        except ValueError as exc:
+            db.rollback()
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.commit()
     db.refresh(metric)
     return _serialize_metric_tree(metric)

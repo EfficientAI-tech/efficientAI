@@ -14,9 +14,39 @@ from app.services.knowledge_bases.embedding_config import profile_from_kb
 from app.services.knowledge_bases.extract import extract_text_from_bytes
 from app.services.storage.blob_storage_service import blob_storage_service
 
+_INGEST_LOCK_NS = 0x4B42_444F  # "KBDO" — serialize ingest per document across workers
+
+
+def _ingest_advisory_keys(document_id: UUID) -> tuple[int, int]:
+    b = document_id.bytes
+    return (
+        _INGEST_LOCK_NS,
+        int.from_bytes(b[0:4], "big") ^ int.from_bytes(b[4:8], "big"),
+    )
+
 
 def ingest_knowledge_document(db: Session, *, document_id: UUID) -> None:
-    doc = db.query(KnowledgeDocument).filter(KnowledgeDocument.id == document_id).first()
+    lock_k1, lock_k2 = _ingest_advisory_keys(document_id)
+    db.execute(
+        text("SELECT pg_advisory_lock(:k1, :k2)"),
+        {"k1": lock_k1, "k2": lock_k2},
+    )
+    try:
+        _ingest_knowledge_document_locked(db, document_id=document_id)
+    finally:
+        db.execute(
+            text("SELECT pg_advisory_unlock(:k1, :k2)"),
+            {"k1": lock_k1, "k2": lock_k2},
+        )
+
+
+def _ingest_knowledge_document_locked(db: Session, *, document_id: UUID) -> None:
+    doc = (
+        db.query(KnowledgeDocument)
+        .filter(KnowledgeDocument.id == document_id)
+        .with_for_update()
+        .first()
+    )
     if not doc:
         return
     kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == doc.knowledge_base_id).first()

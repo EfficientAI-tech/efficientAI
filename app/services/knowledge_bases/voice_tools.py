@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from uuid import UUID
 
@@ -39,8 +40,7 @@ def register_voice_bundle_knowledge_tools(
         required=tool_def["parameters"].get("required") or [],
     )
 
-    async def _handler(params: Any) -> None:
-        query = str((params.arguments or {}).get("query") or "").strip()
+    def _search_sync(search_query: str) -> tuple[list, str]:
         db = SessionLocal()
         try:
             hits = search_knowledge_base(
@@ -48,12 +48,23 @@ def register_voice_bundle_knowledge_tools(
                 organization_id=org_uuid,
                 workspace_id=ws_uuid,
                 agent_id=agent_uuid,
-                query=query,
+                query=search_query,
                 role=role,
             )
-            text = format_search_results_for_tool(hits)
+            return hits, format_search_results_for_tool(hits)
         finally:
             db.close()
+
+    async def _handler(params: Any) -> None:
+        query = str((params.arguments or {}).get("query") or "").strip()
+        hits: list = []
+        try:
+            hits, text = await asyncio.to_thread(_search_sync, query)
+        except Exception as exc:
+            from loguru import logger
+
+            logger.warning("[KnowledgeBase] voice tool search failed: {}", exc)
+            text = f"Knowledge search failed: {exc}"
         if kb_notifier is not None:
             await kb_notifier.on_tool_call(query=query, hit_count=len(hits))
         await params.result_callback(text)

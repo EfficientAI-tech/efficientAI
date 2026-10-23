@@ -2062,8 +2062,9 @@ class ApiClient {
   }
 
   knowledgeDocumentDownloadUrl(knowledgeBaseId: string, documentId: string): string {
-    const base = this.client.defaults.baseURL || ''
-    return `${base}/api/v1/knowledge-bases/${knowledgeBaseId}/documents/${documentId}/download`
+    return this.buildAuthenticatedApiUrl(
+      `/api/v1/knowledge-bases/${knowledgeBaseId}/documents/${documentId}/download`,
+    )
   }
 
   // Chat/Inference endpoints
