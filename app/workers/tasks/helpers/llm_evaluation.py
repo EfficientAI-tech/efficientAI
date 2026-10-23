@@ -29,6 +29,7 @@ def flatten_metric_groups(metric_groups: list[MetricPromptGroup]) -> list:
 from loguru import logger
 
 from app.models.database import ModelProvider
+from app.services.metrics.option_labels import enum_option_labels_from_config
 
 from .json_utils import repair_truncated_json
 from .score_utils import (
@@ -70,10 +71,7 @@ def _classification_metric_error_entry(
 def _get_enum_options(metric) -> list[str]:
     """Return the list of allowed enum option labels for an enum custom metric."""
     cfg = getattr(metric, "custom_config", None) or {}
-    options = cfg.get("options") if isinstance(cfg, dict) else None
-    if not isinstance(options, list):
-        return []
-    return [str(o).strip() for o in options if str(o).strip()]
+    return enum_option_labels_from_config(cfg)
 
 
 def _get_number_range(metric) -> Optional[dict]:

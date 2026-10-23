@@ -12,6 +12,10 @@ from app.models.schemas import MetricSuccessCriterion
 from app.services.classification_metric_scores import classification_facets_from_entry
 from app.services.metric_classification_validation import is_classification_metric
 from app.services.metric_failure_policy import normalize_label
+from app.services.metrics.option_labels import (
+    classification_score_labels_from_config,
+    enum_option_labels_from_config,
+)
 
 
 def _is_categorization_parent(metric: Metric) -> bool:
@@ -381,10 +385,10 @@ def _validate_rule_shape(
                     raise ValueError(f"Classification choice unknown value '{val}'")
         if questions.score and _classification_block_enabled(cfg, "score"):
             used += 1
-            levels = (cfg.get("score") or {}).get("criteria") or []
+            levels = classification_score_labels_from_config(cfg)
             if not questions.score.success_values:
                 raise ValueError(f"Classification score for '{metric.name}' needs success_values")
-            allowed = {normalize_label(str(level)) for level in levels}
+            allowed = {normalize_label(level) for level in levels}
             for val in questions.score.success_values:
                 if normalize_label(val) not in allowed:
                     raise ValueError(f"Classification score unknown level '{val}'")
@@ -404,11 +408,7 @@ def _classification_block_enabled(cfg: dict[str, Any], key: str) -> bool:
 
 
 def _enum_options(metric: Metric) -> list[str]:
-    cfg = metric.custom_config or {}
-    raw = cfg.get("options")
-    if isinstance(raw, list):
-        return [str(o) for o in raw]
-    return []
+    return enum_option_labels_from_config(metric.custom_config or {})
 
 
 def criteria_to_storage(criteria: list[MetricSuccessCriterion]) -> list[dict[str, Any]]:

@@ -22,6 +22,7 @@ from app.services.metrics.evaluation_scope import (
     replace_metric_scenarios,
     scenario_ids_for_response,
 )
+from app.services.metrics.option_labels import custom_config_for_api
 from app.models.schemas import (
     MetricCreate,
     MetricCreateWithChildren,
@@ -165,63 +166,6 @@ def _filter_enabled_metric_trees(
     return filtered
 
 
-def _coerce_metric_option_label(opt: Any) -> Optional[str]:
-    if isinstance(opt, str):
-        stripped = opt.strip()
-        return stripped or None
-    if isinstance(opt, dict):
-        for key in ("value", "label", "name", "description"):
-            val = opt.get(key)
-            if isinstance(val, str) and val.strip():
-                return val.strip()
-    return None
-
-
-def _custom_config_for_api(
-    custom_data_type: Optional[str], custom_config: Any
-) -> Any:
-    if not isinstance(custom_config, dict):
-        return custom_config
-    updated = dict(custom_config)
-    changed = False
-
-    if custom_data_type == "enum":
-        options = updated.get("options")
-        if isinstance(options, list):
-            normalized: List[Any] = []
-            for opt in options:
-                label = _coerce_metric_option_label(opt)
-                if label is not None:
-                    normalized.append(label)
-                elif isinstance(opt, str):
-                    normalized.append(opt)
-                else:
-                    normalized.append(opt)
-            if normalized != options:
-                updated["options"] = normalized
-                changed = True
-
-    if custom_data_type == "classification":
-        score = updated.get("score")
-        if isinstance(score, dict):
-            criteria = score.get("criteria")
-            if isinstance(criteria, list):
-                normalized_levels: List[Any] = []
-                level_changed = False
-                for level in criteria:
-                    label = _coerce_metric_option_label(level)
-                    if label is not None and not isinstance(level, str):
-                        normalized_levels.append(label)
-                        level_changed = True
-                    else:
-                        normalized_levels.append(level)
-                if level_changed:
-                    updated["score"] = {**score, "criteria": normalized_levels}
-                    changed = True
-
-    return updated if changed else custom_config
-
-
 def _serialize_metric_tree(metric: Metric) -> Dict[str, Any]:
     """Convert a Metric ORM row into a dict shaped for ``MetricResponse``.
 
@@ -259,7 +203,7 @@ def _serialize_metric_tree(metric: Metric) -> Dict[str, Any]:
         "supported_surfaces": metric.supported_surfaces or [],
         "enabled_surfaces": metric.enabled_surfaces or [],
         "custom_data_type": metric.custom_data_type,
-        "custom_config": _custom_config_for_api(
+        "custom_config": custom_config_for_api(
             metric.custom_data_type, metric.custom_config
         ),
         "tags": metric.tags,

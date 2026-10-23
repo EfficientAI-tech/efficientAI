@@ -7,6 +7,7 @@ import pytest
 
 from app.models.schemas import MetricSuccessCriterion
 from app.services.harbor.success_criteria import (
+    _validate_rule_shape,
     apply_success_criteria,
     criterion_passes,
     infer_criterion_kind,
@@ -151,6 +152,23 @@ def test_text_metric_does_not_gate():
     )
     assert not passed
     assert reward is None
+
+
+def test_validate_enum_accepts_success_values_matching_object_options():
+    m = _metric(
+        name="Outcome enum",
+        metric_type="text",
+        custom_data_type="enum",
+        custom_config={
+            "options": [{"value": "professional", "description": "Clean close"}, "abrupt"],
+        },
+    )
+    rule = MetricSuccessCriterion(
+        metric_id=m.id,
+        kind="enum",
+        success_values=["professional"],
+    )
+    _validate_rule_shape(rule, m, [])
 
 
 def test_validate_rejects_text_only(db_session, seed_org, default_workspace):

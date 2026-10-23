@@ -2,7 +2,7 @@
 
 import textwrap
 
-from app.api.v1.routes.metrics import _custom_config_for_api
+from app.services.metrics.option_labels import custom_config_for_api
 
 
 def test_create_classification_metric(authenticated_client):
@@ -833,7 +833,7 @@ def test_custom_config_for_api_normalizes_enum_object_options():
             "abrupt",
         ]
     }
-    out = _custom_config_for_api("enum", cfg)
+    out = custom_config_for_api("enum", cfg)
     assert out["options"] == ["professional", "abrupt"]
 
 
