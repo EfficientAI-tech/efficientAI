@@ -147,12 +147,20 @@ def export_tasks(
 
     scenarios = (
         db.query(Scenario)
-        .filter(Scenario.id.in_(scenario_ids), Scenario.organization_id == run.organization_id)
+        .filter(
+            Scenario.id.in_(scenario_ids),
+            Scenario.organization_id == run.organization_id,
+            Scenario.workspace_id == run.workspace_id,
+        )
         .all()
     )
     personas = (
         db.query(Persona)
-        .filter(Persona.id.in_(persona_ids), Persona.organization_id == run.organization_id)
+        .filter(
+            Persona.id.in_(persona_ids),
+            Persona.organization_id == run.organization_id,
+            Persona.workspace_id == run.workspace_id,
+        )
         .all()
     )
     missing = {str(i) for i in scenario_ids} - {str(s.id) for s in scenarios}

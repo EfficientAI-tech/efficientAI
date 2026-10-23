@@ -358,6 +358,7 @@ def evaluate_transcript_metrics(
         organization_id=result.organization_id,
         agent=agent,
         metric_ids=metric_ids,
+        workspace_id=getattr(result, "workspace_id", None),
     )
     from app.services.metrics.evaluation_scope import applicable_metrics
 
@@ -870,6 +871,7 @@ def process_evaluator_result_task(self, result_id: str):
                     organization_id=result.organization_id,
                     agent=agent,
                     metric_ids=getattr(evaluator, "metric_ids", None),
+                    workspace_id=getattr(result, "workspace_id", None),
                 )
                 from app.services.metrics.evaluation_scope import applicable_metrics
 

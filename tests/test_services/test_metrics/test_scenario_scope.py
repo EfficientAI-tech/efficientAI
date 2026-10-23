@@ -24,7 +24,12 @@ def _metric(mid=None, parent_id=None):
 def test_applicable_metrics_golden_always_applies():
     golden = _metric()
     sid = uuid4()
-    out = applicable_metrics([golden], scenario_id=sid, scenario_link_map={})
+    out = applicable_metrics(
+        [golden],
+        scenario_id=sid,
+        agent_link_map={},
+        scenario_link_map={},
+    )
     assert out == [golden]
 
 
@@ -36,13 +41,19 @@ def test_applicable_metrics_linked_only_on_matching_scenario():
     link_map = {mid: frozenset({linked_sid})}
     assert (
         applicable_metrics(
-            [metric], scenario_id=linked_sid, scenario_link_map=link_map
+            [metric],
+            scenario_id=linked_sid,
+            agent_link_map={},
+            scenario_link_map=link_map,
         )
         == [metric]
     )
     assert (
         applicable_metrics(
-            [metric], scenario_id=other_sid, scenario_link_map=link_map
+            [metric],
+            scenario_id=other_sid,
+            agent_link_map={},
+            scenario_link_map=link_map,
         )
         == []
     )

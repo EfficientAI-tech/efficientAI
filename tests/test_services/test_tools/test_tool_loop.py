@@ -108,7 +108,7 @@ def test_tool_failures_are_errors_returned_to_model(scripted_llm):
             None,
         ]
     )
-    _, records = _run(Toolset([FakeProvider()]))
+    _, records, _ = _run(Toolset([FakeProvider()]))
 
     assert [r.status for r in records] == ["error", "error", "error"]
     assert "backend down" in records[0].error
@@ -128,7 +128,7 @@ def test_write_tools_mocked_and_scenario_mocks_win(scripted_llm):
         ]
     )
     provider = FakeProvider()
-    _, records = _run(Toolset([provider], mock_responses={"lookup": {"rows": [1]}}))
+    _, records, _ = _run(Toolset([provider], mock_responses={"lookup": {"rows": [1]}}))
 
     assert [r.status for r in records] == ["mocked", "mocked"]
     assert json.loads(records[0].result_preview) == {"ok": True, "simulated": True}
