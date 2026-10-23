@@ -312,8 +312,7 @@ services:
   # fans out trials itself (SimulationRun.n_concurrent), hence the low concurrency.
   # Exported tasks + job dirs land in ./.data/harbor (shared with the api for trajectories).
   worker-harbor:
-    # Separate tag from the default worker: Python 3.12 + harbor extra (see Dockerfile.worker).
-    image: ghcr.io/efficientai-tech/efficientai-worker-harbor:${EFFICIENTAI_VERSION:-latest}
+    image: ghcr.io/efficientai-tech/efficientai-worker:${EFFICIENTAI_VERSION:-latest}-harbor
     build:
       context: .
       dockerfile: docker/Dockerfile.worker

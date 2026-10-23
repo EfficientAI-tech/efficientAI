@@ -224,7 +224,7 @@ jobs:
           context: .
           file: docker/Dockerfile.worker
           platforms: ${{ matrix.platform }}
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.WORKER_HARBOR_IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.WORKER_IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=worker-harbor-${{ matrix.slug }}
           cache-to: type=gha,scope=worker-harbor-${{ matrix.slug }},mode=max
           build-args: |
@@ -342,13 +342,13 @@ jobs:
         env:
           VERSION: ${{ needs.release.outputs.version }}
           MAJOR_MINOR: ${{ needs.release.outputs.major_minor }}
-          IMAGE: ${{ env.REGISTRY }}/${{ env.WORKER_HARBOR_IMAGE_NAME }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.WORKER_IMAGE_NAME }}
         run: |
           cd /tmp/digests/worker-harbor
           docker buildx imagetools create \
-            -t "$IMAGE:${VERSION}" \
-            -t "$IMAGE:${MAJOR_MINOR}" \
-            -t "$IMAGE:latest" \
+            -t "$IMAGE:${VERSION}-harbor" \
+            -t "$IMAGE:${MAJOR_MINOR}-harbor" \
+            -t "$IMAGE:latest-harbor" \
             $(printf "$IMAGE@sha256:%s " *)
 
       - name: Create GitHub release

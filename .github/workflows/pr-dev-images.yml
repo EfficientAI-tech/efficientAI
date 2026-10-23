@@ -21,7 +21,6 @@ env:
   REGISTRY: ghcr.io
   API_IMAGE_NAME: ${{ github.repository }}-api
   WORKER_IMAGE_NAME: ${{ github.repository }}-worker
-  WORKER_HARBOR_IMAGE_NAME: ${{ github.repository }}-worker-harbor
 
 permissions:
   contents: read
@@ -100,17 +99,21 @@ jobs:
           - service: api
             dockerfile: docker/Dockerfile.api
             image_name_var: API_IMAGE_NAME
+            tag_suffix: ""
             cache_scope: api-pr-dev
             build_args: ""
           - service: worker
             dockerfile: docker/Dockerfile.worker
             image_name_var: WORKER_IMAGE_NAME
+            tag_suffix: ""
             cache_scope: worker-pr-dev
             build_args: |
               INSTALL_EXTRAS=qualitative-voice
+          # Same GHCR package as worker; tags end with -harbor (avoids creating a new package).
           - service: worker-harbor
             dockerfile: docker/Dockerfile.worker
-            image_name_var: WORKER_HARBOR_IMAGE_NAME
+            image_name_var: WORKER_IMAGE_NAME
+            tag_suffix: "-harbor"
             cache_scope: worker-harbor-pr-dev
             build_args: |
               PYTHON_VERSION=3.12
@@ -126,11 +129,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          case "${{ matrix.image_name_var }}" in
-            API_IMAGE_NAME) image_name="${API_IMAGE_NAME,,}" ;;
-            WORKER_HARBOR_IMAGE_NAME) image_name="${WORKER_HARBOR_IMAGE_NAME,,}" ;;
-            *) image_name="${WORKER_IMAGE_NAME,,}" ;;
-          esac
+          if [[ "${{ matrix.image_name_var }}" == "API_IMAGE_NAME" ]]; then
+            image_name="${API_IMAGE_NAME,,}"
+          else
+            image_name="${WORKER_IMAGE_NAME,,}"
+          fi
           echo "name=$image_name" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
@@ -150,10 +153,10 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}
           tags: |
-            type=raw,value=pr-${{ needs.compute-metadata.outputs.pr_number }}
-            type=raw,value=pr-${{ needs.compute-metadata.outputs.pr_number }}-${{ needs.compute-metadata.outputs.short_sha }}
-            type=raw,value=${{ needs.compute-metadata.outputs.dev_version }}
-            type=raw,value=dev-latest-pr-${{ needs.compute-metadata.outputs.pr_number }}
+            type=raw,value=pr-${{ needs.compute-metadata.outputs.pr_number }}${{ matrix.tag_suffix }}
+            type=raw,value=pr-${{ needs.compute-metadata.outputs.pr_number }}-${{ needs.compute-metadata.outputs.short_sha }}${{ matrix.tag_suffix }}
+            type=raw,value=${{ needs.compute-metadata.outputs.dev_version }}${{ matrix.tag_suffix }}
+            type=raw,value=dev-latest-pr-${{ needs.compute-metadata.outputs.pr_number }}${{ matrix.tag_suffix }}
 
       - name: Build and optionally push image
         uses: docker/build-push-action@v5
