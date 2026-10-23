@@ -142,6 +142,12 @@ def run_harbor_simulation_task(self, simulation_run_id: str):
             summary["harbor"] = read_harbor_job_stats(harbor_job_dir(run))
             run.summary = summary
             refresh_run_progress(db, run)
+            if run.failed_trials and not run.error_message:
+                preview = (summary.get("failed_trial_errors") or [{}])[0].get("error_message")
+                if preview:
+                    run.error_message = (
+                        f"{run.failed_trials} trial(s) failed. First error: {preview[:2000]}"
+                    )
             db.commit()
 
             try:

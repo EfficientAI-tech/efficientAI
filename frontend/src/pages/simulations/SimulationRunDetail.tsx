@@ -365,6 +365,17 @@ export default function SimulationRunDetail() {
           <pre className="mt-4 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
             {run.error_message}
           </pre>
+        ) : summary?.failed_trial_errors?.length ? (
+          <div className="mt-4 space-y-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
+            <p className="font-medium">Trial errors</p>
+            {summary.failed_trial_errors.map((e) => (
+              <pre key={e.result_id} className="whitespace-pre-wrap">
+                {[e.scenario_name, e.persona_name].filter(Boolean).join(' · ')}
+                {e.scenario_name || e.persona_name ? ': ' : ''}
+                {e.error_message}
+              </pre>
+            ))}
+          </div>
         ) : null}
       </div>
 

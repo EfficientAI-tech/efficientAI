@@ -82,6 +82,10 @@ def fail_unfinished_trials(results: Iterable[EvaluatorResult], reason: str) -> N
     for result in results:
         if result.status in _UNFINISHED_STATUSES:
             result.status = EvaluatorResultStatus.FAILED.value
+            call_data = result.call_data if isinstance(result.call_data, dict) else {}
+            trial_err = call_data.get("trial_error")
+            if isinstance(trial_err, str) and trial_err.strip():
+                result.error_message = result.error_message or trial_err.strip()
             result.error_message = result.error_message or reason
 
 
@@ -305,10 +309,22 @@ def compute_summary(
     combo_rows.sort(key=lambda c: (c["mean_reward"] is None, c["mean_reward"] or 0))
 
     turns = [len(r.speaker_segments or []) for r in completed]
+    failed_trial_errors = [
+        {
+            "result_id": r.result_id,
+            "scenario_id": str(r.scenario_id) if r.scenario_id else None,
+            "scenario_name": scenario_names.get(r.scenario_id),
+            "persona_name": persona_names.get(r.persona_id),
+            "error_message": (r.error_message or "").strip(),
+        }
+        for r in failed
+        if (r.error_message or "").strip()
+    ]
     return {
         "n_trials": len(results),
         "n_completed": len(completed),
         "n_failed": len(failed),
+        "failed_trial_errors": failed_trial_errors[:10],
         "n_passed": sum(1 for r in scored if r.passed),
         "uses_success_criteria": uses_criteria,
         "pass_rate": round(sum(1 for r in scored if r.passed) / len(scored), 4) if scored else None,

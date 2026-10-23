@@ -2505,11 +2505,20 @@ export interface SimulationRunToolSummary {
   tools: SimulationRunToolRow[]
 }
 
+export interface SimulationRunFailedTrialError {
+  result_id: string
+  scenario_id?: string | null
+  scenario_name?: string | null
+  persona_name?: string | null
+  error_message: string
+}
+
 export interface SimulationRunSummary {
   n_trials: number
   n_completed: number
   n_failed: number
   n_passed: number
+  failed_trial_errors?: SimulationRunFailedTrialError[]
   uses_success_criteria?: boolean
   pass_rate?: number | null
   mean_reward?: number | null

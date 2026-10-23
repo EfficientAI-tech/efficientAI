@@ -297,13 +297,29 @@ def run_trial_conversation(
             on_turn=_on_turn,
         )
     except Exception as exc:
+        err_text = str(exc)
         db.rollback()
+        result = (
+            db.query(EvaluatorResult)
+            .filter(
+                EvaluatorResult.simulation_run_id == run.id,
+                EvaluatorResult.harbor_trial_name == refs.trial_name,
+            )
+            .one()
+        )
         if conversation.transcript:
             write_conversation_to_result(
                 result, conversation, agent=agent, extra_call_data=trial_call_data
             )
+        else:
+            merged = dict(result.call_data or {})
+            merged.update(trial_call_data)
+            result.call_data = merged
+        call_data = dict(result.call_data or {})
+        call_data["trial_error"] = err_text
+        result.call_data = call_data
         result.status = EvaluatorResultStatus.FAILED.value
-        result.error_message = str(exc)
+        result.error_message = err_text
         _commit(db, result)
         raise
 
