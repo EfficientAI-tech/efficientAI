@@ -29,6 +29,12 @@ def flatten_metric_groups(metric_groups: list[MetricPromptGroup]) -> list:
 from loguru import logger
 
 from app.models.database import ModelProvider
+from app.services.metrics.option_labels import (
+    canonical_enum_option,
+    coerce_metric_option_label,
+    enum_numeric_matches_ambiguous,
+    enum_option_labels_from_config,
+)
 
 from .json_utils import repair_truncated_json
 from .score_utils import (
@@ -70,10 +76,7 @@ def _classification_metric_error_entry(
 def _get_enum_options(metric) -> list[str]:
     """Return the list of allowed enum option labels for an enum custom metric."""
     cfg = getattr(metric, "custom_config", None) or {}
-    options = cfg.get("options") if isinstance(cfg, dict) else None
-    if not isinstance(options, list):
-        return []
-    return [str(o).strip() for o in options if str(o).strip()]
+    return enum_option_labels_from_config(cfg)
 
 
 def _get_number_range(metric) -> Optional[dict]:
@@ -138,17 +141,26 @@ def _normalize_enum_value(raw: Any, options: list[str]) -> Optional[str]:
     if raw is None or not options:
         return None
     if isinstance(raw, dict):
-        for k in ("value", "label", "choice", "answer"):
-            if k in raw:
-                raw = raw[k]
-                break
-    text = str(raw).strip()
+        coerced = coerce_metric_option_label(raw)
+        if coerced is not None:
+            text = coerced
+        else:
+            for k in ("value", "label", "choice", "answer"):
+                if k in raw:
+                    raw = raw[k]
+                    break
+            text = str(raw).strip()
+    else:
+        coerced = coerce_metric_option_label(raw)
+        text = coerced if coerced is not None else str(raw).strip()
     if not text:
         return None
+    canonical = canonical_enum_option(text, options)
+    if canonical is not None:
+        return canonical
+    if enum_numeric_matches_ambiguous(text, options):
+        return None
     text_lower = text.lower()
-    for opt in options:
-        if opt.lower() == text_lower:
-            return opt
     # Lenient fallback: substring containment in either direction.
     for opt in options:
         if opt.lower() in text_lower or text_lower in opt.lower():

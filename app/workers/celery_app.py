@@ -22,6 +22,8 @@ from app.workers.tasks import (
     initiate_vobiz_outbound_call_task,
     finalize_telephony_recording_task,
 )
+from app.workers.tasks.ingest_knowledge_document import ingest_knowledge_document_task
+from app.workers.tasks.run_harbor_simulation import run_harbor_simulation_task
 
 __all__ = [
     "celery_app",
@@ -36,4 +38,6 @@ __all__ = [
     "run_judge_alignment_task",
     "initiate_vobiz_outbound_call_task",
     "finalize_telephony_recording_task",
+    "ingest_knowledge_document_task",
+    "run_harbor_simulation_task",
 ]

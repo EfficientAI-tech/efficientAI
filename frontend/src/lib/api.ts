@@ -15,6 +15,13 @@ import type {
   GenerateTestSetupParams,
 } from '../types/agentTestSetupGeneration'
 import type {
+  AgentToolCatalogEntry,
+  AgentToolConnectionLink,
+  ExpectedToolCall,
+  ToolConnection,
+  ToolConnectionCreate,
+  ToolConnectionSecrets,
+  ToolSimulationMode,
   AudioFile,
   Evaluation,
   EvaluationCreate,
@@ -78,6 +85,10 @@ import type {
   Workspace,
   LLMGenerationConfig,
   TestAgent,
+  SimulationRun,
+  SimulationRunCreate,
+  SimulationTrial,
+  SimulationTrialDetail,
 } from '../types/api'
 
 export interface EnterpriseFeatureMeta {
@@ -1427,6 +1438,11 @@ class ApiClient {
     return response.data
   }
 
+  async setAgentFavorite(agentId: string, favorite: boolean): Promise<TestAgent> {
+    const response = await this.client.put(`/api/v1/agents/${agentId}/favorite`, { favorite })
+    return response.data
+  }
+
   async getAgent(agentId: string): Promise<TestAgent> {
     const response = await this.client.get(`/api/v1/agents/${agentId}`)
     return response.data
@@ -1495,6 +1511,20 @@ class ApiClient {
     append_scenarios_to_output?: boolean
   }): Promise<{ content: string; provider: string; model: string }> {
     const response = await this.client.post('/api/v1/agents/generate-description', data)
+    return response.data
+  }
+
+  async generateProductionPromptFromBrief(data: {
+    agent_name: string
+    brief: string
+    language?: string
+    call_type?: string
+    provider?: string
+    model?: string
+    credential_id?: string
+    additional_context?: string
+  }): Promise<{ production_prompt: string; provider: string; model: string }> {
+    const response = await this.client.post('/api/v1/agents/generate-production-prompt', data)
     return response.data
   }
 
@@ -1782,6 +1812,7 @@ class ApiClient {
     agent_id?: string | null
     description?: string | null
     required_info: Record<string, string>
+    expected_tool_calls?: ExpectedToolCall[] | null
   }): Promise<any> {
     const response = await this.client.post('/api/v1/scenarios', data)
     return response.data
@@ -1792,6 +1823,7 @@ class ApiClient {
     agent_id?: string | null
     description?: string | null
     required_info?: Record<string, string>
+    expected_tool_calls?: ExpectedToolCall[] | null
   }): Promise<any> {
     const response = await this.client.put(`/api/v1/scenarios/${scenarioId}`, data)
     return response.data
@@ -1802,6 +1834,237 @@ class ApiClient {
       params: force ? { force: true } : undefined,
     })
     return response.data
+  }
+
+  // Harbor simulation runs
+  async listSimulationRuns(agentId?: string): Promise<SimulationRun[]> {
+    const response = await this.client.get('/api/v1/simulation-runs', {
+      params: agentId ? { agent_id: agentId } : undefined,
+    })
+    return response.data
+  }
+
+  async getSimulationRun(runId: string): Promise<SimulationRun> {
+    const response = await this.client.get(`/api/v1/simulation-runs/${runId}`)
+    return response.data
+  }
+
+  async createSimulationRun(data: SimulationRunCreate): Promise<SimulationRun> {
+    const response = await this.client.post('/api/v1/simulation-runs', data)
+    return response.data
+  }
+
+  async listSimulationTrials(runId: string): Promise<SimulationTrial[]> {
+    const response = await this.client.get(`/api/v1/simulation-runs/${runId}/trials`)
+    return response.data
+  }
+
+  async getSimulationTrial(runId: string, trialId: string): Promise<SimulationTrialDetail> {
+    const response = await this.client.get(`/api/v1/simulation-runs/${runId}/trials/${trialId}`)
+    return response.data
+  }
+
+  async renameSimulationRun(runId: string, name: string | null): Promise<SimulationRun> {
+    const response = await this.client.patch(`/api/v1/simulation-runs/${runId}`, { name })
+    return response.data
+  }
+
+  async cancelSimulationRun(runId: string): Promise<SimulationRun> {
+    const response = await this.client.post(`/api/v1/simulation-runs/${runId}/cancel`)
+    return response.data
+  }
+
+  async deleteSimulationRun(runId: string): Promise<void> {
+    await this.client.delete(`/api/v1/simulation-runs/${runId}`)
+  }
+
+  async rerunSimulationRun(runId: string, onlyFailed = false): Promise<SimulationRun> {
+    const response = await this.client.post(`/api/v1/simulation-runs/${runId}/rerun`, null, {
+      params: { only_failed: onlyFailed },
+    })
+    return response.data
+  }
+
+  async downloadSimulationArtifacts(runId: string): Promise<Blob> {
+    const response = await this.client.get(`/api/v1/simulation-runs/${runId}/artifacts`, {
+      responseType: 'blob',
+    })
+    return response.data
+  }
+
+  // Knowledge bases
+  async listKnowledgeBases(skip = 0, limit = 100): Promise<any[]> {
+    const response = await this.client.get('/api/v1/knowledge-bases', { params: { skip, limit } })
+    return response.data
+  }
+
+  async getKnowledgeBase(knowledgeBaseId: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/knowledge-bases/${knowledgeBaseId}`)
+    return response.data
+  }
+
+  async listKnowledgeBaseEmbeddingModels(): Promise<Array<{ id: string; label: string }>> {
+    const response = await this.client.get('/api/v1/knowledge-bases/embedding-models')
+    return response.data
+  }
+
+  async getKnowledgeBaseEmbeddingConfig(): Promise<{
+    default_provider: string
+    default_model: string
+    required_dimensions: number
+    providers: Array<{
+      id: string
+      label: string
+      suggested_models: Array<{ id: string; label: string }>
+    }>
+  }> {
+    const response = await this.client.get('/api/v1/knowledge-bases/embedding-config')
+    return response.data
+  }
+
+  async createKnowledgeBase(data: {
+    name: string
+    description?: string
+    embedding_provider?: string
+    embedding_model?: string
+    embedding_credential_id?: string | null
+  }): Promise<any> {
+    const response = await this.client.post('/api/v1/knowledge-bases', data)
+    return response.data
+  }
+
+  async updateKnowledgeBase(
+    knowledgeBaseId: string,
+    data: {
+      name?: string
+      description?: string
+      status?: string
+      embedding_provider?: string
+      embedding_model?: string
+      embedding_credential_id?: string | null
+    },
+  ): Promise<any> {
+    const response = await this.client.patch(`/api/v1/knowledge-bases/${knowledgeBaseId}`, data)
+    return response.data
+  }
+
+  async deleteKnowledgeBase(knowledgeBaseId: string): Promise<void> {
+    await this.client.delete(`/api/v1/knowledge-bases/${knowledgeBaseId}`)
+  }
+
+  async listToolConnections(): Promise<ToolConnection[]> {
+    const response = await this.client.get('/api/v1/tool-connections')
+    return response.data
+  }
+
+  async createToolConnection(data: ToolConnectionCreate): Promise<ToolConnection> {
+    const response = await this.client.post('/api/v1/tool-connections', data)
+    return response.data
+  }
+
+  async updateToolConnection(
+    connectionId: string,
+    data: {
+      name?: string
+      config?: Record<string, unknown>
+      secrets?: ToolConnectionSecrets
+      simulation_mode?: ToolSimulationMode
+    },
+  ): Promise<ToolConnection> {
+    const response = await this.client.patch(`/api/v1/tool-connections/${connectionId}`, data)
+    return response.data
+  }
+
+  async testToolConnection(connectionId: string): Promise<ToolConnection> {
+    const response = await this.client.post(`/api/v1/tool-connections/${connectionId}/test`)
+    return response.data
+  }
+
+  async deleteToolConnection(connectionId: string): Promise<void> {
+    await this.client.delete(`/api/v1/tool-connections/${connectionId}`)
+  }
+
+  async getAgentToolConnections(agentId: string): Promise<AgentToolConnectionLink[]> {
+    const response = await this.client.get(`/api/v1/tool-connections/agents/${agentId}/links`)
+    return response.data
+  }
+
+  async updateAgentToolConnections(
+    agentId: string,
+    links: AgentToolConnectionLink[],
+  ): Promise<AgentToolConnectionLink[]> {
+    const response = await this.client.put(`/api/v1/tool-connections/agents/${agentId}/links`, { links })
+    return response.data
+  }
+
+  async getAgentToolCatalog(agentId: string): Promise<AgentToolCatalogEntry[]> {
+    const response = await this.client.get(`/api/v1/tool-connections/agents/${agentId}/catalog`)
+    return response.data
+  }
+
+  async uploadKnowledgeDocument(knowledgeBaseId: string, file: File): Promise<any> {
+    const form = new FormData()
+    form.append('file', file)
+    const response = await this.client.post(
+      `/api/v1/knowledge-bases/${knowledgeBaseId}/documents`,
+      form,
+      { headers: { 'Content-Type': 'multipart/form-data' } },
+    )
+    return response.data
+  }
+
+  async uploadKnowledgeDocuments(
+    knowledgeBaseId: string,
+    files: File[],
+    options?: {
+      onProgress?: (progress: { uploaded: number; total: number; fileName: string }) => void
+    },
+  ): Promise<{ uploaded: number; failed: Array<{ fileName: string; error: string }> }> {
+    const failed: Array<{ fileName: string; error: string }> = []
+    let uploaded = 0
+    const total = files.length
+    for (const file of files) {
+      options?.onProgress?.({ uploaded, total, fileName: file.name })
+      try {
+        await this.uploadKnowledgeDocument(knowledgeBaseId, file)
+        uploaded += 1
+      } catch (err: unknown) {
+        const ax = err as { response?: { data?: { detail?: string } }; message?: string }
+        const detail = ax?.response?.data?.detail
+        failed.push({
+          fileName: file.name,
+          error: typeof detail === 'string' ? detail : ax?.message || 'Upload failed',
+        })
+      }
+    }
+    options?.onProgress?.({ uploaded, total, fileName: '' })
+    return { uploaded, failed }
+  }
+
+  async retryKnowledgeDocument(knowledgeBaseId: string, documentId: string): Promise<any> {
+    const response = await this.client.post(
+      `/api/v1/knowledge-bases/${knowledgeBaseId}/documents/${documentId}/retry`,
+    )
+    return response.data
+  }
+
+  async deleteKnowledgeDocument(knowledgeBaseId: string, documentId: string): Promise<void> {
+    await this.client.delete(
+      `/api/v1/knowledge-bases/${knowledgeBaseId}/documents/${documentId}`,
+    )
+  }
+
+  async getKnowledgeDocumentView(knowledgeBaseId: string, documentId: string): Promise<any> {
+    const response = await this.client.get(
+      `/api/v1/knowledge-bases/${knowledgeBaseId}/documents/${documentId}/view`,
+    )
+    return response.data
+  }
+
+  knowledgeDocumentDownloadUrl(knowledgeBaseId: string, documentId: string): string {
+    return this.buildAuthenticatedApiUrl(
+      `/api/v1/knowledge-bases/${knowledgeBaseId}/documents/${documentId}/download`,
+    )
   }
 
   // Chat/Inference endpoints
@@ -4973,6 +5236,8 @@ class ApiClient {
      * their parent's scope.
      */
     scope?: 'workspace' | 'organization'
+    scenario_ids?: string[]
+    agent_ids?: string[]
   }): Promise<any> {
     const response = await this.client.post('/api/v1/metrics', data)
     return response.data
@@ -5017,6 +5282,8 @@ class ApiClient {
      * in every workspace of the org.
      */
     scope?: 'workspace' | 'organization'
+    scenario_ids?: string[]
+    agent_ids?: string[]
   }): Promise<any> {
     const response = await this.client.post(
       '/api/v1/metrics/with-children',
@@ -5594,6 +5861,8 @@ class ApiClient {
     selection_mode?: 'single_choice' | 'multi_label' | null
     /** Only honored on multi_label parents; backend 400s otherwise. */
     allow_discovery?: boolean
+    scenario_ids?: string[]
+    agent_ids?: string[]
   }): Promise<any> {
     const response = await this.client.put(`/api/v1/metrics/${metricId}`, data)
     return response.data
@@ -5630,6 +5899,39 @@ class ApiClient {
     model?: string
   }> {
     const response = await this.client.post('/api/v1/metrics/generate', data)
+    return response.data
+  }
+
+  async generateMetricsFromScenarios(data: {
+    agent_name: string
+    production_prompt: string
+    call_medium?: string | null
+    scenarios: Array<{
+      name: string
+      description: string
+      goal?: string
+      metric_type?: 'auto' | 'boolean' | 'rating' | 'number' | 'text'
+    }>
+    provider?: string
+    model?: string
+    credential_id?: string
+    llm_config?: Record<string, any>
+  }): Promise<{
+    metrics: Array<{
+      name: string
+      description: string
+      metric_type: 'rating' | 'boolean' | 'number' | 'text'
+      custom_data_type: 'boolean' | 'enum' | 'number_range' | null
+      custom_config: Record<string, any>
+      supported_surfaces: string[]
+      enabled_surfaces: string[]
+      tags: string[]
+      scenario_name: string
+    }>
+    provider: string
+    model: string
+  }> {
+    const response = await this.client.post('/api/v1/metrics/generate-from-scenarios', data)
     return response.data
   }
 

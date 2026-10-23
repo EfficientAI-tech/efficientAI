@@ -34,6 +34,8 @@ from . import send_alert_notifications
 from . import refresh_fx_rates
 from . import run_cron_evaluator_job
 from . import trace_tasks
+from . import ingest_knowledge_document
+from . import run_harbor_simulation
 from app.workers.concurrency import eval_dispatch
 from app.workers.concurrency import fair_dispatch
 from app.workers.concurrency import fair_diarization_dispatch
@@ -148,3 +150,4 @@ dispatch_cron_jobs_task = dispatch_cron_jobs.dispatch_cron_jobs_task
 evaluate_alerts_task = evaluate_alerts.evaluate_alerts_task
 refresh_fx_rates_task = refresh_fx_rates.refresh_fx_rates_task
 run_cron_evaluator_job_task = run_cron_evaluator_job.run_cron_evaluator_job_task
+ingest_knowledge_document_task = ingest_knowledge_document.ingest_knowledge_document_task

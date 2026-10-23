@@ -10,7 +10,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.models.database import Agent
-from app.models.enums import ModelProvider
+from app.models.enums import CallMediumEnum, ModelProvider
 from app.services.ai.llm_service import llm_service
 
 SCENARIO_REFERENCE_HEADING = "## Test scenarios (reference)"
@@ -38,6 +38,28 @@ GENERATE_PERSONA_PROMPT_SYSTEM = (
     "- Infer a complementary caller profile from the agent under test.\n"
     "- Return ONLY the persona prompt text."
 )
+
+GENERATE_CHAT_PERSONA_PROMPT_SYSTEM = (
+    "You are an expert at writing persona prompts for synthetic chat test customers.\n\n"
+    "A persona prompt describes how the simulated customer writes and behaves when texting "
+    "a chat agent (web chat, WhatsApp, SMS). It is appended to the customer LLM system prompt "
+    "during evaluation runs.\n\n"
+    "Guidelines:\n"
+    "- Write 2-5 concise sentences in plain prose (not markdown headings).\n"
+    "- Describe personality, tone, patience, and texting style (message length, typos, "
+    "emoji, how much detail they volunteer up front).\n"
+    "- The customer is chatting with an AI agent — stay in character as a realistic customer.\n"
+    "- Do NOT describe voice, accent, or phone-call behavior.\n"
+    "- Do NOT mention testing, QA, automation, LLM, or system prompts.\n"
+    "- Do NOT repeat the agent's full system prompt verbatim.\n"
+    "- Infer a complementary customer profile from the agent under test.\n"
+    "- Return ONLY the persona prompt text."
+)
+
+
+def _is_chat_agent(agent: Agent) -> bool:
+    medium = getattr(agent.call_medium, "value", agent.call_medium) or ""
+    return str(medium).lower() == CallMediumEnum.CHAT.value
 
 
 @dataclass
@@ -92,9 +114,8 @@ def build_persona_prompt_user_message(
         parts.append(f"Persona gender: {persona_gender}")
     if additional_context and additional_context.strip():
         parts.append(f"Additional context:\n{additional_context.strip()}")
-    parts.append(
-        "\nGenerate a persona prompt for the synthetic caller who will interact with this agent."
-    )
+    who = "customer who will chat with" if _is_chat_agent(agent) else "caller who will interact with"
+    parts.append(f"\nGenerate a persona prompt for the synthetic {who} this agent.")
     return "\n".join(parts)
 
 
@@ -138,7 +159,14 @@ def generate_persona_prompt_from_agent(
             )
 
     messages = [
-        {"role": "system", "content": GENERATE_PERSONA_PROMPT_SYSTEM},
+        {
+            "role": "system",
+            "content": (
+                GENERATE_CHAT_PERSONA_PROMPT_SYSTEM
+                if _is_chat_agent(agent)
+                else GENERATE_PERSONA_PROMPT_SYSTEM
+            ),
+        },
         {
             "role": "user",
             "content": build_persona_prompt_user_message(

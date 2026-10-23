@@ -35,6 +35,30 @@ def _patch_generation_llm(monkeypatch, generate_response):
     monkeypatch.setattr(llm_service, "generate_response", generate_response)
 
 
+def test_generate_production_prompt(authenticated_client, monkeypatch, make_ai_provider):
+    make_ai_provider(provider="openai")
+
+    llm_response = (
+        "You are a billing support chat agent. Greet the user warmly. "
+        "Verify account details before discussing charges. Explain fees clearly. "
+        "Offer refunds when policy allows. Stay concise and professional."
+    )
+    _patch_generation_llm(monkeypatch, lambda **_kwargs: {"text": llm_response})
+
+    response = authenticated_client.post(
+        "/api/v1/agents/generate-production-prompt",
+        json={
+            "agent_name": "Billing Bot",
+            "brief": "Chat agent for billing questions and refunds",
+            "language": "en",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert "billing support chat agent" in body["production_prompt"]
+    assert body["provider"] == "openai"
+
+
 def test_generate_test_prompt(authenticated_client, monkeypatch, make_ai_provider):
     make_ai_provider(provider="openai")
 

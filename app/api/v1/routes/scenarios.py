@@ -44,7 +44,12 @@ async def create_scenario(
         agent_id=scenario.agent_id,
         name=scenario.name,
         description=scenario.description,
-        required_info=scenario.required_info
+        required_info=scenario.required_info,
+        expected_tool_calls=(
+            [call.model_dump() for call in scenario.expected_tool_calls]
+            if scenario.expected_tool_calls is not None
+            else None
+        ),
     )
     db.add(db_scenario)
     db.commit()
