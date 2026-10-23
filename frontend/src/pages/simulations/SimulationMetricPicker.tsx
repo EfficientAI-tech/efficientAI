@@ -12,6 +12,7 @@ import {
   formatMetricScopeLabel,
   goldenMetrics,
   isGoldenMetric,
+  scenarioMetricsForRun,
 } from './simulationMetricScope'
 
 interface Props {
@@ -99,6 +100,13 @@ export default function SimulationMetricPicker({
       return links.some((id) => selected.has(id))
     })
   }, [metricRows, agentMedium, runAgentId, selectedScenarioIds])
+  const forScenarioOnly = useMemo(
+    () =>
+      scenarioMetricsForRun(metricRows, agentMedium, selectedScenarioIds).filter(
+        (metric) => !(metric.agent_ids?.length),
+      ),
+    [metricRows, agentMedium, selectedScenarioIds],
+  )
 
   const handleToggle = (metric: MetricRow) => {
     const wasChecked = normalizedSelected.includes(metric.id)
@@ -151,6 +159,29 @@ export default function SimulationMetricPicker({
             </p>
           ) : (
             forAgent.map((metric) => (
+              <MetricCheckboxRow
+                key={metric.id}
+                metric={metric}
+                checked={normalizedSelected.includes(metric.id)}
+                hint={formatMetricScopeLabel(metric, scenarioNameById, agentNameById)}
+                onToggle={() => handleToggle(metric)}
+              />
+            ))
+          )}
+        </div>
+      </section>
+      <section>
+        <h5 className="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-500">
+          Scenario-specific metrics
+        </h5>
+        <p className="mb-2 text-xs text-gray-500">
+          Linked to scenarios only — auto-selected when those scenarios are in the run.
+        </p>
+        <div className="space-y-2 rounded-xl border border-gray-200 bg-gray-50/30 p-3">
+          {forScenarioOnly.length === 0 ? (
+            <p className="text-sm text-gray-500">No scenario-only metrics for this selection.</p>
+          ) : (
+            forScenarioOnly.map((metric) => (
               <MetricCheckboxRow
                 key={metric.id}
                 metric={metric}

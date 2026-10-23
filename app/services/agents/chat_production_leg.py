@@ -22,14 +22,24 @@ from app.services.testing.simulation_prompts import build_agent_system_prompt
 from app.services.testing.test_agent_simulation_prompt import is_chat_agent
 
 
-def _agent_messages(system_prompt: str, transcript: list[dict[str, str]]) -> list[dict[str, str]]:
-    messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+def _agent_messages(
+    system_prompt: str,
+    transcript: list[dict[str, str]],
+    *,
+    tool_sidecars: Optional[list[list[dict[str, Any]]]] = None,
+) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+    sidecars = tool_sidecars or []
+    assistant_turn = 0
     for entry in transcript:
         speaker = entry.get("speaker")
         text = (entry.get("text") or "").strip()
         if not text:
             continue
         if speaker == "Speaker 2":
+            if assistant_turn < len(sidecars) and sidecars[assistant_turn]:
+                messages.extend(sidecars[assistant_turn])
+            assistant_turn += 1
             messages.append({"role": "assistant", "content": text})
         else:
             messages.append({"role": "user", "content": text})
@@ -332,7 +342,11 @@ def generate_production_chat_reply(
         db, agent=agent, organization_id=organization_id, leg="main"
     )
     agent_system = build_agent_system_prompt(agent)
-    messages = _agent_messages(agent_system, transcript)
+    tool_sidecars_key = "internal_llm_tool_sidecars"
+    tool_sidecars: list[list[dict[str, Any]]] = list(
+        provider_state.extra.get(tool_sidecars_key) or []
+    )
+    messages = _agent_messages(agent_system, transcript, tool_sidecars=tool_sidecars)
     tool_records: list = []
     owns_toolset = toolset is None
     try:
@@ -345,7 +359,7 @@ def generate_production_chat_reply(
                 db, agent=agent, organization_id=organization_id, llm_model=main_llm.model
             )
         if toolset:
-            text, tool_records = run_tool_loop(
+            text, tool_records, tool_message_tail = run_tool_loop(
                 db,
                 toolset=toolset,
                 messages=with_knowledge_base_instructions(messages),
@@ -356,6 +370,9 @@ def generate_production_chat_reply(
                 credential_id=main_llm.credential_id,
                 task_defaults={"temperature": 0.7, "max_tokens": 1024},
             )
+            if tool_message_tail:
+                tool_sidecars.append(tool_message_tail)
+                provider_state.extra[tool_sidecars_key] = tool_sidecars
         else:
             result = llm_service.generate_response(
                 messages=messages,

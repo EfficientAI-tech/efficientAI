@@ -183,7 +183,7 @@ def _generate_test_customer_turn(
     """Simulated customer turn; uses the test agent's knowledge bases when they have ready docs."""
     leg_label = "Simulated customer (test agent LLM)"
     kb_tool_calls: list[dict[str, Any]] = []
-    workspace_id = agent.workspace_id
+    workspace_id = getattr(agent, "workspace_id", None)
     if workspace_id:
         from app.services.knowledge_bases.chat_tools import (
             generate_production_reply_with_knowledge_tools,

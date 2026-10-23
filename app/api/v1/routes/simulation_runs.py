@@ -12,8 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
-from app.core.api_rate_limit import enforce_resource_create_rate_limit
-from app.core.auth import Principal
+from app.core.auth import Principal, get_principal
 from app.dependencies import get_db, get_organization_id, get_workspace_id
 from app.models.database import (
     Agent,
@@ -117,12 +116,20 @@ def _create_and_queue(
 
     found_scenarios = (
         db.query(Scenario.id)
-        .filter(Scenario.id.in_(payload.scenario_ids), Scenario.organization_id == organization_id)
+        .filter(
+            Scenario.id.in_(payload.scenario_ids),
+            Scenario.organization_id == organization_id,
+            Scenario.workspace_id == workspace_id,
+        )
         .count()
     )
     found_personas = (
         db.query(Persona.id)
-        .filter(Persona.id.in_(payload.persona_ids), Persona.organization_id == organization_id)
+        .filter(
+            Persona.id.in_(payload.persona_ids),
+            Persona.organization_id == organization_id,
+            Persona.workspace_id == workspace_id,
+        )
         .count()
     )
     if found_scenarios != len(set(payload.scenario_ids)) or found_personas != len(
@@ -192,7 +199,7 @@ def create_simulation_run(
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
-    principal: Principal = Depends(enforce_resource_create_rate_limit),
+    principal: Principal = Depends(get_principal),
 ):
     run = _create_and_queue(
         db,
@@ -417,7 +424,7 @@ def rerun_simulation_run(
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
-    principal: Principal = Depends(enforce_resource_create_rate_limit),
+    principal: Principal = Depends(get_principal),
 ):
     """Clone a run's config; ``only_failed`` keeps scenarios/personas with a failing trial."""
     run = _get_run(db, run_ref, organization_id, workspace_id)
@@ -488,3 +495,13 @@ def download_simulation_artifacts(
         media_type="application/gzip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+from app.core.auth.capabilities import SIM_MANAGE, SIM_VIEW
+from app.core.auth.workspace_route_capabilities import apply_workspace_route_capabilities
+
+apply_workspace_route_capabilities(
+    router,
+    view_capability=SIM_VIEW,
+    manage_capability=SIM_MANAGE,
+)

@@ -41,10 +41,11 @@ def run_tool_loop(
     task_defaults: Optional[dict[str, Any]] = None,
     max_rounds: int = DEFAULT_MAX_TOOL_ROUNDS,
     side: str = "production",
-) -> tuple[str, list[ToolCallRecord]]:
-    """Return ``(reply_text, tool_call_records)``; tool failures go back to the model."""
+) -> tuple[str, list[ToolCallRecord], list[dict[str, Any]]]:
+    """Return ``(reply_text, tool_call_records, messages_appended)``; tool failures go back to the model."""
     records: list[ToolCallRecord] = []
     working = list(messages)
+    initial_len = len(working)
     empty_retries = 0
     for _ in range(max_rounds):
         result = llm_service.generate_response_with_tools(
@@ -65,11 +66,11 @@ def run_tool_loop(
             # reasoning) before a reply or a tool call was finished. Try again
             # instead of treating that as the customer's answer.
             if text:
-                return text, records
+                return text, records, working[initial_len:]
             if result.get("finish_reason") == "length" or empty_retries < 1:
                 empty_retries += 1
                 continue
-            return "", records
+            return "", records, working[initial_len:]
         working.append(
             {"role": "assistant", "content": result.get("text") or None, "tool_calls": tool_calls}
         )
@@ -119,4 +120,4 @@ def run_tool_loop(
         credential_id=credential_id,
         task_defaults=task_defaults,
     )
-    return (final.get("text") or "").strip(), records
+    return (final.get("text") or "").strip(), records, working[initial_len:]

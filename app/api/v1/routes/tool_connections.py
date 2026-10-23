@@ -9,8 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.core.api_rate_limit import enforce_resource_create_rate_limit
-from app.core.auth import Principal
+from app.core.auth import Principal, get_principal
 from app.dependencies import get_db, get_organization_id, get_workspace_id
 from app.models.database import Agent, AgentToolConnection, ToolConnection
 from app.models.schemas import (
@@ -130,7 +129,7 @@ def create_tool_connection(
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
-    principal: Principal = Depends(enforce_resource_create_rate_limit),
+    principal: Principal = Depends(get_principal),
 ):
     """Create the connection and immediately discover its tools (errors land in ``last_error``)."""
     try:
@@ -294,3 +293,13 @@ def agent_tool_catalog(
         return entries
     finally:
         toolset.close()
+
+
+from app.core.auth.capabilities import SIM_MANAGE, SIM_VIEW
+from app.core.auth.workspace_route_capabilities import apply_workspace_route_capabilities
+
+apply_workspace_route_capabilities(
+    router,
+    view_capability=SIM_VIEW,
+    manage_capability=SIM_MANAGE,
+)

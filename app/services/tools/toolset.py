@@ -182,7 +182,7 @@ def scenario_mock_responses(scenario: Any) -> dict[str, Any]:
         if (
             isinstance(expectation, dict)
             and expectation.get("tool")
-            and ("mock_response" in expectation)
+            and expectation.get("mock_response") is not None
         ):
             mocks[str(expectation["tool"])] = expectation["mock_response"]
     return mocks

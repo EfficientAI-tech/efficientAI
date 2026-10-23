@@ -71,6 +71,22 @@ def ingest_knowledge_document(db: Session, *, document_id: UUID) -> None:
                         "embedding_model": embed_profile.model,
                     },
                 )
+        db.refresh(kb)
+        current_profile = profile_from_kb(kb)
+        if (
+            current_profile.provider != embed_profile.provider
+            or current_profile.model != embed_profile.model
+            or current_profile.credential_id != embed_profile.credential_id
+        ):
+            doc.status = "pending"
+            doc.error_text = None
+            db.commit()
+            from app.workers.tasks.ingest_knowledge_document import (
+                ingest_knowledge_document_task,
+            )
+
+            ingest_knowledge_document_task.delay(str(doc.id))
+            return
         doc.status = "ready"
         doc.error_text = None
         db.commit()

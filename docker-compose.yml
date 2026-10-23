@@ -312,7 +312,7 @@ services:
   # fans out trials itself (SimulationRun.n_concurrent), hence the low concurrency.
   # Exported tasks + job dirs land in ./.data/harbor (shared with the api for trajectories).
   worker-harbor:
-    image: efficientai-worker-harbor:local
+    image: ghcr.io/efficientai-tech/efficientai-worker:${EFFICIENTAI_VERSION:-latest}
     build:
       context: .
       dockerfile: docker/Dockerfile.worker

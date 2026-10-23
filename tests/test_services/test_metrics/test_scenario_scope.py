@@ -5,8 +5,8 @@ from uuid import uuid4
 import pytest
 
 from app.models.database import Metric, MetricScenarioAssignment, Scenario
+from app.services.metrics.evaluation_scope import applicable_metrics
 from app.services.metrics.scenario_scope import (
-    applicable_metrics,
     is_golden_scope,
     load_scenario_link_map,
     metric_applies_to_scenario,
@@ -24,7 +24,7 @@ def _metric(mid=None, parent_id=None):
 def test_applicable_metrics_golden_always_applies():
     golden = _metric()
     sid = uuid4()
-    out = applicable_metrics([golden], sid, link_map={})
+    out = applicable_metrics([golden], scenario_id=sid, scenario_link_map={})
     assert out == [golden]
 
 
@@ -34,15 +34,25 @@ def test_applicable_metrics_linked_only_on_matching_scenario():
     other_sid = uuid4()
     metric = _metric(mid)
     link_map = {mid: frozenset({linked_sid})}
-    assert applicable_metrics([metric], linked_sid, link_map=link_map) == [metric]
-    assert applicable_metrics([metric], other_sid, link_map=link_map) == []
+    assert (
+        applicable_metrics(
+            [metric], scenario_id=linked_sid, scenario_link_map=link_map
+        )
+        == [metric]
+    )
+    assert (
+        applicable_metrics(
+            [metric], scenario_id=other_sid, scenario_link_map=link_map
+        )
+        == []
+    )
 
 
 def test_applicable_metrics_none_scenario_keeps_all():
     mid = uuid4()
     metric = _metric(mid)
     link_map = {mid: frozenset({uuid4()})}
-    assert applicable_metrics([metric], None, link_map=link_map) == [metric]
+    assert applicable_metrics([metric], scenario_id=None) == [metric]
 
 
 def test_child_follows_parent_links(db_session, seed_org, default_workspace):

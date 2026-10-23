@@ -1271,16 +1271,20 @@ export default function MetricsManagement({
       // does not accept ``scope``, so we omit it when editing to keep
       // the body honest.
       ...(!editingMetric ? { scope: formData.scope } : {}),
-      ...(formData.scenario_scope_mode === 'selected'
-        ? { scenario_ids: formData.scenario_link_ids }
-        : editingMetric
-          ? { scenario_ids: [] as string[] }
-          : { scenario_ids: [] as string[] }),
-      ...(formData.agent_scope_mode === 'selected'
-        ? { agent_ids: formData.agent_link_ids }
-        : editingMetric
-          ? { agent_ids: [] as string[] }
-          : { agent_ids: [] as string[] }),
+      ...(editingMetric?.parent_metric_id
+        ? {}
+        : {
+            ...(formData.scenario_scope_mode === 'selected'
+              ? { scenario_ids: formData.scenario_link_ids }
+              : editingMetric
+                ? { scenario_ids: [] as string[] }
+                : { scenario_ids: [] as string[] }),
+            ...(formData.agent_scope_mode === 'selected'
+              ? { agent_ids: formData.agent_link_ids }
+              : editingMetric
+                ? { agent_ids: [] as string[] }
+                : { agent_ids: [] as string[] }),
+          }),
     }
   }
 

@@ -215,7 +215,8 @@ def _dedupe_metric_name(
         return name
     suffix = 2
     while True:
-        candidate = f"{name} ({suffix})"[:60]
+        suffix_text = f" ({suffix})"
+        candidate = f"{name[: 60 - len(suffix_text)]}{suffix_text}"
         collision = (
             db.query(Metric)
             .filter(

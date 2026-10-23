@@ -58,7 +58,7 @@ def generate_production_reply_with_knowledge_tools(
         llm_model=llm_model,
         role=KB_ROLE_TEST if simulated_caller else KB_ROLE_PRODUCTION,
     )
-    text, _records = run_tool_loop(
+    text, _records, _tail = run_tool_loop(
         db,
         toolset=Toolset([provider]),
         messages=with_knowledge_base_instructions(messages, simulated_caller=simulated_caller),

@@ -79,6 +79,7 @@ def run_harbor_simulation_task(self, simulation_run_id: str):
 
         cancelled = False
         returncode = None
+        proc: subprocess.Popen | None = None
         log_path = run_work_dir(run) / "harbor.log"
         try:
             agent = db.query(Agent).filter(Agent.id == run.agent_id).one()
@@ -87,6 +88,7 @@ def run_harbor_simulation_task(self, simulation_run_id: str):
                 organization_id=run.organization_id,
                 agent=agent,
                 metric_ids=run.metric_ids,
+                workspace_id=run.workspace_id,
             )
             tasks = export_tasks(db, run=run, agent=agent, metrics=metrics)
             run.expected_trials = len(tasks) * run.n_attempts
@@ -157,6 +159,8 @@ def run_harbor_simulation_task(self, simulation_run_id: str):
                 run.status = SimulationRunStatus.FAILED.value
                 run.error_message = f"Harbor exited with code {returncode}:\n{_log_tail(log_path)}"
         except Exception as exc:
+            if proc is not None and proc.poll() is None:
+                _stop_process(proc)
             db.rollback()
             logger.error(f"[SimulationRun {simulation_run_id}] Failed: {exc}", exc_info=True)
             run = db.query(SimulationRun).filter(SimulationRun.id == run_uuid).first()

@@ -280,7 +280,14 @@ def _evaluate_llm_metrics_grouped(
     return scores, eval_time
 
 
-def select_metrics_for_evaluation(db, *, organization_id, agent, metric_ids=None) -> list:
+def select_metrics_for_evaluation(
+    db,
+    *,
+    organization_id,
+    agent,
+    metric_ids=None,
+    workspace_id=None,
+) -> list:
     """Active, surface-enabled org metrics, narrowed to ``metric_ids`` when given.
 
     Include metrics that have the agent's surface in their enabled_surfaces so users can
@@ -317,6 +324,12 @@ def select_metrics_for_evaluation(db, *, organization_id, agent, metric_ids=None
             list(selected_metric_ids),
         ) or set()
         enabled_metrics = [m for m in enabled_metrics if str(m.id) in expanded_ids]
+    if workspace_id is not None:
+        enabled_metrics = [
+            m
+            for m in enabled_metrics
+            if m.workspace_id is None or m.workspace_id == workspace_id
+        ]
     return enabled_metrics
 
 

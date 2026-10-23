@@ -10,8 +10,7 @@ from fastapi.responses import Response
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.core.api_rate_limit import enforce_resource_create_rate_limit
-from app.core.auth import Principal
+from app.core.auth import Principal, get_principal
 from app.dependencies import get_db, get_organization_id, get_workspace_id
 from app.models.database import AgentKnowledgeBase, KnowledgeBase, KnowledgeDocument
 from app.models.schemas import (
@@ -113,7 +112,7 @@ def _queue_reindex_documents(db: Session, kb_id: UUID) -> int:
         db.query(KnowledgeDocument)
         .filter(
             KnowledgeDocument.knowledge_base_id == kb_id,
-            KnowledgeDocument.status.in_(("ready", "failed")),
+            KnowledgeDocument.status.in_(("ready", "failed", "processing")),
         )
         .all()
     )
@@ -217,7 +216,7 @@ async def create_knowledge_base(
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
-    _principal: Principal = Depends(enforce_resource_create_rate_limit),
+    _principal: Principal = Depends(get_principal),
 ):
     try:
         profile = parse_embedding_fields(
@@ -427,7 +426,7 @@ async def upload_knowledge_document(
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
-    _principal: Principal = Depends(enforce_resource_create_rate_limit),
+    _principal: Principal = Depends(get_principal),
 ):
     kb = _get_kb_or_404(
         db,
@@ -639,3 +638,13 @@ async def delete_knowledge_document(
     db.delete(doc)
     db.commit()
     return None
+
+
+from app.core.auth.capabilities import SIM_MANAGE, SIM_VIEW
+from app.core.auth.workspace_route_capabilities import apply_workspace_route_capabilities
+
+apply_workspace_route_capabilities(
+    router,
+    view_capability=SIM_VIEW,
+    manage_capability=SIM_MANAGE,
+)

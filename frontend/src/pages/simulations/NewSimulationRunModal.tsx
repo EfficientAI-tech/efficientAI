@@ -32,6 +32,8 @@ import { formatLlmPair } from './simulationFormat'
 
 const STEPS = ['Scenarios & personas', 'Metrics', 'Success criteria', 'Settings & review'] as const
 
+const EMPTY_METRIC_ROWS: MetricRow[] = []
+
 interface ScenarioRow {
   id: string
   name: string
@@ -133,12 +135,15 @@ export default function NewSimulationRunModal({ isOpen, onClose, agent, initialS
     queryFn: () => apiClient.listPersonas(0, 500),
     enabled: isOpen,
   })
-  const { data: metrics = [] } = useQuery({
+  const { data: metrics } = useQuery({
     queryKey: ['metrics', listSurface],
     queryFn: () => apiClient.listMetrics(listSurface, true),
     enabled: isOpen,
   })
-  const metricRows = metrics as MetricRow[]
+  const metricRows = useMemo(
+    () => (metrics ?? EMPTY_METRIC_ROWS) as MetricRow[],
+    [metrics],
+  )
 
   const personas = useMemo(
     () =>
@@ -200,8 +205,9 @@ export default function NewSimulationRunModal({ isOpen, onClose, agent, initialS
   )
 
   useEffect(() => {
+    if (!isOpen) return
     setCriteria((prev) => syncCriteriaWithMetrics(metricRows, normalizedMetricIds, prev))
-  }, [normalizedMetricIds, metricRows])
+  }, [isOpen, normalizedMetricIds, metricRows])
 
   const scenarioNameById = useMemo(
     () => new Map(scenarios.map((s) => [s.id, s.name])),

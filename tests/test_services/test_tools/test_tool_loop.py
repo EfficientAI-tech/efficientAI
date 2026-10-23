@@ -86,7 +86,7 @@ def test_multi_round_calls_are_recorded_and_fed_back(scripted_llm):
         ]
     )
     provider = FakeProvider()
-    text, records = _run(Toolset([provider]))
+    text, records, _ = _run(Toolset([provider]))
 
     assert text == "plain reply"
     assert [r.tool for r in records] == ["lookup", "lookup"]
@@ -140,7 +140,7 @@ def test_round_cap_falls_back_to_plain_completion(scripted_llm):
     scripted_llm(
         [[_tool_call(f"c{i}", "lookup", {"q": str(i)})] for i in range(10)], final_text="capped"
     )
-    text, records = _run(Toolset([FakeProvider()]), max_rounds=2)
+    text, records, _ = _run(Toolset([FakeProvider()]), max_rounds=2)
 
     assert text == "capped"
     assert len(records) == 2
