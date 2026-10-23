@@ -17,12 +17,18 @@ from app.services.storage.blob_storage_service import blob_storage_service
 _INGEST_LOCK_NS = 0x4B42_444F  # "KBDO" — serialize ingest per document across workers
 
 
+def _signed_int32(value: int) -> int:
+    """pg_advisory_lock(int, int) requires signed 32-bit keys."""
+    value &= 0xFFFFFFFF
+    if value > 0x7FFFFFFF:
+        return value - 0x100000000
+    return value
+
+
 def _ingest_advisory_keys(document_id: UUID) -> tuple[int, int]:
     b = document_id.bytes
-    return (
-        _INGEST_LOCK_NS,
-        int.from_bytes(b[0:4], "big") ^ int.from_bytes(b[4:8], "big"),
-    )
+    doc_key = int.from_bytes(b[0:4], "big") ^ int.from_bytes(b[4:8], "big")
+    return (_signed_int32(_INGEST_LOCK_NS), _signed_int32(doc_key))
 
 
 def ingest_knowledge_document(db: Session, *, document_id: UUID) -> None:
