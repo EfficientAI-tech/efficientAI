@@ -30,8 +30,8 @@ from loguru import logger
 
 from app.models.database import ModelProvider
 from app.services.metrics.option_labels import (
+    canonical_enum_option,
     coerce_metric_option_label,
-    enum_labels_equal,
     enum_option_labels_from_config,
 )
 
@@ -154,10 +154,10 @@ def _normalize_enum_value(raw: Any, options: list[str]) -> Optional[str]:
         text = coerced if coerced is not None else str(raw).strip()
     if not text:
         return None
+    canonical = canonical_enum_option(text, options)
+    if canonical is not None:
+        return canonical
     text_lower = text.lower()
-    for opt in options:
-        if enum_labels_equal(text, opt):
-            return opt
     # Lenient fallback: substring containment in either direction.
     for opt in options:
         if opt.lower() in text_lower or text_lower in opt.lower():

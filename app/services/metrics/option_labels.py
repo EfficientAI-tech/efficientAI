@@ -1,5 +1,7 @@
 """Normalize metric enum / classification option shapes from DB or LLM."""
 
+import re
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional
 
 
@@ -34,14 +36,40 @@ def coerce_metric_option_label(opt: Any) -> Optional[str]:
 
 
 def enum_labels_equal(a: str, b: str) -> bool:
-    al = a.strip().lower()
-    bl = b.strip().lower()
-    if al == bl:
+    """Strict label equality for pass/fail rules (case-insensitive, no numeric aliasing)."""
+    return a.strip().lower() == b.strip().lower()
+
+
+def _is_integer_label(label: str) -> bool:
+    return bool(re.fullmatch(r"-?\d+", label.strip()))
+
+
+def _numeric_option_same(candidate: str, option: str) -> bool:
+    """Whether ``candidate`` can refer to ``option`` when strings differ only numerically."""
+    a, b = candidate.strip(), option.strip()
+    if a.lower() == b.lower():
         return True
+    if _is_integer_label(a) and _is_integer_label(b):
+        return int(a, 10) == int(b, 10) and a == b
     try:
-        return float(a.strip()) == float(b.strip())
-    except (TypeError, ValueError):
+        return Decimal(a) == Decimal(b)
+    except (InvalidOperation, ValueError):
         return False
+
+
+def canonical_enum_option(text: str, options: List[str]) -> Optional[str]:
+    """Resolve LLM/user text to a single configured option, or None if ambiguous."""
+    needle = text.strip()
+    if not needle or not options:
+        return None
+    needle_lower = needle.lower()
+    for opt in options:
+        if opt.strip().lower() == needle_lower:
+            return opt
+    numeric_hits = [opt for opt in options if _numeric_option_same(needle, opt)]
+    if len(numeric_hits) == 1:
+        return numeric_hits[0]
+    return None
 
 
 def _dedupe_labels(labels: List[str]) -> List[str]:

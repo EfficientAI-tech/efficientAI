@@ -171,6 +171,31 @@ def test_validate_enum_accepts_success_values_matching_object_options():
     _validate_rule_shape(rule, m, [])
 
 
+def test_validate_enum_distinct_zero_padded_labels():
+    m = _metric(
+        name="Codes",
+        metric_type="text",
+        custom_data_type="enum",
+        custom_config={"options": ["01", "1"]},
+    )
+    _validate_rule_shape(
+        MetricSuccessCriterion(metric_id=m.id, kind="enum", success_values=["1"]),
+        m,
+        [],
+    )
+    _validate_rule_shape(
+        MetricSuccessCriterion(metric_id=m.id, kind="enum", success_values=["01"]),
+        m,
+        [],
+    )
+    with pytest.raises(ValueError, match="unknown"):
+        _validate_rule_shape(
+            MetricSuccessCriterion(metric_id=m.id, kind="enum", success_values=["1.0"]),
+            m,
+            [],
+        )
+
+
 def test_validate_enum_accepts_numeric_option_labels_as_strings():
     m = _metric(
         name="Rating bucket",

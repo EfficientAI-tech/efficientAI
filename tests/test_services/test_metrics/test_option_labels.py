@@ -1,4 +1,5 @@
 from app.services.metrics.option_labels import (
+    canonical_enum_option,
     classification_choice_labels_from_config,
     classification_score_labels_from_config,
     coerce_custom_config_for_storage,
@@ -39,9 +40,17 @@ def test_enum_option_labels_dedupe_and_float_whole_numbers():
     assert enum_option_labels_from_config(cfg) == ["1", "a"]
 
 
-def test_enum_labels_equal_numeric():
-    assert enum_labels_equal("1", "1.0")
+def test_enum_labels_equal_is_strict():
     assert enum_labels_equal("2", "2")
+    assert enum_labels_equal("Good", "good")
+    assert not enum_labels_equal("1", "1.0")
+    assert not enum_labels_equal("01", "1")
+
+
+def test_canonical_enum_option_numeric_only_when_unambiguous():
+    assert canonical_enum_option("1.0", ["1", "2", "3"]) == "1"
+    assert canonical_enum_option("1", ["01", "1"]) == "1"
+    assert canonical_enum_option("1.0", ["01", "1"]) is None
 
 
 def test_classification_choice_from_list_criteria():
