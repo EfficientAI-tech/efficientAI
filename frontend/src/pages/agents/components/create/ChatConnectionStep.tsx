@@ -106,7 +106,8 @@ export default function ChatConnectionStep({
   return (
     <div className="w-full space-y-4">
       <LlmCredentialModelFields
-        title="Chat Agent"
+        title="Production model"
+        hint="This model answers as production using your prompt."
         credentialId={value.mainLlmCredentialId}
         model={value.mainLlmModel}
         activeProviders={activeProviders}

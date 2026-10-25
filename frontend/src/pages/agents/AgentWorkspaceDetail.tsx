@@ -19,6 +19,7 @@ import { CallTypeBadge } from '../evaluators/components/evaluatorUi'
 import type { AgentDetailTab } from './components/AgentInfoView'
 import AgentEditForm from './components/AgentEditForm'
 import AgentTalkSidebar from './components/AgentTalkSidebar'
+import AgentSimulationsPanel from '../simulations/AgentSimulationsPanel'
 import { Save, X } from 'lucide-react'
 import { extractPhoneConflictDetail } from './components/agentPhoneValidation'
 import {
@@ -50,12 +51,15 @@ import {
 import { chatEvalModeForConnection } from './components/create/chatPreprodScope'
 import type { ChatIntegrationOptionId } from './components/create/ChatIntegrationTypeStep'
 
-const VALID_TABS: AgentDetailTab[] = ['overview', 'test_agent', 'voice_ai_agent']
+// 'simulations' is a workspace-only tab (Harbor runs); info/edit views never see it.
+type WorkspaceTab = AgentDetailTab | 'simulations'
 
-function parseTabFromSearch(params: URLSearchParams): AgentDetailTab {
+const VALID_TABS: WorkspaceTab[] = ['overview', 'test_agent', 'voice_ai_agent', 'simulations']
+
+function parseTabFromSearch(params: URLSearchParams): WorkspaceTab {
   const tab = params.get('tab')
-  if (tab && VALID_TABS.includes(tab as AgentDetailTab)) {
-    return tab as AgentDetailTab
+  if (tab && VALID_TABS.includes(tab as WorkspaceTab)) {
+    return tab as WorkspaceTab
   }
   return 'overview'
 }
@@ -82,6 +86,8 @@ function agentToFormData(agent: NonNullable<Awaited<ReturnType<typeof apiClient.
     voice_ai_integration_id: agent.voice_ai_integration_id || '',
     voice_ai_agent_id: agent.voice_ai_agent_id || '',
     provider_prompt: agent.provider_prompt || '',
+    knowledge_base_ids: agent.knowledge_base_ids || [],
+    test_knowledge_base_ids: agent.test_knowledge_base_ids || [],
   }
 }
 
@@ -100,6 +106,8 @@ interface FormData {
   voice_ai_integration_id: string
   voice_ai_agent_id: string
   provider_prompt: string
+  knowledge_base_ids: string[]
+  test_knowledge_base_ids: string[]
 }
 
 interface AgentWorkspaceDetailProps {
@@ -122,7 +130,7 @@ export default function AgentWorkspaceDetail({
   const activeTab = parseTabFromSearch(searchParams)
 
   const setActiveTab = useCallback(
-    (tab: AgentDetailTab) => {
+    (tab: WorkspaceTab) => {
       const next = new URLSearchParams(searchParams)
       if (tab === 'overview') {
         next.delete('tab')
@@ -157,6 +165,8 @@ export default function AgentWorkspaceDetail({
     voice_ai_integration_id: '',
     voice_ai_agent_id: '',
     provider_prompt: '',
+    knowledge_base_ids: [],
+    test_knowledge_base_ids: [],
   })
   const [chatConnection, setChatConnection] = useState<ChatConnectionForm>({
     connectionType: 'internal_llm',
@@ -204,6 +214,11 @@ export default function AgentWorkspaceDetail({
   const { data: aiProviders = [] } = useQuery<AIProvider[]>({
     queryKey: ['ai-providers'],
     queryFn: () => apiClient.listAIProviders(),
+  })
+
+  const { data: knowledgeBases = [] } = useQuery({
+    queryKey: ['knowledge-bases'],
+    queryFn: () => apiClient.listKnowledgeBases(),
   })
 
   const syncChatStateFromAgent = useCallback(
@@ -311,6 +326,9 @@ export default function AgentWorkspaceDetail({
         payload.voice_ai_agent_id = data.voice_ai_agent_id?.trim() || null
         payload.provider_prompt = data.provider_prompt?.trim() || null
       }
+
+      payload.knowledge_base_ids = data.knowledge_base_ids
+      payload.test_knowledge_base_ids = data.test_knowledge_base_ids
 
       return apiClient.updateAgent(agentRouteId!, payload)
     },
@@ -578,11 +596,13 @@ export default function AgentWorkspaceDetail({
                     { id: 'overview' as const, label: 'Overview' },
                     { id: 'test_agent' as const, label: 'Test Agent' },
                     { id: 'voice_ai_agent' as const, label: agentProductionTabLabel('chat') },
+                    { id: 'simulations' as const, label: 'Simulations' },
                   ]
                 : [
                     { id: 'overview' as const, label: 'Overview' },
                     { id: 'test_agent' as const, label: 'Test Agent' },
                     { id: 'voice_ai_agent' as const, label: agentProductionTabLabel('voice') },
+                    { id: 'simulations' as const, label: 'Simulations' },
                   ]
             ).map((tab) => (
               <button
@@ -602,11 +622,14 @@ export default function AgentWorkspaceDetail({
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto p-4">
-          {!isEditMode ? (
+          {activeTab === 'simulations' ? (
+            <AgentSimulationsPanel agent={agent} />
+          ) : !isEditMode ? (
             <AgentInfoView
               agent={agent}
               voiceBundles={voiceBundles}
               integrations={integrations}
+              knowledgeBases={knowledgeBases}
               activeTab={activeTab}
               onSyncProviderPrompt={() => syncPromptMutation.mutate()}
               isSyncingPrompt={syncPromptMutation.isPending}
@@ -641,6 +664,7 @@ export default function AgentWorkspaceDetail({
               }
               chatEditPlatform={chatEditPlatform}
               onChatEditPlatformChange={setChatEditPlatform}
+              knowledgeBases={knowledgeBases}
             />
           )}
         </div>

@@ -51,6 +51,17 @@ def test_metric_studio_forbidden_without_license(unlicensed_client):
     assert response.json()["detail"]["feature"] == "metric_studio"
 
 
+def test_scenario_metrics_forbidden_without_license(unlicensed_client):
+    payload = {
+        "agent_name": "Agent",
+        "production_prompt": "Help users.",
+        "scenarios": [{"name": "S1", "description": "Test scenario"}],
+    }
+    response = unlicensed_client.post("/api/v1/metrics/generate-from-scenarios", json=payload)
+    assert response.status_code == 403
+    assert response.json()["detail"]["feature"] == "scenario_metrics"
+
+
 def test_prompt_optimization_allowed_without_license(unlicensed_client, make_agent):
     agent = make_agent(description="GEPA OSS")
     response = unlicensed_client.post(

@@ -530,6 +530,7 @@ async def websocket_endpoint(
                     caller_opening_text=caller_opening_text,
                     persona_speaks_via_tts=persona_speaks_via_tts,
                     tracing_task_kwargs=tracing_task_kwargs,
+                    enable_knowledge_base_tools=True,
                 )
             else:
                 call_metadata = await run_bot(
@@ -649,7 +650,13 @@ async def websocket_endpoint(
                         "speaker_segments": speaker_segments,
                         "recording_s3_key": call_metadata.get("s3_key"),
                         "duration_seconds": call_metadata.get("duration"),
+                        "knowledge_base_tools_enabled": call_metadata.get(
+                            "knowledge_base_tools_enabled"
+                        ),
                     }
+                    kb_calls = call_metadata.get("knowledge_base_tool_calls")
+                    if kb_calls:
+                        playground_call_data["knowledge_base_tool_calls"] = kb_calls
                     if ui_surface:
                         playground_call_data["ui_surface"] = ui_surface
                     evaluator_result = EvaluatorResult(

@@ -947,6 +947,7 @@ def _build_session_api_app():
         integrations,
         manual_evaluations,
         metrics,
+        scenario_metrics,
         model_config,
         observability,
         personas,
@@ -957,8 +958,10 @@ def _build_session_api_app():
         results,
         scenarios,
         settings,
+        simulation_runs,
         telephony,
         test_agents,
+        tool_connections,
         voice_agent,
         voice_playground,
         voicebundles,
@@ -983,12 +986,14 @@ def _build_session_api_app():
     app.include_router(evaluator_suites.router, prefix="/api/v1")
     app.include_router(personas.router, prefix="/api/v1")
     app.include_router(scenarios.router, prefix="/api/v1")
+    app.include_router(tool_connections.router, prefix="/api/v1")
     app.include_router(settings.router, prefix="/api/v1")
     app.include_router(iam.router, prefix="/api/v1")
     app.include_router(audio.router, prefix="/api/v1")
     app.include_router(integrations.router, prefix="/api/v1")
     app.include_router(aiproviders.router, prefix="/api/v1")
     app.include_router(llm_gateway.router, prefix="/api/v1")
+    app.include_router(scenario_metrics.router, prefix="/api/v1")
     app.include_router(metrics.router, prefix="/api/v1")
     app.include_router(evaluator_result_metric_clusters.router, prefix="/api/v1")
     app.include_router(evaluator_results.router, prefix="/api/v1")
@@ -1019,6 +1024,7 @@ def _build_session_api_app():
     app.include_router(workspace_iam.router, prefix="/api/v1")
     app.include_router(platform_admin.router, prefix="/api/v1")
     app.include_router(metric_studio.router, prefix="/api/v1")
+    app.include_router(simulation_runs.router, prefix="/api/v1")
     # Enterprise route dependencies call app.dependencies.is_feature_enabled at runtime.
     # Force-enable it for API tests so tests remain focused on route behavior.
     app_dependencies.is_feature_enabled = lambda *_args, **_kwargs: True

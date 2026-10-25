@@ -36,10 +36,17 @@ import VoiceBundleDetailCard from './VoiceBundleDetailCard'
 import ChatTestAgentLlmDetailCard, {
   chatTestAgentLlmConfigured,
 } from './ChatTestAgentLlmDetailCard'
+import ChatProductionLlmDetailCard from './ChatProductionLlmDetailCard'
 import AgentPromptVisualization from './AgentPromptVisualization'
 import Button from '../../../components/Button'
 import { agentProviderPromptTag } from './agentFlowchartUtils'
 import TestAgentSubTabNav, { type TestAgentSubTab } from './TestAgentSubTabNav'
+import ProductionAgentSubTabNav, {
+  type ProductionAgentSubTab,
+} from './ProductionAgentSubTabNav'
+import AgentKnowledgeBasesPanel from './AgentKnowledgeBasesPanel'
+import ProductionAgentToolsSection from './ProductionAgentToolsSection'
+import type { KnowledgeBaseSummary } from '../../knowledgeBases/knowledgeBaseTypes'
 import {
   PRODUCTION_FIRST_MESSAGE_OPTIONS,
   callerFirstMessageHelperText,
@@ -69,6 +76,7 @@ interface AgentInfoViewProps {
   /** Live web call to production voice platform (Retell/Vapi) — voice agents only. */
   onTalkToProduction?: () => void
   onEditVoiceBundle?: (bundleId: string) => void
+  knowledgeBases?: KnowledgeBaseSummary[]
 }
 
 const PROSE =
@@ -116,11 +124,16 @@ export default function AgentInfoView({
   isSyncingPrompt,
   onTalkToProduction,
   onEditVoiceBundle,
+  knowledgeBases = [],
 }: AgentInfoViewProps) {
   const navigate = useNavigate()
   const [testPromptView, setTestPromptView] = useState<'text' | 'visualization'>('text')
   const [voiceAiPromptView, setVoiceAiPromptView] = useState<'text' | 'visualization'>('text')
   const [testAgentSubTab, setTestAgentSubTab] = useState<TestAgentSubTab>('prompt')
+  const [productionAgentSubTab, setProductionAgentSubTab] =
+    useState<ProductionAgentSubTab>('prompt')
+  const attachedKnowledgeBaseIds = agent.knowledge_base_ids ?? []
+  const attachedTestKnowledgeBaseIds = agent.test_knowledge_base_ids ?? []
 
   const linkedBundle = agent.voice_bundle_id
     ? voiceBundles.find((v) => v.id === agent.voice_bundle_id)
@@ -360,7 +373,11 @@ export default function AgentInfoView({
               title={agentProductionTabLabel(agent.call_medium)}
               description={
                 isChatAgent
-                  ? 'Production agent under evaluation.'
+                  ? chatConn === 'internal_llm'
+                    ? agent.main_llm_model
+                      ? `Production replies use ${agent.main_llm_model} with your production prompt.`
+                      : 'Set a production model and prompt for hosted simulation.'
+                    : 'Production agent under evaluation.'
                   : 'Provider agent under evaluation.'
               }
             >
@@ -388,6 +405,16 @@ export default function AgentInfoView({
                 ) : (
                   <OverviewDetailRow label="Integration" value={voiceAiIntegrationLabel} />
                 )}
+                {isChatAgent && chatConn === 'internal_llm' ? (
+                  <OverviewDetailRow
+                    label="Production LLM"
+                    value={
+                      agent.main_llm_model
+                        ? `${agent.main_llm_provider || '?'} / ${agent.main_llm_model}`
+                        : OVERVIEW_NOT_CONFIGURED
+                    }
+                  />
+                ) : null}
                 {chatConn === 'provider_chat' || !isChatAgent ? (
                   <OverviewDetailRow
                     label="Provider agent ID"
@@ -477,6 +504,15 @@ export default function AgentInfoView({
                 />
               )}
             </div>
+          )}
+
+          {testAgentSubTab === 'knowledge_bases' && (
+            <AgentKnowledgeBasesPanel
+              mode="view"
+              side="test"
+              attachedIds={attachedTestKnowledgeBaseIds}
+              knowledgeBases={knowledgeBases}
+            />
           )}
         </div>
       )
@@ -589,11 +625,21 @@ export default function AgentInfoView({
             )}
           </div>
         )}
+
+        {testAgentSubTab === 'knowledge_bases' && (
+          <AgentKnowledgeBasesPanel
+            mode="view"
+            side="test"
+            attachedIds={attachedTestKnowledgeBaseIds}
+            knowledgeBases={knowledgeBases}
+          />
+        )}
       </div>
     )
   }
 
   const isChatProductionTab = isChatMedium(agent.call_medium)
+  const chatConnType = (agent.chat_connection_type || 'internal_llm').toLowerCase()
   const chatProdConnectionDisplay = isChatProductionTab
     ? resolveChatProductionConnectionFromAgent(agent, {
         telephonyConfigs,
@@ -604,6 +650,26 @@ export default function AgentInfoView({
 
   return (
     <div className="space-y-6">
+      <ProductionAgentSubTabNav
+        value={productionAgentSubTab}
+        onChange={setProductionAgentSubTab}
+      />
+
+      {productionAgentSubTab === 'tools' && (
+        <ProductionAgentToolsSection
+          mode="view"
+          agentId={agent.id}
+          attachedKnowledgeBaseIds={attachedKnowledgeBaseIds}
+          knowledgeBases={knowledgeBases}
+        />
+      )}
+
+      {productionAgentSubTab === 'prompt' && (
+    <div className="space-y-6">
+      {isChatProductionTab && chatConnType === 'internal_llm' ? (
+        <ChatProductionLlmDetailCard agent={agent} />
+      ) : null}
+
       <div className="flex items-center justify-between gap-4">
         <div>
           <h3 className="text-lg font-semibold text-gray-900">
@@ -728,6 +794,8 @@ export default function AgentInfoView({
           />
         )}
       </div>
+    </div>
+      )}
     </div>
   )
 }
