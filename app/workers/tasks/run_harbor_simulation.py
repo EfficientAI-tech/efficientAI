@@ -38,6 +38,27 @@ def _stop_process(proc: subprocess.Popen) -> None:
         proc.wait()
 
 
+def _queue_failure_analysis(db, run: SimulationRun) -> None:
+    """Cluster trials that missed their success rules once a run completes."""
+    summary = run.summary if isinstance(run.summary, dict) else {}
+    if run.status != SimulationRunStatus.COMPLETED.value:
+        return
+    if (summary.get("n_passed") or 0) >= (summary.get("n_completed") or 0):
+        return
+    from app.workers.tasks.analyze_simulation_run_failures import (
+        analyze_simulation_run_failures_task,
+    )
+
+    try:
+        run.metric_clusters = {"status": "running"}
+        db.commit()
+        analyze_simulation_run_failures_task.delay(str(run.id))
+    except Exception as exc:
+        logger.warning(f"[SimulationRun {run.run_id}] Could not queue failure analysis: {exc}")
+        run.metric_clusters = {"status": "failed", "error_message": "Could not queue failure analysis"}
+        db.commit()
+
+
 @celery_app.task(
     name="run_harbor_simulation",
     bind=True,
@@ -179,6 +200,7 @@ def run_harbor_simulation_task(self, simulation_run_id: str):
             f"[SimulationRun {run.run_id}] {run.status}: "
             f"{run.completed_trials}/{run.expected_trials} completed, {run.failed_trials} failed"
         )
+        _queue_failure_analysis(db, run)
         return {"simulation_run_id": simulation_run_id, "status": run.status}
     finally:
         db.close()
