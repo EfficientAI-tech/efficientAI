@@ -6305,6 +6305,48 @@ class SimulationArtifactsResponse(BaseModel):
     url: str
 
 
+class SimulationFailureAnalysisRequest(BaseModel):
+    """Body for ``POST /simulation-runs/{run_ref}/failure-analysis``."""
+
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    credential_id: Optional[UUID] = None
+    max_llm_calls: Optional[int] = Field(default=None, ge=20, le=500)
+
+
+class SimulationFailureAnalysisResponse(BaseModel):
+    """Failure clusters of trials that missed their success rules, plus prompt suggestions."""
+
+    failed_trials: int = 0
+    success_rules: Dict[str, str] = Field(
+        default_factory=dict, description="metric_id -> human-readable success rule"
+    )
+    metric_clusters: Optional[EvaluationMetricClustersState] = None
+    prompt_improvements: Optional[EvaluationPromptImprovementsState] = None
+
+
+class SimulationComposedPromptResponse(BaseModel):
+    agent_id: UUID
+    agent_name: Optional[str] = None
+    base_prompt: str
+    composed_prompt: str
+    accepted_count: int = 0
+
+
+class SimulationRunPdfReportSections(BaseModel):
+    run_summary: bool = True
+    failure_diagnostics: bool = True
+    prompt_improvements: bool = True
+    methodology: bool = True
+
+
+class SimulationRunPdfReportRequest(BaseModel):
+    sections: SimulationRunPdfReportSections = Field(
+        default_factory=SimulationRunPdfReportSections
+    )
+    platform_base_url: Optional[str] = None
+
+
 # Tool connections (MCP servers, HTTP tools, Postgres) for production agents
 
 ToolConnectionType = Literal["mcp", "http", "postgres"]

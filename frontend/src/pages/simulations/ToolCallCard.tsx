@@ -1,6 +1,6 @@
 import { CheckCircle2, FlaskConical, Wrench, XCircle } from 'lucide-react'
 import type { SimulationToolCall, SimulationToolCallStatus, SimulationToolEvaluation } from '../../types/api'
-import { formatScore } from './simulationFormat'
+import { formatScore, hasToolEvaluation } from './simulationFormat'
 
 const STATUS_STYLES: Record<SimulationToolCallStatus, { label: string; className: string }> = {
   ok: { label: 'Succeeded', className: 'bg-green-50 text-green-700' },
@@ -54,11 +54,17 @@ export function ToolCallCard({ call }: { call: SimulationToolCall }) {
   )
 }
 
-export function ToolEvaluationSection({ evaluation }: { evaluation: SimulationToolEvaluation }) {
-  if (!evaluation.total_calls && !evaluation.expectations.length) return null
+export function ToolEvaluationSection({
+  evaluation,
+  showHeading = true,
+}: {
+  evaluation: SimulationToolEvaluation
+  showHeading?: boolean
+}) {
+  if (!hasToolEvaluation(evaluation)) return null
   return (
     <section>
-      <h4 className="mb-2 text-sm font-semibold text-gray-900">Tool use</h4>
+      {showHeading ? <h4 className="mb-2 text-sm font-semibold text-gray-900">Tool use</h4> : null}
       <div className="mb-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-gray-600">
         <span>
           Calls <span className="font-medium tabular-nums text-gray-900">{evaluation.total_calls}</span>

@@ -2723,6 +2723,36 @@ export interface SimulationTrialDetail extends SimulationTrial {
   llms?: SimulationLlms | null
 }
 
+export interface SimulationFailureAnalysis {
+  failed_trials: number
+  /** metric_id -> human-readable success rule */
+  success_rules: Record<string, string>
+  metric_clusters: EvaluationMetricClustersState | null
+  prompt_improvements: EvaluationPromptImprovementsState | null
+}
+
+export interface SimulationFailureAnalysisRequest {
+  provider?: string
+  model?: string
+  credential_id?: string
+  max_llm_calls?: number
+}
+
+export interface SimulationComposedPrompt {
+  agent_id: string
+  agent_name?: string | null
+  base_prompt: string
+  composed_prompt: string
+  accepted_count: number
+}
+
+export interface SimulationRunPdfReportSections {
+  run_summary: boolean
+  failure_diagnostics: boolean
+  prompt_improvements: boolean
+  methodology: boolean
+}
+
 export type ToolConnectionType = 'mcp' | 'http' | 'postgres'
 export type ToolSimulationMode = 'live' | 'mock_writes' | 'mock_all'
 export type ToolSideEffect = 'read' | 'write'

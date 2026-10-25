@@ -36,6 +36,7 @@ from . import run_cron_evaluator_job
 from . import trace_tasks
 from . import ingest_knowledge_document
 from . import run_harbor_simulation
+from . import analyze_simulation_run_failures
 from app.workers.concurrency import eval_dispatch
 from app.workers.concurrency import fair_dispatch
 from app.workers.concurrency import fair_diarization_dispatch

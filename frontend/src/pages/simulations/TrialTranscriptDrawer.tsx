@@ -1,11 +1,12 @@
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { ExternalLink, MessageSquare, X } from 'lucide-react'
+import type { ReactNode } from 'react'
+import { Bot, ChevronRight, ExternalLink, MessageSquare, Wrench, X } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import type { SimulationLlms, SimulationToolCall, SimulationTrialDetail } from '../../types/api'
 import { PassBadge } from './simulationUi'
 import { ToolEvaluationSection } from './ToolCallCard'
-import { formatScore } from './simulationFormat'
+import { formatScore, hasToolEvaluation } from './simulationFormat'
 import ChatSimulationTranscript from './ChatSimulationTranscript'
 
 interface Props {
@@ -36,6 +37,41 @@ function toolCallsByTurn(trial: SimulationTrialDetail) {
     byTurn.set(call.turn_index, [...(byTurn.get(call.turn_index) ?? []), call])
   }
   return byTurn
+}
+
+/** Closed by default; the summary line stays visible so the transcript is reachable without scrolling. */
+function CollapsibleSection({
+  icon,
+  title,
+  summary,
+  children,
+}: {
+  icon: ReactNode
+  title: string
+  summary?: ReactNode
+  children: ReactNode
+}) {
+  return (
+    <details className="group rounded-lg border border-gray-200 bg-white">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm [&::-webkit-details-marker]:hidden">
+        <ChevronRight className="h-4 w-4 shrink-0 text-gray-400 transition-transform group-open:rotate-90" />
+        {icon}
+        <span className="font-semibold text-gray-900">{title}</span>
+        {summary ? <span className="ml-auto truncate text-xs text-gray-500">{summary}</span> : null}
+      </summary>
+      <div className="border-t border-gray-100 px-3 py-3">{children}</div>
+    </details>
+  )
+}
+
+function toolUseSummary(evaluation: NonNullable<SimulationTrialDetail['tool_evaluation']>): string {
+  const parts = [`${evaluation.total_calls} ${evaluation.total_calls === 1 ? 'call' : 'calls'}`]
+  if (evaluation.errored_calls) parts.push(`${evaluation.errored_calls} failed`)
+  if (evaluation.expectations.length) {
+    const met = evaluation.expectations.filter((e) => e.satisfied).length
+    parts.push(`${met}/${evaluation.expectations.length} expectations met`)
+  }
+  return parts.join(' · ')
 }
 
 function LlmSides({ llms }: { llms?: SimulationLlms | null }) {
@@ -132,7 +168,16 @@ export default function TrialTranscriptDrawer({ runId, trialId, fallbackLlms, on
             </Link>
           </div>
 
-          <LlmSides llms={trial.llms ?? fallbackLlms} />
+          <CollapsibleSection
+            icon={<Bot className="h-4 w-4 text-gray-500" />}
+            title="Agents"
+            summary={[trial.llms ?? fallbackLlms]
+              .flatMap((llms) => [llms?.production?.label, llms?.test?.label])
+              .filter(Boolean)
+              .join(' vs ')}
+          >
+            <LlmSides llms={trial.llms ?? fallbackLlms} />
+          </CollapsibleSection>
 
           {trial.error_message ? (
             <p className="whitespace-pre-wrap rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
@@ -166,7 +211,15 @@ export default function TrialTranscriptDrawer({ runId, trialId, fallbackLlms, on
             </section>
           ) : null}
 
-          {trial.tool_evaluation ? <ToolEvaluationSection evaluation={trial.tool_evaluation} /> : null}
+          {trial.tool_evaluation && hasToolEvaluation(trial.tool_evaluation) ? (
+            <CollapsibleSection
+              icon={<Wrench className="h-4 w-4 text-gray-500" />}
+              title="Tool use"
+              summary={toolUseSummary(trial.tool_evaluation)}
+            >
+              <ToolEvaluationSection evaluation={trial.tool_evaluation} showHeading={false} />
+            </CollapsibleSection>
+          ) : null}
 
           {trial.call_analysis?.call_summary ? (
             <div className="rounded-lg border border-indigo-100 bg-indigo-50 p-4">

@@ -1,4 +1,4 @@
-import type { SimulationRun, SimulationRunStatus } from '../../types/api'
+import type { SimulationRun, SimulationRunStatus, SimulationToolEvaluation } from '../../types/api'
 
 export const ACTIVE_RUN_STATUSES: SimulationRunStatus[] = ['queued', 'preparing', 'running', 'ingesting']
 
@@ -58,3 +58,7 @@ export function rewardCellStyle(reward?: number | null): { background: string; c
 
 // primary-600, the platform's dark yellow.
 export const REWARD_BAR_COLOR = '#ca8a04'
+
+export function hasToolEvaluation(evaluation: SimulationToolEvaluation): boolean {
+  return Boolean(evaluation.total_calls || evaluation.expectations.length)
+}

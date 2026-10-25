@@ -1463,6 +1463,9 @@ class SimulationRun(Base):
     failed_trials = Column(Integer, nullable=False, default=0)
     summary = Column(JSON, nullable=True)
     error_message = Column(Text, nullable=True)
+    # Failure analysis of trials that missed their success rules; see app/services/harbor/failure_analysis.py
+    metric_clusters = Column(JSON, nullable=True)  # EvaluationMetricClustersState
+    prompt_improvements = Column(JSON, nullable=True)  # EvaluationPromptImprovementsState
 
     harbor_job_name = Column(String(255), nullable=True)
     artifacts_s3_key = Column(String, nullable=True)

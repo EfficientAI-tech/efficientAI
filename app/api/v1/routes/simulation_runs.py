@@ -23,11 +23,27 @@ from app.models.database import (
     SimulationRunStatus,
 )
 from app.models.schemas import (
+    EvaluationPromptImprovementsState,
+    PromptImprovementReviewUpdate,
+    SimulationComposedPromptResponse,
+    SimulationFailureAnalysisRequest,
+    SimulationFailureAnalysisResponse,
     SimulationRunCreate,
+    SimulationRunPdfReportRequest,
     SimulationRunRename,
     SimulationRunResponse,
     SimulationTrialDetailResponse,
     SimulationTrialResponse,
+)
+from app.services.call_import_metric_clusters import (
+    METRIC_CLUSTERS_CANCELLED_BY_USER_ERROR,
+    metric_clusters_state_from_raw,
+)
+from app.services.call_import_prompt_improvements import prompt_improvements_state_from_raw
+from app.services.harbor.failure_analysis import (
+    count_failed_trials,
+    editable_agent_prompt,
+    success_rule_labels,
 )
 from app.services.harbor.result_ingest import (
     LOCAL_ARTIFACT_PREFIX,
@@ -496,6 +512,204 @@ def download_simulation_artifacts(
     return Response(
         content=blob_storage_service.download_file_by_key(key),
         media_type="application/gzip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _failure_analysis_response(db: Session, run: SimulationRun) -> SimulationFailureAnalysisResponse:
+    completed_rows = run.completed_trials or 0
+    return SimulationFailureAnalysisResponse(
+        failed_trials=count_failed_trials(db, run),
+        success_rules=success_rule_labels(db, run),
+        metric_clusters=metric_clusters_state_from_raw(
+            run.metric_clusters, completed_rows=completed_rows
+        ),
+        prompt_improvements=(
+            prompt_improvements_state_from_raw(
+                run.prompt_improvements, completed_rows=completed_rows
+            )
+            if isinstance(run.prompt_improvements, dict)
+            else None
+        ),
+    )
+
+
+def _analysis_running(run: SimulationRun) -> bool:
+    clusters = run.metric_clusters if isinstance(run.metric_clusters, dict) else {}
+    prompts = run.prompt_improvements if isinstance(run.prompt_improvements, dict) else {}
+    return clusters.get("status") == "running" or prompts.get("status") == "running"
+
+
+@router.get("/{run_ref}/failure-analysis", response_model=SimulationFailureAnalysisResponse)
+def get_simulation_failure_analysis(
+    run_ref: str,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Failure clusters for trials that missed their success rules, and prompt suggestions."""
+    run = _get_run(db, run_ref, organization_id, workspace_id)
+    return _failure_analysis_response(db, run)
+
+
+@router.post("/{run_ref}/failure-analysis", response_model=SimulationFailureAnalysisResponse)
+def generate_simulation_failure_analysis(
+    run_ref: str,
+    body: Optional[SimulationFailureAnalysisRequest] = None,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """(Re)generate failure clusters and prompt suggestions in the background."""
+    body = body or SimulationFailureAnalysisRequest()
+    run = _get_run(db, run_ref, organization_id, workspace_id)
+    if run.status not in SimulationRunStatus.terminal():
+        raise HTTPException(status_code=409, detail="Wait for the run to finish first")
+    if _analysis_running(run):
+        raise HTTPException(status_code=409, detail="Failure analysis is already running")
+    if count_failed_trials(db, run) == 0:
+        raise HTTPException(
+            status_code=400, detail="No completed trial missed a success rule"
+        )
+    run.metric_clusters = {"status": "running"}
+    run.prompt_improvements = None
+    db.commit()
+
+    from app.workers.tasks.analyze_simulation_run_failures import (
+        analyze_simulation_run_failures_task,
+    )
+
+    analyze_simulation_run_failures_task.delay(
+        str(run.id),
+        provider=body.provider,
+        model=body.model,
+        credential_id=str(body.credential_id) if body.credential_id else None,
+        max_llm_calls=body.max_llm_calls,
+    )
+    db.refresh(run)
+    return _failure_analysis_response(db, run)
+
+
+@router.post(
+    "/{run_ref}/failure-analysis/cancel", response_model=SimulationFailureAnalysisResponse
+)
+def cancel_simulation_failure_analysis(
+    run_ref: str,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Stop clustering; the prompt step is a single LLM call and is left to finish."""
+    run = _get_run(db, run_ref, organization_id, workspace_id)
+    clusters = run.metric_clusters if isinstance(run.metric_clusters, dict) else {}
+    if clusters.get("status") != "running":
+        raise HTTPException(status_code=409, detail="Failure clustering is not running")
+    run.metric_clusters = {
+        **clusters,
+        "status": "cancelled",
+        "error_message": METRIC_CLUSTERS_CANCELLED_BY_USER_ERROR,
+    }
+    db.commit()
+    return _failure_analysis_response(db, run)
+
+
+@router.patch(
+    "/{run_ref}/prompt-improvements/review", response_model=EvaluationPromptImprovementsState
+)
+def review_simulation_prompt_improvement(
+    run_ref: str,
+    body: PromptImprovementReviewUpdate,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    from app.services.call_import_prompt_push import PromptPushError, set_suggestion_review
+
+    run = _get_run(db, run_ref, organization_id, workspace_id)
+    try:
+        set_suggestion_review(run, body.suggestion_id, body.review_status, body.edited_text)
+    except PromptPushError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    db.commit()
+    db.refresh(run)
+    return prompt_improvements_state_from_raw(
+        run.prompt_improvements, completed_rows=run.completed_trials or 0
+    )
+
+
+@router.get(
+    "/{run_ref}/prompt-improvements/composed", response_model=SimulationComposedPromptResponse
+)
+def get_simulation_composed_prompt(
+    run_ref: str,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """The production prompt with accepted suggestions applied, ready to copy."""
+    from app.services.call_import_prompt_push import (
+        PromptPushError,
+        compose_accepted_prompt,
+        review_counts,
+    )
+
+    run = _get_run(db, run_ref, organization_id, workspace_id)
+    agent = db.query(Agent).filter(Agent.id == run.agent_id).one()
+    raw = run.prompt_improvements if isinstance(run.prompt_improvements, dict) else {}
+    base = raw.get("compose_base_prompt")
+    if not isinstance(base, str):
+        base = editable_agent_prompt(agent)
+    suggestions = raw.get("suggestions") if isinstance(raw.get("suggestions"), list) else []
+    try:
+        composed = compose_accepted_prompt(base, suggestions)
+    except PromptPushError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return SimulationComposedPromptResponse(
+        agent_id=agent.id,
+        agent_name=agent.name,
+        base_prompt=base,
+        composed_prompt=composed,
+        accepted_count=review_counts(suggestions)[0],
+    )
+
+
+@router.post("/{run_ref}/pdf-report")
+def download_simulation_run_pdf_report(
+    run_ref: str,
+    body: Optional[SimulationRunPdfReportRequest] = None,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """PDF with run KPIs, failure diagnostics and prompt recommendations."""
+    from app.services.reporting.simulation_run_pdf_report import (
+        simulation_run_pdf_report_service,
+    )
+
+    body = body or SimulationRunPdfReportRequest()
+    run = _get_run(db, run_ref, organization_id, workspace_id)
+    if run.status not in SimulationRunStatus.terminal():
+        raise HTTPException(status_code=409, detail="Wait for the run to finish first")
+    agent = db.query(Agent).filter(Agent.id == run.agent_id).one()
+    summary = run.summary if isinstance(run.summary, dict) else compute_summary(
+        db, run, trial_results(db, run.id)
+    )
+    pdf_bytes = simulation_run_pdf_report_service.render_pdf(
+        run=run,
+        agent=agent,
+        summary=summary,
+        success_rules=success_rule_labels(db, run),
+        metric_clusters=run.metric_clusters if isinstance(run.metric_clusters, dict) else None,
+        prompt_improvements=(
+            run.prompt_improvements if isinstance(run.prompt_improvements, dict) else None
+        ),
+        sections=body.sections.model_dump(),
+        platform_base_url=body.platform_base_url,
+    )
+    filename = f"simulation-run-{run.run_id}-report.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 

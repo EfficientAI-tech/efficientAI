@@ -220,6 +220,7 @@ celery_app.conf.task_routes = {
     "evaluate_studio_run_item": {"queue": "evaluations"},
     # Harbor jobs need Python 3.12 + the harbor extra (worker-harbor service).
     "run_harbor_simulation": {"queue": HARBOR_WORKER_QUEUE},
+    "analyze_simulation_run_failures": {"queue": "evaluations"},
     "generate_agent_flowchart": {"queue": "celery"},
     "map_agent_flowchart_prompt_sections": {"queue": "celery"},
     "flush_usage_counters": {"queue": USAGE_WORKER_QUEUE},

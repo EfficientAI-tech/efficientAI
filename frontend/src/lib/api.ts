@@ -89,6 +89,10 @@ import type {
   SimulationRunCreate,
   SimulationTrial,
   SimulationTrialDetail,
+  SimulationFailureAnalysis,
+  SimulationFailureAnalysisRequest,
+  SimulationComposedPrompt,
+  SimulationRunPdfReportSections,
 } from '../types/api'
 
 export interface EnterpriseFeatureMeta {
@@ -1889,6 +1893,64 @@ class ApiClient {
     const response = await this.client.get(`/api/v1/simulation-runs/${runId}/artifacts`, {
       responseType: 'blob',
     })
+    return response.data
+  }
+
+  async getSimulationFailureAnalysis(runId: string): Promise<SimulationFailureAnalysis> {
+    const response = await this.client.get(`/api/v1/simulation-runs/${runId}/failure-analysis`)
+    return response.data
+  }
+
+  async generateSimulationFailureAnalysis(
+    runId: string,
+    data: SimulationFailureAnalysisRequest = {},
+  ): Promise<SimulationFailureAnalysis> {
+    const response = await this.client.post(
+      `/api/v1/simulation-runs/${runId}/failure-analysis`,
+      data,
+    )
+    return response.data
+  }
+
+  async cancelSimulationFailureAnalysis(runId: string): Promise<SimulationFailureAnalysis> {
+    const response = await this.client.post(
+      `/api/v1/simulation-runs/${runId}/failure-analysis/cancel`,
+    )
+    return response.data
+  }
+
+  async reviewSimulationPromptImprovement(
+    runId: string,
+    data: {
+      suggestion_id: string
+      review_status: 'pending' | 'accepted' | 'rejected'
+      edited_text?: string | null
+    },
+  ): Promise<import('../types/api').EvaluationPromptImprovementsState> {
+    const response = await this.client.patch(
+      `/api/v1/simulation-runs/${runId}/prompt-improvements/review`,
+      data,
+    )
+    return response.data
+  }
+
+  async getSimulationComposedPrompt(runId: string): Promise<SimulationComposedPrompt> {
+    const response = await this.client.get(
+      `/api/v1/simulation-runs/${runId}/prompt-improvements/composed`,
+    )
+    return response.data
+  }
+
+  async downloadSimulationRunPdfReport(
+    runId: string,
+    sections: SimulationRunPdfReportSections,
+    platformBaseUrl?: string,
+  ): Promise<Blob> {
+    const response = await this.client.post(
+      `/api/v1/simulation-runs/${runId}/pdf-report`,
+      { sections, platform_base_url: platformBaseUrl || null },
+      { responseType: 'blob' },
+    )
     return response.data
   }
 

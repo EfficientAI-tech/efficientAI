@@ -5,7 +5,9 @@ import { FlaskConical, Plus, Trash2 } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import { getApiErrorDetail } from '../../lib/authSession'
 import Button from '../../components/Button'
+import ConfirmModal from '../../components/ConfirmModal'
 import { useToast } from '../../hooks/useToast'
+import type { SimulationRun } from '../../types/api'
 import NewSimulationRunModal from './NewSimulationRunModal'
 import { RunStatusChip } from './simulationUi'
 import { formatDuration, formatLlmPair, formatPct, formatScore, isRunActive, runLlmLabel } from './simulationFormat'
@@ -28,14 +30,19 @@ export default function AgentSimulationsPanel({ agent }: Props) {
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
   const [modalOpen, setModalOpen] = useState(false)
+  const [runToDelete, setRunToDelete] = useState<SimulationRun | null>(null)
 
   const deleteMutation = useMutation({
     mutationFn: (runId: string) => apiClient.deleteSimulationRun(runId),
     onSuccess: () => {
+      setRunToDelete(null)
       queryClient.invalidateQueries({ queryKey: ['simulation-runs', agent.id] })
       showToast('Simulation run deleted', 'success')
     },
-    onError: (err) => showToast(getApiErrorDetail(err) || 'Failed to delete run', 'error'),
+    onError: (err) => {
+      setRunToDelete(null)
+      showToast(getApiErrorDetail(err) || 'Failed to delete run', 'error')
+    },
   })
 
   const { data: runs = [], isLoading } = useQuery({
@@ -158,11 +165,7 @@ export default function AgentSimulationsPanel({ agent }: Props) {
                       className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-700"
                       onClick={(e) => {
                         e.stopPropagation()
-                        const stuck = isRunActive(run.status) || run.cancel_requested
-                        const msg = stuck
-                          ? 'This run may still be active or stuck cancelling. Delete it anyway?'
-                          : 'Delete this simulation run and all its trials?'
-                        if (window.confirm(msg)) deleteMutation.mutate(run.run_id)
+                        setRunToDelete(run)
                       }}
                     >
                       <Trash2 className="h-4 w-4" />
@@ -174,6 +177,21 @@ export default function AgentSimulationsPanel({ agent }: Props) {
           </table>
         </div>
       )}
+
+      <ConfirmModal
+        isOpen={runToDelete !== null}
+        title="Delete simulation run"
+        description={
+          runToDelete && (isRunActive(runToDelete.status) || runToDelete.cancel_requested)
+            ? `Run ${runToDelete.run_id} may still be active or stuck cancelling. Deleting it stops the run and removes it with all its trials, failure analysis and prompt suggestions. This cannot be undone.`
+            : `This removes run ${runToDelete?.run_id ?? ''} with all its trials, failure analysis and prompt suggestions. This cannot be undone.`
+        }
+        confirmLabel="Delete run"
+        variant="danger"
+        isLoading={deleteMutation.isPending}
+        onConfirm={() => runToDelete && deleteMutation.mutate(runToDelete.run_id)}
+        onCancel={() => setRunToDelete(null)}
+      />
 
       <NewSimulationRunModal
         isOpen={modalOpen}

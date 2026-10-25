@@ -334,6 +334,38 @@ def generate_prompt_improvements(
     credential_id: Optional[UUID] = None,
     period_deltas: Optional[Dict[str, Dict[str, str]]] = None,
 ) -> EvaluationPromptImprovementsState:
+    return generate_prompt_improvements_for_prompt(
+        agent_id=str(imported_agent.id),
+        agent_name=imported_agent.name,
+        agent_prompt=imported_agent.content or "",
+        agent_flowchart=imported_agent.agent_flowchart,
+        clusters_state=clusters_state,
+        completed_rows=evaluation.completed_rows,
+        organization_id=organization_id,
+        db=db,
+        provider=provider,
+        model=model,
+        credential_id=credential_id,
+        period_deltas=period_deltas,
+    )
+
+
+def generate_prompt_improvements_for_prompt(
+    *,
+    agent_id: str,
+    agent_name: Optional[str],
+    agent_prompt: str,
+    agent_flowchart: Any,
+    clusters_state: EvaluationMetricClustersState,
+    completed_rows: int,
+    organization_id: UUID,
+    db: Session,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    credential_id: Optional[UUID] = None,
+    period_deltas: Optional[Dict[str, Dict[str, str]]] = None,
+) -> EvaluationPromptImprovementsState:
+    """Suggest prompt edits for ``agent_prompt`` from completed failure clusters."""
     if clusters_state.status != "completed" or not clusters_state.groups:
         raise ValueError("Metric clusters must be completed before generating improvements")
 
@@ -356,15 +388,15 @@ def generate_prompt_improvements(
             for area in clusters_state.rca_summary.prompt_areas
         ]
 
-    flow_nodes = _extract_flow_nodes(imported_agent.agent_flowchart)
+    flow_nodes = _extract_flow_nodes(agent_flowchart)
     flow_node_context = [
         {"id": node_id, "label": label}
         for node_id, label in flow_nodes.items()
     ]
 
     user_payload: Dict[str, Any] = {
-        "agent_name": imported_agent.name,
-        "agent_prompt": imported_agent.content,
+        "agent_name": agent_name,
+        "agent_prompt": agent_prompt,
         "failure_clusters": cluster_context,
         "rca_prompt_areas": rca_prompt_areas,
         "rca_overview": (
@@ -397,18 +429,18 @@ def generate_prompt_improvements(
     overview, suggestions = _parse_suggestions(
         raw,
         cluster_context,
-        agent_prompt=imported_agent.content or "",
+        agent_prompt=agent_prompt,
         flow_nodes=flow_nodes,
     )
 
     return EvaluationPromptImprovementsState(
         status="completed",
-        imported_agent_id=str(imported_agent.id),
-        imported_agent_name=imported_agent.name,
+        imported_agent_id=agent_id,
+        imported_agent_name=agent_name,
         suggestions=suggestions,
         overview=overview or None,
         generated_at=datetime.now(timezone.utc),
-        generated_at_completed_rows=evaluation.completed_rows,
+        generated_at_completed_rows=completed_rows,
         provider=provider_enum.value,
         model=model_str,
         error_message=None,
