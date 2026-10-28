@@ -10,9 +10,22 @@ from app.workers.config import celery_app
 
 @celery_app.task(name="flush_usage_counters")
 def flush_usage_counters_task() -> dict:
+    from app.services.billing.flexprice_buffer import flush_buffered_flexprice_events
     from app.services.usage.llm_usage import flush_all_usage_to_catalog
 
+    flexprice_stats = flush_buffered_flexprice_events()
     flushed = flush_all_usage_to_catalog(SessionLocal)
     if flushed:
         logger.info("Flushed {} LLM usage rollup buckets", flushed)
-    return {"flushed_buckets": flushed}
+    if flexprice_stats.get("flushed"):
+        logger.info(
+            "Flushed {} buffered Flexprice events ({} failed, {} pending)",
+            flexprice_stats["flushed"],
+            flexprice_stats.get("failed", 0),
+            flexprice_stats.get("pending", 0),
+        )
+    return {
+        "flushed_buckets": flushed,
+        "flexprice_flushed": flexprice_stats.get("flushed", 0),
+        "flexprice_pending": flexprice_stats.get("pending", 0),
+    }

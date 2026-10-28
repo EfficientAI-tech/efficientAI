@@ -709,6 +709,39 @@ def record_call_import_evaluation_completed(
     )
 
 
+def buffer_call_import_evaluation_completed(
+    organization_id: UUID,
+    evaluation_id: UUID,
+    *,
+    workspace_id: UUID,
+    call_import_id: UUID,
+    rows_billed: int,
+    completed_total: int,
+    total_rows: int = 0,
+    metric_count: int = 0,
+) -> bool:
+    if rows_billed <= 0:
+        return False
+    from app.services.billing.flexprice_buffer import enqueue_flexprice_event
+
+    return enqueue_flexprice_event(
+        CALL_IMPORT_EVALUATION_COMPLETED,
+        organization_id,
+        f"{evaluation_id}:{completed_total}",
+        properties=_event_properties(
+            workspace_id,
+            FEATURE_CALL_IMPORTS,
+            quantity=rows_billed,
+            evaluation_id=evaluation_id,
+            call_import_id=call_import_id,
+            completed_total=completed_total,
+            total_rows=total_rows,
+            metric_count=metric_count,
+            rows_billed=rows_billed,
+        ),
+    )
+
+
 def record_call_import_recording_minutes_billed(
     organization_id: UUID,
     evaluation_row_id: UUID,
@@ -723,6 +756,37 @@ def record_call_import_recording_minutes_billed(
     if billable_minutes <= 0:
         return False
     return record_event(
+        CALL_IMPORT_RECORDING_MINUTES_BILLED,
+        organization_id,
+        evaluation_row_id,
+        properties=_event_properties(
+            workspace_id,
+            FEATURE_CALL_IMPORTS,
+            quantity=billable_minutes,
+            billable_minutes=billable_minutes,
+            evaluation_row_id=evaluation_row_id,
+            evaluation_id=evaluation_id,
+            call_import_id=call_import_id,
+            audio_seconds=audio_seconds,
+        ),
+    )
+
+
+def buffer_call_import_recording_minutes_billed(
+    organization_id: UUID,
+    evaluation_row_id: UUID,
+    *,
+    workspace_id: UUID,
+    evaluation_id: UUID,
+    call_import_id: UUID,
+    audio_seconds: int,
+    billable_minutes: int,
+) -> bool:
+    if billable_minutes <= 0:
+        return False
+    from app.services.billing.flexprice_buffer import enqueue_flexprice_event
+
+    return enqueue_flexprice_event(
         CALL_IMPORT_RECORDING_MINUTES_BILLED,
         organization_id,
         evaluation_row_id,

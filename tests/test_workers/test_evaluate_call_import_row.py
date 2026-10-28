@@ -1041,7 +1041,7 @@ def test_rollup_parent_emits_pass_delta_when_leaving_running(db_session, monkeyp
         return True
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _capture,
     )
 
@@ -1070,7 +1070,7 @@ def test_rollup_parent_bills_only_retry_delta(db_session, monkeypatch):
         return True
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _capture,
     )
 
@@ -1109,7 +1109,7 @@ def test_rollup_parent_repeat_call_does_not_double_bill(db_session, monkeypatch)
         return True
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _capture,
     )
 
@@ -1143,7 +1143,7 @@ def test_rollup_parent_skips_billing_when_metric_rerun_unchanged(
         return True
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _capture,
     )
 
@@ -1172,7 +1172,7 @@ def test_rollup_parent_does_not_advance_watermark_when_billing_fails(
         return False
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _billing_fails,
     )
 
@@ -1202,7 +1202,7 @@ def test_rollup_parent_retries_billing_after_failed_ingest(db_session, monkeypat
         return attempts["count"] >= 2
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _billing_succeeds_on_retry,
     )
 
@@ -1236,7 +1236,7 @@ def test_rollup_parent_does_not_decrease_watermark_when_completed_rows_drop(
         return True
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _capture,
     )
 

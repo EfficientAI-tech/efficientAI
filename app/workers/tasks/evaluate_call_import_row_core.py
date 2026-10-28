@@ -712,11 +712,17 @@ def commit_terminal_row_and_rollup(
         row_db.commit()
     if bill_after_commit is not None:
         evaluation, eval_row, source_row = bill_after_commit
-        maybe_bill_completed_eval_row_flexprice(
+        from app.services.call_imports.eval_flexprice_billing import (
+            maybe_enqueue_recording_minutes_for_completed_row,
+        )
+
+        maybe_enqueue_recording_minutes_for_completed_row(
             row_db,
             evaluation,
             eval_row,
             source_row=source_row,
+            resolve_audio_seconds=resolve_eval_row_audio_seconds,
+            billable_minutes_fn=billable_audio_minutes,
         )
     if (eval_row.status or "").lower() == "completed":
         from app.services.call_imports.discovered_running_cache import (
@@ -838,20 +844,14 @@ def rollup_parent(
             .with_for_update()
             .one()
         )
-        from app.services.billing.flexprice_service import (
-            record_call_import_evaluation_completed,
+        from app.services.call_imports.eval_flexprice_billing import (
+            buffer_call_import_evaluation_pass,
         )
 
-        metric_count = len(evaluation.selected_metric_ids or [])
-        billing_accepted = record_call_import_evaluation_completed(
-            evaluation.organization_id,
-            evaluation.id,
-            workspace_id=evaluation.workspace_id,
-            call_import_id=evaluation.call_import_id,
+        billing_accepted = buffer_call_import_evaluation_pass(
+            evaluation,
             rows_billed=delta,
             completed_total=completed,
-            total_rows=int(evaluation.total_rows or 0),
-            metric_count=metric_count,
         )
         if billing_accepted:
             evaluation.billed_completed_rows = completed
@@ -1087,42 +1087,3 @@ def resolve_eval_row_audio_seconds(
         cache_eval_row_audio_seconds(eval_row, seconds)
     return seconds
 
-
-def maybe_bill_completed_eval_row_flexprice(
-    db: Session,
-    evaluation: CallImportEvaluation,
-    eval_row: CallImportEvaluationRow,
-    *,
-    source_row: CallImportRow | None = None,
-) -> None:
-    if (eval_row.status or "").lower() != "completed":
-        return
-    from app.services.billing.flexprice_service import (
-        record_call_import_recording_minutes_billed,
-    )
-
-    if source_row is None:
-        source_row = (
-            db.query(CallImportRow)
-            .filter(CallImportRow.id == eval_row.call_import_row_id)
-            .first()
-        )
-    if source_row is None:
-        return
-    if not (source_row.recording_s3_key or "").strip():
-        return
-
-    audio_seconds = resolve_eval_row_audio_seconds(db, eval_row, source_row)
-    minutes = billable_audio_minutes(audio_seconds)
-    if minutes <= 0:
-        return
-
-    record_call_import_recording_minutes_billed(
-        evaluation.organization_id,
-        eval_row.id,
-        workspace_id=eval_row.workspace_id or evaluation.workspace_id,
-        evaluation_id=evaluation.id,
-        call_import_id=evaluation.call_import_id,
-        audio_seconds=audio_seconds,
-        billable_minutes=minutes,
-    )
