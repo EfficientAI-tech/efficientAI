@@ -830,6 +830,7 @@ export default function CallImportEvaluationDetail() {
     queryKey: ['call-import', activeWorkspaceId, id],
     queryFn: () => apiClient.getCallImport(id!, { row_limit: 0, row_offset: 0 }),
     enabled: !!id,
+    refetchOnWindowFocus: false,
     // Poll while import, diarisation, or the linked evaluation is in flight
     // so all three summary bars update without a hard refresh. Mirrors the
     // broader conditions on CallImportDetail plus active eval-run status.
@@ -871,6 +872,7 @@ export default function CallImportEvaluationDetail() {
     queryFn: () => apiClient.getCallImportEvaluation(id!, evalId!),
     enabled: !!id && !!evalId,
     staleTime: 5000,
+    refetchOnWindowFocus: false,
     refetchInterval: (q) => {
       const data = q.state.data
       if (data?.bulk_operation) return EVALUATION_BULK_OPERATION_POLL_MS
@@ -963,6 +965,7 @@ export default function CallImportEvaluationDetail() {
         evaluationQuery.data?.status === 'failed'),
     staleTime: 60_000,
     placeholderData: keepPreviousData,
+    refetchOnWindowFocus: false,
     refetchInterval: () => evaluationRowsPollMs(evaluationQuery.data),
   })
 
@@ -979,6 +982,7 @@ export default function CallImportEvaluationDetail() {
       apiClient.getCallImportEvaluationRow(id!, evalId!, detailRow!.id),
     enabled: !!id && !!evalId && !!detailRow?.id,
     staleTime: 60_000,
+    refetchOnWindowFocus: false,
     refetchInterval: () => evaluationRowsPollMs(evaluationQuery.data),
   })
 
@@ -1123,6 +1127,7 @@ export default function CallImportEvaluationDetail() {
       ),
     enabled: !!id && !!evalId && resultsTab === 'visualizations',
     staleTime: 60_000,
+    refetchOnWindowFocus: false,
     refetchInterval: () => {
       const status = evaluationQuery.data?.status
       return status === 'pending' || status === 'running' ? 5000 : false

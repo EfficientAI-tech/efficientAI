@@ -428,8 +428,13 @@ def hydrate_platform_call_import_row(
                 context="platform_empty_audio",
                 reason="recording_empty",
             )
-        s3_service.upload_file_by_key_from_path(
-            tmp.name, key, content_type=content_type or "audio/mpeg"
+        from app.services.call_imports.recording_storage import upload_local_recording_file
+
+        size_bytes, duration_seconds = upload_local_recording_file(
+            tmp.name,
+            key=key,
+            content_type=content_type or "audio/mpeg",
+            size_bytes=total,
         )
     finally:
         tmp.close()
@@ -446,7 +451,8 @@ def hydrate_platform_call_import_row(
     previous_status = row.status
     row.recording_s3_key = key
     row.recording_content_type = content_type
-    row.recording_size_bytes = total
+    row.recording_size_bytes = size_bytes
+    row.recording_duration_seconds = duration_seconds if duration_seconds > 0 else None
     row.status = CallImportRowStatus.COMPLETED
     row.error_message = None
     if not _safe_commit(db, row_id=row_id, context="platform_completed"):

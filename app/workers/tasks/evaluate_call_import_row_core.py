@@ -700,19 +700,24 @@ def commit_terminal_row_and_rollup(
         if transition.rowcount != 1:
             row_db.rollback()
             return
+        bill_after_commit = None
         if (eval_row.status or "").lower() == "completed":
             source_row = (
                 row_db.query(CallImportRow)
                 .filter(CallImportRow.id == eval_row.call_import_row_id)
                 .first()
             )
-            maybe_bill_completed_eval_row_flexprice(
-                row_db,
-                evaluation,
-                eval_row,
-                source_row=source_row,
-            )
+            if source_row is not None:
+                bill_after_commit = (evaluation, eval_row, source_row)
         row_db.commit()
+    if bill_after_commit is not None:
+        evaluation, eval_row, source_row = bill_after_commit
+        maybe_bill_completed_eval_row_flexprice(
+            row_db,
+            evaluation,
+            eval_row,
+            source_row=source_row,
+        )
     if (eval_row.status or "").lower() == "completed":
         from app.services.call_imports.discovered_running_cache import (
             record_row_discoveries,
@@ -1058,6 +1063,11 @@ def resolve_eval_row_audio_seconds(
         )
     if source_row is None:
         return 0
+    stored = getattr(source_row, "recording_duration_seconds", None)
+    if stored is not None and int(stored) > 0:
+        seconds = int(stored)
+        cache_eval_row_audio_seconds(eval_row, seconds)
+        return seconds
     recording_s3_key = (source_row.recording_s3_key or "").strip()
     if not recording_s3_key:
         return 0

@@ -693,7 +693,13 @@ def process_call_import_row_task(
 
         _release_fetch_sessions(row_db, catalog_db)
         try:
-            s3_service.upload_file_by_key(audio_bytes, key, content_type=content_type)
+            from app.services.call_imports.recording_storage import persist_recording_bytes
+
+            size_bytes, duration_seconds = persist_recording_bytes(
+                audio_bytes,
+                key=key,
+                content_type=content_type or "audio/mpeg",
+            )
         except Exception as exc:
             logger.exception("Failed to upload recording to S3 for row {}", row_id)
             terminal_message = _terminal_transient_failure_message(self, row, exc)
@@ -731,7 +737,8 @@ def process_call_import_row_task(
 
         row.recording_s3_key = key
         row.recording_content_type = content_type
-        row.recording_size_bytes = len(audio_bytes)
+        row.recording_size_bytes = size_bytes
+        row.recording_duration_seconds = duration_seconds if duration_seconds > 0 else None
         previous_import_status = row.status
         row.status = CallImportRowStatus.COMPLETED
         row.error_message = None

@@ -2888,6 +2888,7 @@ class CallImportRow(Base):
     recording_s3_key = Column(String(1024), nullable=True)
     recording_content_type = Column(String(128), nullable=True)
     recording_size_bytes = Column(Integer, nullable=True)
+    recording_duration_seconds = Column(Integer, nullable=True)
 
     error_message = Column(Text, nullable=True)
     attempts = Column(Integer, nullable=False, default=0)

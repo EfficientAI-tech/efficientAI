@@ -127,15 +127,22 @@ function importRowsPollMs(
     (header.diarised_pending_rows ?? 0) + (header.diarised_running_rows ?? 0)
   if (diariseInFlight > 0) return 4000
   const evaluationsInFlight = itemsOf<CallImportEvaluation>(evaluations)
-  if (evaluationsInFlight.some((row) => row.bulk_operation)) {
-    return EVALUATION_BULK_OPERATION_POLL_MS
-  }
   if (
     evaluationsInFlight.some(
-      (row) => row.status === 'pending' || row.status === 'running',
+      (row) =>
+        row.bulk_operation ||
+        row.status === 'pending' ||
+        row.status === 'running',
     )
   ) {
     return 4000
+  }
+  if (
+    header.status === 'completed' ||
+    header.status === 'failed' ||
+    header.status === 'mapped'
+  ) {
+    return false
   }
   return false
 }
@@ -973,6 +980,7 @@ export default function CallImportDetail() {
     queryFn: () => apiClient.getCallImport(id!, { row_limit: 0, row_offset: 0 }),
     enabled: !!id,
     staleTime: 60_000,
+    refetchOnWindowFocus: false,
     refetchInterval: (query) => {
       const d = query.state.data
       if (!d) return false
@@ -989,7 +997,15 @@ export default function CallImportDetail() {
       if (d.status === 'pending' || d.status === 'processing') return 5000
       const diariseInFlight =
         (d.diarised_pending_rows ?? 0) + (d.diarised_running_rows ?? 0)
-      return diariseInFlight > 0 ? 4000 : false
+      if (diariseInFlight > 0) return 4000
+      if (
+        d.status === 'completed' ||
+        d.status === 'failed' ||
+        d.status === 'mapped'
+      ) {
+        return false
+      }
+      return false
     },
   })
 
@@ -1004,6 +1020,7 @@ export default function CallImportDetail() {
     enabled: !!id,
     staleTime: 60_000,
     placeholderData: keepPreviousData,
+    refetchOnWindowFocus: false,
     refetchInterval: () =>
       importRowsPollMs(
         queryClient.getQueryData(['call-import', activeWorkspaceId, id]),
@@ -1053,6 +1070,7 @@ export default function CallImportDetail() {
     queryKey: evaluationsQueryKey,
     queryFn: () => apiClient.listCallImportEvaluations(id!),
     enabled: !!id,
+    refetchOnWindowFocus: false,
     refetchInterval: (query) => {
       const rows = itemsOf<CallImportEvaluation>(query.state.data)
       if (rows.some((row) => row.bulk_operation)) {
@@ -1081,6 +1099,7 @@ export default function CallImportDetail() {
     queryFn: () => apiClient.getCallImportInsights(id!),
     enabled: !!id && activeTab === 'insights',
     staleTime: 60_000,
+    refetchOnWindowFocus: false,
     refetchInterval: () => {
       const rows = itemsOf<CallImportEvaluation>(evaluationsData)
       if (rows.some((row) => row.bulk_operation)) {
@@ -1521,6 +1540,7 @@ export default function CallImportDetail() {
     queryFn: () => apiClient.getCallImportRow(id!, selectedRowId!),
     enabled: !!id && !!selectedRowId,
     staleTime: 60_000,
+    refetchOnWindowFocus: false,
     refetchInterval: () => importRowsPollMs(data, evaluationsData),
   })
 
