@@ -434,6 +434,7 @@ def retry_eval_page_query(
     exclude_ids: Optional[Sequence[UUID]] = None,
     include_metric_scores: bool = False,
     ordered: bool = False,
+    search_term: str = "",
 ) -> Query:
     """One status range on (evaluation_id, status). No transcript columns.
 
@@ -453,6 +454,12 @@ def retry_eval_page_query(
             CallImportEvaluationRow.status == status,
         )
     )
+    needle = (search_term or "").strip()
+    if needle:
+        query = query.join(
+            CallImportRow,
+            CallImportEvaluationRow.call_import_row_id == CallImportRow.id,
+        ).filter(CallImportRow.conversation_id.ilike(f"%{needle}%"))
     if after_id is not None:
         query = query.filter(CallImportEvaluationRow.id > after_id)
     if row_ids:
@@ -484,6 +491,7 @@ def load_retry_target_page(
     include_metric_scores: bool = False,
     ordered: bool = False,
     limit: int = RETRY_ROW_PAGE_SIZE,
+    search_term: str = "",
 ) -> List[Tuple[CallImportEvaluationRow, Optional[CallImportRow]]]:
     eval_rows = (
         retry_eval_page_query(
@@ -495,6 +503,7 @@ def load_retry_target_page(
             exclude_ids=exclude_ids,
             include_metric_scores=include_metric_scores,
             ordered=ordered,
+            search_term=search_term,
         )
         .limit(limit)
         .all()
@@ -509,6 +518,49 @@ def load_retry_target_page(
         ).all()
     }
     return [(row, sources.get(row.call_import_row_id)) for row in eval_rows]
+
+
+def count_evaluation_retry_targets(
+    catalog_db: Session,
+    evaluation_id: UUID,
+    *,
+    statuses: Sequence[str],
+    search_term: str = "",
+) -> int:
+    needle = (search_term or "").strip()
+
+    def _count(session: Session) -> int:
+        total = 0
+        for status in statuses:
+            query = session.query(func.count(CallImportEvaluationRow.id)).filter(
+                CallImportEvaluationRow.evaluation_id == evaluation_id,
+                CallImportEvaluationRow.status == status,
+            )
+            if needle:
+                query = query.join(
+                    CallImportRow,
+                    CallImportEvaluationRow.call_import_row_id == CallImportRow.id,
+                ).filter(CallImportRow.conversation_id.ilike(f"%{needle}%"))
+            total += int(query.scalar() or 0)
+        return total
+
+    if not is_sharding_enabled():
+        return _count(catalog_db)
+
+    router = db_pool_manager.router
+    if router is None:
+        return _count(catalog_db)
+    total = 0
+    for shard_id in router.shard_ids:
+        factory = db_pool_manager.shard_session_factory(shard_id)
+        shard_db = factory()
+        try:
+            total += _count(shard_db)
+        finally:
+            shard_db.close()
+    if total == 0:
+        return _count(catalog_db)
+    return total
 
 
 def iter_evaluation_row_sessions(catalog_db: Session, call_import_id: UUID):

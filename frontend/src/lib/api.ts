@@ -80,6 +80,7 @@ import type {
   ListEvaluatorResultsParams,
   CallImportTranscribeRequest,
   CallImportTranscribeResponse,
+  CallImportRowSelectionFilter,
   CallImportRetryFailedRowsResponse,
   PlatformImportProgress,
   Workspace,
@@ -3068,11 +3069,17 @@ class ApiClient {
 
   async bulkDeleteCallImportRows(
     id: string,
-    rowIds: string[],
+    options:
+      | { rowIds: string[] }
+      | { rowFilter: CallImportRowSelectionFilter },
   ): Promise<{ deleted: number; status?: 'completed' | 'accepted' }> {
+    const body =
+      'rowFilter' in options
+        ? { row_filter: options.rowFilter }
+        : { row_ids: options.rowIds }
     const response = await this.client.post(
       `/api/v1/call-imports/${id}/rows/bulk-delete`,
-      { row_ids: rowIds },
+      body,
     )
     return response.data
   }
@@ -3690,12 +3697,14 @@ class ApiClient {
    */
   async cancelCallImportDiarisation(
     callImportId: string,
-    rowIds?: string[] | null,
+    options?: { rowIds?: string[] | null; rowFilter?: CallImportRowSelectionFilter | null },
   ): Promise<{ cancelled: number; skipped: number }> {
-    const body =
-      rowIds === undefined || rowIds === null
-        ? {}
-        : { row_ids: rowIds }
+    let body: Record<string, unknown> = {}
+    if (options?.rowFilter) {
+      body = { row_filter: options.rowFilter }
+    } else if (options?.rowIds !== undefined && options.rowIds !== null) {
+      body = { row_ids: options.rowIds }
+    }
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/cancel-diarisation`,
       body,
@@ -3775,6 +3784,7 @@ class ApiClient {
     evaluationId: string,
     options?: {
       evalRowIds?: string[]
+      rowFilter?: import('../types/api').CallImportEvaluationRowRetryFilter | null
       llmProvider?: string | null
       llmModel?: string | null
       llmCredentialId?: string | null
@@ -3820,6 +3830,9 @@ class ApiClient {
     const body: Record<string, unknown> = {}
     if (options?.evalRowIds && options.evalRowIds.length > 0) {
       body.eval_row_ids = options.evalRowIds
+    }
+    if (options?.rowFilter) {
+      body.row_filter = options.rowFilter
     }
     if (options?.llmProvider) body.llm_provider = options.llmProvider
     if (options?.llmModel) body.llm_model = options.llmModel

@@ -9566,6 +9566,16 @@ async def retry_call_import_evaluation(
         )
 
     requested_ids = payload.eval_row_ids if payload else None
+    retry_filter = payload.row_filter if payload else None
+    _MAX_EXPLICIT_EVAL_RETRY_IDS = 500
+    if requested_ids is not None and len(requested_ids) > _MAX_EXPLICIT_EVAL_RETRY_IDS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"At most {_MAX_EXPLICIT_EVAL_RETRY_IDS} eval_row_ids per request; "
+                "use row_filter for bulk retry."
+            ),
+        )
     # Metric-subset retry: validate that every metric is something this
     # run actually scored. Empty list is rejected too — callers that
     # want a full re-run should omit the field entirely.
@@ -9691,11 +9701,36 @@ async def retry_call_import_evaluation(
     )
 
     skipped: List[CallImportEvaluationRetrySkippedItem] = []
+    retry_search = (retry_filter.q or "").strip() if retry_filter else ""
+    retry_status = (
+        (retry_filter.status or "").strip().lower() if retry_filter and retry_filter.status else None
+    )
     if requested_ids is None:
-        from app.db_sharding.eval_rows import count_evaluation_rows_for_run
+        from app.db_sharding.eval_rows import (
+            count_evaluation_retry_targets,
+            count_evaluation_rows_for_run,
+        )
         from app.db_sharding.sessions import is_sharding_enabled
 
-        if is_sharding_enabled():
+        if retry_filter is not None or retry_search:
+            if retry_status and include_completed and retry_status not in {
+                "failed",
+                "completed",
+            }:
+                statuses = [retry_status]
+            elif retry_status:
+                statuses = [retry_status]
+            else:
+                statuses = (
+                    ["failed", "completed"] if include_completed else ["failed"]
+                )
+            target_count = count_evaluation_retry_targets(
+                db,
+                eval_id,
+                statuses=statuses,
+                search_term=retry_search,
+            )
+        elif is_sharding_enabled():
             statuses = (
                 ["failed", "completed"] if include_completed else ["failed"]
             )
@@ -9774,6 +9809,8 @@ async def retry_call_import_evaluation(
             "metric_ids": [str(mid) for mid in metric_ids] if metric_ids else None,
             "include_completed": include_completed,
             "transcribe_overwrite": transcribe_overwrite,
+            "retry_search_term": retry_search or None,
+            "retry_status_filter": retry_status,
         },
     )
 

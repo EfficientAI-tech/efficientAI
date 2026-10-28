@@ -4415,6 +4415,24 @@ class CallImportEvaluationBulkDelete(BaseModel):
     )
 
 
+class CallImportEvaluationRowRetryFilter(BaseModel):
+    """Retry matching evaluation rows in keyset pages instead of by id list."""
+
+    q: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description="Search conversation_id on the linked import row.",
+    )
+    status: Optional[str] = Field(
+        default=None,
+        max_length=32,
+        description=(
+            "When set, only rows with this evaluation status are retried. "
+            "Omit to use the default failed-only or metric-subset statuses."
+        ),
+    )
+
+
 class CallImportEvaluationRetryRequest(BaseModel):
     """Body for retrying a subset (or all failed rows) of an evaluation run.
 
@@ -4437,11 +4455,24 @@ class CallImportEvaluationRetryRequest(BaseModel):
     eval_row_ids: Optional[List[UUID]] = Field(
         default=None,
         description=(
-            "Restrict the retry to a specific subset of evaluation rows. "
-            "When omitted, every row with status='failed' in this run is "
-            "re-enqueued."
+            "Restrict the retry to a small explicit subset of evaluation rows. "
+            "Prefer ``row_filter`` for select-all. When omitted, every matching "
+            "failed row in this run is re-enqueued in pages."
         ),
     )
+    row_filter: Optional[CallImportEvaluationRowRetryFilter] = Field(
+        default=None,
+        description=(
+            "Server-side filter for bulk retry (search / status) without "
+            "posting every eval_row id."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _retry_ids_or_filter(self) -> "CallImportEvaluationRetryRequest":
+        if self.eval_row_ids and self.row_filter is not None:
+            raise ValueError("Pass either eval_row_ids or row_filter, not both.")
+        return self
 
     # --- Metric-subset re-run ---
     # When ``metric_ids`` is set, the retry recomputes ONLY those
@@ -4847,14 +4878,40 @@ class CallImportEvaluationRowListResponse(BaseModel):
     page_size: int
 
 
+class CallImportRowSelectionFilter(BaseModel):
+    """Server-side row selection for bulk import operations (no id list)."""
+
+    q: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description="Case-insensitive substring match on conversation_id.",
+    )
+    diarised_status: Optional[str] = Field(
+        default=None,
+        max_length=32,
+        description="Filter on diarised_transcript_status (pending, running, etc.).",
+    )
+
+
 class CallImportRowBulkDelete(BaseModel):
     """Request body for deleting multiple rows from a call-import batch."""
 
-    row_ids: List[UUID] = Field(
-        ...,
-        min_length=1,
-        description="Row ids to delete (must belong to the same call import).",
+    row_ids: Optional[List[UUID]] = Field(
+        default=None,
+        description="Explicit row ids for a small on-page selection.",
     )
+    row_filter: Optional[CallImportRowSelectionFilter] = Field(
+        default=None,
+        description="Delete every row matching the import list filters.",
+    )
+
+    @model_validator(mode="after")
+    def _require_rows_or_filter(self) -> "CallImportRowBulkDelete":
+        if self.row_filter is not None:
+            return self
+        if not self.row_ids:
+            raise ValueError("Provide row_ids or row_filter.")
+        return self
 
 
 class CallImportRowBulkDeleteResponse(BaseModel):
@@ -5007,8 +5064,16 @@ class CallImportTranscribeRequest(BaseModel):
     row_ids: Optional[List[UUID]] = Field(
         default=None,
         description=(
-            "Restrict the run to a specific subset of rows. NULL = every "
-            "row in the import (subject to only_missing)."
+            "Restrict the run to a small explicit subset of rows. Prefer "
+            "``row_filter`` for cross-page select-all. NULL = every row "
+            "in the import (subject to only_missing), walked in pages."
+        ),
+    )
+    row_filter: Optional[CallImportRowSelectionFilter] = Field(
+        default=None,
+        description=(
+            "Retry/diarise/delete rows matching these list filters without "
+            "sending every row id from the browser."
         ),
     )
     # --- LLM diariser config ---
@@ -5076,6 +5141,8 @@ class CallImportTranscribeRequest(BaseModel):
                     "mode='llm_only'; the LLM consumes the audio "
                     "directly."
                 )
+        if self.row_ids and self.row_filter is not None:
+            raise ValueError("Pass either row_ids or row_filter, not both.")
         return self
 
 
@@ -5164,6 +5231,16 @@ class CallImportCancelDiarisationRequest(BaseModel):
             "every pending / running diarisation in the import."
         ),
     )
+    row_filter: Optional[CallImportRowSelectionFilter] = Field(
+        default=None,
+        description="Cancel diarisation for rows matching import list filters.",
+    )
+
+    @model_validator(mode="after")
+    def _cancel_ids_or_filter(self) -> "CallImportCancelDiarisationRequest":
+        if self.row_ids is not None and self.row_filter is not None:
+            raise ValueError("Pass either row_ids or row_filter, not both.")
+        return self
 
 
 class CallImportCancelDiarisationResponse(BaseModel):

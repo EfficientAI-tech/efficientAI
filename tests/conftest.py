@@ -807,6 +807,8 @@ def _wire_bulk_ops_stubs(db_session):
             ),
             include_completed=bool(payload_dict.get("include_completed", False)),
             transcribe_overwrite=bool(payload_dict.get("transcribe_overwrite", False)),
+            retry_search_term=str(payload_dict.get("retry_search_term") or ""),
+            retry_status_filter=payload_dict.get("retry_status_filter"),
         )
         return types.SimpleNamespace(id="fake-sync-retry-task")
 

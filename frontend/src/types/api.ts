@@ -2049,13 +2049,18 @@ export interface CallImportEvaluationRowListResponse {
 
 // --- Retry (re-enqueue failed rows on an existing evaluation run) ---
 
+export interface CallImportEvaluationRowRetryFilter {
+  q?: string | null
+  status?: string | null
+}
+
 export interface CallImportEvaluationRetryRequest {
   /**
-   * Restrict the retry to a specific subset of evaluation rows.
-   * When omitted, every row with status='failed' in this run is
-   * re-enqueued.
+   * Restrict the retry to a small explicit subset of evaluation rows.
+   * Prefer ``row_filter`` for bulk select-all.
    */
   eval_row_ids?: string[]
+  row_filter?: CallImportEvaluationRowRetryFilter | null
 
   /**
    * Optional LLM overrides. When provided, persisted onto the run so
@@ -2113,6 +2118,11 @@ export interface CallImportEvaluationBulkActionResponse {
 
 // --- Diarization / transcription ---
 
+export interface CallImportRowSelectionFilter {
+  q?: string | null
+  diarised_status?: string | null
+}
+
 export interface CallImportTranscribeRequest {
   /**
    * Diarisation pipeline shape.
@@ -2132,6 +2142,7 @@ export interface CallImportTranscribeRequest {
   only_missing?: boolean
   overwrite_existing?: boolean
   row_ids?: string[]
+  row_filter?: CallImportRowSelectionFilter | null
   /**
    * LLM diariser. In `stt_llm` mode it splits the STT plain-text into
    * agent/user turns; in `llm_only` mode it directly receives the

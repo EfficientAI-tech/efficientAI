@@ -29,6 +29,8 @@ from app.models.schemas import CallImportTranscribeRequest
 
 _BULK_INSERT_CHUNK = 1000
 _REVOKE_TASK_BATCH = 500
+_IMPORT_ROW_FILTER_PAGE_SIZE = 500
+_MAX_EXPLICIT_EVAL_RETRY_IDS = 500
 
 _ROW_TRANSCRIBE_COLUMNS = (
     CallImportRow.id,
@@ -107,13 +109,34 @@ def select_rows_for_transcription(
     return selected, skip_counts
 
 
-def execute_bulk_diarization(
+def _apply_transcription_selection(
+    rows: List[CallImportRow],
+    payload: CallImportTranscribeRequest,
+    skip_counts: Dict[str, int],
+) -> List[CallImportRow]:
+    selected: List[CallImportRow] = []
+    for row in rows:
+        recording = (row.recording_s3_key or "").strip()
+        if not recording:
+            skip_counts["no_recording"] = skip_counts.get("no_recording", 0) + 1
+            continue
+        existing = (row.diarised_transcript or "").strip()
+        if existing and payload.only_missing and not payload.overwrite_existing:
+            skip_counts["transcript_present"] = (
+                skip_counts.get("transcript_present", 0) + 1
+            )
+            continue
+        selected.append(row)
+    return selected
+
+
+def _enqueue_diarization_for_rows(
     db: Session,
     call_import: CallImport,
     payload: CallImportTranscribeRequest,
-    requested_row_ids: Optional[List[UUID]] = None,
+    rows: List[CallImportRow],
+    skip_counts: Dict[str, int],
 ) -> BulkDiarizationResult:
-    """Store Redis params, then mark rows pending so dispatch never races ahead."""
     from app.workers.concurrency.diarization_dispatch import (
         _REDIS_PARAMS_STORE_ERROR,
         build_diarization_params_from_request,
@@ -121,10 +144,6 @@ def execute_bulk_diarization(
     )
     from app.workers.concurrency.fair_diarization_dispatch import (
         schedule_fair_diarization_dispatch,
-    )
-
-    rows, skip_counts = select_rows_for_transcription(
-        db, call_import, payload, requested_row_ids=requested_row_ids
     )
 
     if not rows:
@@ -188,6 +207,58 @@ def execute_bulk_diarization(
 
     return BulkDiarizationResult(
         queued=queued,
+        skipped_rows=sum(skip_counts.values()),
+        skipped_reason_counts=skip_counts,
+    )
+
+
+def execute_bulk_diarization(
+    db: Session,
+    call_import: CallImport,
+    payload: CallImportTranscribeRequest,
+    requested_row_ids: Optional[List[UUID]] = None,
+) -> BulkDiarizationResult:
+    """Store Redis params, then mark rows pending so dispatch never races ahead."""
+    if requested_row_ids:
+        rows, skip_counts = select_rows_for_transcription(
+            db, call_import, payload, requested_row_ids=requested_row_ids
+        )
+        return _enqueue_diarization_for_rows(
+            db, call_import, payload, rows, skip_counts
+        )
+
+    from app.services.call_imports.row_selection import normalize_row_selection_filter
+    from app.db_sharding.scatter_gather import fetch_call_import_rows_filtered_page
+
+    search_term, diarised_status = normalize_row_selection_filter(payload.row_filter)
+    skip_counts: Dict[str, int] = {}
+    queued_total = 0
+    offset = 0
+    page_size = _IMPORT_ROW_FILTER_PAGE_SIZE
+
+    while True:
+        page = fetch_call_import_rows_filtered_page(
+            db,
+            call_import.id,
+            offset=offset,
+            limit=page_size,
+            search_term=search_term,
+            diarised_status_filter=diarised_status,
+        )
+        if not page:
+            break
+        selected = _apply_transcription_selection(page, payload, skip_counts)
+        result = _enqueue_diarization_for_rows(
+            db, call_import, payload, selected, skip_counts
+        )
+        queued_total += result.queued
+        skip_counts = dict(result.skipped_reason_counts)
+        if len(page) < page_size:
+            break
+        offset += page_size
+
+    return BulkDiarizationResult(
+        queued=queued_total,
         skipped_rows=sum(skip_counts.values()),
         skipped_reason_counts=skip_counts,
     )
@@ -410,7 +481,6 @@ def execute_bulk_row_delete(
     call_import: CallImport,
     row_ids: List[UUID],
 ) -> int:
-    """Revoke tasks, batch-delete blob recordings, bulk-delete DB rows."""
     from app.api.v1.routes.call_imports import (
         _delete_s3_objects,
         _recompute_call_import_counters,
@@ -442,6 +512,42 @@ def execute_bulk_row_delete(
         organization_id,
     )
     return int(deleted or 0)
+
+
+def execute_bulk_row_delete_by_filter(
+    db: Session,
+    organization_id: UUID,
+    call_import: CallImport,
+    *,
+    search_term: str = "",
+    diarised_status_filter: Optional[str] = None,
+) -> int:
+    from app.db_sharding.scatter_gather import fetch_call_import_rows_filtered_page
+
+    deleted_total = 0
+    offset = 0
+    page_size = _IMPORT_ROW_FILTER_PAGE_SIZE
+    while True:
+        page = fetch_call_import_rows_filtered_page(
+            db,
+            call_import.id,
+            offset=offset,
+            limit=page_size,
+            search_term=search_term,
+            diarised_status_filter=diarised_status_filter,
+        )
+        if not page:
+            break
+        deleted_total += execute_bulk_row_delete(
+            db,
+            organization_id,
+            call_import,
+            [row.id for row in page],
+        )
+        if len(page) < page_size:
+            break
+        offset += page_size
+    return deleted_total
 
 
 def _revoke_call_import_task_ids(db: Session, call_import_id: UUID) -> int:
@@ -2001,6 +2107,8 @@ def execute_evaluation_retry(
     metric_ids: Optional[List[UUID]] = None,
     include_completed: bool = False,
     transcribe_overwrite: bool = False,
+    retry_search_term: str = "",
+    retry_status_filter: Optional[str] = None,
 ) -> dict:
     """Page failed rows, bulk-reset them, then start throttled dispatch."""
     from app.api.v1.routes.call_import_evaluations import _rollup_evaluation_status
@@ -2029,6 +2137,9 @@ def execute_evaluation_retry(
 
     include = include_completed or bool(metric_ids)
     statuses = ["failed", "completed"] if include else ["failed"]
+    if retry_status_filter:
+        statuses = [retry_status_filter.strip().lower()]
+    search_term = (retry_search_term or "").strip()
     restricted = [str(mid) for mid in metric_ids] if metric_ids else None
     eval_pk = evaluation.id
     import_id = evaluation.call_import_id
@@ -2116,19 +2227,27 @@ def execute_evaluation_retry(
                     _reset_loaded_page(session, raw)
         else:
             for status in statuses:
+                after_id: Optional[UUID] = None
                 while True:
                     raw = load_retry_target_page(
                         session,
                         eval_pk,
                         status=status,
-                        exclude_ids=orphans or None,
+                        after_id=after_id,
                         include_metric_scores=bool(metric_ids),
-                        ordered=False,
+                        ordered=True,
                         limit=RETRY_ROW_PAGE_SIZE,
+                        search_term=search_term,
                     )
+                    if raw:
+                        page_last_id = raw[-1][0].id
+                    else:
+                        page_last_id = None
                     action = _reset_loaded_page(session, raw)
                     if action in {"empty", "stop"}:
                         break
+                    if page_last_id is not None:
+                        after_id = page_last_id
         if shard_reset:
             reset_groups.append((shard_id, shard_reset))
         return len(shard_reset)

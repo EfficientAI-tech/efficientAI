@@ -3970,12 +3970,10 @@ async def bulk_delete_call_import_rows(
             detail="Call import not found",
         )
 
-    if not payload.row_ids:
+    if not payload.row_ids and payload.row_filter is None:
         return CallImportRowBulkDeleteResponse(deleted=0, status="completed")
 
     from app.workers.tasks.call_import_bulk_ops import bulk_delete_call_import_rows_task
-
-    row_id_strs = [str(rid) for rid in payload.row_ids]
 
     stamp_call_import_actor(call_import, principal)
     db.commit()
@@ -3983,7 +3981,8 @@ async def bulk_delete_call_import_rows(
     bulk_delete_call_import_rows_task.delay(
         str(call_import_id),
         str(organization_id),
-        row_id_strs,
+        [str(rid) for rid in payload.row_ids] if payload.row_ids else None,
+        payload.row_filter.model_dump(mode="json") if payload.row_filter else None,
     )
 
     return CallImportRowBulkDeleteResponse(deleted=0, status="accepted")
@@ -4345,29 +4344,57 @@ async def cancel_call_import_diarisation(
     requested_ids = (
         payload.row_ids if payload and payload.row_ids is not None else None
     )
-    if requested_ids is not None:
+    row_filter = payload.row_filter if payload else None
+    if row_filter is not None and requested_ids is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Pass either row_ids or row_filter, not both.",
+        )
+
+    cancelled = 0
+    skipped = 0
+    skipped_missing = 0
+
+    if row_filter is not None:
+        from app.services.call_imports.row_selection import normalize_row_selection_filter
+        from app.db_sharding.scatter_gather import fetch_call_import_rows_filtered_page
+
+        search_term, diarised_status = normalize_row_selection_filter(row_filter)
+        offset = 0
+        page_size = 500
+        while True:
+            page = fetch_call_import_rows_filtered_page(
+                db,
+                call_import_id,
+                offset=offset,
+                limit=page_size,
+                search_term=search_term,
+                diarised_status_filter=diarised_status,
+            )
+            if not page:
+                break
+            page_cancelled, page_skipped = _apply_diarisation_cancel(page)
+            cancelled += page_cancelled
+            skipped += page_skipped
+            if len(page) < page_size:
+                break
+            offset += page_size
+    elif requested_ids is not None:
         if not requested_ids:
-            # Empty list is "no rows requested" — treat as a no-op
-            # 200 rather than 400 so the UI can pass through an empty
-            # selection without a special-case.
             return CallImportCancelDiarisationResponse(cancelled=0, skipped=0)
         rows = base_query.filter(CallImportRow.id.in_(requested_ids)).all()
         found_ids = {r.id for r in rows}
-        # Treat requested-but-not-found ids as ``skipped`` so the UI's
-        # numbers reconcile (a stale selection that includes deleted
-        # rows shouldn't 404 the whole call).
         missing = [rid for rid in requested_ids if rid not in found_ids]
         skipped_missing = len(missing)
+        cancelled, skipped = _apply_diarisation_cancel(rows)
     else:
-        # Implicit "cancel every cancellable row in this import" path.
         rows = base_query.filter(
             CallImportRow.diarised_transcript_status.in_(
                 list(_cancellable_diarisation_states())
             )
         ).all()
-        skipped_missing = 0
+        cancelled, skipped = _apply_diarisation_cancel(rows)
 
-    cancelled, skipped = _apply_diarisation_cancel(rows)
     stamp_call_import_actor(call_import, principal)
     db.commit()
     return CallImportCancelDiarisationResponse(

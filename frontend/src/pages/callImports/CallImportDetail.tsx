@@ -450,6 +450,10 @@ export default function CallImportDetail() {
   // import" affordance extends the selection across pages by harvesting
   // ids from ``GET /call-imports/{id}/row-ids``.
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set())
+  const [bulkSelectionFilter, setBulkSelectionFilter] = useState<{
+    q?: string
+    diarised_status?: string
+  } | null>(null)
   // Loading flag for the cross-page select-all click; surfaces a tiny
   // spinner on the affordance button so the user knows the harvest is
   // in flight.
@@ -767,8 +771,10 @@ export default function CallImportDetail() {
   })
 
   const bulkDeleteRowsMutation = useMutation({
-    mutationFn: (rowIds: string[]) =>
-      apiClient.bulkDeleteCallImportRows(id!, rowIds),
+    mutationFn: (target: { rowIds?: string[]; rowFilter?: { q?: string; diarised_status?: string } }) =>
+      target.rowFilter
+        ? apiClient.bulkDeleteCallImportRows(id!, { rowFilter: target.rowFilter })
+        : apiClient.bulkDeleteCallImportRows(id!, { rowIds: target.rowIds ?? [] }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
@@ -1223,6 +1229,12 @@ export default function CallImportDetail() {
       if (rowIds && rowIds.length === 1) {
         return apiClient.transcribeCallImportRow(id!, rowIds[0], base)
       }
+      if (bulkSelectionFilter) {
+        return apiClient.transcribeCallImport(id!, {
+          ...base,
+          row_filter: bulkSelectionFilter,
+        })
+      }
       return apiClient.transcribeCallImport(id!, {
         ...base,
         row_ids: rowIds ?? undefined,
@@ -1237,6 +1249,7 @@ export default function CallImportDetail() {
       // keeping them "selected" would invite repeat clicks while the
       // transcribe worker is still doing its first pass.
       setSelectedRowIds(new Set())
+      setBulkSelectionFilter(null)
     },
     onError: (err: any) => {
       setTranscribeError(
@@ -1292,8 +1305,10 @@ export default function CallImportDetail() {
   const [bulkActionError, setBulkActionError] = useState<string | null>(null)
 
   const bulkCancelDiarisationMutation = useMutation({
-    mutationFn: (rowIds: string[]) =>
-      apiClient.cancelCallImportDiarisation(id!, rowIds),
+    mutationFn: (target: { rowIds?: string[]; rowFilter?: { q?: string; diarised_status?: string } }) =>
+      target.rowFilter
+        ? apiClient.cancelCallImportDiarisation(id!, { rowFilter: target.rowFilter })
+        : apiClient.cancelCallImportDiarisation(id!, { rowIds: target.rowIds ?? null }),
     onMutate: () => {
       setBulkActionError(null)
       setBulkActionResult(null)
@@ -1439,6 +1454,12 @@ export default function CallImportDetail() {
   // against whatever slice the user is actually looking at.
   const hasActiveFilter =
     !!rowSearchQuery || diarisedStatusFilter !== 'all'
+  const listRowFilter = (): { q?: string; diarised_status?: string } => ({
+    ...(rowSearchQuery.trim() ? { q: rowSearchQuery.trim() } : {}),
+    ...(diarisedStatusFilter !== 'all'
+      ? { diarised_status: diarisedStatusFilter }
+      : {}),
+  })
   const filteredTotalRows = hasActiveFilter
     ? rowsPage?.filtered_total_rows ?? 0
     : totalRows
@@ -1643,11 +1664,14 @@ export default function CallImportDetail() {
   // selected to let the user extend the selection across every page.
   const selectedOnPage = rows.filter((r) => selectedRowIds.has(r.id))
   const selectedOnPageCount = selectedOnPage.length
-  const selectedCount = selectedRowIds.size
+  const selectedCount = bulkSelectionFilter
+    ? filteredTotalRows
+    : selectedRowIds.size
   const allOnPageSelected =
     rows.length > 0 && selectedOnPageCount === rows.length
   const allMatchingSelected =
-    filteredTotalRows > 0 && selectedCount >= filteredTotalRows
+    bulkSelectionFilter !== null ||
+    (filteredTotalRows > 0 && selectedRowIds.size >= filteredTotalRows)
   // ``transcribeReadySelection`` previously gated the Transcribe
   // button on the on-page filter; with cross-page selection we can't
   // cheaply check every off-page row's status from here, so we trust
@@ -1676,7 +1700,8 @@ export default function CallImportDetail() {
   // the current page (cross-page selection). In that case any
   // per-action count is on-page-only, so the modal degrades to "we'll
   // act on N selected rows; the server filters the rest".
-  const selectionSpansPages = selectedCount > selectedOnPageCount
+  const selectionSpansPages =
+    bulkSelectionFilter !== null || selectedRowIds.size > selectedOnPageCount
 
   return (
     <div className="space-y-6">
@@ -2295,7 +2320,10 @@ export default function CallImportDetail() {
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => setSelectedRowIds(new Set())}
+                onClick={() => {
+                  setSelectedRowIds(new Set())
+                  setBulkSelectionFilter(null)
+                }}
               >
                 Clear
               </Button>
@@ -2414,30 +2442,9 @@ export default function CallImportDetail() {
                     <Button
                       variant="ghost"
                       size="sm"
-                      isLoading={isSelectingAllInImport}
-                      onClick={async () => {
-                        if (isSelectingAllInImport) return
+                      onClick={() => {
                         setSelectAllError(null)
-                        setIsSelectingAllInImport(true)
-                        try {
-                          const { ids } =
-                            await apiClient.listCallImportRowIds(id!, {
-                              q: rowSearchQuery || undefined,
-                              diarised_status:
-                                diarisedStatusFilter === 'all'
-                                  ? undefined
-                                  : diarisedStatusFilter,
-                            })
-                          setSelectedRowIds(new Set(ids))
-                        } catch (err: any) {
-                          setSelectAllError(
-                            err?.response?.data?.detail ||
-                              err?.message ||
-                              'Failed to select all rows.',
-                          )
-                        } finally {
-                          setIsSelectingAllInImport(false)
-                        }
+                        setBulkSelectionFilter(listRowFilter())
                       }}
                     >
                       {`Select all ${filteredTotalRows} rows in this import${
@@ -3555,8 +3562,9 @@ export default function CallImportDetail() {
         renderModal(
           (() => {
             const targets = transcribeTargetRows ?? []
-            const headerLabel =
-              targets.length === 1
+            const headerLabel = bulkSelectionFilter
+              ? `Transcribe ${selectedCount} rows (matching filters)`
+              : targets.length === 1
                 ? `Transcribe row #${(targets[0]?.row_index ?? 0) + 1}`
                 : `Transcribe ${targets.length} rows`
             // The STT picker is only required in the legacy two-stage
@@ -3569,7 +3577,7 @@ export default function CallImportDetail() {
                 ? true
                 : !!transcribeSTT.provider && !!transcribeSTT.model) &&
               isLLMSelectionComplete(transcribeDiariserLLM, aiProviders) &&
-              targets.length > 0 &&
+              (bulkSelectionFilter !== null || targets.length > 0) &&
               !transcribeRowsMutation.isPending
             return (
               <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">
@@ -3813,7 +3821,9 @@ export default function CallImportDetail() {
                       disabled={!canSubmit}
                       onClick={() =>
                         transcribeRowsMutation.mutate({
-                          rowIds: targets.map((r) => r.id),
+                          rowIds: bulkSelectionFilter
+                            ? null
+                            : targets.map((r) => r.id),
                           mode: transcribeMode,
                           stt: transcribeSTT,
                           diariserLLM: transcribeDiariserLLM,
@@ -5068,8 +5078,12 @@ export default function CallImportDetail() {
         variant="danger"
         isLoading={bulkDeleteRowsMutation.isPending}
         onConfirm={() => {
+          if (bulkSelectionFilter) {
+            bulkDeleteRowsMutation.mutate({ rowFilter: bulkSelectionFilter })
+            return
+          }
           if (selectedRowIds.size === 0) return
-          bulkDeleteRowsMutation.mutate(Array.from(selectedRowIds))
+          bulkDeleteRowsMutation.mutate({ rowIds: Array.from(selectedRowIds) })
         }}
         onCancel={() => {
           if (bulkDeleteRowsMutation.isPending) return
@@ -5169,6 +5183,7 @@ export default function CallImportDetail() {
                       variant="primary"
                       size="sm"
                       disabled={
+                        !bulkSelectionFilter &&
                         !selectionSpansPages &&
                         transcribeReadySelection.length === 0
                       }
@@ -5176,7 +5191,9 @@ export default function CallImportDetail() {
                         setShowBulkActionsModal(false)
                         setBulkActionError(null)
                         setBulkActionResult(null)
-                        if (selectionSpansPages) {
+                        if (bulkSelectionFilter) {
+                          openTranscribeModal([])
+                        } else if (selectionSpansPages) {
                           // Cross-page selection: forward synthetic
                           // rows (id-only) so the modal targets the
                           // batch endpoint without inventing fake
@@ -5243,11 +5260,17 @@ export default function CallImportDetail() {
                         // cancellable subset so the server doesn't
                         // need to discover skips; for cross-page we
                         // send everything and let the server filter.
+                        if (bulkSelectionFilter) {
+                          bulkCancelDiarisationMutation.mutate({
+                            rowFilter: bulkSelectionFilter,
+                          })
+                          return
+                        }
                         const ids = selectionSpansPages
                           ? Array.from(selectedRowIds)
                           : cancellableSelection.map((r) => r.id)
                         if (ids.length === 0) return
-                        bulkCancelDiarisationMutation.mutate(ids)
+                        bulkCancelDiarisationMutation.mutate({ rowIds: ids })
                       }}
                       className="flex-shrink-0 text-amber-700 border-amber-300 hover:bg-amber-50"
                     >
