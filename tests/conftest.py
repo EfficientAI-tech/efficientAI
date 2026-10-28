@@ -767,7 +767,9 @@ def _wire_bulk_ops_stubs(db_session):
         types.SimpleNamespace(delay=_sync_mapped_materialize_delay)
     )
 
-    def _sync_import_materialize_delay(call_import_id, organization_id, workspace_id):
+    def _sync_import_materialize_delay(
+        call_import_id, organization_id, workspace_id, **_kwargs
+    ):
         from uuid import UUID
 
         from app.services.call_imports.bulk_ops import execute_call_import_materialization

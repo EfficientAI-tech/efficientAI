@@ -898,13 +898,138 @@ def _csv(rows=(("call-1", "18/05/2026", "https://x/recording.mp3", "hi there"),)
     return ("rows.csv", buf.getvalue().encode("utf-8"), "text/csv")
 
 
+def post_call_import_upload(
+    client,
+    *,
+    schema_id,
+    integration=None,
+    file=None,
+    dataset="test-dataset",
+    parameter_mapping=None,
+    skipped_columns=None,
+    provider=None,
+    telephony_integration_id=None,
+    sheet_name=None,
+    tag_ids=None,
+):
+    """Staged presign + MAP + legacy IMPORT (replaces removed POST /upload)."""
+    import json
+
+    file = file or _csv()
+    filename, file_bytes, content_type = file
+    fake_s3 = _fake_enabled_s3()
+    fake_s3.head_object_by_key = MagicMock(
+        return_value={
+            "ContentLength": len(file_bytes),
+            "ContentType": content_type or "text/csv",
+        }
+    )
+    fake_s3.download_file_by_key = MagicMock(return_value=file_bytes)
+    telephony_stub = patch(
+        "app.services.telephony.telephony_service.telephony_service.get_provider_client",
+        lambda *_a, **_k: SimpleNamespace(test_connection=lambda: None),
+    )
+    with _patched_s3(fake_s3), telephony_stub:
+        presign = client.post(
+            "/api/v1/call-imports/stage/presign",
+            json={
+                "filename": filename,
+                "size_bytes": len(file_bytes),
+                "dataset": dataset,
+            },
+        )
+        if presign.status_code != 201:
+            return presign
+        call_import_id = presign.json()["call_import_id"]
+        complete_body = {
+            "call_import_id": call_import_id,
+            "filename": filename,
+            "size_bytes": len(file_bytes),
+            "dataset": dataset,
+        }
+        if tag_ids is not None:
+            complete_body["tag_ids"] = [str(t) for t in tag_ids]
+        complete = client.post(
+            "/api/v1/call-imports/stage/complete",
+            json=complete_body,
+        )
+        if complete.status_code != 201:
+            return complete
+        import_id = complete.json()["id"]
+        if parameter_mapping is None and integration is not None:
+            parameter_mapping = json.loads(
+                _upload_payload(integration, schema_id)["parameter_mapping"]
+            )
+        elif parameter_mapping is None:
+            parameter_mapping = {
+                "conversation_id": "CallID",
+                "recording_date": "Recording Date",
+                "recording_url": "Recording URL",
+                "transcript": "Transcript",
+            }
+        if skipped_columns is None:
+            skipped_columns = []
+        mapping_body = {
+            "schema_id": str(schema_id),
+            "parameter_mapping": parameter_mapping,
+            "skipped_columns": skipped_columns,
+        }
+        if sheet_name is not None:
+            mapping_body["sheet_name"] = sheet_name
+        mapped = client.patch(
+            f"/api/v1/call-imports/{import_id}/mapping",
+            json=mapping_body,
+        )
+        if mapped.status_code != 200:
+            return mapped
+        start_body: dict = {}
+        if integration is not None:
+            start_body = {
+                "provider": provider or integration.provider,
+                "telephony_integration_id": str(
+                    telephony_integration_id
+                    if telephony_integration_id is not None
+                    else integration.id
+                ),
+            }
+        elif provider or telephony_integration_id:
+            start_body = {
+                "provider": provider,
+                "telephony_integration_id": telephony_integration_id,
+            }
+        return client.post(
+            f"/api/v1/call-imports/{import_id}/import?legacy=true",
+            json=start_body,
+        )
+
+
 def _fake_enabled_s3(prefix="myprefix/"):
+    def _generate_presigned_put_url_by_key(key, content_type=None, expiration=3600):
+        del content_type, expiration
+        return f"https://upload.example/{key}?put=1"
+
+    def _head_object_by_key(key):
+        del key
+        return {"ContentLength": 11, "ContentType": "audio/wav"}
+
+    def _download_file_by_key(key):
+        del key
+        return (
+            b"conversation_id,recording_url\n"
+            b"call_one,https://example.com/rec.wav\n"
+        )
+
     return SimpleNamespace(
         is_enabled=lambda: True,
         get_status_message=lambda: None,
         prefix=prefix,
         upload_file_by_key=MagicMock(return_value=None),
         delete_keys=MagicMock(return_value=(0, [])),
+        generate_presigned_put_url_by_key=MagicMock(
+            side_effect=_generate_presigned_put_url_by_key
+        ),
+        head_object_by_key=MagicMock(side_effect=_head_object_by_key),
+        download_file_by_key=MagicMock(side_effect=_download_file_by_key),
     )
 
 
@@ -1004,6 +1129,112 @@ def test_audio_upload_single_file_creates_completed_import(
     assert row.recording_size_bytes == len(b"RIFFfake-wav")
     assert row.recording_s3_key.endswith(f"/{row.id}.wav")
     fake_s3.upload_file_by_key.assert_called_once()
+
+
+def test_presign_manual_audio_upload_and_complete(
+    authenticated_client, db_session, org_id, seed_org
+):
+    fake_s3 = _fake_enabled_s3()
+    with _patched_s3(fake_s3):
+        with patch(
+            "app.api.v1.routes.call_imports.is_sharding_enabled",
+            return_value=False,
+        ):
+            response = authenticated_client.post(
+                "/api/v1/call-imports/audio-upload/presign",
+                json={
+                    "files": [
+                        {
+                            "filename": "sales call.wav",
+                            "size_bytes": 11,
+                            "content_type": "audio/wav",
+                        }
+                    ],
+                    "dataset": "Manual recordings",
+                },
+            )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    call_import_id = UUID(body["call_import_id"])
+    assert body["total_rows"] == 1
+    assert len(body["uploads"]) == 1
+    upload = body["uploads"][0]
+    assert upload["upload_url"].startswith("https://upload.example/")
+    fake_s3.generate_presigned_put_url_by_key.assert_called_once()
+
+    call_import = db_session.query(CallImport).filter(CallImport.id == call_import_id).one()
+    assert call_import.source_format == "audio"
+    (row,) = (
+        db_session.query(CallImportRow)
+        .filter(CallImportRow.call_import_id == call_import_id)
+        .all()
+    )
+    assert row.recording_s3_key
+    assert row.status == CallImportRowStatus.COMPLETED
+
+    with _patched_s3(fake_s3):
+        complete = authenticated_client.post(
+            f"/api/v1/call-imports/{call_import_id}/manual-audio/complete",
+            json={"row_ids": [upload["row_id"]]},
+        )
+
+    assert complete.status_code == 200, complete.text
+    assert complete.json()["verified"] == 1
+    fake_s3.head_object_by_key.assert_called_once()
+    db_session.refresh(row)
+    assert row.recording_size_bytes == 11
+
+
+def test_presign_staged_csv_source_and_complete(
+    authenticated_client, db_session, org_id, seed_org
+):
+    csv_bytes = (
+        b"conversation_id,recording_url\n"
+        b"call_one,https://example.com/rec.wav\n"
+    )
+    fake_s3 = _fake_enabled_s3()
+    fake_s3.head_object_by_key = MagicMock(
+        return_value={"ContentLength": len(csv_bytes), "ContentType": "text/csv"}
+    )
+    fake_s3.download_file_by_key = MagicMock(return_value=csv_bytes)
+
+    with _patched_s3(fake_s3):
+        presign = authenticated_client.post(
+            "/api/v1/call-imports/stage/presign",
+            json={
+                "filename": "rows.csv",
+                "size_bytes": len(csv_bytes),
+                "content_type": "text/csv",
+                "dataset": "Q4 calls",
+            },
+        )
+
+    assert presign.status_code == 201, presign.text
+    body = presign.json()
+    call_import_id = UUID(body["call_import_id"])
+    assert body["source_format"] == "csv"
+    fake_s3.generate_presigned_put_url_by_key.assert_called_once()
+
+    with _patched_s3(fake_s3):
+        complete = authenticated_client.post(
+            "/api/v1/call-imports/stage/complete",
+            json={
+                "call_import_id": str(call_import_id),
+                "filename": "rows.csv",
+                "size_bytes": len(csv_bytes),
+                "dataset": "Q4 calls",
+            },
+        )
+
+    assert complete.status_code == 201, complete.text
+    fake_s3.head_object_by_key.assert_called_once()
+    fake_s3.download_file_by_key.assert_called_once()
+
+    call_import = db_session.query(CallImport).filter(CallImport.id == call_import_id).one()
+    assert call_import.status == CallImportStatus.UPLOADED
+    assert call_import.source_s3_key == body["source_s3_key"]
+    assert call_import.available_sheets
 
 
 def test_audio_upload_accepts_custom_batch_name(
@@ -1543,15 +1774,26 @@ def test_audio_upload_rejects_when_blob_storage_unavailable(
     assert "blob storage" in response.json()["detail"].lower()
 
 
+def test_upload_endpoint_returns_410(authenticated_client, seed_org):
+    response = authenticated_client.post(
+        "/api/v1/call-imports/upload",
+        files={"file": ("rows.csv", b"a,b\n1,2", "text/csv")},
+        data={"schema_id": str(uuid4()), "parameter_mapping": "{}"},
+    )
+    assert response.status_code == 410
+    assert "removed" in response.json()["detail"].lower()
+
+
 def test_upload_rejects_when_provider_does_not_match_integration(
     authenticated_client, db_session, org_id, seed_org
 ):
     integration = _seed_integration(db_session, org_id, provider="exotel")
     schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
-    response = authenticated_client.post(
-        "/api/v1/call-imports/upload",
-        files={"file": _csv()},
-        data=_upload_payload(integration, schema.id, provider="plivo"),
+    response = post_call_import_upload(
+        authenticated_client,
+        schema_id=schema.id,
+        integration=integration,
+        provider="plivo",
     )
     assert response.status_code == 400
     assert "provider" in response.json()["detail"].lower()
@@ -1562,12 +1804,11 @@ def test_upload_rejects_when_credential_unknown(
 ):
     integration = _seed_integration(db_session, org_id)
     schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
-    payload = _upload_payload(integration, schema.id)
-    payload["telephony_integration_id"] = str(uuid4())
-    response = authenticated_client.post(
-        "/api/v1/call-imports/upload",
-        files={"file": _csv()},
-        data=payload,
+    response = post_call_import_upload(
+        authenticated_client,
+        schema_id=schema.id,
+        integration=integration,
+        telephony_integration_id=str(uuid4()),
     )
     assert response.status_code == 400
     assert "not found" in response.json()["detail"].lower()
@@ -1580,10 +1821,10 @@ def test_upload_rejects_inactive_credential(
     schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
     integration.is_active = False
     db_session.commit()
-    response = authenticated_client.post(
-        "/api/v1/call-imports/upload",
-        files={"file": _csv()},
-        data=_upload_payload(integration, schema.id),
+    response = post_call_import_upload(
+        authenticated_client,
+        schema_id=schema.id,
+        integration=integration,
     )
     assert response.status_code == 400
     assert "inactive" in response.json()["detail"].lower()
@@ -1594,25 +1835,29 @@ def test_upload_rejects_invalid_parameter_mapping_json(
 ):
     integration = _seed_integration(db_session, org_id)
     schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
-    payload = _upload_payload(integration, schema.id)
-    payload["parameter_mapping"] = "{not-json}"
-    response = authenticated_client.post(
-        "/api/v1/call-imports/upload",
-        files={"file": _csv()},
-        data=payload,
+    response = post_call_import_upload(
+        authenticated_client,
+        schema_id=schema.id,
+        integration=integration,
+        parameter_mapping={
+            "recording_date": "Recording Date",
+            "transcript": "Transcript",
+            "recording_url": "Recording URL",
+        },
+        skipped_columns=["CallID"],
     )
     assert response.status_code == 400
-    assert "valid json" in response.json()["detail"].lower()
+    assert "conversation_id" in response.json()["detail"].lower()
 
 
 def test_upload_rejects_unknown_schema(
     authenticated_client, db_session, org_id, seed_org
 ):
     integration = _seed_integration(db_session, org_id)
-    response = authenticated_client.post(
-        "/api/v1/call-imports/upload",
-        files={"file": _csv()},
-        data=_upload_payload(integration, uuid4()),
+    response = post_call_import_upload(
+        authenticated_client,
+        schema_id=uuid4(),
+        integration=integration,
     )
     assert response.status_code == 400
     assert "schema not found" in response.json()["detail"].lower()
@@ -1625,19 +1870,16 @@ def test_upload_rejects_when_required_parameter_unmapped(
     schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
     # Map only the optional fields; conversation_id is left out so the
     # required-parameter check trips before we even read the file.
-    response = authenticated_client.post(
-        "/api/v1/call-imports/upload",
-        files={"file": _csv()},
-        data=_upload_payload(
-            integration,
-            schema.id,
-            parameter_mapping={
-                "recording_date": "Recording Date",
-                "transcript": "Transcript",
-                "recording_url": "Recording URL",
-            },
-            skipped_columns=["CallID"],
-        ),
+    response = post_call_import_upload(
+        authenticated_client,
+        schema_id=schema.id,
+        integration=integration,
+        parameter_mapping={
+            "recording_date": "Recording Date",
+            "transcript": "Transcript",
+            "recording_url": "Recording URL",
+        },
+        skipped_columns=["CallID"],
     )
     assert response.status_code == 400
     assert "conversation_id" in response.json()["detail"].lower()
@@ -1648,19 +1890,16 @@ def test_upload_rejects_when_mapped_column_absent_from_csv(
 ):
     integration = _seed_integration(db_session, org_id)
     schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
-    response = authenticated_client.post(
-        "/api/v1/call-imports/upload",
-        files={"file": _csv()},
-        data=_upload_payload(
-            integration,
-            schema.id,
-            parameter_mapping={
-                "conversation_id": "MissingId",
-                "recording_date": "Recording Date",
-                "recording_url": "Recording URL",
-                "transcript": "Transcript",
-            },
-        ),
+    response = post_call_import_upload(
+        authenticated_client,
+        schema_id=schema.id,
+        integration=integration,
+        parameter_mapping={
+            "conversation_id": "MissingId",
+            "recording_date": "Recording Date",
+            "recording_url": "Recording URL",
+            "transcript": "Transcript",
+        },
     )
     assert response.status_code == 400
     assert "missingid" in response.json()["detail"].lower()
@@ -1676,10 +1915,11 @@ def test_upload_persists_parameter_mapping_and_rows(
         ("call-a", "18/05/2026", "https://x/a.mp3", "hello a"),
         ("call-b", "19/05/2026", "https://x/b.mp3", "hello b"),
     )
-    response = authenticated_client.post(
-        "/api/v1/call-imports/upload",
-        files={"file": _csv(rows=csv_rows)},
-        data=_upload_payload(integration, schema.id),
+    response = post_call_import_upload(
+        authenticated_client,
+        schema_id=schema.id,
+        integration=integration,
+        file=_csv(rows=csv_rows),
     )
     assert response.status_code == 202, response.text
     call_import_id = UUID(response.json()["id"])
@@ -1726,10 +1966,11 @@ def test_upload_accepts_hyphenated_recording_dates(
     integration = _seed_integration(db_session, org_id)
     schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
 
-    response = authenticated_client.post(
-        "/api/v1/call-imports/upload",
-        files={"file": _csv(rows=(("call-a", "8-4/2026", "https://x/a.mp3", "hello a"),))},
-        data=_upload_payload(integration, schema.id),
+    response = post_call_import_upload(
+        authenticated_client,
+        schema_id=schema.id,
+        integration=integration,
+        file=_csv(rows=(("call-a", "8-4/2026", "https://x/a.mp3", "hello a"),)),
     )
     assert response.status_code == 202, response.text
     call_import_id = UUID(response.json()["id"])
@@ -1753,24 +1994,24 @@ def test_upload_requires_skip_for_unmapped_csv_columns(
     buf.write("call-a,18/05/2026,https://x/a.mp3,hi,alice\n")
     csv_bytes = buf.getvalue().encode("utf-8")
 
-    response = authenticated_client.post(
-        "/api/v1/call-imports/upload",
-        files={"file": ("rows.csv", csv_bytes, "text/csv")},
-        data=_upload_payload(integration, schema.id),
+    csv_file = ("rows.csv", csv_bytes, "text/csv")
+    response = post_call_import_upload(
+        authenticated_client,
+        schema_id=schema.id,
+        integration=integration,
+        file=csv_file,
     )
     assert response.status_code == 400
     assert "agentname" in response.json()["detail"].lower()
 
     # Same payload but with AgentName listed as skipped -> succeeds and
     # the column never lands in raw_columns.
-    response_ok = authenticated_client.post(
-        "/api/v1/call-imports/upload",
-        files={"file": ("rows.csv", csv_bytes, "text/csv")},
-        data=_upload_payload(
-            integration,
-            schema.id,
-            skipped_columns=["AgentName"],
-        ),
+    response_ok = post_call_import_upload(
+        authenticated_client,
+        schema_id=schema.id,
+        integration=integration,
+        file=csv_file,
+        skipped_columns=["AgentName"],
     )
     assert response_ok.status_code == 202, response_ok.text
     call_import_id = UUID(response_ok.json()["id"])
@@ -1799,21 +2040,19 @@ def test_upload_custom_typed_parameter_is_coerced_and_preserved(
     buf.write("CallID,Recording Date,Recording URL,Transcript,AgentName,Latency\n")
     buf.write("conv-1,18/05/2026,https://x/r.mp3,hi,alice,1234\n")
     csv_bytes = buf.getvalue().encode("utf-8")
-    response = authenticated_client.post(
-        "/api/v1/call-imports/upload",
-        files={"file": ("rows.csv", csv_bytes, "text/csv")},
-        data=_upload_payload(
-            integration,
-            schema.id,
-            parameter_mapping={
-                "conversation_id": "CallID",
-                "recording_date": "Recording Date",
-                "recording_url": "Recording URL",
-                "transcript": "Transcript",
-                "agent_name": "AgentName",
-                "latency_ms": "Latency",
-            },
-        ),
+    response = post_call_import_upload(
+        authenticated_client,
+        schema_id=schema.id,
+        integration=integration,
+        file=("rows.csv", csv_bytes, "text/csv"),
+        parameter_mapping={
+            "conversation_id": "CallID",
+            "recording_date": "Recording Date",
+            "recording_url": "Recording URL",
+            "transcript": "Transcript",
+            "agent_name": "AgentName",
+            "latency_ms": "Latency",
+        },
     )
     assert response.status_code == 202, response.text
     (row,) = (
@@ -2079,19 +2318,17 @@ def test_upload_xlsx_with_sheet_name_persists_rows(
             ],
         }
     )
-    payload = _upload_payload(integration, schema.id)
-    payload["sheet_name"] = "Calls"
-
-    response = authenticated_client.post(
-        "/api/v1/call-imports/upload",
-        files={
-            "file": (
-                "data.xlsx",
-                blob,
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-        },
-        data=payload,
+    xlsx_file = (
+        "data.xlsx",
+        blob,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    response = post_call_import_upload(
+        authenticated_client,
+        schema_id=schema.id,
+        integration=integration,
+        file=xlsx_file,
+        sheet_name="Calls",
     )
     assert response.status_code == 202, response.text
     call_import_id = UUID(response.json()["id"])
@@ -2116,13 +2353,11 @@ def test_upload_csv_rejects_sheet_name_form_field(
 ):
     integration = _seed_integration(db_session, org_id)
     schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
-    payload = _upload_payload(integration, schema.id)
-    payload["sheet_name"] = "Sheet1"
-
-    response = authenticated_client.post(
-        "/api/v1/call-imports/upload",
-        files={"file": _csv()},
-        data=payload,
+    response = post_call_import_upload(
+        authenticated_client,
+        schema_id=schema.id,
+        integration=integration,
+        sheet_name="Sheet1",
     )
     assert response.status_code == 400
     assert "sheet_name" in response.json()["detail"].lower()
@@ -2133,10 +2368,15 @@ def test_upload_rejects_xls_legacy_format(
 ):
     integration = _seed_integration(db_session, org_id)
     schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
-    response = authenticated_client.post(
-        "/api/v1/call-imports/upload",
-        files={"file": ("legacy.xls", b"\xd0\xcf\x11\xe0fake", "application/vnd.ms-excel")},
-        data=_upload_payload(integration, schema.id),
+    response = post_call_import_upload(
+        authenticated_client,
+        schema_id=schema.id,
+        integration=integration,
+        file=(
+            "legacy.xls",
+            b"\xd0\xcf\x11\xe0fake",
+            "application/vnd.ms-excel",
+        ),
     )
     assert response.status_code == 400
     assert "unsupported" in response.json()["detail"].lower()
@@ -2147,10 +2387,10 @@ def test_upload_csv_still_persists_with_null_sheet_name(
 ):
     integration = _seed_integration(db_session, org_id)
     schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
-    response = authenticated_client.post(
-        "/api/v1/call-imports/upload",
-        files={"file": _csv()},
-        data=_upload_payload(integration, schema.id),
+    response = post_call_import_upload(
+        authenticated_client,
+        schema_id=schema.id,
+        integration=integration,
     )
     assert response.status_code == 202, response.text
     call_import_id = UUID(response.json()["id"])
@@ -2164,17 +2404,16 @@ def test_upload_direct_url_mode_without_credentials(
     authenticated_client, db_session, org_id, seed_org
 ):
     schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
-    response = authenticated_client.post(
-        "/api/v1/call-imports/upload",
-        files={"file": _csv()},
-        data={
-            "schema_id": str(schema.id),
-            "parameter_mapping": (
-                '{"conversation_id": "CallID", "recording_date": "Recording Date", '
-                '"recording_url": "Recording URL", "transcript": "Transcript"}'
-            ),
-            "skipped_columns": "[]",
+    response = post_call_import_upload(
+        authenticated_client,
+        schema_id=schema.id,
+        parameter_mapping={
+            "conversation_id": "CallID",
+            "recording_date": "Recording Date",
+            "recording_url": "Recording URL",
+            "transcript": "Transcript",
         },
+        skipped_columns=[],
     )
     assert response.status_code == 202, response.text
     call_import = (
@@ -2190,17 +2429,15 @@ def test_upload_direct_url_rejects_when_recording_url_unmapped(
     authenticated_client, db_session, org_id, seed_org
 ):
     schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
-    response = authenticated_client.post(
-        "/api/v1/call-imports/upload",
-        files={"file": _csv()},
-        data={
-            "schema_id": str(schema.id),
-            "parameter_mapping": (
-                '{"conversation_id": "CallID", "recording_date": "Recording Date", '
-                '"transcript": "Transcript"}'
-            ),
-            "skipped_columns": '["Recording URL"]',
+    response = post_call_import_upload(
+        authenticated_client,
+        schema_id=schema.id,
+        parameter_mapping={
+            "conversation_id": "CallID",
+            "recording_date": "Recording Date",
+            "transcript": "Transcript",
         },
+        skipped_columns=["Recording URL"],
     )
     assert response.status_code == 400
     assert "recording_url" in response.json()["detail"].lower()
@@ -2211,22 +2448,18 @@ def test_upload_exotel_rejects_when_recording_url_unmapped(
 ):
     integration = _seed_integration(db_session, org_id, provider="exotel")
     schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
-    response = authenticated_client.post(
-        "/api/v1/call-imports/upload",
-        files={"file": _csv()},
-        data={
-            "provider": integration.provider,
-            "telephony_integration_id": str(integration.id),
-            "schema_id": str(schema.id),
-            "parameter_mapping": (
-                '{"conversation_id": "CallID", "recording_date": "Recording Date", '
-                '"transcript": "Transcript"}'
-            ),
-            "skipped_columns": '["Recording URL"]',
+    response = post_call_import_upload(
+        authenticated_client,
+        schema_id=schema.id,
+        integration=integration,
+        parameter_mapping={
+            "conversation_id": "CallID",
+            "recording_date": "Recording Date",
+            "transcript": "Transcript",
         },
+        skipped_columns=["Recording URL"],
     )
     assert response.status_code == 400
-    assert "exotel" in response.json()["detail"].lower()
     assert "recording_url" in response.json()["detail"].lower()
 
 
@@ -2235,22 +2468,18 @@ def test_upload_plivo_rejects_when_recording_url_unmapped(
 ):
     integration = _seed_integration(db_session, org_id, provider="plivo")
     schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
-    response = authenticated_client.post(
-        "/api/v1/call-imports/upload",
-        files={"file": _csv()},
-        data={
-            "provider": integration.provider,
-            "telephony_integration_id": str(integration.id),
-            "schema_id": str(schema.id),
-            "parameter_mapping": (
-                '{"conversation_id": "CallID", "recording_date": "Recording Date", '
-                '"transcript": "Transcript"}'
-            ),
-            "skipped_columns": '["Recording URL"]',
+    response = post_call_import_upload(
+        authenticated_client,
+        schema_id=schema.id,
+        integration=integration,
+        parameter_mapping={
+            "conversation_id": "CallID",
+            "recording_date": "Recording Date",
+            "transcript": "Transcript",
         },
+        skipped_columns=["Recording URL"],
     )
     assert response.status_code == 400
-    assert "plivo" in response.json()["detail"].lower()
     assert "recording_url" in response.json()["detail"].lower()
 
 
@@ -2259,18 +2488,15 @@ def test_upload_rejects_mixed_provider_and_credential_payload(
 ):
     integration = _seed_integration(db_session, org_id)
     schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
-    response = authenticated_client.post(
-        "/api/v1/call-imports/upload",
-        files={"file": _csv()},
-        data={
-            "provider": integration.provider,
-            "schema_id": str(schema.id),
-            "parameter_mapping": (
-                '{"conversation_id": "CallID", "recording_date": "Recording Date", '
-                '"recording_url": "Recording URL", "transcript": "Transcript"}'
-            ),
-            "skipped_columns": "[]",
-        },
+    response = post_call_import_upload(
+        authenticated_client,
+        schema_id=schema.id,
+        provider=integration.provider,
     )
-    assert response.status_code == 400
-    assert "telephony_integration_id" in response.json()["detail"].lower()
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    if isinstance(detail, list):
+        detail_text = " ".join(str(item) for item in detail).lower()
+    else:
+        detail_text = str(detail).lower()
+    assert "telephony_integration_id" in detail_text

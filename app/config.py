@@ -130,6 +130,8 @@ class Settings(BaseSettings):
     PLATFORM_IMPORT_PREVIEW_COUNT_MAX_PAGES: int = 25
     PLATFORM_IMPORT_PREVIEW_SAMPLE_SIZE: int = 5
     PLATFORM_IMPORT_FEATURE_ENABLED: bool = True
+    CALL_IMPORT_STT_RPM_DEFAULT: int = 60
+    CALL_IMPORT_STT_RPM_BY_PROVIDER: dict = {}
 
     # CORS
     CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000"]
@@ -754,6 +756,15 @@ def load_config_from_file(config_path: str) -> None:
             settings.IMPORT_GLOBAL_INFLIGHT_LIMIT = int(
                 workers_config["import_global_inflight_limit"]
             )
+        if "call_import_stt_rpm_default" in workers_config:
+            settings.CALL_IMPORT_STT_RPM_DEFAULT = int(
+                workers_config["call_import_stt_rpm_default"]
+            )
+        raw_stt_rpm = workers_config.get("call_import_stt_rpm_by_provider")
+        if isinstance(raw_stt_rpm, dict):
+            settings.CALL_IMPORT_STT_RPM_BY_PROVIDER = {
+                str(k).strip().lower(): int(v) for k, v in raw_stt_rpm.items()
+            }
         if "telephony_import_credit_limit" in workers_config:
             settings.TELEPHONY_IMPORT_CREDIT_LIMIT = int(
                 workers_config["telephony_import_credit_limit"]

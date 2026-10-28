@@ -120,10 +120,13 @@ import TelephonyCredentialPicker, {
   isCredentialSelectionValid,
 } from './components/TelephonyCredentialPicker'
 import MetricFlowChart from './components/MetricFlowChart'
+import { useCallImportEvaluationAggregate } from './hooks/useCallImportEvaluationAggregate'
 import {
   EVALUATION_BULK_OPERATION_POLL_MS,
   evaluationBulkOperationDescription,
   evaluationBulkOperationLabel,
+  evaluationRunPollMs,
+  evaluationTerminalStatus,
   type BulkEvaluationOperation,
 } from './evaluationBulkOperation'
 import {
@@ -286,23 +289,6 @@ function isUserInsightMetricName(name: string): boolean {
 }
 
 const ROWS_PAGE_SIZE = 50
-const EVAL_PROGRESS_POLL_MS = 3000
-const EVAL_PROGRESS_POLL_LARGE_MS = 10000
-const EVAL_LARGE_ROW_THRESHOLD = 5000
-
-function evaluationRowsPollMs(
-  evaluation:
-    | { status?: string; total_rows?: number; bulk_operation?: unknown }
-    | undefined,
-): number | false {
-  if (!evaluation) return false
-  if (evaluation.bulk_operation) return EVALUATION_BULK_OPERATION_POLL_MS
-  if (evaluation.status !== 'pending' && evaluation.status !== 'running') return false
-  const totalRows = evaluation.total_rows ?? 0
-  return totalRows > EVAL_LARGE_ROW_THRESHOLD
-    ? EVAL_PROGRESS_POLL_LARGE_MS
-    : EVAL_PROGRESS_POLL_MS
-}
 const USER_INSIGHTS_SAMPLE_SIZE_OPTIONS = [50, 100, 150, 200, 300, 500] as const
 const DEFAULT_USER_INSIGHTS_SAMPLE_SIZE = 200
 
@@ -860,7 +846,13 @@ export default function CallImportEvaluationDetail() {
       const inFlight =
         (ci?.diarised_pending_rows ?? 0) + (ci?.diarised_running_rows ?? 0)
       if (inFlight > 0) return 4000
-      if (evaluation?.bulk_operation) return EVALUATION_BULK_OPERATION_POLL_MS
+      if (
+        evaluation &&
+        !evaluationTerminalStatus(evaluation.status) &&
+        evaluation.bulk_operation
+      ) {
+        return EVALUATION_BULK_OPERATION_POLL_MS
+      }
       const evalStatus = evaluation?.status
       if (evalStatus === 'pending' || evalStatus === 'running') return 4000
       return false
@@ -873,16 +865,7 @@ export default function CallImportEvaluationDetail() {
     enabled: !!id && !!evalId,
     staleTime: 5000,
     refetchOnWindowFocus: false,
-    refetchInterval: (q) => {
-      const data = q.state.data
-      if (data?.bulk_operation) return EVALUATION_BULK_OPERATION_POLL_MS
-      const status = data?.status
-      if (status !== 'pending' && status !== 'running') return false
-      const totalRows = data?.total_rows ?? 0
-      return totalRows > EVAL_LARGE_ROW_THRESHOLD
-        ? EVAL_PROGRESS_POLL_LARGE_MS
-        : EVAL_PROGRESS_POLL_MS
-    },
+    refetchInterval: (q) => evaluationRunPollMs(q.state.data),
   })
 
   const { data: aiProviders = [] } = useQuery({
@@ -966,7 +949,7 @@ export default function CallImportEvaluationDetail() {
     staleTime: 60_000,
     placeholderData: keepPreviousData,
     refetchOnWindowFocus: false,
-    refetchInterval: () => evaluationRowsPollMs(evaluationQuery.data),
+    refetchInterval: () => evaluationRunPollMs(evaluationQuery.data),
   })
 
   const { data: detailRowFull } = useQuery({
@@ -983,7 +966,7 @@ export default function CallImportEvaluationDetail() {
     enabled: !!id && !!evalId && !!detailRow?.id,
     staleTime: 60_000,
     refetchOnWindowFocus: false,
-    refetchInterval: () => evaluationRowsPollMs(evaluationQuery.data),
+    refetchInterval: () => evaluationRunPollMs(evaluationQuery.data),
   })
 
   useEffect(() => {
@@ -1065,7 +1048,7 @@ export default function CallImportEvaluationDetail() {
     }
   }, [rowsQuery.data?.items, detailRow])
 
-  const evaluationRowsLive = evaluationRowsPollMs(evaluationQuery.data) !== false
+  const evaluationRowsLive = evaluationRunPollMs(evaluationQuery.data) !== false
   const evaluationRowsWereLive = useRef(false)
   useEffect(() => {
     if (evaluationRowsLive) {
@@ -1111,27 +1094,13 @@ export default function CallImportEvaluationDetail() {
   // Lazy: only fetch aggregates when the user lands on the
   // visualizations tab. Refetches while the run is still in flight so
   // the chart fills in as workers complete rows.
-  const aggregateQuery = useQuery({
-    queryKey: [
-      'call-import-evaluation-aggregate',
-      activeWorkspaceId,
-      id,
-      evalId,
-      vizBaselineEvaluationId,
-    ],
-    queryFn: () =>
-      apiClient.getCallImportEvaluationAggregate(
-        id!,
-        evalId!,
-        vizBaselineEvaluationId,
-      ),
+  const aggregateQuery = useCallImportEvaluationAggregate({
+    callImportId: id,
+    evaluationId: evalId,
+    workspaceId: activeWorkspaceId,
+    baselineEvaluationId: vizBaselineEvaluationId,
     enabled: !!id && !!evalId && resultsTab === 'visualizations',
-    staleTime: 60_000,
-    refetchOnWindowFocus: false,
-    refetchInterval: () => {
-      const status = evaluationQuery.data?.status
-      return status === 'pending' || status === 'running' ? 5000 : false
-    },
+    evaluationStatus: evaluationQuery.data?.status,
   })
 
   const visualizationInsightsQuery = useQuery<EvaluationTldrSummary | null>({
@@ -1307,6 +1276,10 @@ export default function CallImportEvaluationDetail() {
             )
           : undefined
       return apiClient.retryCallImportEvaluation(id!, evalId!, {
+        rowFilter: {
+          q: searchQuery.trim() || undefined,
+          status: 'failed',
+        },
         llmProvider:
           llmChanged && llmComplete ? retryLLM.provider ?? undefined : undefined,
         llmModel:

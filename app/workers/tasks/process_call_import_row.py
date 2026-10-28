@@ -24,6 +24,8 @@ errors mark the row failed immediately.
 from __future__ import annotations
 
 import mimetypes
+import os
+import tempfile
 from typing import Optional, Tuple
 from uuid import UUID
 
@@ -35,6 +37,38 @@ from app.workers.config import celery_app
 
 _RETRYABLE_COUNTDOWN_SECONDS = 60
 _CREDENTIAL_AUTH_FAIL_ATTEMPT_THRESHOLD = 2
+
+
+def _fetch_recording_to_local_file(
+    recording_url: str,
+    *,
+    telephony_client,
+    use_credentialed_download: bool,
+) -> Tuple[str, str]:
+    """Return (temp_path, content_type). Caller must unlink temp_path."""
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".audio")
+    os.close(tmp_fd)
+    try:
+        if use_credentialed_download:
+            audio_bytes, content_type = telephony_client.download_recording(
+                recording_url
+            )
+            with open(tmp_path, "wb") as handle:
+                handle.write(audio_bytes)
+            return tmp_path, content_type or "audio/mpeg"
+
+        from app.services.telephony.recording_download import (
+            download_public_recording_to_path,
+        )
+
+        content_type = download_public_recording_to_path(recording_url, tmp_path)
+        return tmp_path, content_type
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def _is_credentialed_auth_rejection(exc: Exception) -> bool:
@@ -514,14 +548,17 @@ def process_call_import_row_task(
         # ------------------------------------------------------------------
         if direct_url_mode:
             _release_fetch_sessions(row_db, catalog_db)
-            audio_bytes: Optional[bytes] = None
+            local_recording_path: Optional[str] = None
             content_type: Optional[str] = None
             direct_failure: Optional[Exception] = None
             direct_was_transient = False
 
             try:
-                fetched = download_public_recording(original_csv_url)
-                audio_bytes, content_type = fetched
+                local_recording_path, content_type = _fetch_recording_to_local_file(
+                    original_csv_url,
+                    telephony_client=client,
+                    use_credentialed_download=False,
+                )
             except NON_RETRYABLE_ERRORS as exc:
                 direct_failure = exc
                 logger.warning(
@@ -545,7 +582,7 @@ def process_call_import_row_task(
                     "Direct URL download failed (unexpected) for row {}", row_id
                 )
 
-            if audio_bytes is None:
+            if local_recording_path is None:
                 if direct_was_transient:
                     terminal_message = _terminal_transient_failure_message(
                         self, row, direct_failure
@@ -585,11 +622,9 @@ def process_call_import_row_task(
         else:
             # ------------------------------------------------------------------
             # Credentialed import — download from the CSV-supplied URL only.
-            # Exotel and Plivo URLs require HTTP Basic auth; other providers
-            # use public download (e.g. presigned links).
             # ------------------------------------------------------------------
-            audio_bytes: Optional[bytes] = None
-            content_type: Optional[str] = None
+            local_recording_path = None
+            content_type = None
             download_failure: Optional[Exception] = None
             download_was_transient = False
             use_credentialed_download = _use_credentialed_recording_download(
@@ -613,13 +648,11 @@ def process_call_import_row_task(
 
             _release_fetch_sessions(row_db, catalog_db)
             try:
-                if use_credentialed_download:
-                    fetched: Tuple[bytes, str] = client.download_recording(
-                        original_csv_url
-                    )
-                else:
-                    fetched = download_public_recording(original_csv_url)
-                audio_bytes, content_type = fetched
+                local_recording_path, content_type = _fetch_recording_to_local_file(
+                    original_csv_url,
+                    telephony_client=client,
+                    use_credentialed_download=use_credentialed_download,
+                )
             except NON_RETRYABLE_ERRORS as exc:
                 download_failure = exc
                 logger.warning(
@@ -643,7 +676,7 @@ def process_call_import_row_task(
                     "Recording download failed (unexpected) for row {}", row_id
                 )
 
-            if audio_bytes is None:
+            if local_recording_path is None:
                 if download_was_transient:
                     return _schedule_transient_retry(
                         self,
@@ -693,13 +726,21 @@ def process_call_import_row_task(
 
         _release_fetch_sessions(row_db, catalog_db)
         try:
-            from app.services.call_imports.recording_storage import persist_recording_bytes
-
-            size_bytes, duration_seconds = persist_recording_bytes(
-                audio_bytes,
-                key=key,
-                content_type=content_type or "audio/mpeg",
+            from app.services.call_imports.recording_storage import (
+                upload_local_recording_file,
             )
+
+            try:
+                size_bytes, duration_seconds = upload_local_recording_file(
+                    local_recording_path,
+                    key=key,
+                    content_type=content_type or "audio/mpeg",
+                )
+            finally:
+                try:
+                    os.unlink(local_recording_path)
+                except OSError:
+                    pass
         except Exception as exc:
             logger.exception("Failed to upload recording to S3 for row {}", row_id)
             terminal_message = _terminal_transient_failure_message(self, row, exc)
@@ -791,7 +832,7 @@ def process_call_import_row_task(
             "status": "completed",
             "row_id": row_id,
             "s3_key": key,
-            "size_bytes": len(audio_bytes),
+            "size_bytes": size_bytes,
         }
     except StaleDataError:
         db.rollback()

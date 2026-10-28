@@ -1377,6 +1377,33 @@ export interface CallImportUploadResponse {
   message: string
 }
 
+export interface CallImportManualAudioPresignUploadItem {
+  row_id: string
+  recording_s3_key: string
+  conversation_id: string
+  upload_url: string
+  content_type: string
+  filename: string
+}
+
+export interface CallImportManualAudioPresignResponse {
+  call_import_id: string
+  uploads: CallImportManualAudioPresignUploadItem[]
+  total_rows: number
+  status: CallImportStatus
+  dataset: string | null
+  tags: CallImportTag[]
+  message: string
+}
+
+export interface CallImportSourceStagePresignResponse {
+  call_import_id: string
+  source_s3_key: string
+  source_format: string
+  upload_url: string
+  content_type: string
+}
+
 /** One worksheet (or one CSV file synthesized as a single sheet). */
 export interface CallImportPreviewSheet {
   /** Sheet name for xlsx; filename for csv. */

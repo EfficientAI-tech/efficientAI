@@ -2,6 +2,7 @@
 
 import sys
 import types
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
@@ -85,19 +86,19 @@ def upload_schema(db_session, org_id, seed_org):
 
 
 def _upload(client, *, schema_id):
-    files = {"file": ("test.csv", _csv_bytes(), "text/csv")}
+    from tests.test_api.test_call_imports_routes import post_call_import_upload
+
     first_cfg = client.get("/api/v1/telephony/configs").json()[0]
-    data = {
-        "schema_id": str(schema_id),
-        "parameter_mapping": (
-            '{"conversation_id":"CallID","recording_date":"Recording Date",'
-            '"recording_url":"Recording URL","transcript":"Transcript"}'
-        ),
-        "skipped_columns": "[]",
-        "provider": first_cfg["provider"],
-        "telephony_integration_id": first_cfg["id"],
-    }
-    return client.post("/api/v1/call-imports/upload", files=files, data=data)
+    integration = SimpleNamespace(
+        id=UUID(first_cfg["id"]),
+        provider=first_cfg["provider"],
+    )
+    return post_call_import_upload(
+        client,
+        schema_id=schema_id,
+        integration=integration,
+        file=("test.csv", _csv_bytes(), "text/csv"),
+    )
 
 
 def _csv_bytes():

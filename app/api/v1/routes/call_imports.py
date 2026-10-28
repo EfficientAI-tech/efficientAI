@@ -71,6 +71,11 @@ from app.models.schemas import (
     CallImportInsightsRunPoint,
     CallImportListResponse,
     CallImportMappingUpdate,
+    CallImportManualAudioCompleteRequest,
+    CallImportManualAudioCompleteResponse,
+    CallImportManualAudioPresignRequest,
+    CallImportManualAudioPresignResponse,
+    CallImportManualAudioPresignUploadItem,
     CallImportMetricAggregate,
     CallImportPreviewResponse,
     CallImportPreviewSheet,
@@ -82,6 +87,9 @@ from app.models.schemas import (
     CallImportRowBulkDeleteResponse,
     CallImportRowResponse,
     CallImportStartRequest,
+    CallImportSourceStageCompleteRequest,
+    CallImportSourceStagePresignRequest,
+    CallImportSourceStagePresignResponse,
     CallImportTranscribeRequest,
     CallImportTranscribeResponse,
     CallImportUpdate,
@@ -546,6 +554,36 @@ async def _prepare_audio_upload_files(
             }
         )
     return prepared
+
+
+def _validate_audio_file_size(filename: str, size_bytes: int) -> None:
+    max_bytes = int(settings.MAX_FILE_SIZE_MB) * 1024 * 1024
+    if size_bytes > max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                f"Audio file '{filename}' exceeds "
+                f"{settings.MAX_FILE_SIZE_MB} MB."
+            ),
+        )
+
+
+def _prepare_audio_presign_items(
+    files: List,
+    conversation_counts: Dict[str, int],
+) -> List[Dict[str, Any]]:
+    from app.services.call_imports import manual_audio_presign as presign_mod
+
+    return presign_mod.prepare_manual_audio_metadata(
+        files,
+        conversation_counts,
+        validate_extension=_audio_extension,
+        validate_size=_validate_audio_file_size,
+        audio_content_type=_audio_content_type,
+        sanitize_conversation_id=_sanitize_conversation_id,
+        dedupe_conversation_id=_dedupe_conversation_id,
+        filename_stem=_filename_stem,
+    )
 
 
 def _upload_manual_audio_blobs_parallel(
@@ -1448,6 +1486,71 @@ def _build_available_sheets(
     return _xlsx_preview_sheets(file_bytes)
 
 
+def _normalize_content_modality(content_modality: Optional[str]) -> Optional[str]:
+    if content_modality is None or not content_modality.strip():
+        return None
+    mod = content_modality.strip().lower()
+    if mod not in ("chat", "voice"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="content_modality must be 'chat' or 'voice' when provided.",
+        )
+    return mod
+
+
+def _insert_staged_call_import_record(
+    db: Session,
+    *,
+    call_import_id: UUID,
+    organization_id: UUID,
+    workspace_id: UUID,
+    principal: Principal,
+    filename: str,
+    fmt: str,
+    s3_key: str,
+    content_type: str,
+    file_bytes: bytes,
+    normalized_dataset: str,
+    schema_id: Optional[UUID],
+    normalized_modality: Optional[str],
+    tag_rows: List[CallImportTag],
+) -> CallImport:
+    sheets = _build_available_sheets(file_bytes, fmt, filename)
+    call_import = CallImport(
+        id=call_import_id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        provider=None,
+        telephony_integration_id=None,
+        original_filename=filename,
+        sheet_name=None,
+        dataset=normalized_dataset,
+        schema_id=schema_id,
+        parameter_mapping={},
+        skipped_columns=[],
+        column_mapping={},
+        extra_columns=[],
+        custom_column_mapping={},
+        source_s3_key=s3_key,
+        source_format=fmt,
+        source_size_bytes=len(file_bytes),
+        source_content_type=content_type,
+        available_sheets=[sheet.model_dump() for sheet in sheets],
+        total_rows=0,
+        completed_rows=0,
+        failed_rows=0,
+        status=CallImportStatus.UPLOADED,
+        content_modality=normalized_modality,
+    )
+    if tag_rows:
+        call_import.tags = tag_rows
+    stamp_call_import_actor(call_import, principal, creating=True)
+    db.add(call_import)
+    db.commit()
+    db.refresh(call_import)
+    return call_import
+
+
 def _resolve_schema(
     db: Session,
     organization_id: UUID,
@@ -1956,10 +2059,158 @@ async def preview_call_import_file(
 
 
 @router.post(
+    "/stage/presign",
+    response_model=CallImportSourceStagePresignResponse,
+    status_code=status.HTTP_201_CREATED,
+    operation_id="presignCallImportSourceStage",
+)
+async def presign_call_import_source_stage(
+    payload: CallImportSourceStagePresignRequest,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportSourceStagePresignResponse:
+    del api_key, db
+    _ensure_blob_storage_enabled()
+
+    from app.services.call_imports import staged_source_presign as stage_mod
+    from app.services.storage.s3_service import s3_service
+
+    fmt = stage_mod.validate_staged_source_file(
+        payload.filename,
+        payload.size_bytes,
+        file_format=_file_format,
+        max_upload_bytes=MAX_UPLOAD_BYTES,
+    )
+    normalized_dataset = _normalize_dataset(payload.dataset)
+    if not normalized_dataset:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="dataset is required and must be a non-empty string.",
+        )
+
+    call_import_id = uuid4()
+    content_type = _source_content_type(fmt)
+    s3_key, upload_url = stage_mod.build_staged_source_presign(
+        organization_id=organization_id,
+        call_import_id=call_import_id,
+        fmt=fmt,
+        content_type=content_type,
+        source_s3_key=_source_s3_key,
+        generate_presigned_put_url_by_key=s3_service.generate_presigned_put_url_by_key,
+    )
+    return CallImportSourceStagePresignResponse(
+        call_import_id=call_import_id,
+        source_s3_key=s3_key,
+        source_format=fmt,
+        upload_url=upload_url,
+        content_type=content_type,
+    )
+
+
+@router.post(
+    "/stage/complete",
+    response_model=CallImportResponse,
+    status_code=status.HTTP_201_CREATED,
+    operation_id="completeCallImportSourceStage",
+)
+async def complete_call_import_source_stage(
+    payload: CallImportSourceStageCompleteRequest,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> CallImportResponse:
+    del api_key
+    _ensure_blob_storage_enabled()
+
+    from app.services.call_imports import staged_source_presign as stage_mod
+    from app.services.storage.s3_service import s3_service
+
+    fmt = stage_mod.validate_staged_source_file(
+        payload.filename,
+        payload.size_bytes,
+        file_format=_file_format,
+        max_upload_bytes=MAX_UPLOAD_BYTES,
+    )
+    normalized_dataset = _normalize_dataset(payload.dataset)
+    if not normalized_dataset:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="dataset is required and must be a non-empty string.",
+        )
+    normalized_modality = _normalize_content_modality(payload.content_modality)
+    if payload.schema_id is not None:
+        _resolve_schema(db, organization_id, workspace_id, payload.schema_id)
+    tag_rows = _resolve_tags(db, organization_id, payload.tag_ids)
+
+    s3_key = _source_s3_key(organization_id, payload.call_import_id, fmt)
+    content_type = _source_content_type(fmt)
+
+    try:
+        file_bytes = stage_mod.load_staged_source_bytes(
+            source_s3_key=s3_key,
+            expected_size=payload.size_bytes,
+            head_object_by_key=s3_service.head_object_by_key,
+            download_file_by_key=s3_service.download_file_by_key,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(
+            "Failed to load staged source from S3 for call import {}",
+            payload.call_import_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Failed to read staged upload from storage: {exc}",
+        ) from exc
+
+    existing = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == payload.call_import_id,
+            CallImport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This staged import id is already registered.",
+        )
+
+    try:
+        call_import = _insert_staged_call_import_record(
+            db,
+            call_import_id=payload.call_import_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            principal=principal,
+            filename=payload.filename,
+            fmt=fmt,
+            s3_key=s3_key,
+            content_type=content_type,
+            file_bytes=file_bytes,
+            normalized_dataset=normalized_dataset,
+            schema_id=payload.schema_id,
+            normalized_modality=normalized_modality,
+            tag_rows=tag_rows,
+        )
+    except Exception:
+        db.rollback()
+        raise
+
+    return _serialize_call_import(db, call_import)
+
+
+@router.post(
     "",
     response_model=CallImportResponse,
     status_code=status.HTTP_201_CREATED,
     operation_id="createCallImport",
+    deprecated=True,
 )
 async def create_call_import(
     file: UploadFile = File(
@@ -1995,14 +2246,10 @@ async def create_call_import(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportResponse:
-    """UPLOAD stage of the staged call-import flow.
+    """UPLOAD stage (legacy multipart).
 
-    Persists the source file to S3 and creates a ``CallImport`` row with
-    ``status='uploaded'``. No mapping, no provider, no rows yet — the
-    user moves through MAP and IMPORT as separate idempotent steps.
-
-    Dataset is collected here (rather than at IMPORT) so the batch is
-    filterable from the moment it appears in the list view.
+    Prefer ``POST /stage/presign`` then browser PUT then ``POST /stage/complete``
+    so the API never buffers the source file.
     """
     del api_key
 
@@ -2030,36 +2277,15 @@ async def create_call_import(
             detail=f"File exceeds {MAX_UPLOAD_BYTES} bytes",
         )
 
-    # Parse-now so we (a) reject garbage uploads up-front instead of
-    # later in the MAP step, and (b) capture the sheets snapshot the
-    # MAP UI needs without having to re-fetch the file from S3.
-    sheets = _build_available_sheets(file_bytes, fmt, file.filename)
-
-    # Optional schema pre-pick: validated only if supplied (the user is
-    # allowed to set it for the first time during MAP).
     if schema_id is not None:
         _resolve_schema(db, organization_id, workspace_id, schema_id)
 
-    normalized_modality: Optional[str] = None
-    if content_modality is not None and content_modality.strip():
-        mod = content_modality.strip().lower()
-        if mod not in ("chat", "voice"):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="content_modality must be 'chat' or 'voice' when provided.",
-            )
-        normalized_modality = mod
-
+    normalized_modality = _normalize_content_modality(content_modality)
     tag_rows = _resolve_tags(db, organization_id, tag_ids)
 
     _ensure_blob_storage_enabled()
 
-    # Pre-generate the id so we can compute a deterministic S3 key
-    # before the row is persisted, keeping ``source_s3_key`` consistent
-    # with the prefix sweep used at delete-time.
-    import uuid as _uuid
-
-    call_import_id = _uuid.uuid4()
+    call_import_id = uuid4()
     s3_key = _source_s3_key(organization_id, call_import_id, fmt)
     content_type = _source_content_type(fmt)
 
@@ -2077,46 +2303,25 @@ async def create_call_import(
             detail=f"Failed to persist upload to S3: {exc}",
         )
 
-    call_import = CallImport(
-        id=call_import_id,
-        organization_id=organization_id,
-        workspace_id=workspace_id,
-        # Provider + credential aren't known until the IMPORT stage; leave
-        # them NULL so the staged-vs-legacy distinction is visible at a
-        # glance from the DB.
-        provider=None,
-        telephony_integration_id=None,
-        original_filename=file.filename,
-        sheet_name=None,
-        dataset=normalized_dataset,
-        schema_id=schema_id,
-        parameter_mapping={},
-        skipped_columns=[],
-        column_mapping={},
-        extra_columns=[],
-        custom_column_mapping={},
-        source_s3_key=s3_key,
-        source_format=fmt,
-        source_size_bytes=len(file_bytes),
-        source_content_type=content_type,
-        available_sheets=[sheet.model_dump() for sheet in sheets],
-        total_rows=0,
-        completed_rows=0,
-        failed_rows=0,
-        status=CallImportStatus.UPLOADED,
-        content_modality=normalized_modality,
-    )
-    if tag_rows:
-        call_import.tags = tag_rows
-
-    stamp_call_import_actor(call_import, principal, creating=True)
-    db.add(call_import)
     try:
-        db.commit()
+        call_import = _insert_staged_call_import_record(
+            db,
+            call_import_id=call_import_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            principal=principal,
+            filename=file.filename or "upload.csv",
+            fmt=fmt,
+            s3_key=s3_key,
+            content_type=content_type,
+            file_bytes=file_bytes,
+            normalized_dataset=normalized_dataset,
+            schema_id=schema_id,
+            normalized_modality=normalized_modality,
+            tag_rows=tag_rows,
+        )
     except Exception:
         db.rollback()
-        # Best-effort cleanup of the uploaded S3 object so a failed
-        # commit doesn't leak storage.
         try:
             s3_service.delete_file_by_key(s3_key)
         except Exception as cleanup_exc:  # noqa: BLE001
@@ -2127,7 +2332,6 @@ async def create_call_import(
             )
         raise
 
-    db.refresh(call_import)
     return _serialize_call_import(db, call_import)
 
 
@@ -2408,225 +2612,305 @@ async def start_call_import(
 
 @router.post(
     "/upload",
-    response_model=CallImportUploadResponse,
-    status_code=status.HTTP_202_ACCEPTED,
+    status_code=status.HTTP_410_GONE,
     operation_id="uploadCallImportCsv",
     deprecated=True,
 )
-async def upload_call_import_csv(
+async def upload_call_import_csv_removed() -> None:
+    """Removed: use staged presign then MAP/IMPORT."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=(
+            "POST /call-imports/upload was removed. Stage the CSV with "
+            "POST /call-imports/stage/presign and POST /call-imports/stage/complete, "
+            "then PATCH /{id}/mapping and POST /{id}/import?legacy=true."
+        ),
+    )
+
+
+@router.post(
+    "/audio-upload/presign",
+    response_model=CallImportManualAudioPresignResponse,
+    status_code=status.HTTP_201_CREATED,
+    operation_id="presignCallImportAudioUpload",
+)
+async def presign_call_import_audio_upload(
+    payload: CallImportManualAudioPresignRequest,
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    provider: Optional[str] = Form(
-        None,
-        description=(
-            "Telephony provider key (e.g. 'exotel', 'plivo'). Must match the "
-            "selected telephony_integration_id's provider. Omit together "
-            "with telephony_integration_id for direct-URL import."
-        ),
-    ),
-    telephony_integration_id: Optional[UUID] = Form(
-        None,
-        description=(
-            "Specific TelephonyIntegration credential row to use when "
-            "downloading recordings for this batch. Omit together with "
-            "provider for direct-URL import."
-        ),
-    ),
-    schema_id: UUID = Form(
-        ...,
-        description=(
-            "Reusable Input Parameter schema this upload is mapped against. "
-            "Must belong to the active workspace."
-        ),
-    ),
-    parameter_mapping: str = Form(
-        ...,
-        description=(
-            "JSON-encoded ``{schema_parameter_name: source_header}`` map "
-            "covering every required schema parameter. Optional parameters "
-            "may be omitted or set to an empty string."
-        ),
-    ),
-    skipped_columns: Optional[str] = Form(
-        None,
-        description=(
-            "JSON-encoded list of source header strings the uploader has "
-            "explicitly skipped. Every header in the file must either be "
-            "mapped or appear here; otherwise the upload is rejected so a "
-            "forgotten column never silently drops."
-        ),
-    ),
-    dataset: Optional[str] = Form(
-        None,
-        description=(
-            "Optional free-text dataset label for high-level segregation. "
-            "Empty strings are stored as NULL."
-        ),
-    ),
-    tag_ids: Optional[List[UUID]] = Form(
-        None,
-        description="Optional list of CallImportTag ids to attach to the new batch.",
-    ),
-    sheet_name: Optional[str] = Form(
-        None,
-        description=(
-            "Worksheet to import when the file is an Excel workbook "
-            "(.xlsx / .xlsm). REQUIRED for Excel uploads. Ignored for CSV "
-            "uploads (rejected with 400 if non-empty so typos surface "
-            "instead of silently importing the wrong source)."
-        ),
-    ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
-) -> CallImportUploadResponse:
-    """Legacy one-shot upload kept for backward compatibility.
-
-    DEPRECATED: prefer the staged flow
-    (``POST /`` → ``PATCH /{id}/mapping`` → ``POST /{id}/import``) so
-    each step is idempotent and resumable. This endpoint runs all three
-    stages inline in a single transaction so existing scripts /
-    integrations keep working unchanged.
-    """
+) -> CallImportManualAudioPresignResponse:
     del api_key
+    _ensure_blob_storage_enabled()
+    _enforce_audio_upload_file_limit(len(payload.files))
 
-    fmt = _file_format(file.filename)
-    if fmt is None:
+    normalized_dataset = _normalize_dataset(payload.dataset or "")
+    if not normalized_dataset:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "Unsupported file format. Allowed extensions: "
-                f"{', '.join(ALLOWED_EXTENSIONS)}."
-            ),
+            detail="dataset is required and must be a non-empty string.",
         )
 
-    sheet_name_clean = (sheet_name or "").strip() or None
-    if fmt == "csv" and sheet_name_clean is not None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="sheet_name is not applicable to CSV uploads.",
-        )
-    if fmt == "xlsx" and sheet_name_clean is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="sheet_name is required when uploading an Excel workbook.",
-        )
+    tag_rows = _resolve_tags(db, organization_id, payload.tag_ids)
+    prepared = _prepare_audio_presign_items(payload.files, conversation_counts={})
 
-    file_bytes = await file.read()
-    if len(file_bytes) > MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File exceeds {MAX_UPLOAD_BYTES} bytes",
-        )
-
-    schema = _resolve_schema(db, organization_id, workspace_id, schema_id)
-    parameters = list(schema.parameters)
-
-    mapping_payload = _parse_json_form_field(
-        "parameter_mapping", parameter_mapping, {}
-    )
-    cleaned_mapping = _clean_parameter_mapping(
-        mapping_payload, parameters, schema.name
-    )
-
-    skipped_payload = _parse_json_form_field("skipped_columns", skipped_columns, [])
-    cleaned_skipped = _clean_skipped_columns(skipped_payload)
-
-    has_provider = bool((provider or "").strip())
-    has_integration = telephony_integration_id is not None
-    if has_provider != has_integration:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "provider and telephony_integration_id must both be provided "
-                "or both omitted for direct-URL import."
-            ),
-        )
-
-    if telephony_integration_id is not None:
-        integration = _resolve_telephony_integration(
-            db, organization_id, telephony_integration_id, provider or ""
-        )
-        if (integration.provider or "").lower() in {"exotel", "plivo"}:
-            _validate_credentialed_import_ready(
-                integration.provider, parameters, cleaned_mapping
-            )
+    normalized_batch_name = _normalize_import_display_name(payload.batch_name)
+    if normalized_batch_name:
+        original_filename = normalized_batch_name
+    elif len(prepared) == 1:
+        original_filename = prepared[0]["filename"]
     else:
-        _validate_direct_url_import_ready(parameters, cleaned_mapping)
-        integration = None
+        original_filename = "Manual recordings"
 
-    parsed_rows = _parse_source_file(
-        file_bytes, fmt, sheet_name_clean, parameters, cleaned_mapping, cleaned_skipped
-    )
-    _raise_if_no_importable_rows(parsed_rows, source_label=fmt)
-
-    tag_rows = _resolve_tags(db, organization_id, tag_ids)
+    from app.services.call_imports import manual_audio_presign as presign_mod
+    from app.services.storage.s3_service import s3_service
 
     call_import = CallImport(
         organization_id=organization_id,
         workspace_id=workspace_id,
-        provider=integration.provider if integration is not None else None,
-        telephony_integration_id=integration.id if integration is not None else None,
-        original_filename=file.filename,
-        sheet_name=sheet_name_clean,
-        dataset=_normalize_dataset(dataset),
-        schema_id=schema.id,
-        parameter_mapping=dict(cleaned_mapping),
-        skipped_columns=list(cleaned_skipped),
-        # Legacy columns are left empty on new uploads; the detail page
-        # falls back to ``parameter_mapping`` when ``schema_id`` is set.
-        column_mapping={},
-        extra_columns=[],
-        custom_column_mapping={},
-        total_rows=len(parsed_rows.rows),
+        provider=None,
+        telephony_integration_id=None,
+        original_filename=original_filename,
+        source_format="audio",
+        source_size_bytes=0,
+        source_content_type="audio/*",
+        dataset=normalized_dataset,
+        total_rows=0,
         completed_rows=0,
         failed_rows=0,
-        status=CallImportStatus.PENDING,
-        source_row_skips=parse_skips_to_json(parsed_rows.skipped),
+        status=CallImportStatus.COMPLETED,
     )
     if tag_rows:
         call_import.tags = tag_rows
     stamp_call_import_actor(call_import, principal, creating=True)
-    db.add(call_import)
-    db.flush()  # populate call_import.id
-    if integration is None:
-        # The model's historical Python default is "exotel"; direct-URL
-        # imports intentionally have no telephony provider.
+
+    try:
+        db.add(call_import)
+        db.flush()
         call_import.provider = None
+        uploads_raw, _keys = presign_mod.build_manual_audio_presign_uploads(
+            organization_id=organization_id,
+            call_import_id=call_import.id,
+            prepared=prepared,
+            audio_s3_key=_audio_s3_key,
+            generate_presigned_put_url_by_key=s3_service.generate_presigned_put_url_by_key,
+        )
+        presign_mod.persist_manual_audio_row_mappings(
+            db,
+            call_import=call_import,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            uploads=uploads_raw,
+            start_row_index=0,
+        )
+        db.commit()
+        if is_sharding_enabled():
+            from app.db_sharding.registry import publish_slice_registry_change
 
-    row_models = _materialize_rows(
-        db, call_import, parsed_rows.rows, organization_id
-    )
+            publish_slice_registry_change(call_import.id)
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Failed to presign manual call recording upload")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to prepare manual recording upload: {exc}",
+        ) from exc
 
-    call_import.status = CallImportStatus.PROCESSING
-    stamp_call_import_actor(call_import, principal)
-    db.commit()
     db.refresh(call_import)
-
     background_tasks.add_task(
         record_call_import_batch_created,
         organization_id,
         call_import.id,
         workspace_id=workspace_id,
         total_rows=call_import.total_rows,
-        source="csv",
-        provider=call_import.provider,
+        source="audio",
+        provider=None,
     )
-
-    _enqueue_row_tasks(db, call_import, row_models)
-
-    return CallImportUploadResponse(
-        id=call_import.id,
+    uploads = [
+        CallImportManualAudioPresignUploadItem(
+            row_id=item["row_id"],
+            recording_s3_key=item["recording_s3_key"],
+            conversation_id=item["conversation_id"],
+            upload_url=item["upload_url"],
+            content_type=item["content_type"],
+            filename=item["filename"],
+        )
+        for item in uploads_raw
+    ]
+    return CallImportManualAudioPresignResponse(
+        call_import_id=call_import.id,
+        uploads=uploads,
         total_rows=call_import.total_rows,
         status=call_import.status,
         dataset=call_import.dataset,
         tags=_tag_response_payload(call_import.tags),
         message=(
-            f"Accepted {call_import.total_rows} rows for import. "
-            "Recordings will be fetched asynchronously."
+            f"Presigned {len(uploads)} recording upload"
+            f"{'' if len(uploads) == 1 else 's'}."
         ),
+    )
+
+
+@router.post(
+    "/{call_import_id}/audio-append/presign",
+    response_model=CallImportManualAudioPresignResponse,
+    status_code=status.HTTP_200_OK,
+    operation_id="presignAppendCallImportAudio",
+)
+async def presign_append_call_import_audio(
+    call_import_id: UUID,
+    payload: CallImportManualAudioPresignRequest,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+) -> CallImportManualAudioPresignResponse:
+    del api_key
+    _ensure_blob_storage_enabled()
+    _enforce_audio_upload_file_limit(len(payload.files))
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+            CallImport.workspace_id == workspace_id,
+        )
+        .first()
+    )
+    if not call_import:
+        raise HTTPException(status_code=404, detail="Call import not found")
+    if (call_import.source_format or "").lower() != "audio":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Audio append is only supported for manual audio upload batches.",
+        )
+    if call_import.status != CallImportStatus.COMPLETED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Cannot append audio while batch is in status "
+                f"'{call_import.status.value}'."
+            ),
+        )
+
+    start_row_index, conversation_counts = _manual_audio_append_start_state(
+        db, call_import
+    )
+    prepared = _prepare_audio_presign_items(payload.files, conversation_counts)
+
+    from app.services.call_imports import manual_audio_presign as presign_mod
+    from app.services.storage.s3_service import s3_service
+
+    try:
+        uploads_raw, _keys = presign_mod.build_manual_audio_presign_uploads(
+            organization_id=organization_id,
+            call_import_id=call_import.id,
+            prepared=prepared,
+            audio_s3_key=_audio_s3_key,
+            generate_presigned_put_url_by_key=s3_service.generate_presigned_put_url_by_key,
+        )
+        presign_mod.persist_manual_audio_row_mappings(
+            db,
+            call_import=call_import,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            uploads=uploads_raw,
+            start_row_index=start_row_index,
+        )
+        db.commit()
+        if is_sharding_enabled():
+            from app.db_sharding.registry import publish_slice_registry_change
+
+            publish_slice_registry_change(call_import.id)
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Failed to presign manual audio append")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to prepare audio append: {exc}",
+        ) from exc
+
+    db.refresh(call_import)
+    uploads = [
+        CallImportManualAudioPresignUploadItem(
+            row_id=item["row_id"],
+            recording_s3_key=item["recording_s3_key"],
+            conversation_id=item["conversation_id"],
+            upload_url=item["upload_url"],
+            content_type=item["content_type"],
+            filename=item["filename"],
+        )
+        for item in uploads_raw
+    ]
+    return CallImportManualAudioPresignResponse(
+        call_import_id=call_import.id,
+        uploads=uploads,
+        total_rows=call_import.total_rows,
+        status=call_import.status,
+        dataset=call_import.dataset,
+        tags=_tag_response_payload(call_import.tags),
+        message=(
+            f"Presigned {len(uploads)} recording upload"
+            f"{'' if len(uploads) == 1 else 's'} for append."
+        ),
+    )
+
+
+@router.post(
+    "/{call_import_id}/manual-audio/complete",
+    response_model=CallImportManualAudioCompleteResponse,
+    status_code=status.HTTP_200_OK,
+    operation_id="completeCallImportManualAudioUpload",
+)
+async def complete_call_import_manual_audio_upload(
+    call_import_id: UUID,
+    payload: CallImportManualAudioCompleteRequest,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+) -> CallImportManualAudioCompleteResponse:
+    del api_key
+    _ensure_blob_storage_enabled()
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+            CallImport.workspace_id == workspace_id,
+        )
+        .first()
+    )
+    if not call_import:
+        raise HTTPException(status_code=404, detail="Call import not found")
+
+    from app.services.call_imports import manual_audio_presign as presign_mod
+    from app.services.storage.s3_service import s3_service
+
+    verified = presign_mod.verify_manual_audio_uploads(
+        db,
+        call_import_id=call_import.id,
+        organization_id=organization_id,
+        row_ids=payload.row_ids,
+        head_object_by_key=s3_service.head_object_by_key,
+    )
+    db.commit()
+    db.refresh(call_import)
+    return CallImportManualAudioCompleteResponse(
+        verified=verified,
+        call_import_id=call_import.id,
+        total_rows=int(call_import.total_rows or 0),
     )
 
 

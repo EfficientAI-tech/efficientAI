@@ -933,6 +933,28 @@ def transcribe_call_import_row_task(
                 row_db.commit()
                 return {"status": "failed", "reason": "missing_llm_diariser"}
 
+            if normalised_mode == "stt_llm" and provider_enum is not None:
+                from app.workers.concurrency.stt_token_bucket import (
+                    consume_stt_token,
+                    waiting_stt_message,
+                )
+
+                stt_token = consume_stt_token(
+                    provider_enum.value,
+                    member=slot_task_id,
+                )
+                if not stt_token.allowed:
+                    row.diarised_transcript_status = "pending"
+                    row.diarised_transcript_error = waiting_stt_message(
+                        provider_enum.value
+                    )
+                    row.celery_task_id = None
+                    row_db.commit()
+                    return {
+                        "status": "waiting_stt",
+                        "wait_seconds": stt_token.wait_seconds,
+                    }
+
             row.diarised_transcript_status = "running"
             row.diarised_transcript_error = None
             if normalised_mode == "stt_llm" and provider_enum is not None:

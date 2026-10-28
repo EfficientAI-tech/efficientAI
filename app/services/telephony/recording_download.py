@@ -434,6 +434,150 @@ def download_recording_url(
     return body, content_type
 
 
+def stream_recording_url_to_path(
+    recording_url: str,
+    dest_path: str,
+    *,
+    auth: Optional[Union[Tuple[str, str], httpx.Auth]] = None,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    max_bytes: int = DEFAULT_MAX_RECORDING_BYTES,
+    user_supplied: bool = False,
+    credential_fingerprint: Optional[str] = None,
+) -> str:
+    """Stream a recording to ``dest_path``; return content_type."""
+    if not recording_url:
+        raise ExotelInvalidContentError("recording_url is empty")
+    if user_supplied and auth is not None:
+        raise ExotelInvalidContentError(
+            "User-supplied recording URLs must not be fetched with credentials"
+        )
+
+    if auth is not None:
+        allowed_suffixes = list(_CREDENTIALED_ALLOWED_HOST_SUFFIXES)
+    else:
+        allowed_suffixes = _allowed_host_suffixes()
+
+    assert_recording_url_safe(
+        recording_url,
+        user_supplied=user_supplied,
+        allowed_suffixes=allowed_suffixes,
+    )
+
+    request_hooks: Optional[dict[str, List[Callable[..., None]]]] = None
+    if not user_supplied:
+        request_hooks = _provider_recording_redirect_hooks(
+            allowed_suffixes=allowed_suffixes if auth is not None else None,
+        )
+
+    follow_redirects = not user_supplied
+
+    try:
+        with httpx.Client(
+            timeout=timeout_seconds,
+            follow_redirects=follow_redirects,
+            event_hooks=request_hooks,
+        ) as client:
+            with client.stream("GET", recording_url, auth=auth) as resp:
+                if resp.status_code in (401, 403):
+                    if auth is not None:
+                        retry_after = _raise_credentialed_throttle(
+                            fingerprint=credential_fingerprint,
+                            message=f"Recording URL rejected credentials (HTTP {resp.status_code})",
+                        )
+                        raise CredentialedRecordingThrottledError(
+                            f"Recording URL rejected credentials (HTTP {resp.status_code})",
+                            retry_after_seconds=retry_after,
+                        )
+                    raise ExotelAuthError(
+                        f"Recording URL rejected credentials (HTTP {resp.status_code})"
+                    )
+                if resp.status_code == 404:
+                    raise ExotelNotFoundError(f"Recording not found at {recording_url}")
+                if resp.status_code == 429:
+                    retry_after_header = _parse_retry_after_header(
+                        resp.headers.get("Retry-After")
+                    )
+                    if auth is not None:
+                        retry_after = _raise_credentialed_throttle(
+                            fingerprint=credential_fingerprint,
+                            message="Rate limited fetching recording (HTTP 429)",
+                            retry_after_seconds=retry_after_header,
+                        )
+                        raise CredentialedRecordingThrottledError(
+                            "Rate limited fetching recording (HTTP 429)",
+                            retry_after_seconds=retry_after,
+                        )
+                    raise ExotelTransientError(
+                        f"Rate limited fetching recording (HTTP 429): {resp.text[:200]}"
+                    )
+                if 500 <= resp.status_code < 600:
+                    raise ExotelTransientError(
+                        f"Server error fetching recording (HTTP {resp.status_code})"
+                    )
+                if resp.status_code == 400:
+                    if auth is not None:
+                        raise ExotelTransientError(
+                            f"Unexpected HTTP 400 fetching recording: {resp.text[:200]}"
+                        )
+                    raise ExotelInvalidContentError(
+                        f"Unexpected HTTP 400 fetching recording: {resp.text[:200]}"
+                    )
+                if resp.status_code >= 400:
+                    raise ExotelInvalidContentError(
+                        f"Unexpected HTTP {resp.status_code} fetching recording: {resp.text[:200]}"
+                    )
+
+                content_type = (
+                    (resp.headers.get("content-type") or "")
+                    .split(";", 1)[0]
+                    .strip()
+                    .lower()
+                )
+                if not content_type.startswith("audio/"):
+                    raise ExotelInvalidContentError(
+                        "Recording URL returned non-audio content type: "
+                        f"{content_type or 'unknown'}"
+                    )
+
+                total = 0
+                with open(dest_path, "wb") as handle:
+                    for chunk in resp.iter_bytes():
+                        if not chunk:
+                            continue
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise ExotelRecordingTooLargeError(
+                                f"Recording size exceeds cap of {max_bytes} bytes"
+                            )
+                        handle.write(chunk)
+                if total == 0:
+                    raise ExotelInvalidContentError("Recording response was empty")
+                return content_type
+    except ExotelInvalidContentError:
+        raise
+    except httpx.TimeoutException as exc:
+        raise ExotelTransientError(f"Timeout fetching recording: {exc}") from exc
+    except httpx.HTTPError as exc:
+        raise ExotelTransientError(f"HTTP error fetching recording: {exc}") from exc
+
+
+def download_public_recording_to_path(
+    recording_url: str,
+    dest_path: str,
+    *,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    max_bytes: int = DEFAULT_MAX_RECORDING_BYTES,
+) -> str:
+    return stream_recording_url_to_path(
+        recording_url,
+        dest_path,
+        auth=None,
+        timeout_seconds=timeout_seconds,
+        max_bytes=max_bytes,
+        user_supplied=True,
+    )
+
+
 def _raise_credentialed_throttle(
     *,
     fingerprint: Optional[str],

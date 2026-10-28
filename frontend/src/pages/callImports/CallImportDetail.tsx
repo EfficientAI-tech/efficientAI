@@ -93,9 +93,9 @@ import {
   type CallImportRowSidePanelTabId,
 } from './components/CallImportRowSidePanelContent'
 import {
-  EVALUATION_BULK_OPERATION_POLL_MS,
   evaluationBulkOperationLabel,
   evaluationHasActiveBulkOperation,
+  evaluationListPollMs,
   type BulkEvaluationOperation,
 } from './evaluationBulkOperation'
 
@@ -109,7 +109,6 @@ function importRowsPollMs(
         diarised_running_rows?: number
       }
     | undefined,
-  evaluations: unknown,
 ): number | false {
   if (!header) return false
   if (header.status === 'deleting') return 4000
@@ -126,17 +125,6 @@ function importRowsPollMs(
   const diariseInFlight =
     (header.diarised_pending_rows ?? 0) + (header.diarised_running_rows ?? 0)
   if (diariseInFlight > 0) return 4000
-  const evaluationsInFlight = itemsOf<CallImportEvaluation>(evaluations)
-  if (
-    evaluationsInFlight.some(
-      (row) =>
-        row.bulk_operation ||
-        row.status === 'pending' ||
-        row.status === 'running',
-    )
-  ) {
-    return 4000
-  }
   if (
     header.status === 'completed' ||
     header.status === 'failed' ||
@@ -447,17 +435,12 @@ export default function CallImportDetail() {
   // Multi-select state for the row list — drives the bulk-action
   // toolbar (delete / transcribe). The header checkbox toggles every
   // row currently visible on the page; an explicit "Select all in
-  // import" affordance extends the selection across pages by harvesting
-  // ids from ``GET /call-imports/{id}/row-ids``.
+  // import" affordance sets a server-side row_filter for bulk actions.
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set())
   const [bulkSelectionFilter, setBulkSelectionFilter] = useState<{
     q?: string
     diarised_status?: string
   } | null>(null)
-  // Loading flag for the cross-page select-all click; surfaces a tiny
-  // spinner on the affordance button so the user knows the harvest is
-  // in flight.
-  const [isSelectingAllInImport, setIsSelectingAllInImport] = useState(false)
   const [selectAllError, setSelectAllError] = useState<string | null>(null)
   const [showBulkDeleteRows, setShowBulkDeleteRows] = useState(false)
   const [bulkDeleteRowsError, setBulkDeleteRowsError] = useState<string | null>(
@@ -1027,11 +1010,7 @@ export default function CallImportDetail() {
     staleTime: 60_000,
     placeholderData: keepPreviousData,
     refetchOnWindowFocus: false,
-    refetchInterval: () =>
-      importRowsPollMs(
-        queryClient.getQueryData(['call-import', activeWorkspaceId, id]),
-        queryClient.getQueryData(evaluationsQueryKey),
-      ),
+    refetchInterval: () => importRowsPollMs(data),
   })
 
   const isFetching = headerFetching || rowsFetching
@@ -1078,13 +1057,10 @@ export default function CallImportDetail() {
     enabled: !!id,
     refetchOnWindowFocus: false,
     refetchInterval: (query) => {
-      const rows = itemsOf<CallImportEvaluation>(query.state.data)
-      if (rows.some((row) => row.bulk_operation)) {
-        return EVALUATION_BULK_OPERATION_POLL_MS
-      }
-      return rows.some((row) => row.status === 'pending' || row.status === 'running')
-        ? 3000
-        : false
+      if (activeTab !== 'evaluations' && activeTab !== 'insights') return false
+      return evaluationListPollMs(
+        itemsOf<CallImportEvaluation>(query.state.data),
+      )
     },
   })
 
@@ -1106,21 +1082,13 @@ export default function CallImportDetail() {
     enabled: !!id && activeTab === 'insights',
     staleTime: 60_000,
     refetchOnWindowFocus: false,
-    refetchInterval: () => {
-      const rows = itemsOf<CallImportEvaluation>(evaluationsData)
-      if (rows.some((row) => row.bulk_operation)) {
-        return EVALUATION_BULK_OPERATION_POLL_MS
-      }
-      return rows.some(
-        (row) => row.status === 'pending' || row.status === 'running',
-      )
-        ? 15000
-        : false
-    },
+    refetchInterval: () =>
+      evaluationListPollMs(itemsOf<CallImportEvaluation>(evaluationsData), {
+        slowCadenceMs: 15000,
+      }),
   })
 
-  const importRowsLive =
-    importRowsPollMs(data, evaluationsData) !== false
+  const importRowsLive = importRowsPollMs(data) !== false
   const importRowsWereLive = useRef(false)
   useEffect(() => {
     if (importRowsLive) {
@@ -1562,7 +1530,7 @@ export default function CallImportDetail() {
     enabled: !!id && !!selectedRowId,
     staleTime: 60_000,
     refetchOnWindowFocus: false,
-    refetchInterval: () => importRowsPollMs(data, evaluationsData),
+    refetchInterval: () => importRowsPollMs(data),
   })
 
   useEffect(() => {
@@ -2727,6 +2695,15 @@ export default function CallImportDetail() {
                           <span className="font-medium">
                             Diarisation error:
                           </span>{' '}
+                          {formatDiarisationError(row.diarised_transcript_error)}
+                        </div>
+                      </div>
+                    )}
+                  {row.diarised_transcript_status === 'pending' &&
+                    row.diarised_transcript_error?.includes('Waiting for') && (
+                      <div className="border-t border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-900 flex items-start gap-2">
+                        <AlertCircle className="h-3.5 w-3.5 text-amber-600 flex-shrink-0 mt-0.5" />
+                        <div className="min-w-0 flex-1 break-words">
                           {formatDiarisationError(row.diarised_transcript_error)}
                         </div>
                       </div>

@@ -1079,11 +1079,5 @@ def resolve_eval_row_audio_seconds(
         seconds = int(stored)
         cache_eval_row_audio_seconds(eval_row, seconds)
         return seconds
-    recording_s3_key = (source_row.recording_s3_key or "").strip()
-    if not recording_s3_key:
-        return 0
-    seconds = probe_recording_audio_seconds(recording_s3_key)
-    if seconds > 0:
-        cache_eval_row_audio_seconds(eval_row, seconds)
-    return seconds
+    return 0
 

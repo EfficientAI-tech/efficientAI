@@ -235,8 +235,11 @@ export default function PlatformImportProgressDock() {
       refetchInterval: (query: { state: { data?: PlatformImportProgress } }) => {
         if (typeof document !== 'undefined' && document.hidden) return false
         if (location.pathname === `/call-imports/${w.id}`) return false
-        return query.state.data?.is_active === false ? false : STATUS_POLL_MS
+        const progress = query.state.data
+        if (progress?.is_active !== true) return false
+        return STATUS_POLL_MS
       },
+      refetchOnWindowFocus: false,
       enabled: Boolean(w.id && activeWorkspaceId) && location.pathname !== `/call-imports/${w.id}`,
     })),
   })
@@ -315,7 +318,7 @@ export default function PlatformImportProgressDock() {
     })
   }, [watches, progressQueries, unpin])
 
-  const activeCount = items.filter((x) => x.progress?.is_active !== false).length
+  const activeCount = items.filter((x) => x.progress?.is_active === true).length
   const headlinePercent =
     items.length === 1 && items[0].progress
       ? items[0].progress.overall_percent

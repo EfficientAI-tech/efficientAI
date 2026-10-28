@@ -81,6 +81,8 @@ import type {
   CallImportTranscribeRequest,
   CallImportTranscribeResponse,
   CallImportRowSelectionFilter,
+  CallImportManualAudioPresignResponse,
+  CallImportSourceStagePresignResponse,
   CallImportRetryFailedRowsResponse,
   PlatformImportProgress,
   Workspace,
@@ -591,6 +593,34 @@ export const apiBaseUrl =
   (import.meta.env.PROD ? '' : 'http://localhost:8000')
 
 const API_BASE_URL = apiBaseUrl
+
+async function uploadFileToPresignedPutUrl(
+  uploadUrl: string,
+  file: File,
+  contentType: string,
+): Promise<void> {
+  const response = await fetch(uploadUrl, {
+    method: 'PUT',
+    body: file,
+    headers: { 'Content-Type': contentType },
+  })
+  if (!response.ok) {
+    throw new Error(`Direct storage upload failed (${response.status}).`)
+  }
+}
+
+function presignResponseToUploadResponse(
+  presign: CallImportManualAudioPresignResponse,
+): CallImportUploadResponse {
+  return {
+    id: presign.call_import_id,
+    total_rows: presign.total_rows,
+    status: presign.status,
+    dataset: presign.dataset,
+    tags: presign.tags,
+    message: presign.message,
+  }
+}
 
 let refreshPromise: Promise<boolean> | null = null
 
@@ -2552,6 +2582,7 @@ class ApiClient {
     return response.data
   }
 
+  /** @deprecated Use createCallImport → updateCallImportMapping → startCallImport. */
   async uploadCallImport(
     file: File,
     options: {
@@ -2582,28 +2613,22 @@ class ApiClient {
       sheetName?: string | null
     }
   ): Promise<CallImportUploadResponse> {
-    const formData = new FormData()
-    formData.append('file', file)
-    formData.append('provider', options.provider)
-    formData.append('telephony_integration_id', options.telephonyIntegrationId)
-    formData.append('schema_id', options.schemaId)
-    formData.append('parameter_mapping', JSON.stringify(options.parameterMapping))
-    formData.append('skipped_columns', JSON.stringify(options.skippedColumns || []))
-    if (options.dataset !== undefined && options.dataset !== null) {
-      formData.append('dataset', options.dataset)
-    }
-    if (options.tagIds && options.tagIds.length > 0) {
-      for (const tagId of options.tagIds) {
-        formData.append('tag_ids', tagId)
-      }
-    }
-    if (options.sheetName) {
-      formData.append('sheet_name', options.sheetName)
-    }
-    const response = await this.client.post('/api/v1/call-imports/upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
+    const dataset = (options.dataset ?? '').trim() || 'import'
+    const staged = await this.createCallImport(file, {
+      dataset,
+      tagIds: options.tagIds,
+      schemaId: options.schemaId,
     })
-    return response.data
+    await this.updateCallImportMapping(staged.id, {
+      schemaId: options.schemaId,
+      sheetName: options.sheetName,
+      parameterMapping: options.parameterMapping,
+      skippedColumns: options.skippedColumns,
+    })
+    return this.startCallImport(staged.id, {
+      provider: options.provider,
+      telephonyIntegrationId: options.telephonyIntegrationId,
+    })
   }
 
   /**
@@ -2620,36 +2645,118 @@ class ApiClient {
     options: {
       dataset: string
       tagIds?: string[]
-      /**
-       * Optional schema pre-pick. The user can still change it during
-       * the MAP stage; provided here only so the detail page can pre-
-       * select the schema dropdown.
-       */
       schemaId?: string | null
-      /** Set to `chat` for post-prod transcript-only imports. */
       contentModality?: 'chat' | 'voice'
     },
   ): Promise<CallImport> {
-    const formData = new FormData()
-    formData.append('file', file)
-    formData.append('dataset', options.dataset)
-    if (options.tagIds && options.tagIds.length > 0) {
-      for (const tagId of options.tagIds) {
-        formData.append('tag_ids', tagId)
-      }
+    const fileItem = {
+      filename: file.name,
+      size_bytes: file.size,
+      content_type: file.type || undefined,
     }
-    if (options.schemaId) {
-      formData.append('schema_id', options.schemaId)
+    const presignResponse = await this.client.post<CallImportSourceStagePresignResponse>(
+      '/api/v1/call-imports/stage/presign',
+      {
+        ...fileItem,
+        dataset: options.dataset.trim(),
+        tag_ids: options.tagIds,
+        schema_id: options.schemaId || undefined,
+        content_modality: options.contentModality,
+      },
+    )
+    const presign = presignResponse.data
+    await uploadFileToPresignedPutUrl(
+      presign.upload_url,
+      file,
+      presign.content_type,
+    )
+    const completeResponse = await this.client.post<CallImport>(
+      '/api/v1/call-imports/stage/complete',
+      {
+        call_import_id: presign.call_import_id,
+        ...fileItem,
+        dataset: options.dataset.trim(),
+        tag_ids: options.tagIds,
+        schema_id: options.schemaId || undefined,
+        content_modality: options.contentModality,
+      },
+    )
+    return completeResponse.data
+  }
+
+  private async presignManualAudioUpload(
+    files: File[],
+    options: {
+      dataset?: string
+      tagIds?: string[]
+      batchName?: string
+      importId?: string
+    },
+  ): Promise<CallImportManualAudioPresignResponse> {
+    const fileItems = files.map((file) => ({
+      filename: file.name,
+      size_bytes: file.size,
+      content_type: file.type || undefined,
+    }))
+    if (options.importId) {
+      const response = await this.client.post<CallImportManualAudioPresignResponse>(
+        `/api/v1/call-imports/${options.importId}/audio-append/presign`,
+        { files: fileItems },
+      )
+      return response.data
     }
-    if (options.contentModality) {
-      formData.append('content_modality', options.contentModality)
-    }
-    const response = await this.client.post('/api/v1/call-imports', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
+    const response = await this.client.post<CallImportManualAudioPresignResponse>(
+      '/api/v1/call-imports/audio-upload/presign',
+      {
+        files: fileItems,
+        dataset: options.dataset?.trim(),
+        batch_name: options.batchName?.trim() || undefined,
+        tag_ids: options.tagIds,
+      },
+    )
     return response.data
   }
 
+  private async completeManualAudioUpload(
+    importId: string,
+    rowIds: string[],
+  ): Promise<void> {
+    await this.client.post(
+      `/api/v1/call-imports/${importId}/manual-audio/complete`,
+      { row_ids: rowIds },
+    )
+  }
+
+  private async uploadManualAudioFilesViaPresign(
+    files: File[],
+    options: {
+      dataset?: string
+      tagIds?: string[]
+      batchName?: string
+      importId?: string
+    },
+  ): Promise<CallImportUploadResponse> {
+    const presign = await this.presignManualAudioUpload(files, options)
+    const pending = [...files]
+    const rowIds: string[] = []
+    for (const slot of presign.uploads) {
+      const matchIndex = pending.findIndex((file) => file.name === slot.filename)
+      const file = matchIndex >= 0 ? pending.splice(matchIndex, 1)[0] : null
+      if (!file) {
+        throw new Error(`Missing local file for ${slot.filename}`)
+      }
+      await uploadFileToPresignedPutUrl(
+        slot.upload_url,
+        file,
+        slot.content_type,
+      )
+      rowIds.push(slot.row_id)
+    }
+    await this.completeManualAudioUpload(presign.call_import_id, rowIds)
+    return presignResponseToUploadResponse(presign)
+  }
+
+  /** @deprecated Prefer presigned upload via uploadCallImportAudioChunked. */
   async uploadCallImportAudio(
     files: File[],
     options: {
@@ -2658,41 +2765,14 @@ class ApiClient {
       batchName?: string
     },
   ): Promise<CallImportUploadResponse> {
-    const formData = new FormData()
-    for (const file of files) {
-      formData.append('files', file)
-    }
-    formData.append('dataset', options.dataset)
-    if (options.batchName?.trim()) {
-      formData.append('batch_name', options.batchName.trim())
-    }
-    if (options.tagIds && options.tagIds.length > 0) {
-      for (const tagId of options.tagIds) {
-        formData.append('tag_ids', tagId)
-      }
-    }
-    const response = await this.client.post('/api/v1/call-imports/audio-upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
-    return response.data
+    return this.uploadManualAudioFilesViaPresign(files, options)
   }
 
   async appendCallImportAudio(
     importId: string,
     files: File[],
   ): Promise<CallImportUploadResponse> {
-    const formData = new FormData()
-    for (const file of files) {
-      formData.append('files', file)
-    }
-    const response = await this.client.post(
-      `/api/v1/call-imports/${importId}/audio-append`,
-      formData,
-      {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      },
-    )
-    return response.data
+    return this.uploadManualAudioFilesViaPresign(files, { importId })
   }
 
   async uploadCallImportAudioChunked(
@@ -2724,13 +2804,15 @@ class ApiClient {
       })
 
       if (chunkIndex === 0) {
-        result = await this.uploadCallImportAudio(chunk, {
+        result = await this.uploadManualAudioFilesViaPresign(chunk, {
           dataset: options.dataset,
           tagIds: options.tagIds,
           batchName: options.batchName,
         })
       } else {
-        result = await this.appendCallImportAudio(result!.id, chunk)
+        result = await this.uploadManualAudioFilesViaPresign(chunk, {
+          importId: result!.id,
+        })
       }
 
       options.onProgress?.({
@@ -2773,7 +2855,9 @@ class ApiClient {
         totalFiles: files.length,
       })
 
-      result = await this.appendCallImportAudio(importId, chunk)
+      result = await this.uploadManualAudioFilesViaPresign(chunk, {
+        importId,
+      })
 
       options?.onProgress?.({
         chunkIndex: chunkIndex + 1,

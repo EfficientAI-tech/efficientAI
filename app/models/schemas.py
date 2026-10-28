@@ -4014,6 +4014,82 @@ class CallImportDispatchDiagnosticsResponse(BaseModel):
     generated_at: datetime
 
 
+class CallImportManualAudioFilePresignItem(BaseModel):
+    filename: str = Field(..., max_length=512)
+    size_bytes: int = Field(..., ge=1)
+    content_type: Optional[str] = Field(default=None, max_length=200)
+
+
+class CallImportManualAudioPresignRequest(BaseModel):
+    files: List[CallImportManualAudioFilePresignItem] = Field(..., min_length=1)
+    dataset: Optional[str] = Field(
+        default=None,
+        description="Required when creating a new manual-audio batch.",
+    )
+    tag_ids: Optional[List[UUID]] = None
+    batch_name: Optional[str] = Field(default=None, max_length=255)
+
+
+class CallImportManualAudioPresignUploadItem(BaseModel):
+    row_id: UUID
+    recording_s3_key: str
+    conversation_id: str
+    upload_url: str
+    content_type: str
+    filename: str
+
+
+class CallImportManualAudioPresignResponse(BaseModel):
+    call_import_id: UUID
+    uploads: List[CallImportManualAudioPresignUploadItem]
+    total_rows: int
+    status: CallImportStatus
+    dataset: Optional[str] = None
+    tags: List[CallImportTagResponse] = Field(default_factory=list)
+    message: str
+
+
+class CallImportManualAudioCompleteRequest(BaseModel):
+    row_ids: List[UUID] = Field(..., min_length=1)
+
+
+class CallImportManualAudioCompleteResponse(BaseModel):
+    verified: int
+    call_import_id: UUID
+    total_rows: int
+
+
+class CallImportSourceStagePresignRequest(BaseModel):
+    filename: str = Field(..., max_length=512)
+    size_bytes: int = Field(..., ge=1)
+    content_type: Optional[str] = Field(default=None, max_length=200)
+    dataset: str = Field(..., min_length=1)
+    tag_ids: Optional[List[UUID]] = None
+    schema_id: Optional[UUID] = None
+    content_modality: Optional[str] = Field(
+        default=None,
+        description="Optional 'chat' for transcript-only imports.",
+    )
+
+
+class CallImportSourceStagePresignResponse(BaseModel):
+    call_import_id: UUID
+    source_s3_key: str
+    source_format: str
+    upload_url: str
+    content_type: str
+
+
+class CallImportSourceStageCompleteRequest(BaseModel):
+    call_import_id: UUID
+    filename: str = Field(..., max_length=512)
+    size_bytes: int = Field(..., ge=1)
+    dataset: str = Field(..., min_length=1)
+    tag_ids: Optional[List[UUID]] = None
+    schema_id: Optional[UUID] = None
+    content_modality: Optional[str] = None
+
+
 class CallImportUploadResponse(BaseModel):
     """Response returned right after a CSV is accepted."""
 
