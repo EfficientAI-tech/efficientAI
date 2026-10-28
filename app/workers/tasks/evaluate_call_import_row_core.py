@@ -811,6 +811,17 @@ def rollup_parent(
 
     _apply_parent_status_from_counters(evaluation)
 
+    if previous_row_status is not None and new_row_status is not None:
+        from app.services.call_imports.metric_aggregate_cache import (
+            maybe_refresh_aggregate_cache_after_row,
+        )
+
+        maybe_refresh_aggregate_cache_after_row(
+            db,
+            evaluation,
+            new_row_status=new_row_status,
+        )
+
     total = int(evaluation.total_rows or 0)
     completed = int(evaluation.completed_rows or 0)
     failed = int(evaluation.failed_rows or 0)

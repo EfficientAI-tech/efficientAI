@@ -3145,6 +3145,9 @@ class CallImportEvaluation(Base):
     # baseline evaluation id + completed row counts.
     period_delta_explanations = Column(JSON, nullable=True)
 
+    cached_metric_aggregates = Column(JSON, nullable=True)
+    cached_metric_aggregates_at_count = Column(Integer, nullable=True)
+
     status = Column(String(20), nullable=False, default="pending", index=True)
 
     total_rows = Column(Integer, nullable=False, default=0)

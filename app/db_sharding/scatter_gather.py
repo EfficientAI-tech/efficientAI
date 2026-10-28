@@ -1219,6 +1219,44 @@ def load_evaluation_score_rows(
     return merged
 
 
+def load_evaluation_score_rows_for_aggregate(
+    catalog_db: Session,
+    evaluation_id: UUID,
+) -> List[CallImportEvaluationRow]:
+    """Score rows with a terminal status only (for chart aggregates)."""
+
+    def load(db: Session) -> List[CallImportEvaluationRow]:
+        rows = (
+            db.query(CallImportEvaluationRow)
+            .options(load_only(*_EVAL_SCORE_COLUMNS))
+            .filter(
+                CallImportEvaluationRow.evaluation_id == evaluation_id,
+                CallImportEvaluationRow.status.in_(("completed", "failed")),
+            )
+            .all()
+        )
+        for row in rows:
+            db.expunge(row)
+        return rows
+
+    if not is_sharding_enabled():
+        return load(catalog_db)
+
+    merged: List[CallImportEvaluationRow] = []
+    router = db_pool_manager.router
+    assert router is not None
+    for shard_id in router.shard_ids:
+        factory = db_pool_manager.shard_session_factory(shard_id)
+        shard_db = factory()
+        try:
+            merged.extend(load(shard_db))
+        finally:
+            shard_db.close()
+    if not merged:
+        return load(catalog_db)
+    return merged
+
+
 def count_call_import_rows(
     catalog_db: Session,
     call_import_id: UUID,

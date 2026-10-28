@@ -5331,9 +5331,11 @@ async def get_call_import_evaluation_aggregate(
             status_code=404, detail="Call import evaluation not found"
         )
 
-    eval_rows = _load_eval_rows(db, eval_id)
+    from app.services.call_imports.metric_aggregate_cache import (
+        metrics_for_aggregate_endpoint,
+    )
 
-    metrics = _compute_metric_aggregates(db, evaluation, eval_rows)
+    metrics = metrics_for_aggregate_endpoint(db, evaluation)
 
     period_deltas: dict[str, MetricPeriodDelta] = {}
     resolved_baseline_id: Optional[UUID] = None
