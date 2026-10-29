@@ -92,6 +92,8 @@ class Settings(BaseSettings):
     # Celery
     CELERY_BROKER_URL: Optional[str] = None
     CELERY_RESULT_BACKEND: Optional[str] = None
+    # worker-imports uses --pool=threads; terminate=True raises NotImplementedError there.
+    CELERY_REVOKE_USE_TERMINATE: bool = False
 
     # Call-import worker concurrency limits (Redis fair-share for evaluations)
     EVAL_WORKSPACE_INFLIGHT_LIMIT: int = 100
@@ -713,6 +715,10 @@ def load_config_from_file(config_path: str) -> None:
             settings.CELERY_BROKER_URL = celery_config["broker_url"]
         if "result_backend" in celery_config:
             settings.CELERY_RESULT_BACKEND = celery_config["result_backend"]
+        if "revoke_use_terminate" in celery_config:
+            settings.CELERY_REVOKE_USE_TERMINATE = bool(
+                celery_config["revoke_use_terminate"]
+            )
 
     if "workers" in config_data:
         workers_config = config_data["workers"]

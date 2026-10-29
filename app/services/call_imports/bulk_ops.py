@@ -1233,6 +1233,7 @@ def _latest_evaluation_progress_for_ui(
             "latest_evaluation_total_rows": None,
             "latest_evaluation_completed_rows": None,
             "latest_evaluation_failed_rows": None,
+            "latest_evaluation_bulk_operation": None,
         }
     ui_completed_raw, ui_failed_raw = merge_eval_counters_for_ui(row)
     total = int(row.total_rows or 0)
@@ -1242,12 +1243,17 @@ def _latest_evaluation_progress_for_ui(
     if hasattr(status, "value"):
         status = status.value
     transcript_source = row.transcript_source
+    from app.services.call_imports.evaluation_bulk_op import (
+        get_evaluation_bulk_operation,
+    )
+
     return {
         "latest_evaluation_status": status,
         "latest_evaluation_transcript_source": transcript_source,
         "latest_evaluation_total_rows": total,
         "latest_evaluation_completed_rows": ui_completed,
         "latest_evaluation_failed_rows": ui_failed,
+        "latest_evaluation_bulk_operation": get_evaluation_bulk_operation(row.id),
     }
 
 
@@ -1459,26 +1465,12 @@ def _batch_revoke_celery_task_ids(
     terminate: bool,
 ) -> int:
     """Revoke Celery tasks in batches; best-effort on control-plane errors."""
-    cleaned = [tid for tid in task_ids if (tid or "").strip()]
-    if not cleaned:
-        return 0
-    try:
-        from app.workers.celery_app import celery_app
+    from app.workers.celery_revoke import revoke_celery_tasks
 
-        revoked = 0
-        for start in range(0, len(cleaned), _REVOKE_TASK_BATCH):
-            chunk = cleaned[start : start + _REVOKE_TASK_BATCH]
-            if terminate:
-                celery_app.control.revoke(
-                    chunk, terminate=True, signal="SIGTERM"
-                )
-            else:
-                celery_app.control.revoke(chunk, terminate=False)
-            revoked += len(chunk)
-        return revoked
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to batch-revoke {} Celery tasks: {}", len(cleaned), exc)
-        return 0
+    return revoke_celery_tasks(
+        task_ids,
+        terminate=None if terminate else False,
+    )
 
 
 def execute_evaluation_cancel(

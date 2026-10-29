@@ -8,10 +8,15 @@ import type {
   CallImportEvaluationListResponse,
 } from '../../../types/api'
 import {
-  evaluationHasActiveBulkOperation,
+  bulkCancelResponseKeepsBulkOperation,
   evaluationListPollMs,
   type BulkEvaluationOperation,
 } from '../evaluationBulkOperation'
+import {
+  type LatestEvalSnapshot,
+  latestEvaluationPollMs,
+  latestEvaluationShouldPoll,
+} from '../importPolling'
 
 type ActiveTab = 'rows' | 'evaluations' | 'insights'
 
@@ -24,6 +29,7 @@ export function useImportEvaluationsTab(
     fallback: string,
     setError: (message: string) => void,
   ) => void,
+  importHeader?: LatestEvalSnapshot,
 ) {
   const queryClient = useQueryClient()
 
@@ -60,17 +66,27 @@ export function useImportEvaluationsTab(
     enabled: !!importId,
     refetchOnWindowFocus: false,
     refetchInterval: (query) => {
-      if (activeTab !== 'evaluations' && activeTab !== 'insights') return false
-      return evaluationListPollMs(
-        itemsOf<CallImportEvaluation>(query.state.data),
-      )
+      const items = itemsOf<CallImportEvaluation>(query.state.data)
+      const listMs = evaluationListPollMs(items)
+      if (listMs) return listMs
+      if (
+        activeTab !== 'evaluations' &&
+        activeTab !== 'insights' &&
+        latestEvaluationShouldPoll(importHeader)
+      ) {
+        return latestEvaluationPollMs(importHeader) || false
+      }
+      if (activeTab === 'evaluations' || activeTab === 'insights') {
+        return false
+      }
+      return false
     },
   })
 
   const evaluationsWithBulkOperation = useMemo(
     () =>
-      itemsOf<CallImportEvaluation>(evaluationsData).filter((evaluation) =>
-        evaluationHasActiveBulkOperation(evaluation),
+      itemsOf<CallImportEvaluation>(evaluationsData).filter(
+        (evaluation) => evaluation.bulk_operation != null,
       ),
     [evaluationsData],
   )
@@ -110,7 +126,7 @@ export function useImportEvaluationsTab(
       setCancellingEvalId(evaluationId)
     },
     onSuccess: (data: CallImportEvaluationBulkActionResponse, evaluationId) => {
-      if (data.target_count > 0) {
+      if (bulkCancelResponseKeepsBulkOperation(data)) {
         setEvaluationBulkOperationInList(evaluationId, 'abort')
       }
       queryClient.invalidateQueries({ queryKey: evaluationsQueryKey })
@@ -139,7 +155,7 @@ export function useImportEvaluationsTab(
       for (const result of results) {
         if (
           result.status === 'fulfilled' &&
-          result.value.response.target_count > 0
+          bulkCancelResponseKeepsBulkOperation(result.value.response)
         ) {
           setEvaluationBulkOperationInList(result.value.evalId, 'abort')
         }

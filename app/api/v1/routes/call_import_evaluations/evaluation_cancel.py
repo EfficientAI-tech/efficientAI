@@ -192,13 +192,11 @@ def _revoke_pending_tasks(evaluation: CallImportEvaluation) -> None:
 # first-class "Abort" button mirroring the diarisation cancel pattern at
 # ``app.api.v1.routes.call_imports`` (``_apply_diarisation_cancel`` etc.).
 #
-# Why ``terminate=True``: the legacy ``_revoke_pending_tasks`` above uses
-# ``terminate=False`` because it's called from delete-flow paths where the
-# task may simply not get to run (a worker pulls it off the queue and drops
-# it). For a user-initiated cancel we want SIGTERM to interrupt the worker
-# mid-LLM/audio call so the in-flight HTTP request actually aborts.
-# ``terminate=True`` routes the signal to the executing process; we spell
-# ``signal="SIGTERM"`` out for clarity even though it's the default.
+# Revoke uses :mod:`app.workers.celery_revoke` — ``terminate`` is off by default
+# because ``worker-imports`` runs ``--pool=threads`` (Celery cannot kill threads).
+# Rows are marked cancelled in the DB first; eval workers cooperatively exit via
+# ``was_cancelled_externally``. Set ``celery.revoke_use_terminate: true`` only
+# when every targeted worker uses prefork and you need SIGTERM mid-flight.
 
 # Sentinel error message stamped on cancelled rows. Read by the eval worker's
 # ``_was_cancelled_externally`` guard (see
@@ -230,23 +228,13 @@ def _revoke_eval_task(eval_row: CallImportEvaluationRow) -> None:
     task_id = (eval_row.celery_task_id or "").strip()
     if not task_id:
         return
-    try:
-        from app.workers.celery_app import celery_app
+    from app.workers.celery_revoke import revoke_celery_tasks
 
-        celery_app.control.revoke(
-            task_id, terminate=True, signal="SIGTERM"
-        )
+    if revoke_celery_tasks([task_id]):
         logger.info(
             "Revoked evaluation task {} for eval row {}",
             task_id,
             eval_row.id,
-        )
-    except Exception as exc:  # noqa: BLE001 — revoke is best-effort
-        logger.warning(
-            "Failed to revoke evaluation task {} for eval row {}: {}",
-            task_id,
-            eval_row.id,
-            exc,
         )
 
 
@@ -329,23 +317,13 @@ def _revoke_eval_task_by_id(task_id: str, *, eval_row_id: UUID) -> None:
     cleaned = (task_id or "").strip()
     if not cleaned:
         return
-    try:
-        from app.workers.celery_app import celery_app
+    from app.workers.celery_revoke import revoke_celery_tasks
 
-        celery_app.control.revoke(
-            cleaned, terminate=True, signal="SIGTERM"
-        )
+    if revoke_celery_tasks([cleaned]):
         logger.info(
             "Revoked evaluation task {} for eval row {}",
             cleaned,
             eval_row_id,
-        )
-    except Exception as exc:  # noqa: BLE001 — revoke is best-effort
-        logger.warning(
-            "Failed to revoke evaluation task {} for eval row {}: {}",
-            cleaned,
-            eval_row_id,
-            exc,
         )
 
 
@@ -446,6 +424,7 @@ async def cancel_call_import_evaluation(
             return CallImportEvaluationBulkActionResponse(
                 accepted=True,
                 target_count=0,
+                worker_enqueued=False,
                 evaluation_id=eval_id,
             )
         _claim_evaluation_bulk_operation(eval_id, "abort")
@@ -457,6 +436,7 @@ async def cancel_call_import_evaluation(
         return CallImportEvaluationBulkActionResponse(
             accepted=True,
             target_count=0,
+            worker_enqueued=True,
             evaluation_id=eval_id,
         )
 
@@ -473,6 +453,7 @@ async def cancel_call_import_evaluation(
     return CallImportEvaluationBulkActionResponse(
         accepted=True,
         target_count=target_count,
+        worker_enqueued=True,
         evaluation_id=eval_id,
     )
 
@@ -526,6 +507,7 @@ async def force_fail_pending_call_import_evaluation_rows(
         return CallImportEvaluationBulkActionResponse(
             accepted=True,
             target_count=0,
+            worker_enqueued=False,
             evaluation_id=eval_id,
         )
 
@@ -543,6 +525,7 @@ async def force_fail_pending_call_import_evaluation_rows(
     return CallImportEvaluationBulkActionResponse(
         accepted=True,
         target_count=target_count,
+        worker_enqueued=True,
         evaluation_id=eval_id,
     )
 

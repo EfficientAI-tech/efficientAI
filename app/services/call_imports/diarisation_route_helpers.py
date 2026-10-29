@@ -22,11 +22,9 @@ def _revoke_diarisation_task(row: CallImportRow) -> None:
     if not task_id:
         return
     try:
-        from app.workers.celery_app import celery_app
+        from app.workers.celery_revoke import revoke_celery_tasks
 
-        celery_app.control.revoke(
-            task_id, terminate=True, signal="SIGTERM"
-        )
+        revoke_celery_tasks([task_id])
         logger.info(
             "Revoked diarisation task {} for call-import row {}",
             task_id,

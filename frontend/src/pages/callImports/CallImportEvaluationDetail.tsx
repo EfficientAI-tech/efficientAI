@@ -47,13 +47,13 @@ import MetricPromptImprovementsPanel from './components/MetricPromptImprovements
 import { useCallImportEvaluationAggregate } from './hooks/useCallImportEvaluationAggregate'
 import { useEvalEvaluationRows } from './hooks/useEvalEvaluationRows'
 import {
-  EVALUATION_BULK_OPERATION_POLL_MS,
+  bulkCancelResponseKeepsBulkOperation,
   evaluationBulkOperationDescription,
   evaluationBulkOperationLabel,
   evaluationRunPollMs,
-  evaluationTerminalStatus,
   type BulkEvaluationOperation,
 } from './evaluationBulkOperation'
+import { importHeaderPollMs } from './importPolling'
 import { isReservedMetricScoreKey } from './metricScoresMeta'
 import MetricVisualization from './components/evalCharts/MetricVisualization'
 import {
@@ -74,6 +74,7 @@ import { MetricClustersPanel } from './components/evalDetail/EvalMetricClustersP
 import { useEvalRetryMutations } from './hooks/useEvalRetryMutations'
 import { useEvalPdfReports } from './hooks/useEvalPdfReports'
 import { EvaluationDetailHeader } from './components/evalDetail/EvaluationDetailHeader'
+import { EvaluationResultsTabSwitcher } from './components/evalDetail/EvaluationResultsTabSwitcher'
 import { EvaluationRowsTable } from './components/evalDetail/EvaluationRowsTable'
 import { EvaluationRetryRerunModals } from './components/evalDetail/EvaluationRetryRerunModals'
 import { EvaluationPdfWizard } from './components/evalDetail/EvaluationPdfWizard'
@@ -393,41 +394,19 @@ export default function CallImportEvaluationDetail() {
     // so all three summary bars update without a hard refresh. Mirrors the
     // broader conditions on CallImportDetail plus active eval-run status.
     refetchInterval: (q) => {
+      const ci = q.state.data
       const evaluation = queryClient.getQueryData(evaluationQueryKey) as
-        | {
-            status?: string
-            bulk_operation?: unknown
-            transcript_source?: string
-          }
+        | CallImportEvaluation
         | undefined
-      const ci = q.state.data as
-        | {
-            status?: string
-            diarised_pending_rows?: number
-            diarised_running_rows?: number
-          }
-        | undefined
-      if (ci?.status === 'deleting') return 3000
-      if (
-        evaluation &&
-        evaluation.transcript_source !== 'diarised'
-      ) {
-        return false
+      const headerMs = importHeaderPollMs(ci)
+      const evalMs = evaluationRunPollMs(evaluation)
+      if (headerMs && evalMs) {
+        return Math.min(
+          typeof headerMs === 'number' ? headerMs : 5000,
+          typeof evalMs === 'number' ? evalMs : 5000,
+        )
       }
-      if (ci?.status === 'pending' || ci?.status === 'processing') return 5000
-      const inFlight =
-        (ci?.diarised_pending_rows ?? 0) + (ci?.diarised_running_rows ?? 0)
-      if (inFlight > 0) return 4000
-      if (
-        evaluation &&
-        !evaluationTerminalStatus(evaluation.status) &&
-        evaluation.bulk_operation
-      ) {
-        return EVALUATION_BULK_OPERATION_POLL_MS
-      }
-      const evalStatus = evaluation?.status
-      if (evalStatus === 'pending' || evalStatus === 'running') return 4000
-      return false
+      return headerMs || evalMs || false
     },
   })
 
@@ -435,10 +414,13 @@ export default function CallImportEvaluationDetail() {
     queryKey: evaluationQueryKey,
     queryFn: () => apiClient.callImports.getCallImportEvaluation(id!, evalId!),
     enabled: !!id && !!evalId,
-    staleTime: 5000,
+    staleTime: 0,
     refetchOnWindowFocus: false,
     refetchInterval: (q) => evaluationRunPollMs(q.state.data),
   })
+
+  const evalDetailPollInterval = () =>
+    evaluationRunPollMs(evaluationQuery.data) || false
 
   const { data: aiProviders = [] } = useQuery({
     queryKey: ['ai-providers'],
@@ -495,7 +477,7 @@ export default function CallImportEvaluationDetail() {
     workspaceId: activeWorkspaceId,
     baselineEvaluationId: vizBaselineEvaluationId,
     enabled: !!id && !!evalId && resultsTab === 'visualizations',
-    evaluationStatus: evaluationQuery.data?.status,
+    evaluation: evaluationQuery.data,
   })
 
   const visualizationInsightsQuery = useQuery<EvaluationTldrSummary | null>({
@@ -515,10 +497,7 @@ export default function CallImportEvaluationDetail() {
       !!evalId &&
       (resultsTab === 'visualizations' || pdfReportOpen),
     refetchOnWindowFocus: false,
-    refetchInterval: (query) => {
-      const status = query.state.data?.status
-      return status === 'running' ? 5000 : false
-    },
+    refetchInterval: () => evalDetailPollInterval(),
   })
 
   const metricClustersQuery = useQuery<EvaluationMetricClustersState | null>({
@@ -530,10 +509,7 @@ export default function CallImportEvaluationDetail() {
       !!evalId &&
       (resultsTab === 'visualizations' || pdfReportOpen),
     refetchOnWindowFocus: false,
-    refetchInterval: (query) => {
-      const status = query.state.data?.status
-      return status === 'running' ? 5000 : false
-    },
+    refetchInterval: () => evalDetailPollInterval(),
   })
 
   const promptImprovementsQuery = useQuery<EvaluationPromptImprovementsState | null>({
@@ -545,10 +521,7 @@ export default function CallImportEvaluationDetail() {
       !!evalId &&
       (resultsTab === 'visualizations' || pdfReportOpen),
     refetchOnWindowFocus: false,
-    refetchInterval: (query) => {
-      const status = query.state.data?.status
-      return status === 'running' ? 5000 : false
-    },
+    refetchInterval: () => evalDetailPollInterval(),
   })
 
   const retry = useEvalRetryMutations({
@@ -640,23 +613,26 @@ export default function CallImportEvaluationDetail() {
   // a spinner on the row's Stop button without blocking the others.
   const [cancellingRowId, setCancellingRowId] = useState<string | null>(null)
 
-  // Run-level cancel: SIGTERM-revokes every in-flight row, flips them
-  // to ``failed`` with the cancelled-by-user sentinel, and rolls up
-  // the parent run. The 3s parent + rows pollers below pick the new
-  // state up automatically; we still invalidate so the UI updates on
-  // the next tick rather than waiting up to 3s.
+  // Run-level cancel: marks rows cancelled in DB (background worker for large
+  // batches), revokes Celery tasks without terminate on worker-imports, rolls
+  // up the parent. Pollers pick up state; invalidate for a quick refetch.
   const cancelEvaluationMutation = useMutation({
     mutationFn: () => apiClient.callImports.cancelCallImportEvaluation(id!, evalId!),
     onMutate: () => {
       setCancelError(null)
+      setEvaluationBulkOperationOptimistic('abort')
+      invalidateEvaluationQueries()
     },
     onSuccess: (data: CallImportEvaluationBulkActionResponse) => {
-      if (data.target_count > 0) {
+      if (bulkCancelResponseKeepsBulkOperation(data)) {
         setEvaluationBulkOperationOptimistic('abort')
+      } else {
+        setEvaluationBulkOperationOptimistic(null)
       }
       invalidateEvaluationQueries()
     },
     onError: (err: any) => {
+      setEvaluationBulkOperationOptimistic(null)
       setCancelError(
         err?.response?.status === 409
           ? err?.response?.data?.detail || bulkOperationConflictMessage
@@ -1263,8 +1239,6 @@ export default function CallImportEvaluationDetail() {
         exportParts={exportParts}
         handleExport={handleExport}
         setDeleteEvalOpen={setDeleteEvalOpen}
-        resultsTab={resultsTab}
-        setResultsTab={setResultsTab}
       />
 
       <div className="bg-white shadow rounded-lg p-6">
@@ -1603,7 +1577,7 @@ export default function CallImportEvaluationDetail() {
       </div>
 
       <div className="bg-white shadow rounded-lg p-6">
-        <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
+        <div className="flex items-start justify-between mb-3 gap-3 flex-wrap">
           <div>
             <h2 className="text-lg font-semibold text-gray-900">Row results</h2>
             <p className="text-xs text-gray-500 mt-0.5">
@@ -1611,6 +1585,10 @@ export default function CallImportEvaluationDetail() {
               metric{displayMetrics.length === 1 ? '' : 's'}.
             </p>
           </div>
+          <EvaluationResultsTabSwitcher
+            resultsTab={resultsTab}
+            setResultsTab={setResultsTab}
+          />
         </div>
 
         {resultsTab === 'flow' ? (

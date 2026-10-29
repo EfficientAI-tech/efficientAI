@@ -37,9 +37,7 @@ def test_cancel_running_metric_clusters(
     assert body["progress"]["completed_llm_calls"] == 10
     assert body["progress"]["total_llm_calls"] == 352
 
-    revoke.assert_called_once_with(
-        "clusters-task-abc", terminate=True, signal="SIGTERM"
-    )
+    revoke.assert_called_once_with(["clusters-task-abc"], terminate=False)
 
     refreshed = (
         db_session.query(CallImportEvaluation)

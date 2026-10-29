@@ -5,43 +5,11 @@ import { copyTextToClipboard } from '../../../lib/clipboard'
 import type { CallImportRow } from '../../../types/api'
 import type { CallImportRowSidePanelTabId } from '../components/CallImportRowSidePanelContent'
 
-export const ROW_PAGE_SIZE = 100
+import {
+  importRowsPollMs,
+} from '../importPolling'
 
-export function importRowsPollMs(
-  header:
-    | {
-        status?: string
-        source_format?: string | null
-        platform_progress?: { is_active?: boolean } | null
-        diarised_pending_rows?: number
-        diarised_running_rows?: number
-      }
-    | undefined,
-): number | false {
-  if (!header) return false
-  if (header.status === 'deleting') return 4000
-  const platform = (header.source_format || '').toLowerCase() === 'platform'
-  if (
-    platform &&
-    (header.status === 'pending' ||
-      header.status === 'processing' ||
-      header.platform_progress?.is_active)
-  ) {
-    return 4000
-  }
-  if (header.status === 'pending' || header.status === 'processing') return 5000
-  const diariseInFlight =
-    (header.diarised_pending_rows ?? 0) + (header.diarised_running_rows ?? 0)
-  if (diariseInFlight > 0) return 4000
-  if (
-    header.status === 'completed' ||
-    header.status === 'failed' ||
-    header.status === 'mapped'
-  ) {
-    return false
-  }
-  return false
-}
+export const ROW_PAGE_SIZE = 100
 
 export function getRawColumnEntries(row: CallImportRow): Array<[string, unknown]> {
   const transcriptValue = (row.transcript || '').trim()

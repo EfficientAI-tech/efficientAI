@@ -262,9 +262,16 @@ export function useEvalRetryMutations({
           : undefined,
       })
     },
+    onMutate: () => {
+      setRetryError(null)
+      setEvaluationBulkOperationOptimistic('retry')
+      invalidateEvaluationQueries()
+    },
     onSuccess: (data: CallImportEvaluationRetryResponse) => {
       if (data.requeued > 0) {
         setEvaluationBulkOperationOptimistic('retry')
+      } else {
+        setEvaluationBulkOperationOptimistic(null)
       }
       invalidateEvaluationQueries()
       queryClient.invalidateQueries({
@@ -274,6 +281,7 @@ export function useEvalRetryMutations({
       setRetryConfirmOpen(false)
     },
     onError: (err: any) => {
+      setEvaluationBulkOperationOptimistic(null)
       setRetryError(
         err?.response?.status === 409
           ? err?.response?.data?.detail || bulkOperationConflictMessage
@@ -414,15 +422,23 @@ export function useEvalRetryMutations({
         metricLlmOverrides: rerunClassificationOverrides,
       })
     },
+    onMutate: () => {
+      setRerunError(null)
+      setEvaluationBulkOperationOptimistic('retry')
+      invalidateEvaluationQueries()
+    },
     onSuccess: (data: CallImportEvaluationRetryResponse) => {
       if (data.requeued > 0) {
         setEvaluationBulkOperationOptimistic('retry')
+      } else {
+        setEvaluationBulkOperationOptimistic(null)
       }
       invalidateEvaluationQueries()
       setRerunError(null)
       setRerunMetricsOpen(false)
     },
     onError: (err: any) => {
+      setEvaluationBulkOperationOptimistic(null)
       const fallback = 'Failed to re-run the selected metrics.'
       setRerunError(
         err?.response?.status === 409

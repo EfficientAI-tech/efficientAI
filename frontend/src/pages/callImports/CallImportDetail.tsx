@@ -28,6 +28,7 @@ import { ImportDeleteConfirmModals } from './components/importDetail/ImportDelet
 import { ImportRunEvaluationModal } from './components/importDetail/ImportRunEvaluationModal'
 import { useImportEvaluationsTab } from './hooks/useImportEvaluationsTab'
 import { evaluationListPollMs } from './evaluationBulkOperation'
+import { importHeaderPollMs } from './importPolling'
 
 
 
@@ -52,32 +53,7 @@ export default function CallImportDetail() {
     enabled: !!id,
     staleTime: 60_000,
     refetchOnWindowFocus: false,
-    refetchInterval: (query) => {
-      const d = query.state.data
-      if (!d) return false
-      if (d.status === 'deleting') return 4000
-      const platform = (d.source_format || '').toLowerCase() === 'platform'
-      if (
-        platform &&
-        (d.status === 'pending' ||
-          d.status === 'processing' ||
-          d.platform_progress?.is_active)
-      ) {
-        return 4000
-      }
-      if (d.status === 'pending' || d.status === 'processing') return 5000
-      const diariseInFlight =
-        (d.diarised_pending_rows ?? 0) + (d.diarised_running_rows ?? 0)
-      if (diariseInFlight > 0) return 4000
-      if (
-        d.status === 'completed' ||
-        d.status === 'failed' ||
-        d.status === 'mapped'
-      ) {
-        return false
-      }
-      return false
-    },
+    refetchInterval: (query) => importHeaderPollMs(query.state.data),
   })
 
   const {
@@ -229,7 +205,7 @@ export default function CallImportDetail() {
     cancellingEvalId,
     cancelEvaluationMutation,
     bulkCancelEvalsMutation,
-  } = useImportEvaluationsTab(id, activeWorkspaceId, activeTab, reportDeleteError)
+  } = useImportEvaluationsTab(id, activeWorkspaceId, activeTab, reportDeleteError, data)
 
   // Standalone "Transcribe row" modal (separate from the eval flow).
   const [showTranscribeModal, setShowTranscribeModal] = useState(false)

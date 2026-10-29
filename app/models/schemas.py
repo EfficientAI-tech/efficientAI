@@ -3898,6 +3898,10 @@ class CallImportResponse(BaseModel):
             "unflushed Redis deltas."
         ),
     )
+    latest_evaluation_bulk_operation: Optional[str] = Field(
+        None,
+        description="In-flight bulk op on the latest evaluation (retry, abort, etc.).",
+    )
     created_at: datetime
     updated_at: datetime
     created_by_email: Optional[str] = None
@@ -4789,6 +4793,13 @@ class CallImportEvaluationBulkActionResponse(BaseModel):
     target_count: int = Field(
         ...,
         description="How many rows the background worker will process.",
+    )
+    worker_enqueued: bool = Field(
+        default=False,
+        description=(
+            "True when a background worker was queued (even if target_count is 0, "
+            "e.g. diarisation-only abort)."
+        ),
     )
     evaluation_id: UUID
 

@@ -1270,6 +1270,7 @@ export interface CallImport {
   latest_evaluation_total_rows?: number | null
   latest_evaluation_completed_rows?: number | null
   latest_evaluation_failed_rows?: number | null
+  latest_evaluation_bulk_operation?: 'abort' | 'retry' | 'force_fail_pending' | null
   created_at: string
   updated_at: string
   created_by_email?: string | null
@@ -1457,7 +1458,7 @@ export interface CallImportEvaluation {
   /** parent_id -> [child_id, ...] snapshot captured at run time. */
   selected_metric_groups?: Record<string, string[]> | null
   metrics: CallImportMetricSummary[]
-  status: 'pending' | 'running' | 'completed' | 'partial' | 'failed'
+  status: 'pending' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled'
   total_rows: number
   completed_rows: number
   failed_rows: number
@@ -2140,6 +2141,8 @@ export interface CallImportEvaluationRetryResponse {
 export interface CallImportEvaluationBulkActionResponse {
   accepted: boolean
   target_count: number
+  /** Background cancel/force-fail worker was queued (incl. diarisation-only abort). */
+  worker_enqueued?: boolean
   evaluation_id: string
 }
 

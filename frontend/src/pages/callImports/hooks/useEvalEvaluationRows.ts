@@ -3,9 +3,28 @@ import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-quer
 import { apiClient } from '../../../lib/api'
 import { itemsOf } from '../../../lib/safeData'
 import type { CallImportEvaluation, CallImportEvaluationRow } from '../../../types/api'
-import { evaluationRunPollMs } from '../evaluationBulkOperation'
+import {
+  evaluationHasActiveBulkOperation,
+  evaluationRunPollMs,
+} from '../evaluationBulkOperation'
 
 export const EVAL_ROWS_PAGE_SIZE = 50
+
+function evaluationRowsQueryEnabled(
+  evaluation: CallImportEvaluation | undefined,
+): boolean {
+  if (!evaluation) return false
+  if (evaluationHasActiveBulkOperation(evaluation)) return true
+  const status = evaluation.status
+  return (
+    status === 'running' ||
+    status === 'pending' ||
+    status === 'cancelled' ||
+    status === 'completed' ||
+    status === 'partial' ||
+    status === 'failed'
+  )
+}
 
 export type EvalRowsMetricFilter = {
   metricId: string
@@ -137,10 +156,7 @@ export function useEvalEvaluationRows({
       !!callImportId &&
       !!evaluationId &&
       resultsTab === 'table' &&
-      (evaluation?.status === 'running' ||
-        evaluation?.status === 'completed' ||
-        evaluation?.status === 'partial' ||
-        evaluation?.status === 'failed'),
+      evaluationRowsQueryEnabled(evaluation),
     staleTime: 60_000,
     placeholderData: keepPreviousData,
     refetchOnWindowFocus: false,

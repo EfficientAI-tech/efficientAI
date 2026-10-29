@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
-import { evaluationTerminalStatus } from '../evaluationBulkOperation'
+import type { CallImportEvaluation } from '../../../types/api'
+import { evaluationRunPollMs } from '../evaluationBulkOperation'
 
 export function useCallImportEvaluationAggregate(options: {
   callImportId: string | undefined
@@ -8,7 +9,7 @@ export function useCallImportEvaluationAggregate(options: {
   workspaceId: string | null
   baselineEvaluationId: string | null
   enabled: boolean
-  evaluationStatus: string | undefined
+  evaluation: CallImportEvaluation | undefined
 }) {
   const {
     callImportId,
@@ -16,7 +17,7 @@ export function useCallImportEvaluationAggregate(options: {
     workspaceId,
     baselineEvaluationId,
     enabled,
-    evaluationStatus,
+    evaluation,
   } = options
 
   return useQuery({
@@ -36,11 +37,6 @@ export function useCallImportEvaluationAggregate(options: {
     enabled: Boolean(callImportId && evaluationId && enabled),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
-    refetchInterval: () => {
-      if (evaluationTerminalStatus(evaluationStatus)) return false
-      return evaluationStatus === 'pending' || evaluationStatus === 'running'
-        ? 5000
-        : false
-    },
+    refetchInterval: () => evaluationRunPollMs(evaluation) || false,
   })
 }
