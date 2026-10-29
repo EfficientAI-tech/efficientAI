@@ -91,7 +91,9 @@ def test_execute_bulk_diarization_updates_rows_on_shards():
             "app.workers.concurrency.fair_diarization_dispatch.schedule_fair_diarization_dispatch",
         ),
     ):
-        result = execute_bulk_diarization(fake_db, call_import, payload)
+        result = execute_bulk_diarization(
+            fake_db, call_import, payload, requested_row_ids=[row_id]
+        )
 
     assert result.queued == 1
     mock_update.assert_called_once()

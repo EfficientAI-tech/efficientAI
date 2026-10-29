@@ -1,4 +1,8 @@
 import axios, { AxiosInstance } from 'axios'
+export { uploadFileToPresignedPutUrl } from './presignedUpload'
+import { CallImportsApi, type CallImportAudioUploadProgress } from '../pages/callImports/api/callImportsApi'
+export type { CallImportAudioUploadProgress } from '../pages/callImports/api/callImportsApi'
+export { AUDIO_UPLOAD_CHUNK_SIZE } from '../pages/callImports/api/callImportsApi'
 import {
   clearAuthSession,
   csrfHeaders,
@@ -81,8 +85,6 @@ import type {
   CallImportTranscribeRequest,
   CallImportTranscribeResponse,
   CallImportRowSelectionFilter,
-  CallImportManualAudioPresignResponse,
-  CallImportSourceStagePresignResponse,
   CallImportRetryFailedRowsResponse,
   PlatformImportProgress,
   Workspace,
@@ -594,38 +596,12 @@ export const apiBaseUrl =
 
 const API_BASE_URL = apiBaseUrl
 
-async function uploadFileToPresignedPutUrl(
-  uploadUrl: string,
-  file: File,
-  contentType: string,
-): Promise<void> {
-  const response = await fetch(uploadUrl, {
-    method: 'PUT',
-    body: file,
-    headers: { 'Content-Type': contentType },
-  })
-  if (!response.ok) {
-    throw new Error(`Direct storage upload failed (${response.status}).`)
-  }
-}
-
-function presignResponseToUploadResponse(
-  presign: CallImportManualAudioPresignResponse,
-): CallImportUploadResponse {
-  return {
-    id: presign.call_import_id,
-    total_rows: presign.total_rows,
-    status: presign.status,
-    dataset: presign.dataset,
-    tags: presign.tags,
-    message: presign.message,
-  }
-}
 
 let refreshPromise: Promise<boolean> | null = null
 
 class ApiClient {
   private client: AxiosInstance
+  readonly callImports: CallImportsApi
   private inMemoryAccessToken: string | null = null
   private inMemoryRefreshToken: string | null = null
   private cookieSessionEnabled = true
@@ -638,6 +614,8 @@ class ApiClient {
         'Content-Type': 'application/json',
       },
     })
+
+    this.callImports = new CallImportsApi(this.client)
 
     this.client.interceptors.request.use((config) => {
       const apiKey = this.cookieSessionEnabled ? null : localStorage.getItem('apiKey')
@@ -2563,7 +2541,6 @@ class ApiClient {
   }
 
   // Call Imports endpoints
-
   /**
    * Inspect an uploaded CSV / Excel file and get its sheets + headers.
    *
@@ -2572,14 +2549,7 @@ class ApiClient {
    * Excel workbooks come back with one entry per worksheet.
    */
   async previewCallImportFile(file: File): Promise<CallImportPreviewResponse> {
-    const formData = new FormData()
-    formData.append('file', file)
-    const response = await this.client.post(
-      '/api/v1/call-imports/preview',
-      formData,
-      { headers: { 'Content-Type': 'multipart/form-data' } },
-    )
-    return response.data
+    return this.callImports.previewCallImportFile(file)
   }
 
   /** @deprecated Use createCallImport → updateCallImportMapping → startCallImport. */
@@ -2613,22 +2583,7 @@ class ApiClient {
       sheetName?: string | null
     }
   ): Promise<CallImportUploadResponse> {
-    const dataset = (options.dataset ?? '').trim() || 'import'
-    const staged = await this.createCallImport(file, {
-      dataset,
-      tagIds: options.tagIds,
-      schemaId: options.schemaId,
-    })
-    await this.updateCallImportMapping(staged.id, {
-      schemaId: options.schemaId,
-      sheetName: options.sheetName,
-      parameterMapping: options.parameterMapping,
-      skippedColumns: options.skippedColumns,
-    })
-    return this.startCallImport(staged.id, {
-      provider: options.provider,
-      telephonyIntegrationId: options.telephonyIntegrationId,
-    })
+    return this.callImports.uploadCallImport(file, options)
   }
 
   /**
@@ -2649,111 +2604,7 @@ class ApiClient {
       contentModality?: 'chat' | 'voice'
     },
   ): Promise<CallImport> {
-    const fileItem = {
-      filename: file.name,
-      size_bytes: file.size,
-      content_type: file.type || undefined,
-    }
-    const presignResponse = await this.client.post<CallImportSourceStagePresignResponse>(
-      '/api/v1/call-imports/stage/presign',
-      {
-        ...fileItem,
-        dataset: options.dataset.trim(),
-        tag_ids: options.tagIds,
-        schema_id: options.schemaId || undefined,
-        content_modality: options.contentModality,
-      },
-    )
-    const presign = presignResponse.data
-    await uploadFileToPresignedPutUrl(
-      presign.upload_url,
-      file,
-      presign.content_type,
-    )
-    const completeResponse = await this.client.post<CallImport>(
-      '/api/v1/call-imports/stage/complete',
-      {
-        call_import_id: presign.call_import_id,
-        ...fileItem,
-        dataset: options.dataset.trim(),
-        tag_ids: options.tagIds,
-        schema_id: options.schemaId || undefined,
-        content_modality: options.contentModality,
-      },
-    )
-    return completeResponse.data
-  }
-
-  private async presignManualAudioUpload(
-    files: File[],
-    options: {
-      dataset?: string
-      tagIds?: string[]
-      batchName?: string
-      importId?: string
-    },
-  ): Promise<CallImportManualAudioPresignResponse> {
-    const fileItems = files.map((file) => ({
-      filename: file.name,
-      size_bytes: file.size,
-      content_type: file.type || undefined,
-    }))
-    if (options.importId) {
-      const response = await this.client.post<CallImportManualAudioPresignResponse>(
-        `/api/v1/call-imports/${options.importId}/audio-append/presign`,
-        { files: fileItems },
-      )
-      return response.data
-    }
-    const response = await this.client.post<CallImportManualAudioPresignResponse>(
-      '/api/v1/call-imports/audio-upload/presign',
-      {
-        files: fileItems,
-        dataset: options.dataset?.trim(),
-        batch_name: options.batchName?.trim() || undefined,
-        tag_ids: options.tagIds,
-      },
-    )
-    return response.data
-  }
-
-  private async completeManualAudioUpload(
-    importId: string,
-    rowIds: string[],
-  ): Promise<void> {
-    await this.client.post(
-      `/api/v1/call-imports/${importId}/manual-audio/complete`,
-      { row_ids: rowIds },
-    )
-  }
-
-  private async uploadManualAudioFilesViaPresign(
-    files: File[],
-    options: {
-      dataset?: string
-      tagIds?: string[]
-      batchName?: string
-      importId?: string
-    },
-  ): Promise<CallImportUploadResponse> {
-    const presign = await this.presignManualAudioUpload(files, options)
-    const pending = [...files]
-    const rowIds: string[] = []
-    for (const slot of presign.uploads) {
-      const matchIndex = pending.findIndex((file) => file.name === slot.filename)
-      const file = matchIndex >= 0 ? pending.splice(matchIndex, 1)[0] : null
-      if (!file) {
-        throw new Error(`Missing local file for ${slot.filename}`)
-      }
-      await uploadFileToPresignedPutUrl(
-        slot.upload_url,
-        file,
-        slot.content_type,
-      )
-      rowIds.push(slot.row_id)
-    }
-    await this.completeManualAudioUpload(presign.call_import_id, rowIds)
-    return presignResponseToUploadResponse(presign)
+    return this.callImports.createCallImport(file, options)
   }
 
   /** @deprecated Prefer presigned upload via uploadCallImportAudioChunked. */
@@ -2765,14 +2616,14 @@ class ApiClient {
       batchName?: string
     },
   ): Promise<CallImportUploadResponse> {
-    return this.uploadManualAudioFilesViaPresign(files, options)
+    return this.callImports.uploadCallImportAudio(files, options)
   }
 
   async appendCallImportAudio(
     importId: string,
     files: File[],
   ): Promise<CallImportUploadResponse> {
-    return this.uploadManualAudioFilesViaPresign(files, { importId })
+    return this.callImports.appendCallImportAudio(importId, files)
   }
 
   async uploadCallImportAudioChunked(
@@ -2784,49 +2635,7 @@ class ApiClient {
       onProgress?: (progress: CallImportAudioUploadProgress) => void
     },
   ): Promise<CallImportUploadResponse> {
-    if (files.length === 0) {
-      throw new Error('At least one audio file is required.')
-    }
-
-    const chunks: File[][] = []
-    for (let i = 0; i < files.length; i += AUDIO_UPLOAD_CHUNK_SIZE) {
-      chunks.push(files.slice(i, i + AUDIO_UPLOAD_CHUNK_SIZE))
-    }
-
-    let result: CallImportUploadResponse | null = null
-    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
-      const chunk = chunks[chunkIndex]
-      options.onProgress?.({
-        chunkIndex: chunkIndex + 1,
-        totalChunks: chunks.length,
-        uploadedFiles: chunkIndex * AUDIO_UPLOAD_CHUNK_SIZE,
-        totalFiles: files.length,
-      })
-
-      if (chunkIndex === 0) {
-        result = await this.uploadManualAudioFilesViaPresign(chunk, {
-          dataset: options.dataset,
-          tagIds: options.tagIds,
-          batchName: options.batchName,
-        })
-      } else {
-        result = await this.uploadManualAudioFilesViaPresign(chunk, {
-          importId: result!.id,
-        })
-      }
-
-      options.onProgress?.({
-        chunkIndex: chunkIndex + 1,
-        totalChunks: chunks.length,
-        uploadedFiles: Math.min(
-          (chunkIndex + 1) * AUDIO_UPLOAD_CHUNK_SIZE,
-          files.length,
-        ),
-        totalFiles: files.length,
-      })
-    }
-
-    return result!
+    return this.callImports.uploadCallImportAudioChunked(files, options)
   }
 
   async uploadCallImportAudioAppendChunked(
@@ -2836,41 +2645,7 @@ class ApiClient {
       onProgress?: (progress: CallImportAudioUploadProgress) => void
     },
   ): Promise<CallImportUploadResponse> {
-    if (files.length === 0) {
-      throw new Error('At least one audio file is required.')
-    }
-
-    const chunks: File[][] = []
-    for (let i = 0; i < files.length; i += AUDIO_UPLOAD_CHUNK_SIZE) {
-      chunks.push(files.slice(i, i + AUDIO_UPLOAD_CHUNK_SIZE))
-    }
-
-    let result: CallImportUploadResponse | null = null
-    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
-      const chunk = chunks[chunkIndex]
-      options?.onProgress?.({
-        chunkIndex: chunkIndex + 1,
-        totalChunks: chunks.length,
-        uploadedFiles: chunkIndex * AUDIO_UPLOAD_CHUNK_SIZE,
-        totalFiles: files.length,
-      })
-
-      result = await this.uploadManualAudioFilesViaPresign(chunk, {
-        importId,
-      })
-
-      options?.onProgress?.({
-        chunkIndex: chunkIndex + 1,
-        totalChunks: chunks.length,
-        uploadedFiles: Math.min(
-          (chunkIndex + 1) * AUDIO_UPLOAD_CHUNK_SIZE,
-          files.length,
-        ),
-        totalFiles: files.length,
-      })
-    }
-
-    return result!
+    return this.callImports.uploadCallImportAudioAppendChunked(importId, files, options)
   }
 
   /**
@@ -2891,16 +2666,7 @@ class ApiClient {
       skippedColumns?: string[]
     },
   ): Promise<CallImport> {
-    const response = await this.client.patch(
-      `/api/v1/call-imports/${id}/mapping`,
-      {
-        schema_id: options.schemaId,
-        sheet_name: options.sheetName ?? null,
-        parameter_mapping: options.parameterMapping,
-        skipped_columns: options.skippedColumns ?? [],
-      },
-    )
-    return response.data
+    return this.callImports.updateCallImportMapping(id, options)
   }
 
   /**
@@ -2917,55 +2683,38 @@ class ApiClient {
       telephonyIntegrationId: string | null
     },
   ): Promise<CallImportUploadResponse> {
-    const response = await this.client.post(
-      `/api/v1/call-imports/${id}/import`,
-      {
-        provider: options.provider,
-        telephony_integration_id: options.telephonyIntegrationId,
-      },
-    )
-    return response.data
+    return this.callImports.startCallImport(id, options)
   }
 
   // -------------------------------------------------------------------
   // Call Import Schemas (reusable Input Parameter schemas)
   // -------------------------------------------------------------------
-
   async listCallImportSchemas(): Promise<CallImportSchemaListResponse> {
-    const response = await this.client.get('/api/v1/call-import-schemas')
-    return response.data
+    return this.callImports.listCallImportSchemas()
   }
 
   async getCallImportSchema(id: string): Promise<CallImportSchema> {
-    const response = await this.client.get(`/api/v1/call-import-schemas/${id}`)
-    return response.data
+    return this.callImports.getCallImportSchema(id)
   }
 
   async createCallImportSchema(
     payload: CallImportSchemaCreate,
   ): Promise<CallImportSchema> {
-    const response = await this.client.post('/api/v1/call-import-schemas', payload)
-    return response.data
+    return this.callImports.createCallImportSchema(payload)
   }
 
   async updateCallImportSchema(
     id: string,
     payload: CallImportSchemaUpdate,
   ): Promise<CallImportSchema> {
-    const response = await this.client.patch(
-      `/api/v1/call-import-schemas/${id}`,
-      payload,
-    )
-    return response.data
+    return this.callImports.updateCallImportSchema(id, payload)
   }
 
   async deleteCallImportSchema(
     id: string,
     options?: { force?: boolean },
   ): Promise<void> {
-    await this.client.delete(`/api/v1/call-import-schemas/${id}`, {
-      params: options?.force ? { force: true } : undefined,
-    })
+    return this.callImports.deleteCallImportSchema(id, options)
   }
 
   async previewPlatformCallImport(payload: {
@@ -2995,8 +2744,7 @@ class ApiClient {
       status?: string | null
     }>
   }> {
-    const response = await this.client.post('/api/v1/call-imports/platform/preview', payload)
-    return response.data
+    return this.callImports.previewPlatformCallImport(payload)
   }
 
   async createPlatformCallImport(payload: {
@@ -3016,43 +2764,29 @@ class ApiClient {
       agents?: Array<{ id: string; name: string; medium?: string | null }>
     }
   }, idempotencyKey?: string): Promise<{ id: string; status: string; discovery_status?: string }> {
-    const response = await this.client.post('/api/v1/call-imports/platform', payload, {
-      headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
-    })
-    return response.data
+    return this.callImports.createPlatformCallImport(payload, idempotencyKey)
   }
 
   async pausePlatformImport(importId: string): Promise<{ status: string }> {
-    const response = await this.client.post(`/api/v1/call-imports/platform/${importId}/pause`)
-    return response.data
+    return this.callImports.pausePlatformImport(importId)
   }
 
   async resumePlatformImport(importId: string): Promise<{ status: string }> {
-    const response = await this.client.post(`/api/v1/call-imports/platform/${importId}/resume`)
-    return response.data
+    return this.callImports.resumePlatformImport(importId)
   }
 
   async retryPlatformDiscovery(importId: string): Promise<{ status: string }> {
-    const response = await this.client.post(
-      `/api/v1/call-imports/platform/${importId}/retry-discovery`,
-    )
-    return response.data
+    return this.callImports.retryPlatformDiscovery(importId)
   }
 
   async listPlatformImportAgents(
     integrationId: string,
   ): Promise<Array<{ id: string; name: string; medium?: string | null }>> {
-    const response = await this.client.get('/api/v1/call-imports/platform/agents', {
-      params: { integration_id: integrationId },
-    })
-    return response.data
+    return this.callImports.listPlatformImportAgents(integrationId)
   }
 
   async getPlatformImportProgress(importId: string): Promise<PlatformImportProgress> {
-    const response = await this.client.get(
-      `/api/v1/call-imports/platform/${importId}/progress`,
-    )
-    return response.data
+    return this.callImports.getPlatformImportProgress(importId)
   }
 
   async listCallImports(
@@ -3065,21 +2799,11 @@ class ApiClient {
       source_format?: string
     } = {}
   ): Promise<CallImportListResponse> {
-    // Send tag_id repeated rather than as a JSON array.
-    const search = new URLSearchParams()
-    if (params.page !== undefined) search.set('page', String(params.page))
-    if (params.page_size !== undefined) search.set('page_size', String(params.page_size))
-    if (params.status) search.set('status', params.status)
-    if (params.dataset !== undefined) search.set('dataset', params.dataset)
-    if (params.source_format) search.set('source_format', params.source_format)
-    for (const tag of params.tag_id || []) search.append('tag_id', tag)
-    const response = await this.client.get('/api/v1/call-imports', { params: search })
-    return response.data
+    return this.callImports.listCallImports(params)
   }
 
   async listCallImportDatasets(): Promise<string[]> {
-    const response = await this.client.get('/api/v1/call-imports/datasets')
-    return response.data
+    return this.callImports.listCallImportDatasets()
   }
 
   async getCallImport(
@@ -3097,15 +2821,11 @@ class ApiClient {
       diarised_status?: 'pending' | 'running' | 'completed' | 'failed'
     } = {}
   ): Promise<CallImportDetail> {
-    const response = await this.client.get(`/api/v1/call-imports/${id}`, { params })
-    return response.data
+    return this.callImports.getCallImport(id, params)
   }
 
   async getCallImportRow(id: string, rowId: string): Promise<CallImportRow> {
-    const response = await this.client.get(
-      `/api/v1/call-imports/${id}/rows/${rowId}`,
-    )
-    return response.data
+    return this.callImports.getCallImportRow(id, rowId)
   }
 
   async listCallImportRowIds(
@@ -3115,11 +2835,7 @@ class ApiClient {
       diarised_status?: 'pending' | 'running' | 'completed' | 'failed'
     } = {}
   ): Promise<{ ids: string[]; total: number }> {
-    const response = await this.client.get(
-      `/api/v1/call-imports/${id}/row-ids`,
-      { params },
-    )
-    return response.data
+    return this.callImports.listCallImportRowIds(id, params)
   }
 
   async updateCallImport(
@@ -3136,19 +2852,17 @@ class ApiClient {
       schema_id?: string | null
     },
   ): Promise<CallImport> {
-    const response = await this.client.patch(`/api/v1/call-imports/${id}`, payload)
-    return response.data
+    return this.callImports.updateCallImport(id, payload)
   }
 
   async deleteCallImport(
     id: string,
   ): Promise<{ id: string; status: 'accepted' | 'completed' }> {
-    const response = await this.client.delete(`/api/v1/call-imports/${id}`)
-    return response.data
+    return this.callImports.deleteCallImport(id)
   }
 
   async deleteCallImportRow(id: string, rowId: string): Promise<void> {
-    await this.client.delete(`/api/v1/call-imports/${id}/rows/${rowId}`)
+    return this.callImports.deleteCallImportRow(id, rowId)
   }
 
   async bulkDeleteCallImportRows(
@@ -3157,15 +2871,7 @@ class ApiClient {
       | { rowIds: string[] }
       | { rowFilter: CallImportRowSelectionFilter },
   ): Promise<{ deleted: number; status?: 'completed' | 'accepted' }> {
-    const body =
-      'rowFilter' in options
-        ? { row_filter: options.rowFilter }
-        : { row_ids: options.rowIds }
-    const response = await this.client.post(
-      `/api/v1/call-imports/${id}/rows/bulk-delete`,
-      body,
-    )
-    return response.data
+    return this.callImports.bulkDeleteCallImportRows(id, options)
   }
 
   async createCallImportEvaluation(
@@ -3223,11 +2929,7 @@ class ApiClient {
       telephony_integration_id?: string | null
     },
   ): Promise<CallImportEvaluation> {
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/evaluations`,
-      payload,
-    )
-    return response.data
+    return this.callImports.createCallImportEvaluation(callImportId, payload)
   }
 
   /** Aggregated metric distributions for a single evaluation run. */
@@ -3236,15 +2938,7 @@ class ApiClient {
     evaluationId: string,
     baselineEvaluationId?: string | null,
   ): Promise<CallImportEvaluationAggregateResponse> {
-    const response = await this.client.get(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/aggregate`,
-      {
-        params: baselineEvaluationId
-          ? { baseline_evaluation_id: baselineEvaluationId }
-          : undefined,
-      },
-    )
-    return response.data
+    return this.callImports.getCallImportEvaluationAggregate(callImportId, evaluationId, baselineEvaluationId)
   }
 
   /**
@@ -3256,10 +2950,7 @@ class ApiClient {
     callImportId: string,
     evaluationId: string,
   ): Promise<import('../types/api').EvaluationTldrSummary | null> {
-    const response = await this.client.get(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/insights`,
-    )
-    return response.data ?? null
+    return this.callImports.getCallImportEvaluationInsights(callImportId, evaluationId)
   }
 
   /**
@@ -3282,48 +2973,28 @@ class ApiClient {
       max_llm_calls?: number | null
     },
   ): Promise<import('../types/api').EvaluationTldrSummary> {
-    const body: Record<string, unknown> = {
-      regenerate: Boolean(options?.regenerate),
-    }
-    if (options?.provider) body.provider = options.provider
-    if (options?.model) body.model = options.model
-    if (options?.credential_id) body.credential_id = options.credential_id
-    if (options?.max_llm_calls != null) body.max_llm_calls = options.max_llm_calls
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/insights`,
-      body,
-    )
-    return response.data
+    return this.callImports.generateCallImportEvaluationInsights(callImportId, evaluationId, options)
   }
 
   async getCallImportEvaluationUserInsights(
     callImportId: string,
     evaluationId: string,
   ): Promise<import('../types/api').EvaluationUserInsightsState | null> {
-    const response = await this.client.get(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/user-insights`,
-    )
-    return response.data
+    return this.callImports.getCallImportEvaluationUserInsights(callImportId, evaluationId)
   }
 
   async getCallImportEvaluationMetricClusters(
     callImportId: string,
     evaluationId: string,
   ): Promise<import('../types/api').EvaluationMetricClustersState | null> {
-    const response = await this.client.get(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/metric-clusters`,
-    )
-    return response.data
+    return this.callImports.getCallImportEvaluationMetricClusters(callImportId, evaluationId)
   }
 
   async getCallImportEvaluationPromptImprovements(
     callImportId: string,
     evaluationId: string,
   ): Promise<import('../types/api').EvaluationPromptImprovementsState | null> {
-    const response = await this.client.get(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/prompt-improvements`,
-    )
-    return response.data
+    return this.callImports.getCallImportEvaluationPromptImprovements(callImportId, evaluationId)
   }
 
   async generateCallImportEvaluationPromptImprovements(
@@ -3338,11 +3009,7 @@ class ApiClient {
       credential_id?: string
     },
   ): Promise<import('../types/api').EvaluationPromptImprovementsState> {
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/prompt-improvements`,
-      data,
-    )
-    return response.data
+    return this.callImports.generateCallImportEvaluationPromptImprovements(callImportId, evaluationId, data)
   }
 
   async reviewCallImportEvaluationPromptImprovement(
@@ -3354,21 +3021,14 @@ class ApiClient {
       edited_text?: string | null
     },
   ): Promise<import('../types/api').EvaluationPromptImprovementsState> {
-    const response = await this.client.patch(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/prompt-improvements/review`,
-      data,
-    )
-    return response.data
+    return this.callImports.reviewCallImportEvaluationPromptImprovement(callImportId, evaluationId, data)
   }
 
   async previewCallImportEvaluationPromptPush(
     callImportId: string,
     evaluationId: string,
   ): Promise<import('../types/api').PromptPushPreview> {
-    const response = await this.client.get(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/prompt-improvements/push-preview`,
-    )
-    return response.data
+    return this.callImports.previewCallImportEvaluationPromptPush(callImportId, evaluationId)
   }
 
   async pushCallImportEvaluationPrompt(
@@ -3377,11 +3037,7 @@ class ApiClient {
     confirm: string,
     options?: { pushToLive?: boolean },
   ): Promise<import('../types/api').PromptPushRecord> {
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/prompt-improvements/push`,
-      { confirm, push_to_live: options?.pushToLive ?? true },
-    )
-    return response.data
+    return this.callImports.pushCallImportEvaluationPrompt(callImportId, evaluationId, confirm, options)
   }
 
   async listCallImportEvaluationMetricClusterEligibleRows(
@@ -3392,24 +3048,14 @@ class ApiClient {
       count_only?: boolean
     },
   ): Promise<import('../types/api').MetricClusterEligibleRowsResponse> {
-    const params = new URLSearchParams()
-    if (options?.limit != null) params.set('limit', String(options.limit))
-    if (options?.count_only) params.set('count_only', 'true')
-    const query = params.toString()
-    const response = await this.client.get(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/metric-clusters/eligible-rows${query ? `?${query}` : ''}`,
-    )
-    return response.data
+    return this.callImports.listCallImportEvaluationMetricClusterEligibleRows(callImportId, evaluationId, options)
   }
 
   async getCallImportEvaluationMetricClusterFailurePolicies(
     callImportId: string,
     evaluationId: string,
   ): Promise<import('../types/api').MetricFailurePoliciesResponse> {
-    const response = await this.client.get(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/metric-clusters/failure-policies`,
-    )
-    return response.data
+    return this.callImports.getCallImportEvaluationMetricClusterFailurePolicies(callImportId, evaluationId)
   }
 
   async saveCallImportEvaluationMetricClusterFailurePolicies(
@@ -3417,11 +3063,7 @@ class ApiClient {
     evaluationId: string,
     policies: Record<string, import('../types/api').MetricFailurePolicy>,
   ): Promise<import('../types/api').MetricFailurePoliciesResponse> {
-    const response = await this.client.put(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/metric-clusters/failure-policies`,
-      { policies, source: 'user' },
-    )
-    return response.data
+    return this.callImports.saveCallImportEvaluationMetricClusterFailurePolicies(callImportId, evaluationId, policies)
   }
 
   async generateCallImportEvaluationMetricClusters(
@@ -3442,36 +3084,14 @@ class ApiClient {
       > | null
     },
   ): Promise<import('../types/api').EvaluationMetricClustersState> {
-    const body: Record<string, unknown> = {
-      regenerate: Boolean(options?.regenerate),
-      force: Boolean(options?.force),
-    }
-    if (options?.provider) body.provider = options.provider
-    if (options?.model) body.model = options.model
-    if (options?.credential_id) body.credential_id = options.credential_id
-    if (options?.max_llm_calls != null) body.max_llm_calls = options.max_llm_calls
-    if (options?.evaluation_row_ids?.length) {
-      body.evaluation_row_ids = options.evaluation_row_ids
-    }
-    if (options?.row_limit != null) body.row_limit = options.row_limit
-    if (options?.failure_policies) {
-      body.failure_policies = options.failure_policies
-    }
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/metric-clusters`,
-      body,
-    )
-    return response.data
+    return this.callImports.generateCallImportEvaluationMetricClusters(callImportId, evaluationId, options)
   }
 
   async cancelCallImportEvaluationMetricClusters(
     callImportId: string,
     evaluationId: string,
   ): Promise<import('../types/api').EvaluationMetricClustersState> {
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/metric-clusters/cancel`,
-    )
-    return response.data
+    return this.callImports.cancelCallImportEvaluationMetricClusters(callImportId, evaluationId)
   }
 
   async generateCallImportEvaluationUserInsights(
@@ -3486,19 +3106,7 @@ class ApiClient {
       max_llm_calls?: number | null
     },
   ): Promise<import('../types/api').EvaluationUserInsightsState> {
-    const body: Record<string, unknown> = {
-      regenerate: Boolean(options?.regenerate),
-      force: Boolean(options?.force),
-    }
-    if (options?.provider) body.provider = options.provider
-    if (options?.model) body.model = options.model
-    if (options?.credential_id) body.credential_id = options.credential_id
-    if (options?.max_llm_calls != null) body.max_llm_calls = options.max_llm_calls
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/user-insights`,
-      body,
-    )
-    return response.data
+    return this.callImports.generateCallImportEvaluationUserInsights(callImportId, evaluationId, options)
   }
 
   /**
@@ -3511,11 +3119,7 @@ class ApiClient {
     evaluationId: string,
     parentMetricId: string,
   ): Promise<import('../types/api').MetricFlowResponse> {
-    const response = await this.client.get(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/flow`,
-      { params: { parent_metric_id: parentMetricId } },
-    )
-    return response.data
+    return this.callImports.getCallImportEvaluationFlow(callImportId, evaluationId, parentMetricId)
   }
 
   /**
@@ -3528,11 +3132,7 @@ class ApiClient {
     evaluationId: string,
     parentMetricId: string,
   ): Promise<import('../types/api').DiscoveredLabelsResponse> {
-    const response = await this.client.get(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/discovered-labels`,
-      { params: { parent_metric_id: parentMetricId } },
-    )
-    return response.data
+    return this.callImports.getCallImportEvaluationDiscoveredLabels(callImportId, evaluationId, parentMetricId)
   }
 
   /**
@@ -3545,11 +3145,7 @@ class ApiClient {
     evaluationId: string,
     body: { parent_metric_id: string; from_key: string; to_key: string },
   ): Promise<import('../types/api').DiscoveredLabelsResponse> {
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/discovered-labels/merge`,
-      body,
-    )
-    return response.data
+    return this.callImports.mergeCallImportEvaluationDiscoveredLabels(callImportId, evaluationId, body)
   }
 
   /**
@@ -3563,11 +3159,7 @@ class ApiClient {
     evaluationId: string,
     body: { parent_metric_id: string; key: string },
   ): Promise<import('../types/api').DiscoveredLabelsResponse> {
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/discovered-labels/delete`,
-      body,
-    )
-    return response.data
+    return this.callImports.deleteCallImportEvaluationDiscoveredLabel(callImportId, evaluationId, body)
   }
 
   /**
@@ -3589,11 +3181,7 @@ class ApiClient {
       capture_rationale?: boolean
     },
   ): Promise<import('../types/api').MetricSummary> {
-    const response = await this.client.post(
-      `/api/v1/metrics/${parentMetricId}/children/from-discovered`,
-      body,
-    )
-    return response.data
+    return this.callImports.promoteDiscoveredChild(parentMetricId, body)
   }
 
   /**
@@ -3608,10 +3196,7 @@ class ApiClient {
     callImportId: string,
     evaluationId: string,
   ): Promise<import('../types/api').DiscoveredMetricsResponse> {
-    const response = await this.client.get(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/discovered-metrics`,
-    )
-    return response.data
+    return this.callImports.getCallImportEvaluationDiscoveredMetrics(callImportId, evaluationId)
   }
 
   /**
@@ -3625,11 +3210,7 @@ class ApiClient {
     evaluationId: string,
     body: { from_key: string; to_key: string },
   ): Promise<import('../types/api').DiscoveredMetricsResponse> {
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/discovered-metrics/merge`,
-      body,
-    )
-    return response.data
+    return this.callImports.mergeCallImportEvaluationDiscoveredMetrics(callImportId, evaluationId, body)
   }
 
   /**
@@ -3643,11 +3224,7 @@ class ApiClient {
     evaluationId: string,
     body: { key: string },
   ): Promise<import('../types/api').DiscoveredMetricsResponse> {
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/discovered-metrics/delete`,
-      body,
-    )
-    return response.data
+    return this.callImports.deleteCallImportEvaluationDiscoveredMetric(callImportId, evaluationId, body)
   }
 
   /**
@@ -3669,21 +3246,14 @@ class ApiClient {
     capture_rationale?: boolean
     custom_config?: Record<string, unknown> | null
   }): Promise<import('../types/api').MetricSummary> {
-    const response = await this.client.post(
-      `/api/v1/metrics/from-discovered`,
-      body,
-    )
-    return response.data
+    return this.callImports.promoteDiscoveredMetric(body)
   }
 
   /** Cross-run insights for the call import detail page. */
   async getCallImportInsights(
     callImportId: string,
   ): Promise<CallImportInsightsResponse> {
-    const response = await this.client.get(
-      `/api/v1/call-imports/${callImportId}/insights`,
-    )
-    return response.data
+    return this.callImports.getCallImportInsights(callImportId)
   }
 
   /**
@@ -3692,10 +3262,7 @@ class ApiClient {
    * operator sees the actual default they'd otherwise get.
    */
   async getCallImportDiarisationPromptDefault(): Promise<string> {
-    const response = await this.client.get(
-      `/api/v1/call-imports/diarisation-prompt-default`,
-    )
-    return (response.data?.prompt ?? '') as string
+    return this.callImports.getCallImportDiarisationPromptDefault()
   }
 
   /** Fan out diarization tasks for a batch of rows. */
@@ -3703,11 +3270,7 @@ class ApiClient {
     callImportId: string,
     payload: CallImportTranscribeRequest,
   ): Promise<CallImportTranscribeResponse> {
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/transcribe`,
-      payload,
-    )
-    return response.data
+    return this.callImports.transcribeCallImport(callImportId, payload)
   }
 
   /** Diarize a single row's recording. */
@@ -3716,11 +3279,7 @@ class ApiClient {
     rowId: string,
     payload: CallImportTranscribeRequest,
   ): Promise<CallImportTranscribeResponse> {
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/rows/${rowId}/transcribe`,
-      payload,
-    )
-    return response.data
+    return this.callImports.transcribeCallImportRow(callImportId, rowId, payload)
   }
 
   /**
@@ -3737,16 +3296,7 @@ class ApiClient {
       telephonyIntegrationId: string | null
     },
   ): Promise<CallImportRetryFailedRowsResponse> {
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/retry-failed`,
-      options
-        ? {
-            provider: options.provider,
-            telephony_integration_id: options.telephonyIntegrationId,
-          }
-        : undefined,
-    )
-    return response.data
+    return this.callImports.retryFailedCallImportRows(callImportId, options)
   }
 
   /**
@@ -3765,10 +3315,7 @@ class ApiClient {
     callImportId: string,
     rowId: string,
   ): Promise<CallImportRow> {
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/rows/${rowId}/cancel-diarisation`,
-    )
-    return response.data
+    return this.callImports.cancelCallImportRowDiarisation(callImportId, rowId)
   }
 
   /**
@@ -3783,17 +3330,7 @@ class ApiClient {
     callImportId: string,
     options?: { rowIds?: string[] | null; rowFilter?: CallImportRowSelectionFilter | null },
   ): Promise<{ cancelled: number; skipped: number }> {
-    let body: Record<string, unknown> = {}
-    if (options?.rowFilter) {
-      body = { row_filter: options.rowFilter }
-    } else if (options?.rowIds !== undefined && options.rowIds !== null) {
-      body = { row_ids: options.rowIds }
-    }
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/cancel-diarisation`,
-      body,
-    )
-    return response.data
+    return this.callImports.cancelCallImportDiarisation(callImportId, options)
   }
 
   /**
@@ -3811,10 +3348,7 @@ class ApiClient {
     callImportId: string,
     rowId: string,
   ): Promise<CallImportRow> {
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/rows/${rowId}/diarised-speaker-swap`,
-    )
-    return response.data
+    return this.callImports.toggleCallImportRowSpeakerSwap(callImportId, rowId)
   }
 
   async updateCallImportEvaluation(
@@ -3822,22 +3356,14 @@ class ApiClient {
     evaluationId: string,
     payload: { name?: string | null },
   ): Promise<CallImportEvaluation> {
-    const response = await this.client.patch(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}`,
-      payload,
-    )
-    return response.data
+    return this.callImports.updateCallImportEvaluation(callImportId, evaluationId, payload)
   }
 
   async bulkDeleteCallImportEvaluations(
     callImportId: string,
     evaluationIds: string[],
   ): Promise<{ deleted: number }> {
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/evaluations/bulk-delete`,
-      { evaluation_ids: evaluationIds },
-    )
-    return response.data
+    return this.callImports.bulkDeleteCallImportEvaluations(callImportId, evaluationIds)
   }
 
   async deleteCallImportEvaluationRow(
@@ -3845,9 +3371,7 @@ class ApiClient {
     evaluationId: string,
     evalRowId: string,
   ): Promise<void> {
-    await this.client.delete(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/rows/${evalRowId}`,
-    )
+    return this.callImports.deleteCallImportEvaluationRow(callImportId, evaluationId, evalRowId)
   }
 
   /**
@@ -3911,65 +3435,7 @@ class ApiClient {
       metricLlmOverrides?: Record<string, CallImportEvaluationLLMOverride>
     },
   ): Promise<CallImportEvaluationRetryResponse> {
-    const body: Record<string, unknown> = {}
-    if (options?.evalRowIds && options.evalRowIds.length > 0) {
-      body.eval_row_ids = options.evalRowIds
-    }
-    if (options?.rowFilter) {
-      body.row_filter = options.rowFilter
-    }
-    if (options?.llmProvider) body.llm_provider = options.llmProvider
-    if (options?.llmModel) body.llm_model = options.llmModel
-    if (options?.llmCredentialId !== undefined) {
-      body.llm_credential_id = options.llmCredentialId
-    }
-    if (options?.llmConfig !== undefined) {
-      body.llm_config = options.llmConfig
-    }
-    if (options?.metricLlmOverrides !== undefined) {
-      body.metric_llm_overrides = options.metricLlmOverrides
-    }
-    if (options?.sttProvider) body.stt_provider = options.sttProvider
-    if (options?.sttModel) body.stt_model = options.sttModel
-    if (options?.sttCredentialId !== undefined) {
-      body.stt_credential_id = options.sttCredentialId
-    }
-    if (options?.transcribeOverwrite) {
-      body.transcribe_overwrite = true
-    }
-    if (options?.transcribeMode) {
-      body.transcribe_mode = options.transcribeMode
-    }
-    if (options?.diarizationLlmProvider) {
-      body.diarization_llm_provider = options.diarizationLlmProvider
-    }
-    if (options?.diarizationLlmModel) {
-      body.diarization_llm_model = options.diarizationLlmModel
-    }
-    if (options?.diarizationLlmCredentialId !== undefined) {
-      body.diarization_llm_credential_id = options.diarizationLlmCredentialId
-    }
-    if (options?.diarizationPrompt !== undefined) {
-      body.diarization_prompt = options.diarizationPrompt
-    }
-    if (
-      options?.provider !== undefined ||
-      options?.telephonyIntegrationId !== undefined
-    ) {
-      body.provider = options.provider ?? null
-      body.telephony_integration_id = options.telephonyIntegrationId ?? null
-    }
-    if (options?.metricIds && options.metricIds.length > 0) {
-      body.metric_ids = options.metricIds
-    }
-    if (options?.includeCompleted) {
-      body.include_completed = true
-    }
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/retry`,
-      body,
-    )
-    return response.data
+    return this.callImports.retryCallImportEvaluation(callImportId, evaluationId, options)
   }
 
   /**
@@ -3983,10 +3449,7 @@ class ApiClient {
     evaluationId: string,
     evalRowId: string,
   ): Promise<CallImportEvaluationRow> {
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/rows/${evalRowId}/retry`,
-    )
-    return response.data
+    return this.callImports.retryCallImportEvaluationRow(callImportId, evaluationId, evalRowId)
   }
 
   /**
@@ -4005,10 +3468,7 @@ class ApiClient {
     callImportId: string,
     evaluationId: string,
   ): Promise<CallImportEvaluationBulkActionResponse> {
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/cancel`,
-    )
-    return response.data
+    return this.callImports.cancelCallImportEvaluation(callImportId, evaluationId)
   }
 
   /**
@@ -4022,10 +3482,7 @@ class ApiClient {
     callImportId: string,
     evaluationId: string,
   ): Promise<CallImportEvaluationBulkActionResponse> {
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/force-fail-pending`,
-    )
-    return response.data
+    return this.callImports.forceFailCallImportEvaluationPending(callImportId, evaluationId)
   }
 
   /**
@@ -4041,25 +3498,18 @@ class ApiClient {
     evaluationId: string,
     evalRowId: string,
   ): Promise<CallImportEvaluationRow> {
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/rows/${evalRowId}/cancel`,
-    )
-    return response.data
+    return this.callImports.cancelCallImportEvaluationRow(callImportId, evaluationId, evalRowId)
   }
 
   async listCallImportEvaluations(callImportId: string): Promise<CallImportEvaluationListResponse> {
-    const response = await this.client.get(`/api/v1/call-imports/${callImportId}/evaluations`)
-    return response.data
+    return this.callImports.listCallImportEvaluations(callImportId)
   }
 
   async getCallImportEvaluation(
     callImportId: string,
     evaluationId: string,
   ): Promise<CallImportEvaluation> {
-    const response = await this.client.get(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}`,
-    )
-    return response.data
+    return this.callImports.getCallImportEvaluation(callImportId, evaluationId)
   }
 
   async listCallImportEvaluationRows(
@@ -4097,15 +3547,7 @@ class ApiClient {
       sort_dir?: 'asc' | 'desc'
     } = {},
   ): Promise<CallImportEvaluationRowListResponse> {
-    const cleaned: Record<string, any> = {}
-    for (const [k, v] of Object.entries(params)) {
-      if (v !== undefined && v !== null && v !== '') cleaned[k] = v
-    }
-    const response = await this.client.get(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/rows`,
-      { params: cleaned },
-    )
-    return response.data
+    return this.callImports.listCallImportEvaluationRows(callImportId, evaluationId, params)
   }
 
   async getCallImportEvaluationRow(
@@ -4113,10 +3555,7 @@ class ApiClient {
     evaluationId: string,
     rowId: string,
   ): Promise<CallImportEvaluationRow> {
-    const response = await this.client.get(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/rows/${rowId}`,
-    )
-    return response.data
+    return this.callImports.getCallImportEvaluationRow(callImportId, evaluationId, rowId)
   }
 
   async startCallImportEvaluationExport(
@@ -4125,11 +3564,7 @@ class ApiClient {
     format: 'csv' | 'xlsx' = 'csv',
     includeTranscripts = true,
   ): Promise<CallImportEvaluationExportJob> {
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/export`,
-      { format, include_transcripts: includeTranscripts },
-    )
-    return response.data
+    return this.callImports.startCallImportEvaluationExport(callImportId, evaluationId, format, includeTranscripts)
   }
 
   async getCallImportEvaluationExport(
@@ -4137,10 +3572,7 @@ class ApiClient {
     evaluationId: string,
     jobId: string,
   ): Promise<CallImportEvaluationExportJob> {
-    const response = await this.client.get(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/export-jobs/${jobId}`,
-    )
-    return response.data
+    return this.callImports.getCallImportEvaluationExport(callImportId, evaluationId, jobId)
   }
 
   async generateCallImportEvaluationPdfReport(
@@ -4158,38 +3590,14 @@ class ApiClient {
       platformBaseUrl?: string | null
     },
   ): Promise<CallImportEvaluationPdfReport | Blob> {
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/pdf-report`,
-      {
-        vendor_name: vendorName,
-        report_type: reportType,
-        include_weekly_delta: includeWeeklyDelta,
-        include_period_delta: includeWeeklyDelta,
-        baseline_evaluation_id: options?.baselineEvaluationId || null,
-        use_case: options?.useCase || null,
-        internal_brand_image_id: options?.internalBrandImageId || null,
-        external_brand_image_id: options?.externalBrandImageId || null,
-        report_config: options?.reportConfig || {},
-        platform_base_url: options?.platformBaseUrl || null,
-      },
-      { responseType: 'arraybuffer' },
-    )
-    const contentType = String(response.headers['content-type'] || '')
-    if (contentType.includes('application/pdf')) {
-      return new Blob([response.data], { type: 'application/pdf' })
-    }
-    const text = new TextDecoder().decode(response.data)
-    return JSON.parse(text) as CallImportEvaluationPdfReport
+    return this.callImports.generateCallImportEvaluationPdfReport(callImportId, evaluationId, vendorName, reportType, includeWeeklyDelta, options)
   }
 
   async listCallImportEvaluationPdfReports(
     callImportId: string,
     evaluationId: string,
   ): Promise<CallImportEvaluationPdfReportListResponse> {
-    const response = await this.client.get(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/pdf-reports`,
-    )
-    return response.data
+    return this.callImports.listCallImportEvaluationPdfReports(callImportId, evaluationId)
   }
 
   async getCallImportEvaluationPdfReport(
@@ -4197,10 +3605,7 @@ class ApiClient {
     evaluationId: string,
     reportId: string,
   ): Promise<CallImportEvaluationPdfReport> {
-    const response = await this.client.get(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/pdf-reports/${reportId}`,
-    )
-    return response.data
+    return this.callImports.getCallImportEvaluationPdfReport(callImportId, evaluationId, reportId)
   }
 
   async downloadCallImportEvaluationPdfReport(
@@ -4208,54 +3613,41 @@ class ApiClient {
     evaluationId: string,
     reportId: string,
   ): Promise<Blob> {
-    const response = await this.client.get(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/pdf-reports/${reportId}/download`,
-      { responseType: 'blob' },
-    )
-    return response.data
+    return this.callImports.downloadCallImportEvaluationPdfReport(callImportId, evaluationId, reportId)
   }
 
   async listCallImportEvaluationBaselineCandidates(
     callImportId: string,
     evaluationId: string,
   ): Promise<CallImportEvaluationBaselineCandidatesResponse> {
-    const response = await this.client.get(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/baseline-candidates`,
-    )
-    return response.data
+    return this.callImports.listCallImportEvaluationBaselineCandidates(callImportId, evaluationId)
   }
 
   async deleteCallImportEvaluation(callImportId: string, evaluationId: string): Promise<void> {
-    await this.client.delete(`/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}`)
+    return this.callImports.deleteCallImportEvaluation(callImportId, evaluationId)
   }
 
   // Call Import Tags endpoints
   async listCallImportTags(): Promise<CallImportTag[]> {
-    const response = await this.client.get('/api/v1/call-import-tags')
-    return response.data
+    return this.callImports.listCallImportTags()
   }
 
   async createCallImportTag(payload: {
     name: string
     color?: string | null
   }): Promise<CallImportTag> {
-    const response = await this.client.post('/api/v1/call-import-tags', payload)
-    return response.data
+    return this.callImports.createCallImportTag(payload)
   }
 
   async updateCallImportTag(
     tagId: string,
     payload: { name?: string; color?: string | null },
   ): Promise<CallImportTag> {
-    const response = await this.client.patch(
-      `/api/v1/call-import-tags/${tagId}`,
-      payload,
-    )
-    return response.data
+    return this.callImports.updateCallImportTag(tagId, payload)
   }
 
   async deleteCallImportTag(tagId: string): Promise<void> {
-    await this.client.delete(`/api/v1/call-import-tags/${tagId}`)
+    return this.callImports.deleteCallImportTag(tagId)
   }
 
   // Model Config endpoints
@@ -7098,14 +6490,6 @@ export interface JudgeOptimizeResponse {
   test_sample_count: number
 }
 
-export const AUDIO_UPLOAD_CHUNK_SIZE = 25
-
-export interface CallImportAudioUploadProgress {
-  chunkIndex: number
-  totalChunks: number
-  uploadedFiles: number
-  totalFiles: number
-}
 
 // Factory function to create ApiClient instance
 // This ensures TypeScript correctly infers the type as ApiClient, not AxiosInstance

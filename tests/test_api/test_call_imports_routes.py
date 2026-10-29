@@ -1094,7 +1094,7 @@ def test_audio_upload_single_file_creates_completed_import(
     fake_s3 = _fake_enabled_s3()
     with _patched_s3(fake_s3):
         with patch(
-            "app.api.v1.routes.call_imports.is_sharding_enabled",
+            "app.services.call_imports.manual_audio_route_helpers.is_sharding_enabled",
             return_value=False,
         ):
             response = authenticated_client.post(
@@ -1137,7 +1137,7 @@ def test_presign_manual_audio_upload_and_complete(
     fake_s3 = _fake_enabled_s3()
     with _patched_s3(fake_s3):
         with patch(
-            "app.api.v1.routes.call_imports.is_sharding_enabled",
+            "app.services.call_imports.manual_audio_route_helpers.is_sharding_enabled",
             return_value=False,
         ):
             response = authenticated_client.post(
@@ -1316,7 +1316,7 @@ def test_audio_upload_uses_shard_insert_when_sharding_enabled(
     registered: list = []
 
     monkeypatch.setattr(
-        "app.api.v1.routes.call_imports.is_sharding_enabled",
+        "app.services.call_imports.manual_audio_route_helpers.is_sharding_enabled",
         lambda: True,
     )
 
@@ -1356,7 +1356,7 @@ def test_audio_upload_multiple_files_dedupes_filename_call_ids(
     fake_s3 = _fake_enabled_s3()
     with _patched_s3(fake_s3):
         with patch(
-            "app.api.v1.routes.call_imports.is_sharding_enabled",
+            "app.services.call_imports.manual_audio_route_helpers.is_sharding_enabled",
             return_value=False,
         ):
             response = authenticated_client.post(
@@ -1391,7 +1391,7 @@ def test_audio_append_adds_rows_to_existing_batch(
     fake_s3 = _fake_enabled_s3()
     with _patched_s3(fake_s3):
         with patch(
-            "app.api.v1.routes.call_imports.is_sharding_enabled",
+            "app.services.call_imports.manual_audio_route_helpers.is_sharding_enabled",
             return_value=False,
         ):
             create_response = authenticated_client.post(
@@ -1432,7 +1432,7 @@ def test_audio_append_continues_row_index_when_sharding_enabled(
     registered: list = []
 
     monkeypatch.setattr(
-        "app.api.v1.routes.call_imports.is_sharding_enabled",
+        "app.services.call_imports.manual_audio_route_helpers.is_sharding_enabled",
         lambda: True,
     )
 

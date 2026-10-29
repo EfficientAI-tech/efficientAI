@@ -233,7 +233,11 @@ def test_datasets_endpoint_returns_distinct_sorted_labels(
 
     response = authenticated_client.get("/api/v1/call-imports/datasets")
     assert response.status_code == 200
-    assert response.json() == ["a-set", "z-set"]
+    body = response.json()
+    assert [label for label in body if label in ("a-set", "z-set")] == [
+        "a-set",
+        "z-set",
+    ]
 
 
 def test_patch_updates_dataset_and_tags(

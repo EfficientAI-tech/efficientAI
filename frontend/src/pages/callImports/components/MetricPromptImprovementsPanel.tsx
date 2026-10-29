@@ -197,7 +197,7 @@ export default function MetricPromptImprovementsPanel({
       if (!linkedImportedAgentPartialId && effectiveAgentId) {
         payload.imported_agent_id = effectiveAgentId
       }
-      return apiClient.generateCallImportEvaluationPromptImprovements(
+      return apiClient.callImports.generateCallImportEvaluationPromptImprovements(
         callImportId,
         evaluationId,
         payload,
@@ -235,7 +235,7 @@ export default function MetricPromptImprovementsPanel({
       suggestion_id: string
       review_status: 'pending' | 'accepted' | 'rejected'
       edited_text?: string | null
-    }) => apiClient.reviewCallImportEvaluationPromptImprovement(callImportId, evaluationId, data),
+    }) => apiClient.callImports.reviewCallImportEvaluationPromptImprovement(callImportId, evaluationId, data),
     onSuccess: () => {
       setEditingId(null)
       setPushPreview(null)
@@ -246,7 +246,7 @@ export default function MetricPromptImprovementsPanel({
   })
 
   const previewMutation = useMutation({
-    mutationFn: () => apiClient.previewCallImportEvaluationPromptPush(callImportId, evaluationId),
+    mutationFn: () => apiClient.callImports.previewCallImportEvaluationPromptPush(callImportId, evaluationId),
     onSuccess: (preview) => {
       setPushError(null)
       setConfirmText('')
@@ -269,7 +269,7 @@ export default function MetricPromptImprovementsPanel({
 
   const pushMutation = useMutation({
     mutationFn: (pushToLive: boolean) =>
-      apiClient.pushCallImportEvaluationPrompt(callImportId, evaluationId, 'confirm', {
+      apiClient.callImports.pushCallImportEvaluationPrompt(callImportId, evaluationId, 'confirm', {
         pushToLive,
       }),
     onSuccess: (_data, pushToLive) => {

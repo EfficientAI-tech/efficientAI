@@ -56,11 +56,11 @@ export default function ChatImports() {
 
   const { data: datasets = [] } = useQuery({
     queryKey: ['call-import-datasets', activeWorkspaceId],
-    queryFn: () => apiClient.listCallImportDatasets(),
+    queryFn: () => apiClient.callImports.listCallImportDatasets(),
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => apiClient.deleteCallImport(id),
+    mutationFn: (id: string) => apiClient.callImports.deleteCallImport(id),
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['chat-imports'] })
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
@@ -92,7 +92,7 @@ export default function ChatImports() {
 
   const { data, isLoading, isFetching, refetch } = useQuery({
     queryKey: ['chat-imports', activeWorkspaceId, queryParams],
-    queryFn: () => apiClient.listCallImports(queryParams),
+    queryFn: () => apiClient.callImports.listCallImports(queryParams),
     refetchInterval: (query) => {
       const items = itemsOf<CallImport>(query.state.data)
       const hasActive = items.some(

@@ -35,7 +35,6 @@ from sqlalchemy.orm.exc import StaleDataError
 from app.workers.config import celery_app
 
 
-_RETRYABLE_COUNTDOWN_SECONDS = 60
 _CREDENTIAL_AUTH_FAIL_ATTEMPT_THRESHOLD = 2
 
 
@@ -114,16 +113,12 @@ def _mark_row_failed_for_fetch(
     return {"status": "failed", "reason": reason}
 
 
-def _retry_countdown_for_error(exc: Exception) -> int:
-    retry_after = getattr(exc, "retry_after_seconds", None)
-    if retry_after is not None:
-        try:
-            seconds = int(retry_after)
-        except (TypeError, ValueError):
-            seconds = 0
-        if seconds > 0:
-            return max(1, seconds)
-    return _RETRYABLE_COUNTDOWN_SECONDS
+def _retry_countdown_for_error(exc: Exception, *, attempt: int = 0) -> int:
+    from app.workers.concurrency.import_retry_backoff import (
+        import_transient_retry_countdown,
+    )
+
+    return import_transient_retry_countdown(exc, attempt=attempt)
 
 
 def _schedule_transient_retry(
@@ -157,7 +152,10 @@ def _schedule_transient_retry(
     row.error_message = f"Transient: {exc}"
     if not _safe_commit(db, row_id=row_id, context=context):
         return {"status": "skipped", "reason": "row_deleted"}
-    raise self.retry(exc=exc, countdown=_retry_countdown_for_error(exc))
+    attempt = int(getattr(getattr(self, "request", None), "retries", 0) or 0)
+    raise self.retry(
+        exc=exc, countdown=_retry_countdown_for_error(exc, attempt=attempt)
+    )
 
 
 def _consume_authenticated_import_credit(client) -> Optional[Exception]:
@@ -602,8 +600,14 @@ def process_call_import_row_task(
                     row.error_message = f"Transient: {direct_failure}"
                     if not _safe_commit(db, row_id=row_id, context="direct_url_transient"):
                         return {"status": "skipped", "reason": "row_deleted"}
+                    attempt = int(
+                        getattr(getattr(self, "request", None), "retries", 0) or 0
+                    )
                     raise self.retry(
-                        exc=direct_failure, countdown=_RETRYABLE_COUNTDOWN_SECONDS
+                        exc=direct_failure,
+                        countdown=_retry_countdown_for_error(
+                            direct_failure, attempt=attempt
+                        ),
                     )
                 row.status = CallImportRowStatus.FAILED
                 row.error_message = (
@@ -760,7 +764,11 @@ def process_call_import_row_task(
             row.status = CallImportRowStatus.PENDING
             if not _safe_commit(db, row_id=row_id, context="s3_upload_retry"):
                 return {"status": "skipped", "reason": "row_deleted"}
-            raise self.retry(exc=exc, countdown=_RETRYABLE_COUNTDOWN_SECONDS)
+            attempt = int(getattr(getattr(self, "request", None), "retries", 0) or 0)
+            raise self.retry(
+                exc=exc,
+                countdown=_retry_countdown_for_error(exc, attempt=attempt),
+            )
 
         skip_reason = _row_or_import_gone(
             db,

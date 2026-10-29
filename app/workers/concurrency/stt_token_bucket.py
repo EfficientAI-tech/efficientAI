@@ -87,7 +87,8 @@ def consume_stt_token(
         )
         if int(allowed or 0):
             return SttTokenResult(True)
-        return SttTokenResult(False, wait_seconds=1)
+        denied_wait = max(1, int(settings.TELEPHONY_IMPORT_BACKOFF_BASE_SECONDS))
+        return SttTokenResult(False, wait_seconds=denied_wait)
     except redis.RedisError as exc:
         logger.warning("call-import STT token bucket failed: {}", exc)
         return SttTokenResult(False, wait_seconds=5)

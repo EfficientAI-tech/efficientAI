@@ -28,7 +28,7 @@ export function useCallImportEvaluationAggregate(options: {
       baselineEvaluationId,
     ],
     queryFn: () =>
-      apiClient.getCallImportEvaluationAggregate(
+      apiClient.callImports.getCallImportEvaluationAggregate(
         callImportId!,
         evaluationId!,
         baselineEvaluationId,

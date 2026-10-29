@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useParams, useLocation } from 'react-router-dom'
 import { useAuthStore } from './store/authStore'
 import { useLicenseStore } from './store/licenseStore'
@@ -107,10 +107,21 @@ import BlindTestForm from './pages/public/BlindTestForm'
 // Call Imports
 import CallImports from './pages/callImports/CallImports'
 import ChatImports from './pages/callImports/ChatImports'
-import CallImportDetail from './pages/callImports/CallImportDetail'
-import CallImportEvaluationDetail from './pages/callImports/CallImportEvaluationDetail'
 import CallImportTagsPage from './pages/callImports/Tags'
 import CallImportSchemasPage from './pages/callImports/Schemas'
+
+const CallImportDetail = lazy(() => import('./pages/callImports/CallImportDetail'))
+const CallImportEvaluationDetail = lazy(
+  () => import('./pages/callImports/CallImportEvaluationDetail'),
+)
+
+function RouteSuspenseFallback() {
+  return (
+    <div className="flex items-center justify-center h-screen">
+      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900" />
+    </div>
+  )
+}
 
 
 function PreserveSearchRedirect({ to }: { to: string }) {
@@ -264,10 +275,25 @@ function App() {
           <Route path="chat-imports" element={<EnterpriseGate feature="call_imports"><ChatImports /></EnterpriseGate>} />
           <Route path="call-imports/tags" element={<EnterpriseGate feature="call_imports"><CallImportTagsPage /></EnterpriseGate>} />
           <Route path="call-imports/schemas" element={<EnterpriseGate feature="call_imports"><CallImportSchemasPage /></EnterpriseGate>} />
-          <Route path="call-imports/:id" element={<EnterpriseGate feature="call_imports"><CallImportDetail /></EnterpriseGate>} />
+          <Route
+            path="call-imports/:id"
+            element={
+              <EnterpriseGate feature="call_imports">
+                <Suspense fallback={<RouteSuspenseFallback />}>
+                  <CallImportDetail />
+                </Suspense>
+              </EnterpriseGate>
+            }
+          />
           <Route
             path="call-imports/:id/evaluations/:evalId"
-            element={<EnterpriseGate feature="call_imports"><CallImportEvaluationDetail /></EnterpriseGate>}
+            element={
+              <EnterpriseGate feature="call_imports">
+                <Suspense fallback={<RouteSuspenseFallback />}>
+                  <CallImportEvaluationDetail />
+                </Suspense>
+              </EnterpriseGate>
+            }
           />
           <Route path="prompt-optimization" element={<PromptOptimization />} />
           <Route path="judge-alignment" element={<JudgeAlignment />} />

@@ -19,6 +19,31 @@ from app.models.database import (
 from app.models.enums import CallImportRowStatus, CallImportStatus
 
 
+@pytest.fixture(autouse=True)
+def _isolate_eval_worker_tests(monkeypatch):
+    import importlib
+    import sys
+
+    for mod_name in (
+        "app.workers.concurrency.limits",
+        "app.workers.concurrency.eval_dispatch",
+        "app.workers.concurrency.fair_dispatch",
+    ):
+        cached = sys.modules.get(mod_name)
+        if cached is not None and not getattr(cached, "__file__", None):
+            sys.modules.pop(mod_name, None)
+            importlib.import_module(mod_name)
+
+    monkeypatch.setattr(
+        "app.db_sharding.sessions.is_sharding_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "app.services.call_imports.metric_aggregate_cache.maybe_refresh_aggregate_cache_after_row",
+        lambda *_a, **_k: None,
+    )
+
+
 class _NonClosingSession:
     """Session proxy that ignores .close() so the test can still inspect rows
     after the Celery task wraps everything in a try/finally that closes the DB.
@@ -2171,6 +2196,7 @@ def test_second_terminal_write_does_not_advance_progress(db_session):
     eval_row.status = "running"
     db_session.commit()
 
+    eval_row_id = eval_row.id
     eval_row.status = "completed"
     eval_row.finished_at = datetime.now(timezone.utc)
     commit_terminal_row_and_rollup(
@@ -2182,6 +2208,7 @@ def test_second_terminal_write_does_not_advance_progress(db_session):
     db_session.refresh(evaluation)
     assert evaluation.completed_rows == 1
 
+    eval_row = db_session.get(CallImportEvaluationRow, eval_row_id)
     eval_row.status = "completed"
     commit_terminal_row_and_rollup(
         db_session,

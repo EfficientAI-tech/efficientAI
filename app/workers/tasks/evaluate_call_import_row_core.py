@@ -689,15 +689,29 @@ def commit_terminal_row_and_rollup(
         shard_row_write_context(row_db) if parent_db is not row_db else nullcontext()
     )
     with write_ctx:
-        transition = row_db.execute(
-            update(CallImportEvaluationRow)
-            .where(
-                CallImportEvaluationRow.id == eval_row.id,
-                CallImportEvaluationRow.status.in_(("pending", "running")),
+        target_status = eval_row.status
+        with row_db.no_autoflush:
+            transition = row_db.execute(
+                update(CallImportEvaluationRow)
+                .where(
+                    CallImportEvaluationRow.id == eval_row.id,
+                    CallImportEvaluationRow.status.in_(("pending", "running")),
+                )
+                .values(status=target_status)
             )
-            .values(status=eval_row.status)
+        current = (
+            row_db.query(CallImportEvaluationRow.status)
+            .filter(CallImportEvaluationRow.id == eval_row.id)
+            .scalar()
         )
-        if transition.rowcount != 1:
+        target = (target_status or "").lower()
+        current_norm = (current or "").lower()
+        if transition.rowcount not in (1, -1):
+            if current_norm == target:
+                return
+            row_db.rollback()
+            return
+        if current_norm != target:
             row_db.rollback()
             return
         bill_after_commit = None
@@ -709,7 +723,9 @@ def commit_terminal_row_and_rollup(
             )
             if source_row is not None:
                 bill_after_commit = (evaluation, eval_row, source_row)
+        row_db.flush()
         row_db.commit()
+        row_db.refresh(eval_row)
     if bill_after_commit is not None:
         evaluation, eval_row, source_row = bill_after_commit
         from app.services.call_imports.eval_flexprice_billing import (

@@ -68,18 +68,6 @@ def _extension_for_content_type(content_type: str) -> str:
     return mapping.get(ct, "mp3")
 
 
-def _retryable_status(exc: Exception) -> int | None:
-    from app.services.call_imports.platform_discovery import list_failure_disposition
-
-    kind, _wait = list_failure_disposition(exc)
-    if kind == "auth":
-        return 401
-    if kind == "retry":
-        return 503
-    return None
-
-
-def _hand_off(
     *,
     row,
     db,
@@ -233,24 +221,18 @@ def hydrate_platform_call_import_row(
         normalized = adapter.hydrate(item)
         clear_platform_auth_failures(integration.id)
     except Exception as exc:
-        status_code = _retryable_status(exc)
-        if status_code in (401, 403):
+        from app.services.call_imports.platform_discovery import list_failure_disposition
+
+        kind, wait_seconds = list_failure_disposition(exc)
+        if kind == "auth":
             record_platform_auth_failure(integration.id)
-        elif status_code == 429 or (status_code is not None and status_code >= 500):
-            retry_after = 1
-            response = getattr(exc, "response", None)
-            header = getattr(response, "headers", None)
-            if header is not None:
-                try:
-                    retry_after = int(header.get("Retry-After") or 1)
-                except (TypeError, ValueError):
-                    retry_after = 1
+        elif kind == "retry":
             return _hand_off(
                 row=row,
                 db=db,
                 row_id=row_id,
                 slot_task_id=slot_task_id,
-                wait_seconds=retry_after,
+                wait_seconds=wait_seconds,
                 reason="provider_retry",
             )
         logger.warning("platform hydrate failed row {}: {}", row_id, exc)
@@ -348,14 +330,16 @@ def hydrate_platform_call_import_row(
     try:
         stream, content_type = adapter.open_audio_stream(normalized)
     except Exception as exc:
-        status_code = _retryable_status(exc)
-        if status_code == 429 or (status_code is not None and status_code >= 500):
+        from app.services.call_imports.platform_discovery import list_failure_disposition
+
+        kind, wait_seconds = list_failure_disposition(exc)
+        if kind == "retry":
             return _hand_off(
                 row=row,
                 db=db,
                 row_id=row_id,
                 slot_task_id=slot_task_id,
-                wait_seconds=1,
+                wait_seconds=wait_seconds,
                 reason="provider_retry",
             )
         return _mark_row_failed_for_fetch(

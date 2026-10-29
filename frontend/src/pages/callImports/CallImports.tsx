@@ -104,16 +104,16 @@ export default function CallImports() {
 
   const { data: datasets = [] } = useQuery({
     queryKey: ['call-import-datasets', activeWorkspaceId],
-    queryFn: () => apiClient.listCallImportDatasets(),
+    queryFn: () => apiClient.callImports.listCallImportDatasets(),
   })
 
   const { data: allTags = [] } = useQuery({
     queryKey: ['call-import-tags', activeWorkspaceId],
-    queryFn: () => apiClient.listCallImportTags(),
+    queryFn: () => apiClient.callImports.listCallImportTags(),
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => apiClient.deleteCallImport(id),
+    mutationFn: (id: string) => apiClient.callImports.deleteCallImport(id),
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
       setPendingDelete(null)
@@ -151,7 +151,7 @@ export default function CallImports() {
 
   const { data, isLoading, isFetching, refetch } = useQuery({
     queryKey: ['call-imports', activeWorkspaceId, queryParams],
-    queryFn: () => apiClient.listCallImports(queryParams),
+    queryFn: () => apiClient.callImports.listCallImports(queryParams),
     refetchInterval: (query) => {
       const items = itemsOf<CallImport>(query.state.data)
       const hasDeleting = items.some((i: CallImport) => i.status === 'deleting')

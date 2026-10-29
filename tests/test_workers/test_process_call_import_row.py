@@ -174,6 +174,11 @@ class _FakeS3:
         self.uploads.append({"key": key, "size": len(file_content), "content_type": content_type})
         return key
 
+    def upload_file_by_key_from_path(self, path, key, content_type="audio/mpeg"):
+        with open(path, "rb") as handle:
+            body = handle.read()
+        return self.upload_file_by_key(body, key, content_type=content_type)
+
     def download_file_by_key(self, key):
         return b"fake-audio-bytes"
 
@@ -210,8 +215,7 @@ def _patch_public_download(monkeypatch, *, return_value=None, side_effect=None):
     """Patch the unauthenticated CSV-URL downloader used for direct/Plivo imports."""
     calls = []
 
-    def fake_public(url):
-        calls.append(url)
+    def _resolve(url):
         if side_effect is not None:
             if isinstance(side_effect, type) and issubclass(side_effect, Exception):
                 raise side_effect(f"public download failed for {url}")
@@ -222,9 +226,27 @@ def _patch_public_download(monkeypatch, *, return_value=None, side_effect=None):
             return return_value(url)
         return return_value
 
+    def fake_public(url, *_args, **_kwargs):
+        calls.append(url)
+        return _resolve(url)
+
+    def fake_public_to_path(url, dest_path, **_kwargs):
+        calls.append(url)
+        resolved = _resolve(url)
+        if isinstance(resolved, tuple) and len(resolved) == 2:
+            body, content_type = resolved
+            with open(dest_path, "wb") as handle:
+                handle.write(body)
+            return content_type
+        raise TypeError("return_value must be (bytes, content_type) for path download")
+
     monkeypatch.setattr(
         "app.services.telephony.recording_download.download_public_recording",
         fake_public,
+    )
+    monkeypatch.setattr(
+        "app.services.telephony.recording_download.download_public_recording_to_path",
+        fake_public_to_path,
     )
     return calls
 
@@ -1304,17 +1326,25 @@ def test_process_row_skips_when_row_deleted_during_upload(db_session, monkeypatc
 
     fake_client = _FakeExotelClient(audio=b"hello-audio", content_type="audio/mpeg")
     fake_s3 = _FakeS3(enabled=True)
+    task_module = _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3)
 
-    def _upload_then_delete(file_content, key, content_type="audio/mpeg"):
+    import os
+
+    import app.services.call_imports.recording_storage as recording_storage
+
+    def upload_then_delete(path, *, key, content_type, size_bytes=None):
+        if size_bytes is None:
+            size_bytes = os.path.getsize(path)
         fake_s3.uploads.append(
-            {"key": key, "size": len(file_content), "content_type": content_type}
+            {"key": key, "size": int(size_bytes), "content_type": content_type}
         )
         db_session.delete(row)
         db_session.commit()
-        return key
+        return int(size_bytes), 0
 
-    fake_s3.upload_file_by_key = _upload_then_delete
-    task_module = _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3)
+    monkeypatch.setattr(
+        recording_storage, "upload_local_recording_file", upload_then_delete
+    )
 
     result = task_module.process_call_import_row_task.run(str(row.id))
 

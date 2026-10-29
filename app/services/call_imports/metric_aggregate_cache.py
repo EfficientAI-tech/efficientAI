@@ -120,11 +120,9 @@ def maybe_refresh_aggregate_cache_after_row(
         return
     try:
         rebuild_evaluation_metric_aggregate_cache(db, evaluation.id)
-        db.commit()
     except Exception as exc:
         logger.warning(
             "aggregate cache refresh failed for evaluation {}: {}",
             evaluation.id,
             exc,
         )
-        db.rollback()

@@ -1,334 +1,36 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from 'react'
-import { createPortal } from 'react-dom'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import {
-  Activity,
-  AlertCircle,
-  ArrowLeft,
-  BarChart3,
-  Check,
-  Copy,
-  Database,
-  Download,
-  Edit3,
-  FileText,
-  Layers,
-  ListTree,
-  Mic,
-  MicOff,
-  Play,
-  RefreshCw,
-  Search,
-  Square,
-  Trash2,
-  Upload,
-  X,
-  XCircle,
-  Loader2,
-} from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { AlertCircle, ArrowLeft, RefreshCw } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import { itemsOf } from '../../lib/safeData'
-import { copyTextToClipboard } from '../../lib/clipboard'
 import { getApiErrorMessage } from '../../lib/apiErrors'
 import { useToast } from '../../hooks/useToast'
-import { formatDiarisationError } from '../../lib/diarisationErrors'
 import { useWorkspaceStore } from '../../store/workspaceStore'
-import type {
-  CallImportEvaluation,
-  CallImportEvaluationBulkActionResponse,
-  CallImportEvaluationLLMOverride,
-  CallImportEvaluationListResponse,
-  CallImportRow,
-  CallImportTag,
-} from '../../types/api'
-import Button from '../../components/Button'
-import ConfirmModal from '../../components/ConfirmModal'
-import Pagination from '../../components/Pagination'
-import StatusBadge from '../../components/shared/StatusBadge'
-import {
-  CallImportAuditMeta,
-} from '../../components/callImports/AuditMetaChips'
-import DiariseStatusPill from '../../components/callImports/DiariseStatusPill'
-import ProviderModelPicker, {
-  type ProviderModelValue,
-} from '../../components/providers/ProviderModelPicker'
-import AIProviderModelPicker from '../../components/AIProviderModelPicker'
-import {
-  isLLMSelectionComplete,
-  isLLMSelectionPartial,
-  resolveLLMModelForSubmit,
-  isClassificationCapableModel,
-  isClassificationMetric,
-  isStandardJudgeModel,
-} from '../../lib/llmModelOptions'
-import CallImportProgressBar from './components/CallImportProgressBar'
+import type { CallImportEvaluation, CallImportRow } from '../../types/api'
+import { type ProviderModelValue } from '../../components/providers/ProviderModelPicker'
+import { resolveLLMModelForSubmit } from '../../lib/llmModelOptions'
 import PlatformImportProgressDock from './components/PlatformImportProgressDock'
 import { usePlatformImportProgressStore } from '../../store/platformImportProgressStore'
-import { platformImportLabel, platformSkipLines } from './platformImportLabel'
 import RetryFailedImportModal from './components/RetryFailedImportModal'
 import UploadAudioModal from './components/UploadAudioModal'
-import InsightsMetricCard, {
-  INSIGHTS_PALETTE,
-} from './components/InsightsMetricCard'
 import MappingPanel from './components/MappingPanel'
 import RunEvaluationStep from './components/RunEvaluationStep'
-import RunEvaluationClassificationModel from './components/RunEvaluationClassificationModel'
 import StageTracker from './components/StageTracker'
-import TelephonyCredentialPicker, {
-  credentialSelectionFromState,
-  isCredentialSelectionValid,
-} from './components/TelephonyCredentialPicker'
-import { CallRowDetailSplitLayout } from './components/CallRowDetailSplitLayout'
-import { CallRowSidePanel } from './components/CallRowSidePanel'
-import {
-  CallImportRowSidePanelContent,
-  type CallImportRowSidePanelTabId,
-} from './components/CallImportRowSidePanelContent'
-import {
-  evaluationBulkOperationLabel,
-  evaluationHasActiveBulkOperation,
-  evaluationListPollMs,
-  type BulkEvaluationOperation,
-} from './evaluationBulkOperation'
+import ImportRowsTab from './components/ImportRowsTab'
+import ImportEvaluationsTab from './components/ImportEvaluationsTab'
+import ImportInsightsTab from './components/ImportInsightsTab'
+import { useImportDetailRows } from './hooks/useImportDetailRows'
+import { isImportCredentialError } from './components/importDetail/isImportCredentialError'
+import { ImportDetailHeader } from './components/importDetail/ImportDetailHeader'
+import { ImportTranscribeModals } from './components/importDetail/ImportTranscribeModals'
+import { ImportDeleteConfirmModals } from './components/importDetail/ImportDeleteConfirmModals'
+import { ImportRunEvaluationModal } from './components/importDetail/ImportRunEvaluationModal'
+import { useImportEvaluationsTab } from './hooks/useImportEvaluationsTab'
+import { evaluationListPollMs } from './evaluationBulkOperation'
 
-function importRowsPollMs(
-  header:
-    | {
-        status?: string
-        source_format?: string | null
-        platform_progress?: { is_active?: boolean } | null
-        diarised_pending_rows?: number
-        diarised_running_rows?: number
-      }
-    | undefined,
-): number | false {
-  if (!header) return false
-  if (header.status === 'deleting') return 4000
-  const platform = (header.source_format || '').toLowerCase() === 'platform'
-  if (
-    platform &&
-    (header.status === 'pending' ||
-      header.status === 'processing' ||
-      header.platform_progress?.is_active)
-  ) {
-    return 4000
-  }
-  if (header.status === 'pending' || header.status === 'processing') return 5000
-  const diariseInFlight =
-    (header.diarised_pending_rows ?? 0) + (header.diarised_running_rows ?? 0)
-  if (diariseInFlight > 0) return 4000
-  if (
-    header.status === 'completed' ||
-    header.status === 'failed' ||
-    header.status === 'mapped'
-  ) {
-    return false
-  }
-  return false
-}
 
-// Providers we know `TranscriptionService.transcribe()` already supports
-// for the full diarization-enabled path. Local Whisper is omitted since
-// it's an unconditional fallback inside the service rather than
-// something the user explicitly picks. Google is wired up via Gemini
-// multimodal completions through LiteLLM (see
-// `app/services/ai/stt_clients/google.py`) — the picker exposes the
-// `gemini-*-stt` model entries from `app/config/models.json`.
-const STT_PROVIDER_ALLOWLIST = [
-  'deepgram',
-  'openai',
-  'elevenlabs',
-  'sarvam',
-  'smallest',
-  'google',
-]
 
-const ROW_PAGE_SIZE = 100
-
-function renderModal(content: ReactNode) {
-  if (typeof document === 'undefined') return null
-  return createPortal(content, document.body)
-}
-
-function getRawColumnEntries(row: CallImportRow): Array<[string, unknown]> {
-  const transcriptValue = (row.transcript || '').trim()
-  const recordingUrlValue = (row.recording_url || '').trim()
-  const conversationIdValue = (row.conversation_id || '').trim()
-  return Object.entries(row.raw_columns || {}).filter(([key, value]) => {
-    if (!key.trim()) return false
-    const stringValue = value === null || value === undefined ? '' : String(value)
-    const trimmedValue = stringValue.trim()
-    if (!trimmedValue) return true
-    if (transcriptValue && trimmedValue === transcriptValue) return false
-    if (recordingUrlValue && trimmedValue === recordingUrlValue) return false
-    if (conversationIdValue && trimmedValue === conversationIdValue) return false
-    return true
-  })
-}
-
-function isNonRetryableError(message: string | null | undefined): boolean {
-  if (!message) return false
-  return /(401|403|404|forbidden|unauthor|not found|exceeds|too large|invalid content)/i.test(message)
-}
-
-function isImportCredentialError(message: string | null | undefined): boolean {
-  if (!message) return false
-  return /(rejected credentials|telephony credentials rejected|auth failed|credentials could not be verified)/i.test(
-    message,
-  )
-}
-
-// --- Insights tab helpers ---------------------------------------------
-//
-// KPI cards in the Insights header use a tinted gradient background +
-// matching icon chip so each metric is colour-coded at a glance. The
-// tone is purely cosmetic — no semantics are encoded beyond
-// emerald=positive (transcripts present), amber=needs-attention
-// (rows without transcripts) and the rest neutral-but-distinct.
-
-type KpiTone = 'indigo' | 'emerald' | 'amber' | 'violet' | 'gray'
-
-const KPI_TONE_CLASS: Record<
-  KpiTone,
-  { card: string; chip: string; icon: string; value: string }
-> = {
-  indigo: {
-    card: 'from-indigo-50 to-white border-indigo-100',
-    chip: 'bg-indigo-100 text-indigo-700',
-    icon: 'text-indigo-600',
-    value: 'text-indigo-900',
-  },
-  emerald: {
-    card: 'from-emerald-50 to-white border-emerald-100',
-    chip: 'bg-emerald-100 text-emerald-700',
-    icon: 'text-emerald-600',
-    value: 'text-emerald-900',
-  },
-  amber: {
-    card: 'from-amber-50 to-white border-amber-100',
-    chip: 'bg-amber-100 text-amber-700',
-    icon: 'text-amber-600',
-    value: 'text-amber-900',
-  },
-  violet: {
-    card: 'from-violet-50 to-white border-violet-100',
-    chip: 'bg-violet-100 text-violet-700',
-    icon: 'text-violet-600',
-    value: 'text-violet-900',
-  },
-  gray: {
-    card: 'from-gray-50 to-white border-gray-200',
-    chip: 'bg-gray-100 text-gray-600',
-    icon: 'text-gray-500',
-    value: 'text-gray-900',
-  },
-}
-
-function KpiCard({
-  Icon,
-  label,
-  value,
-  sub,
-  tone = 'gray',
-}: {
-  Icon: React.ComponentType<{ className?: string }>
-  label: string
-  value: string | number
-  sub?: string | null
-  tone?: KpiTone
-}) {
-  const cls = KPI_TONE_CLASS[tone]
-  return (
-    <div
-      className={`rounded-xl border bg-gradient-to-br ${cls.card} px-3 py-2.5 flex items-start gap-3`}
-    >
-      <span
-        className={`shrink-0 inline-flex items-center justify-center h-8 w-8 rounded-lg ${cls.chip}`}
-      >
-        <Icon className={`h-4 w-4 ${cls.icon}`} />
-      </span>
-      <div className="min-w-0 flex-1">
-        <p className="text-[10px] uppercase tracking-wider text-gray-500 truncate">
-          {label}
-        </p>
-        <p className={`text-2xl font-semibold leading-tight tabular-nums ${cls.value}`}>
-          {value}
-        </p>
-        {sub ? (
-          <p className="text-[10px] text-gray-500 truncate">{sub}</p>
-        ) : null}
-      </div>
-    </div>
-  )
-}
-
-/**
- * Stacked horizontal bar (single row) showing the proportion of
- * transcripts produced by each STT provider, plus a colour-coded
- * legend below. Replaces the old gray-pill list which was hard to
- * compare at a glance once you had >2 sources.
- */
-function TranscriptSourceMix({
-  counts,
-}: {
-  counts: Record<string, number>
-}) {
-  const entries = Object.entries(counts)
-    .filter(([, count]) => count > 0)
-    .sort((a, b) => b[1] - a[1])
-  const total = entries.reduce((s, [, c]) => s + c, 0) || 1
-  if (entries.length === 0) return null
-  return (
-    <div>
-      <h3 className="text-sm font-semibold text-gray-800 mb-2">
-        Transcript source mix
-      </h3>
-      <div
-        className="flex h-6 w-full overflow-hidden rounded-md border border-gray-200"
-        role="img"
-        aria-label="Transcript source breakdown"
-      >
-        {entries.map(([source, count], i) => {
-          const pct = (count / total) * 100
-          const color = INSIGHTS_PALETTE[i % INSIGHTS_PALETTE.length]
-          return (
-            <div
-              key={source}
-              style={{ width: `${pct}%`, background: color }}
-              title={`${source}: ${count} (${pct.toFixed(1)}%)`}
-            />
-          )
-        })}
-      </div>
-      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-gray-700">
-        {entries.map(([source, count], i) => {
-          const pct = (count / total) * 100
-          const color = INSIGHTS_PALETTE[i % INSIGHTS_PALETTE.length]
-          return (
-            <div key={source} className="inline-flex items-center gap-1.5">
-              <span
-                className="h-2.5 w-2.5 rounded-sm"
-                style={{ background: color }}
-              />
-              <span className="font-medium capitalize">{source}</span>
-              <span className="text-gray-500 tabular-nums">
-                · {count} ({pct.toFixed(0)}%)
-              </span>
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
 
 export default function CallImportDetail() {
   const { id } = useParams<{ id: string }>()
@@ -337,111 +39,91 @@ export default function CallImportDetail() {
   const { showToast, ToastContainer } = useToast()
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
 
-  const evaluationsQueryKey = [
-    'call-import-evaluations',
-    activeWorkspaceId,
-    id,
-  ] as const
 
-  const setEvaluationBulkOperationInList = (
-    evaluationId: string,
-    operation: BulkEvaluationOperation | null,
-  ) => {
-    if (!id) return
-    queryClient.setQueryData<CallImportEvaluationListResponse>(
-      evaluationsQueryKey,
-      (prev) => {
-        if (!prev) return prev
-        return {
-          ...prev,
-          items: prev.items.map((item) =>
-            item.id === evaluationId
-              ? { ...item, bulk_operation: operation }
-              : item,
-          ),
-        }
-      },
-    )
-  }
+  const {
+    data,
+    isLoading,
+    isFetching: headerFetching,
+    refetch: refetchHeader,
+    error,
+  } = useQuery({
+    queryKey: ['call-import', activeWorkspaceId, id],
+    queryFn: () => apiClient.callImports.getCallImport(id!, { row_limit: 0, row_offset: 0 }),
+    enabled: !!id,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    refetchInterval: (query) => {
+      const d = query.state.data
+      if (!d) return false
+      if (d.status === 'deleting') return 4000
+      const platform = (d.source_format || '').toLowerCase() === 'platform'
+      if (
+        platform &&
+        (d.status === 'pending' ||
+          d.status === 'processing' ||
+          d.platform_progress?.is_active)
+      ) {
+        return 4000
+      }
+      if (d.status === 'pending' || d.status === 'processing') return 5000
+      const diariseInFlight =
+        (d.diarised_pending_rows ?? 0) + (d.diarised_running_rows ?? 0)
+      if (diariseInFlight > 0) return 4000
+      if (
+        d.status === 'completed' ||
+        d.status === 'failed' ||
+        d.status === 'mapped'
+      ) {
+        return false
+      }
+      return false
+    },
+  })
 
-  const [rowOffset, setRowOffset] = useState(0)
-  const [selectedRowId, setSelectedRowId] = useState<string | null>(null)
-  const [rowPanelTab, setRowPanelTab] =
-    useState<CallImportRowSidePanelTabId>('production')
-  // Transient "✓ Copied" feedback on the per-row Copy button next to
-  // the conversation_id. Keyed by row.id so the badge can flip on the
-  // exact button that was clicked without affecting the rest of the
-  // table. Auto-clears after 1.5s via a setTimeout inside the handler.
-  const [copiedRowId, setCopiedRowId] = useState<string | null>(null)
-  const [copiedTranscriptField, setCopiedTranscriptField] = useState<{
-    rowId: string
-    field: 'production' | 'diarised'
-  } | null>(null)
+  const {
+    rowOffset,
+    setRowOffset,
+    selectedRowId,
+    setSelectedRowId,
+    rowPanelTab,
+    setRowPanelTab,
+    copiedRowId,
+    copiedTranscriptField,
+    handleCopyConversationId,
+    handleCopyTranscript,
+    rowSearchInput,
+    setRowSearchInput,
+    rowSearchQuery,
+    diarisedStatusFilter,
+    setDiarisedStatusFilter,
+    selectedRowIds,
+    setSelectedRowIds,
+    bulkSelectionFilter,
+    setBulkSelectionFilter,
+    selectAllError,
+    setSelectAllError,
+    rowsPage,
+    rowsLoading,
+    rowsFetching,
+    refetchRows,
+    rows,
+    selectedRow,
+    selectedRowDetail,
+    filteredTotalRows,
+    hasActiveFilter,
+    rowPage,
+    rowTotalPages,
+    listRowFilter,
+    selectedCount,
+    selectedOnPageCount,
+    allOnPageSelected,
+    allMatchingSelected,
+    transcribeReadySelection,
+    cancellableSelection,
+    selectionSpansPages,
+  } = useImportDetailRows(id ?? '', activeWorkspaceId, data)
 
-  const handleCopyConversationId = (
-    row: CallImportRow,
-    event: React.MouseEvent,
-  ) => {
-    event.preventDefault()
-    event.stopPropagation()
-    const text = row.conversation_id || ''
-    if (!text) return
-    copyTextToClipboard(text, () => {
-      setCopiedRowId(row.id)
-      window.setTimeout(() => {
-        setCopiedRowId((current) => (current === row.id ? null : current))
-      }, 1500)
-    })
-  }
 
-  const handleCopyTranscript = (
-    row: CallImportRow,
-    field: 'production' | 'diarised',
-    event: React.MouseEvent,
-  ) => {
-    event.preventDefault()
-    event.stopPropagation()
-    const text =
-      field === 'production'
-        ? row.transcript || ''
-        : row.diarised_transcript || ''
-    if (!text) return
-    copyTextToClipboard(text, () => {
-      setCopiedTranscriptField({ rowId: row.id, field })
-      window.setTimeout(() => {
-        setCopiedTranscriptField((current) =>
-          current?.rowId === row.id && current?.field === field ? null : current,
-        )
-      }, 1500)
-    })
-  }
-  // Row search: debounce keystrokes so we don't refire the rows fetch on
-  // every character — the backend filters by conversation_id ILIKE %q%
-  // and reports the post-filter total in ``filtered_total_rows``.
-  const [rowSearchInput, setRowSearchInput] = useState('')
-  const [rowSearchQuery, setRowSearchQuery] = useState('')
-  // Optional filter on per-row diarised transcript status. Lets the
-  // user find rows where diarisation failed (or is still running)
-  // without having to expand each row. Backed by the new
-  // ``diarised_status`` query param on ``GET /call-imports/{id}``.
-  type DiarisedStatusFilter =
-    | 'all'
-    | 'pending'
-    | 'running'
-    | 'completed'
-    | 'failed'
-  const [diarisedStatusFilter, setDiarisedStatusFilter] =
-    useState<DiarisedStatusFilter>('all')
-  // Multi-select state for the row list — drives the bulk-action
-  // toolbar (delete / transcribe). The header checkbox toggles every
-  // row currently visible on the page; an explicit "Select all in
-  // import" affordance sets a server-side row_filter for bulk actions.
-  const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set())
-  const [bulkSelectionFilter, setBulkSelectionFilter] = useState<{
-    q?: string
-    diarised_status?: string
-  } | null>(null)
-  const [selectAllError, setSelectAllError] = useState<string | null>(null)
   const [showBulkDeleteRows, setShowBulkDeleteRows] = useState(false)
   const [bulkDeleteRowsError, setBulkDeleteRowsError] = useState<string | null>(
     null,
@@ -456,7 +138,6 @@ export default function CallImportDetail() {
     setError(message)
     showToast(message, 'error')
   }
-
   const [showDeleteImport, setShowDeleteImport] = useState(false)
   const [showAppendAudioModal, setShowAppendAudioModal] = useState(false)
   const [showRetryFailedImportConfirm, setShowRetryFailedImportConfirm] =
@@ -534,9 +215,22 @@ export default function CallImportDetail() {
   const [activeTab, setActiveTab] = useState<
     'rows' | 'evaluations' | 'insights'
   >('rows')
-  const [selectedEvalIds, setSelectedEvalIds] = useState<Set<string>>(new Set())
-  const [showBulkDeleteEvals, setShowBulkDeleteEvals] = useState(false)
-  const [bulkDeleteEvalsError, setBulkDeleteEvalsError] = useState<string | null>(null)
+
+  const {
+    evaluationsData,
+    evaluationsWithBulkOperation,
+    selectedEvalIds,
+    setSelectedEvalIds,
+    showBulkDeleteEvals,
+    setShowBulkDeleteEvals,
+    bulkDeleteEvalsError,
+    setBulkDeleteEvalsError,
+    bulkDeleteEvalsMutation,
+    cancellingEvalId,
+    cancelEvaluationMutation,
+    bulkCancelEvalsMutation,
+  } = useImportEvaluationsTab(id, activeWorkspaceId, activeTab, reportDeleteError)
+
   // Standalone "Transcribe row" modal (separate from the eval flow).
   const [showTranscribeModal, setShowTranscribeModal] = useState(false)
   const [transcribeTargetRows, setTranscribeTargetRows] = useState<
@@ -619,7 +313,7 @@ export default function CallImportDetail() {
   // server-side default rather than a duplicated hardcoded copy.
   const { data: defaultDiarisationPrompt } = useQuery({
     queryKey: ['call-import-diarisation-prompt-default'],
-    queryFn: () => apiClient.getCallImportDiarisationPromptDefault(),
+    queryFn: () => apiClient.callImports.getCallImportDiarisationPromptDefault(),
     staleTime: Infinity,
   })
 
@@ -669,13 +363,13 @@ export default function CallImportDetail() {
 
   const { data: existingDatasets = [] } = useQuery({
     queryKey: ['call-import-datasets', activeWorkspaceId],
-    queryFn: () => apiClient.listCallImportDatasets(),
+    queryFn: () => apiClient.callImports.listCallImportDatasets(),
     enabled: editingMeta,
   })
 
   const { data: allTags = [] } = useQuery({
     queryKey: ['call-import-tags', activeWorkspaceId],
-    queryFn: () => apiClient.listCallImportTags(),
+    queryFn: () => apiClient.callImports.listCallImportTags(),
   })
 
   const updateMetaMutation = useMutation({
@@ -683,7 +377,7 @@ export default function CallImportDetail() {
       original_filename?: string | null
       dataset?: string | null
       tag_ids?: string[]
-    }) => apiClient.updateCallImport(id!, payload),
+    }) => apiClient.callImports.updateCallImport(id!, payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
@@ -693,7 +387,7 @@ export default function CallImportDetail() {
   })
 
   const deleteImportMutation = useMutation({
-    mutationFn: (importId: string) => apiClient.deleteCallImport(importId),
+    mutationFn: (importId: string) => apiClient.callImports.deleteCallImport(importId),
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
       queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
@@ -715,7 +409,7 @@ export default function CallImportDetail() {
       provider: string | null
       telephonyIntegrationId: string | null
     }) =>
-      apiClient.retryFailedCallImportRows(id!, selection),
+      apiClient.callImports.retryFailedCallImportRows(id!, selection),
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
@@ -741,7 +435,7 @@ export default function CallImportDetail() {
 
   const deleteRowMutation = useMutation({
     mutationFn: ({ importId, rowId }: { importId: string; rowId: string }) =>
-      apiClient.deleteCallImportRow(importId, rowId),
+      apiClient.callImports.deleteCallImportRow(importId, rowId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
@@ -756,8 +450,8 @@ export default function CallImportDetail() {
   const bulkDeleteRowsMutation = useMutation({
     mutationFn: (target: { rowIds?: string[]; rowFilter?: { q?: string; diarised_status?: string } }) =>
       target.rowFilter
-        ? apiClient.bulkDeleteCallImportRows(id!, { rowFilter: target.rowFilter })
-        : apiClient.bulkDeleteCallImportRows(id!, { rowIds: target.rowIds ?? [] }),
+        ? apiClient.callImports.bulkDeleteCallImportRows(id!, { rowFilter: target.rowFilter })
+        : apiClient.callImports.bulkDeleteCallImportRows(id!, { rowIds: target.rowIds ?? [] }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
@@ -774,13 +468,6 @@ export default function CallImportDetail() {
     },
   })
 
-  // Debounce the row-search input so we don't requery on every keystroke.
-  useEffect(() => {
-    const handle = setTimeout(() => {
-      setRowSearchQuery(rowSearchInput.trim())
-    }, 250)
-    return () => clearTimeout(handle)
-  }, [rowSearchInput])
 
   // Debounce the partials-search input so we don't refire the list
   // query on every character while the import sub-modal is open.
@@ -931,88 +618,6 @@ export default function CallImportDetail() {
     setPartialsSearchQuery('')
   }
 
-  // Snap back to the first page whenever the active query changes —
-  // otherwise the user could be sitting on page 3 of a filtered set
-  // that only has one page of results.
-  useEffect(() => {
-    setRowOffset(0)
-  }, [rowSearchQuery, diarisedStatusFilter])
-
-  // Clear any active row selection when the filter set changes — the
-  // ids the user picked may no longer match the new slice. Pagination
-  // alone no longer resets the selection so users can still pick rows
-  // across pages (the "Select all in import" affordance relies on this).
-  useEffect(() => {
-    setSelectedRowIds(new Set())
-    setSelectAllError(null)
-  }, [rowSearchQuery, diarisedStatusFilter])
-
-  const queryParams = useMemo(
-    () => ({
-      row_limit: ROW_PAGE_SIZE,
-      row_offset: rowOffset,
-      q: rowSearchQuery || undefined,
-      diarised_status:
-        diarisedStatusFilter === 'all' ? undefined : diarisedStatusFilter,
-    }),
-    [rowOffset, rowSearchQuery, diarisedStatusFilter],
-  )
-
-  const {
-    data,
-    isLoading,
-    isFetching: headerFetching,
-    refetch: refetchHeader,
-    error,
-  } = useQuery({
-    queryKey: ['call-import', activeWorkspaceId, id],
-    queryFn: () => apiClient.getCallImport(id!, { row_limit: 0, row_offset: 0 }),
-    enabled: !!id,
-    staleTime: 60_000,
-    refetchOnWindowFocus: false,
-    refetchInterval: (query) => {
-      const d = query.state.data
-      if (!d) return false
-      if (d.status === 'deleting') return 4000
-      const platform = (d.source_format || '').toLowerCase() === 'platform'
-      if (
-        platform &&
-        (d.status === 'pending' ||
-          d.status === 'processing' ||
-          d.platform_progress?.is_active)
-      ) {
-        return 4000
-      }
-      if (d.status === 'pending' || d.status === 'processing') return 5000
-      const diariseInFlight =
-        (d.diarised_pending_rows ?? 0) + (d.diarised_running_rows ?? 0)
-      if (diariseInFlight > 0) return 4000
-      if (
-        d.status === 'completed' ||
-        d.status === 'failed' ||
-        d.status === 'mapped'
-      ) {
-        return false
-      }
-      return false
-    },
-  })
-
-  const {
-    data: rowsPage,
-    isLoading: rowsLoading,
-    isFetching: rowsFetching,
-    refetch: refetchRows,
-  } = useQuery({
-    queryKey: ['call-import', activeWorkspaceId, id, 'rows', queryParams],
-    queryFn: () => apiClient.getCallImport(id!, queryParams),
-    enabled: !!id,
-    staleTime: 60_000,
-    placeholderData: keepPreviousData,
-    refetchOnWindowFocus: false,
-    refetchInterval: () => importRowsPollMs(data),
-  })
-
   const isFetching = headerFetching || rowsFetching
   const refetch = () => {
     void refetchHeader()
@@ -1051,26 +656,6 @@ export default function CallImportDetail() {
     enabled: !!id,
   })
 
-  const { data: evaluationsData } = useQuery({
-    queryKey: evaluationsQueryKey,
-    queryFn: () => apiClient.listCallImportEvaluations(id!),
-    enabled: !!id,
-    refetchOnWindowFocus: false,
-    refetchInterval: (query) => {
-      if (activeTab !== 'evaluations' && activeTab !== 'insights') return false
-      return evaluationListPollMs(
-        itemsOf<CallImportEvaluation>(query.state.data),
-      )
-    },
-  })
-
-  const evaluationsWithBulkOperation = useMemo(
-    () =>
-      itemsOf<CallImportEvaluation>(evaluationsData).filter((evaluation) =>
-        evaluationHasActiveBulkOperation(evaluation),
-      ),
-    [evaluationsData],
-  )
 
   // Insights tab: fetched lazily so we don't pay for the cross-run
   // aggregation on first page load. Refetches on a 30s cadence while
@@ -1078,7 +663,7 @@ export default function CallImportDetail() {
   // data arrives.
   const { data: insightsData, isLoading: insightsLoading } = useQuery({
     queryKey: ['call-import-insights', activeWorkspaceId, id],
-    queryFn: () => apiClient.getCallImportInsights(id!),
+    queryFn: () => apiClient.callImports.getCallImportInsights(id!),
     enabled: !!id && activeTab === 'insights',
     staleTime: 60_000,
     refetchOnWindowFocus: false,
@@ -1088,26 +673,9 @@ export default function CallImportDetail() {
       }),
   })
 
-  const importRowsLive = importRowsPollMs(data) !== false
-  const importRowsWereLive = useRef(false)
-  useEffect(() => {
-    if (importRowsLive) {
-      importRowsWereLive.current = true
-      return
-    }
-    if (!importRowsWereLive.current || !id) return
-    importRowsWereLive.current = false
-    void queryClient.invalidateQueries({
-      queryKey: ['call-import', activeWorkspaceId, id, 'rows'],
-    })
-    void queryClient.invalidateQueries({
-      queryKey: ['call-import', activeWorkspaceId, id, 'row'],
-    })
-  }, [importRowsLive, id, activeWorkspaceId, queryClient])
-
   const runEvaluationMutation = useMutation({
-    mutationFn: (payload: Parameters<typeof apiClient.createCallImportEvaluation>[1]) =>
-      apiClient.createCallImportEvaluation(id!, payload),
+    mutationFn: (payload: Parameters<typeof apiClient.callImports.createCallImportEvaluation>[1]) =>
+      apiClient.callImports.createCallImportEvaluation(id!, payload),
     onSuccess: (created) => {
       queryClient.invalidateQueries({ queryKey: ['call-import-evaluations', activeWorkspaceId, id] })
       queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
@@ -1195,15 +763,15 @@ export default function CallImportDetail() {
       // endpoint when the modal targets exactly one row so the API
       // surface stays self-documenting.
       if (rowIds && rowIds.length === 1) {
-        return apiClient.transcribeCallImportRow(id!, rowIds[0], base)
+        return apiClient.callImports.transcribeCallImportRow(id!, rowIds[0], base)
       }
       if (bulkSelectionFilter) {
-        return apiClient.transcribeCallImport(id!, {
+        return apiClient.callImports.transcribeCallImport(id!, {
           ...base,
           row_filter: bulkSelectionFilter,
         })
       }
-      return apiClient.transcribeCallImport(id!, {
+      return apiClient.callImports.transcribeCallImport(id!, {
         ...base,
         row_ids: rowIds ?? undefined,
       })
@@ -1234,7 +802,7 @@ export default function CallImportDetail() {
 
   const cancelDiarisationMutation = useMutation({
     mutationFn: ({ rowId }: { rowId: string }) =>
-      apiClient.cancelCallImportRowDiarisation(id!, rowId),
+      apiClient.callImports.cancelCallImportRowDiarisation(id!, rowId),
     onMutate: ({ rowId }) => {
       setCancellingRowId(rowId)
     },
@@ -1275,8 +843,8 @@ export default function CallImportDetail() {
   const bulkCancelDiarisationMutation = useMutation({
     mutationFn: (target: { rowIds?: string[]; rowFilter?: { q?: string; diarised_status?: string } }) =>
       target.rowFilter
-        ? apiClient.cancelCallImportDiarisation(id!, { rowFilter: target.rowFilter })
-        : apiClient.cancelCallImportDiarisation(id!, { rowIds: target.rowIds ?? null }),
+        ? apiClient.callImports.cancelCallImportDiarisation(id!, { rowFilter: target.rowFilter })
+        : apiClient.callImports.cancelCallImportDiarisation(id!, { rowIds: target.rowIds ?? null }),
     onMutate: () => {
       setBulkActionError(null)
       setBulkActionResult(null)
@@ -1316,7 +884,7 @@ export default function CallImportDetail() {
 
   const swapSpeakersMutation = useMutation({
     mutationFn: ({ rowId }: { rowId: string }) =>
-      apiClient.toggleCallImportRowSpeakerSwap(id!, rowId),
+      apiClient.callImports.toggleCallImportRowSpeakerSwap(id!, rowId),
     onMutate: ({ rowId }) => {
       setSwappingRowId(rowId)
       setSwapError(null)
@@ -1340,76 +908,6 @@ export default function CallImportDetail() {
     },
   })
 
-  const bulkDeleteEvalsMutation = useMutation({
-    mutationFn: (ids: string[]) =>
-      apiClient.bulkDeleteCallImportEvaluations(id!, ids),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['call-import-evaluations', activeWorkspaceId, id] })
-      setSelectedEvalIds(new Set())
-      setShowBulkDeleteEvals(false)
-      setBulkDeleteEvalsError(null)
-    },
-    onError: (err: unknown) => {
-      reportDeleteError(
-        err,
-        'Failed to delete evaluation runs.',
-        setBulkDeleteEvalsError,
-      )
-    },
-  })
-
-  const [cancellingEvalId, setCancellingEvalId] = useState<string | null>(null)
-
-  const cancelEvaluationMutation = useMutation({
-    mutationFn: (evaluationId: string) =>
-      apiClient.cancelCallImportEvaluation(id!, evaluationId),
-    onMutate: (evaluationId) => {
-      setCancellingEvalId(evaluationId)
-    },
-    onSuccess: (data: CallImportEvaluationBulkActionResponse, evaluationId) => {
-      if (data.target_count > 0) {
-        setEvaluationBulkOperationInList(evaluationId, 'abort')
-      }
-      queryClient.invalidateQueries({ queryKey: evaluationsQueryKey })
-    },
-    onError: (err: unknown) => {
-      console.error('cancelEvaluationMutation failed:', err)
-    },
-    onSettled: () => {
-      setCancellingEvalId(null)
-    },
-  })
-
-  // Bulk-abort — fires the single-run cancel endpoint per selected run in parallel.
-  const bulkCancelEvalsMutation = useMutation({
-    mutationFn: async (ids: string[]) => {
-      const results = await Promise.allSettled(
-        ids.map(async (evalId) => ({
-          evalId,
-          response: await apiClient.cancelCallImportEvaluation(id!, evalId),
-        })),
-      )
-      const fulfilled = results.filter((r) => r.status === 'fulfilled').length
-      const rejected = results.filter((r) => r.status === 'rejected').length
-      return { results, fulfilled, rejected }
-    },
-    onSuccess: ({ results }) => {
-      for (const result of results) {
-        if (
-          result.status === 'fulfilled' &&
-          result.value.response.target_count > 0
-        ) {
-          setEvaluationBulkOperationInList(result.value.evalId, 'abort')
-        }
-      }
-      queryClient.invalidateQueries({ queryKey: evaluationsQueryKey })
-      setSelectedEvalIds(new Set())
-    },
-    onError: (err: any) => {
-      // eslint-disable-next-line no-console
-      console.error('bulkCancelEvalsMutation failed:', err)
-    },
-  })
 
   const totalRows = data?.total_rows ?? 0
   const failedImportRowsCount = data?.failed_rows ?? 0
@@ -1420,20 +918,6 @@ export default function CallImportDetail() {
   // ``filtered_total_rows`` is set whenever any filter (search OR
   // diarisation-status) is active; pagination should always page
   // against whatever slice the user is actually looking at.
-  const hasActiveFilter =
-    !!rowSearchQuery || diarisedStatusFilter !== 'all'
-  const listRowFilter = (): { q?: string; diarised_status?: string } => ({
-    ...(rowSearchQuery.trim() ? { q: rowSearchQuery.trim() } : {}),
-    ...(diarisedStatusFilter !== 'all'
-      ? { diarised_status: diarisedStatusFilter }
-      : {}),
-  })
-  const filteredTotalRows = hasActiveFilter
-    ? rowsPage?.filtered_total_rows ?? 0
-    : totalRows
-  const rowPage = Math.floor(rowOffset / ROW_PAGE_SIZE) + 1
-  const rowTotalPages = Math.max(1, Math.ceil(filteredTotalRows / ROW_PAGE_SIZE))
-
   const handleDownload = async (row: CallImportRow) => {
     if (!row.recording_s3_key) return
     try {
@@ -1516,43 +1000,6 @@ export default function CallImportDetail() {
     setShowTranscribeModal(true)
   }
 
-  useEffect(() => {
-    if (!selectedRowId || !data) return
-    const visibleRows = rowsPage?.rows ?? []
-    if (!visibleRows.some((r) => r.id === selectedRowId)) {
-      setSelectedRowId(null)
-    }
-  }, [rowsPage, selectedRowId])
-
-  const { data: selectedRowDetail } = useQuery({
-    queryKey: ['call-import', activeWorkspaceId, id, 'row', selectedRowId],
-    queryFn: () => apiClient.getCallImportRow(id!, selectedRowId!),
-    enabled: !!id && !!selectedRowId,
-    staleTime: 60_000,
-    refetchOnWindowFocus: false,
-    refetchInterval: () => importRowsPollMs(data),
-  })
-
-  useEffect(() => {
-    if (!id || !rowsPage) return
-    const nextOffset = rowOffset + ROW_PAGE_SIZE
-    if (nextOffset >= filteredTotalRows) return
-    const nextParams = { ...queryParams, row_offset: nextOffset }
-    void queryClient.prefetchQuery({
-      queryKey: ['call-import', activeWorkspaceId, id, 'rows', nextParams],
-      queryFn: () => apiClient.getCallImport(id, nextParams),
-      staleTime: 60_000,
-    })
-  }, [
-    id,
-    rowOffset,
-    filteredTotalRows,
-    queryParams,
-    activeWorkspaceId,
-    queryClient,
-    rowsPage,
-  ])
-
   if (!id) {
     return <div className="text-sm text-red-600">Missing import id.</div>
   }
@@ -1591,11 +1038,6 @@ export default function CallImportDetail() {
     )
   }
 
-  const rows = rowsPage?.rows ?? []
-  const selectedListRow =
-    rows.find((r) => r.id === selectedRowId) ?? null
-  const selectedRow = selectedRowDetail ?? selectedListRow
-
   const pendingCredentialErrorCount = rows.filter(
     (row) =>
       row.status === 'pending' &&
@@ -1624,515 +1066,57 @@ export default function CallImportDetail() {
     isManualAudioImport && data.status === 'completed' && !isDeleting
   const canRunEvaluation = data.status === 'mapped' || showWorkflowTabs
 
-  // Selection state — ``selectedRowIds`` can now span pages (we no
-  // longer wipe it on pagination), so distinguish "how many of the
-  // currently-visible rows are ticked" from "how many rows are
-  // selected in total". The header checkbox toggles only the on-page
-  // rows; a separate affordance appears once every on-page row is
-  // selected to let the user extend the selection across every page.
-  const selectedOnPage = rows.filter((r) => selectedRowIds.has(r.id))
-  const selectedOnPageCount = selectedOnPage.length
-  const selectedCount = bulkSelectionFilter
-    ? filteredTotalRows
-    : selectedRowIds.size
-  const allOnPageSelected =
-    rows.length > 0 && selectedOnPageCount === rows.length
-  const allMatchingSelected =
-    bulkSelectionFilter !== null ||
-    (filteredTotalRows > 0 && selectedRowIds.size >= filteredTotalRows)
-  // ``transcribeReadySelection`` previously gated the Transcribe
-  // button on the on-page filter; with cross-page selection we can't
-  // cheaply check every off-page row's status from here, so we trust
-  // the worker's own ``_select_rows_for_transcription`` filter to
-  // skip rows lacking audio / in-flight. We still surface an on-page
-  // optimistic count for the button label.
-  const transcribeReadySelection = selectedOnPage.filter(
-    (r) =>
-      !!r.recording_s3_key &&
-      r.diarised_transcript_status !== 'pending' &&
-      r.diarised_transcript_status !== 'running',
-  )
-  // Rows in the selection (on-page slice we can see) whose diarisation
-  // is actually cancellable (queued OR currently running). The same
-  // cross-page caveat as ``transcribeReadySelection`` applies — if the
-  // user has selected rows on pages we don't have loaded, this counter
-  // undercounts and we surface that ambiguity in the modal copy. The
-  // backend filters again server-side so a hopeful click on a stale
-  // count just reports back ``cancelled / skipped`` in the toast.
-  const cancellableSelection = selectedOnPage.filter(
-    (r) =>
-      r.diarised_transcript_status === 'pending' ||
-      r.diarised_transcript_status === 'running',
-  )
-  // True when the user's selection covers rows we don't have loaded on
-  // the current page (cross-page selection). In that case any
-  // per-action count is on-page-only, so the modal degrades to "we'll
-  // act on N selected rows; the server filters the rest".
-  const selectionSpansPages =
-    bulkSelectionFilter !== null || selectedRowIds.size > selectedOnPageCount
-
   return (
     <div className="space-y-6">
       <ToastContainer />
-      {isDeleting && (
-        <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
-          This import is being deleted in the background. Actions are disabled
-          until removal completes.
-        </div>
-      )}
-      <div className="flex items-center justify-between">
-        <Link
-          to="/call-imports"
-          className="inline-flex items-center gap-1 text-sm text-primary-600 hover:text-primary-700"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back to Imports
-        </Link>
-        <div className="flex items-center gap-2">
-          {canRunEvaluation && !isDeleting && showWorkflowTabs && (
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={openRunEvaluationModal}
-              disabled={!rows.length}
-              title={
-                !rows.length
-                  ? 'No rows to evaluate yet'
-                  : 'Open the run dialog — pick metrics, credentials, and models before starting'
-              }
-            >
-              Run Evaluation
-            </Button>
-          )}
-          {canAppendManualAudio && (
-            <Button
-              variant="outline"
-              size="sm"
-              leftIcon={<Upload className="h-4 w-4" />}
-              onClick={() => setShowAppendAudioModal(true)}
-              title="Upload more recordings into this import batch"
-            >
-              Add recordings
-            </Button>
-          )}
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => refetch()}
-            isLoading={isFetching && !isLoading}
-            leftIcon={!(isFetching && !isLoading) ? <RefreshCw className="h-4 w-4" /> : undefined}
-          >
-            Refresh
-          </Button>
-          {failedImportRowsCount > 0 && (
-            <Button
-              variant="outline"
-              size="sm"
-              leftIcon={<RefreshCw className="h-4 w-4" />}
-              onClick={() => {
-                setRetryFailedImportError(null)
-                setShowRetryFailedImportConfirm(true)
-              }}
-              className="text-amber-700 hover:text-amber-800 hover:bg-amber-50 border-amber-200"
-              title={`Retry ${failedImportRowsCount} failed import row${
-                failedImportRowsCount === 1 ? '' : 's'
-              }`}
-            >
-              Retry failed imports ({failedImportRowsCount})
-            </Button>
-          )}
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              setDeleteError(null)
-              setShowDeleteImport(true)
-            }}
-            disabled={isDeleting}
-            leftIcon={<Trash2 className="h-4 w-4" />}
-            className="text-red-600 hover:text-red-700 hover:bg-red-50"
-          >
-            Delete Import
-          </Button>
-        </div>
-      </div>
+      <ImportDetailHeader
+        data={data}
+        isDeleting={isDeleting}
+        canRunEvaluation={canRunEvaluation}
+        showWorkflowTabs={showWorkflowTabs}
+        openRunEvaluationModal={openRunEvaluationModal}
+        rows={rows}
+        canAppendManualAudio={canAppendManualAudio}
+        onAppendAudio={() => setShowAppendAudioModal(true)}
+        refetch={refetch}
+        isFetching={isFetching}
+        isLoading={isLoading}
+        failedImportRowsCount={failedImportRowsCount}
+        onRetryFailedImport={() => {
+          setRetryFailedImportError(null)
+          setShowRetryFailedImportConfirm(true)
+        }}
+        onDeleteImport={() => {
+          setDeleteError(null)
+          setShowDeleteImport(true)
+        }}
+        isPlatformImport={isPlatformImport}
+        liveProgress={liveProgress}
+        recordingTotal={recordingTotal}
+        recordingCompleted={recordingCompleted}
+        recordingFailed={recordingFailed}
+        diarisationInFlightCount={diarisationInFlightCount}
+        diarisedCompletedRows={diarisedCompletedRows}
+        diarisedFailedRows={diarisedFailedRows}
+        showCredentialImportWarning={showCredentialImportWarning}
+        pendingCredentialErrorCount={pendingCredentialErrorCount}
+        editingMeta={editingMeta}
+        setEditingMeta={setEditingMeta}
+        draftImportName={draftImportName}
+        setDraftImportName={setDraftImportName}
+        draftDataset={draftDataset}
+        setDraftDataset={setDraftDataset}
+        draftTagIds={draftTagIds}
+        setDraftTagIds={setDraftTagIds}
+        existingDatasets={existingDatasets}
+        allTags={allTags}
+        updateMetaMutation={updateMetaMutation}
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        totalRows={totalRows}
+        evaluationsCount={evaluationsData?.items?.length ?? 0}
+      />
 
-      <div className="bg-white shadow rounded-lg p-6">
-        <div className="space-y-4">
-          <div className="min-w-0">
-            <h1 className="text-2xl font-bold text-gray-900 truncate">
-              {(data.source_format || '').toLowerCase() === 'platform'
-                ? platformImportLabel(data)
-                : data.original_filename || '(unnamed import)'}
-            </h1>
-            <div className="mt-1 text-xs text-gray-500 font-mono">{data.id}</div>
-            <div className="mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 min-w-0 max-w-full text-sm text-gray-600">
-              <span className="inline-flex items-center gap-1.5 shrink-0">
-                {data.latest_evaluation_status ? (
-                  <>
-                    <span className="text-xs text-gray-500">Latest evaluation</span>
-                    <StatusBadge status={data.latest_evaluation_status} />
-                  </>
-                ) : (
-                  <StatusBadge status={data.status} />
-                )}
-              </span>
-              <span className="capitalize shrink-0">
-                Provider:{' '}
-                <span className="font-medium text-gray-800">
-                  {data.provider || (
-                    <span className="text-gray-400 italic normal-case font-normal">
-                      not selected yet
-                    </span>
-                  )}
-                </span>
-              </span>
-              {isPlatformImport && (
-                <span className="shrink-0">
-                  Agent:{' '}
-                  <span className="font-medium text-gray-800">
-                    {(data.platform_agents || []).length === 0
-                      ? 'All agents'
-                      : (data.platform_agents || [])
-                          .map((agent) =>
-                            agent.medium
-                              ? `${agent.name} · ${agent.medium}`
-                              : agent.name,
-                          )
-                          .join(', ')}
-                  </span>
-                </span>
-              )}
-              <CallImportAuditMeta
-                inline
-                createdAt={data.created_at}
-                updatedAt={data.updated_at}
-                createdByEmail={data.created_by_email}
-                lastUpdatedByEmail={data.last_updated_by_email}
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-3 shadow-sm min-w-0">
-              <h3 className="text-sm font-semibold text-slate-900 mb-2.5 pb-2 border-b border-slate-200">
-                Recording import
-              </h3>
-              <CallImportProgressBar
-                total={recordingTotal}
-                completed={recordingCompleted}
-                failed={recordingFailed}
-                deleting={isDeleting}
-              />
-              {isPlatformImport &&
-                (liveProgress?.discovery_status || data.discovery_status) && (
-                  <p className="mt-2 text-xs text-gray-600">
-                    Discovery {liveProgress?.discovery_status || data.discovery_status}
-                    {liveProgress
-                      ? ` · ${liveProgress.discovery.slices_completed}/${liveProgress.discovery.slices_total} days`
-                      : ''}
-                    {data.paused_at || liveProgress?.paused ? ' · paused' : ''}
-                  </p>
-                )}
-              {platformSkipLines(liveProgress?.skip_counts ?? data.skip_counts).length > 0 && (
-                <p className="mt-2 text-xs text-gray-600">
-                  {platformSkipLines(liveProgress?.skip_counts ?? data.skip_counts).join(' · ')}
-                </p>
-              )}
-              <div className="mt-2.5 grid grid-cols-3 gap-2 text-center text-xs">
-                <div className="bg-white rounded-md border border-slate-100 p-2">
-                  <div className="text-gray-500">Total</div>
-                  <div className="font-semibold text-gray-900">{recordingTotal}</div>
-                </div>
-                <div className="bg-white rounded-md border border-green-100 p-2">
-                  <div className="text-green-700">Completed</div>
-                  <div className="font-semibold text-green-800">{recordingCompleted}</div>
-                </div>
-                <div className="bg-white rounded-md border border-red-100 p-2">
-                  <div className="text-red-700">Failed</div>
-                  <div className="font-semibold text-red-800">{recordingFailed}</div>
-                </div>
-              </div>
-            </div>
-
-            <div className="rounded-lg border border-violet-200 bg-violet-50/50 p-3 shadow-sm min-w-0">
-              <div className="flex items-center justify-between gap-2 mb-2.5 pb-2 border-b border-violet-200">
-                <h3 className="text-sm font-semibold text-violet-950">
-                  Transcription &amp; diarisation
-                </h3>
-                {diarisationInFlightCount > 0 && (
-                  <span className="inline-flex items-center gap-1 text-[11px] font-medium text-violet-700 whitespace-nowrap">
-                    <RefreshCw className="h-3 w-3 animate-spin" />
-                    {diarisationInFlightCount} in progress
-                  </span>
-                )}
-              </div>
-              <CallImportProgressBar
-                total={data.total_rows}
-                completed={diarisedCompletedRows}
-                failed={diarisedFailedRows}
-                deleting={isDeleting}
-              />
-              <div className="mt-2.5 grid grid-cols-3 gap-2 text-center text-xs">
-                <div className="bg-white rounded-md border border-violet-100 p-2">
-                  <div className="text-gray-500">Total</div>
-                  <div className="font-semibold text-gray-900">{data.total_rows}</div>
-                </div>
-                <div className="bg-white rounded-md border border-green-100 p-2">
-                  <div className="text-green-700">Completed</div>
-                  <div className="font-semibold text-green-800">
-                    {diarisedCompletedRows}
-                  </div>
-                </div>
-                <div className="bg-white rounded-md border border-red-100 p-2">
-                  <div className="text-red-700">Failed</div>
-                  <div className="font-semibold text-red-800">
-                    {diarisedFailedRows}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="mt-4 border-t border-gray-100 pt-4">
-          {!editingMeta ? (
-            <div className="flex items-start justify-between gap-3 flex-wrap">
-              <div className="flex flex-col gap-2">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-                    Dataset:
-                  </span>
-                  {data.dataset ? (
-                    <span className="inline-flex items-center text-sm font-medium text-gray-800 bg-gray-100 rounded px-2 py-0.5">
-                      {data.dataset}
-                    </span>
-                  ) : (
-                    <span className="text-sm text-gray-400 italic">none</span>
-                  )}
-                </div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-                    Tags:
-                  </span>
-                  {data.tags.length > 0 ? (
-                    data.tags.map((tag) => (
-                      <span
-                        key={tag.id}
-                        className="inline-flex items-center text-xs uppercase tracking-wide rounded-full px-2 py-0.5 border"
-                        style={{
-                          borderColor: tag.color || '#d1d5db',
-                          color: tag.color || '#4b5563',
-                        }}
-                      >
-                        {tag.name}
-                      </span>
-                    ))
-                  ) : (
-                    <span className="text-sm text-gray-400 italic">none</span>
-                  )}
-                </div>
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                leftIcon={<Edit3 className="h-4 w-4" />}
-                onClick={() => {
-                  setDraftImportName(data.original_filename || '')
-                  setDraftDataset(data.dataset || '')
-                  setDraftTagIds(data.tags.map((t) => t.id))
-                  setEditingMeta(true)
-                }}
-              >
-                Edit name / dataset / tags
-              </Button>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <div>
-                <label
-                  htmlFor="import-name-edit"
-                  className="block text-xs font-medium text-gray-600 uppercase tracking-wide mb-1"
-                >
-                  Import name
-                </label>
-                <input
-                  id="import-name-edit"
-                  type="text"
-                  value={draftImportName}
-                  onChange={(e) => setDraftImportName(e.target.value)}
-                  placeholder="Leave blank to clear"
-                  className="w-full max-w-sm px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                />
-              </div>
-              <div>
-                <label
-                  htmlFor="dataset-edit"
-                  className="block text-xs font-medium text-gray-600 uppercase tracking-wide mb-1"
-                >
-                  Dataset
-                </label>
-                <input
-                  id="dataset-edit"
-                  type="text"
-                  list="dataset-edit-suggestions"
-                  value={draftDataset}
-                  onChange={(e) => setDraftDataset(e.target.value)}
-                  placeholder="Leave blank to clear"
-                  className="w-full max-w-sm px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                />
-                <datalist id="dataset-edit-suggestions">
-                  {existingDatasets.map((d) => (
-                    <option key={d} value={d} />
-                  ))}
-                </datalist>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-600 uppercase tracking-wide mb-1">
-                  Tags
-                </label>
-                {allTags.length === 0 ? (
-                  <p className="text-xs text-gray-500">
-                    No tags created yet.{' '}
-                    <Link
-                      to="/call-imports/tags"
-                      className="text-primary-600 hover:text-primary-700 underline"
-                    >
-                      Create tags
-                    </Link>
-                    .
-                  </p>
-                ) : (
-                  <div className="flex flex-wrap gap-2">
-                    {allTags.map((tag: CallImportTag) => {
-                      const active = draftTagIds.includes(tag.id)
-                      return (
-                        <button
-                          key={tag.id}
-                          type="button"
-                          onClick={() =>
-                            setDraftTagIds((prev) =>
-                              prev.includes(tag.id)
-                                ? prev.filter((t) => t !== tag.id)
-                                : [...prev, tag.id],
-                            )
-                          }
-                          className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
-                            active
-                              ? 'bg-primary-600 border-primary-600 text-white'
-                              : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
-                          }`}
-                          style={
-                            !active && tag.color
-                              ? { borderColor: tag.color, color: tag.color }
-                              : undefined
-                          }
-                        >
-                          {tag.name}
-                        </button>
-                      )
-                    })}
-                  </div>
-                )}
-              </div>
-              <div className="flex gap-2">
-                <Button
-                  variant="primary"
-                  size="sm"
-                  leftIcon={<Check className="h-4 w-4" />}
-                  isLoading={updateMetaMutation.isPending}
-                  onClick={() =>
-                    updateMetaMutation.mutate({
-                      original_filename: draftImportName.trim()
-                        ? draftImportName.trim()
-                        : null,
-                      dataset: draftDataset.trim() ? draftDataset.trim() : null,
-                      tag_ids: draftTagIds,
-                    })
-                  }
-                >
-                  Save
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setEditingMeta(false)}
-                  disabled={updateMetaMutation.isPending}
-                >
-                  Cancel
-                </Button>
-              </div>
-              {updateMetaMutation.isError && (
-                <p className="text-xs text-red-600">
-                  {(updateMetaMutation.error as any)?.response?.data?.detail ||
-                    'Failed to update.'}
-                </p>
-              )}
-            </div>
-          )}
-        </div>
-
-        {data.error_message && (
-          <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-3">
-            <div className="flex items-start gap-2">
-              <AlertCircle className="h-4 w-4 text-red-600 mt-0.5" />
-              <p className="text-sm text-red-800">{data.error_message}</p>
-            </div>
-          </div>
-        )}
-
-        {showCredentialImportWarning && (
-          <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg p-3">
-            <div className="flex items-start gap-2">
-              <AlertCircle className="h-4 w-4 text-amber-600 mt-0.5 flex-shrink-0" />
-              <div className="text-sm text-amber-900 space-y-1">
-                <p>
-                  {pendingCredentialErrorCount} row
-                  {pendingCredentialErrorCount === 1 ? '' : 's'} failed to fetch
-                  recordings due to telephony credential errors. Update credentials in
-                  Integrations, then use Retry failed to try again.
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {(data.source_row_skips?.length ?? 0) > 0 && data.total_rows > 0 && (
-          <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg p-3">
-            <div className="flex items-start gap-2">
-              <AlertCircle className="h-4 w-4 text-amber-600 mt-0.5 flex-shrink-0" />
-              <div className="text-sm text-amber-900 space-y-2 min-w-0">
-                <p>
-                  Imported {data.total_rows} row
-                  {data.total_rows === 1 ? '' : 's'}.{' '}
-                  {data.source_row_skips!.length} source row
-                  {data.source_row_skips!.length === 1 ? '' : 's'} skipped
-                  — missing or invalid conversation ID / recording URL.
-                </p>
-                <ul className="list-disc pl-5 space-y-0.5 max-h-40 overflow-y-auto text-xs">
-                  {data.source_row_skips!.slice(0, 50).map((skip) => (
-                    <li key={`${skip.source_row}-${skip.reason}`}>
-                      {skip.message}
-                    </li>
-                  ))}
-                </ul>
-                {data.source_row_skips!.length > 50 && (
-                  <p className="text-xs text-amber-800">
-                    and {data.source_row_skips!.length - 50} more skipped row
-                    {data.source_row_skips!.length - 50 === 1 ? '' : 's'}.
-                  </p>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Stage tracker: only meaningful for batches that came through
-          the staged flow (i.e. have ``source_s3_key`` set). Legacy
-          one-shot uploads start at status='processing' so they would
-          render the tracker stuck on the final step, which is
-          confusing — skip it entirely for those. */}
       {data.source_s3_key && <StageTracker status={data.status} />}
 
       {needsMapping && data.source_s3_key && (
@@ -2154,2753 +1138,82 @@ export default function CallImportDetail() {
         </>
       )}
 
-      {showWorkflowTabs ? (
-      <div className="border-b border-gray-200">
-        <nav className="-mb-px flex gap-6" aria-label="Call import sections">
-          <button
-            type="button"
-            onClick={() => setActiveTab('rows')}
-            className={`whitespace-nowrap py-3 px-1 border-b-2 text-sm font-medium transition ${
-              activeTab === 'rows'
-                ? 'border-primary-500 text-primary-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            }`}
-            aria-current={activeTab === 'rows' ? 'page' : undefined}
-          >
-            Rows
-            <span className="ml-2 inline-flex items-center justify-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">
-              {totalRows}
-            </span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('evaluations')}
-            className={`whitespace-nowrap py-3 px-1 border-b-2 text-sm font-medium transition ${
-              activeTab === 'evaluations'
-                ? 'border-primary-500 text-primary-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            }`}
-            aria-current={activeTab === 'evaluations' ? 'page' : undefined}
-          >
-            Evaluations
-            <span className="ml-2 inline-flex items-center justify-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">
-              {evaluationsData?.items?.length ?? 0}
-            </span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('insights')}
-            className={`whitespace-nowrap py-3 px-1 border-b-2 text-sm font-medium transition ${
-              activeTab === 'insights'
-                ? 'border-primary-500 text-primary-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            }`}
-            aria-current={activeTab === 'insights' ? 'page' : undefined}
-          >
-            <BarChart3 className="h-3.5 w-3.5 inline mr-1 -mt-0.5" />
-            Insights
-          </button>
-        </nav>
-      </div>
-      ) : null}
-
       {showWorkflowTabs && activeTab === 'rows' && (
-      <div className="bg-white shadow rounded-lg p-6">
-        <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
-          <h2 className="text-lg font-semibold text-gray-900">Rows</h2>
-          <div className="flex items-center gap-3 flex-wrap">
-            <p className="text-sm text-gray-500">
-              Showing {rows.length === 0 ? 0 : rowOffset + 1}&ndash;
-              {rowOffset + rows.length} of {filteredTotalRows}
-              {hasActiveFilter ? ` (filtered from ${totalRows})` : ''}
-            </p>
-          </div>
-        </div>
-
-        <div className="mb-4 flex items-stretch gap-2 flex-wrap">
-          <div className="relative flex-1 min-w-[260px] max-w-md">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
-            <input
-              type="text"
-              value={rowSearchInput}
-              onChange={(e) => setRowSearchInput(e.target.value)}
-              placeholder="Search by Conversation ID…"
-              aria-label="Search rows by Conversation ID"
-              className="w-full pl-9 pr-9 py-2 text-sm border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-500"
-            />
-            {rowSearchInput && (
-              <button
-                type="button"
-                onClick={() => setRowSearchInput('')}
-                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded text-gray-400 hover:text-gray-600 hover:bg-gray-100"
-                aria-label="Clear search"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            )}
-          </div>
-          {/* Diarisation status filter chips — finally lets the user
-              find rows where diarisation failed without expanding every
-              row in turn. The active chip drives ``diarised_status`` on
-              the rows query and updates ``filtered_total_rows``. */}
-          <div
-            className="flex items-center gap-1 flex-wrap"
-            role="group"
-            aria-label="Filter rows by diarisation status"
-          >
-            <span className="text-[11px] uppercase tracking-wide text-gray-500 mr-1">
-              Diarisation:
-            </span>
-            {(
-              [
-                { id: 'all', label: 'All' },
-                { id: 'pending', label: 'Pending' },
-                { id: 'running', label: 'Running' },
-                { id: 'completed', label: 'Completed' },
-                { id: 'failed', label: 'Failed' },
-              ] as Array<{ id: DiarisedStatusFilter; label: string }>
-            ).map((chip) => {
-              const active = diarisedStatusFilter === chip.id
-              return (
-                <button
-                  key={chip.id}
-                  type="button"
-                  onClick={() => setDiarisedStatusFilter(chip.id)}
-                  className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
-                    active
-                      ? chip.id === 'failed'
-                        ? 'bg-red-600 border-red-600 text-white'
-                        : 'bg-primary-600 border-primary-600 text-white'
-                      : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
-                  }`}
-                  aria-pressed={active}
-                >
-                  {chip.label}
-                </button>
-              )
-            })}
-          </div>
-          {selectedCount > 0 && (
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-xs text-gray-600">
-                {selectedCount} selected
-              </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setSelectedRowIds(new Set())
-                  setBulkSelectionFilter(null)
-                }}
-              >
-                Clear
-              </Button>
-              {/* Single entry point for every multi-row operation:
-                  Diarise, Stop diarisation, Delete. The modal
-                  surfaces per-action counts and explicit confirm
-                  affordances, so the toolbar can stay uncluttered
-                  even as we keep adding bulk verbs. */}
-              <Button
-                variant="ghost"
-                size="sm"
-                leftIcon={<ListTree className="h-4 w-4" />}
-                onClick={() => {
-                  setBulkActionError(null)
-                  setBulkActionResult(null)
-                  setShowBulkActionsModal(true)
-                }}
-                className="text-primary-700 hover:text-primary-800 hover:bg-primary-50"
-              >
-                Bulk actions
-              </Button>
-            </div>
-          )}
-        </div>
-
-        {rows.length === 0 ? (
-          <div className="text-center py-12 text-gray-500">
-            <FileText className="h-12 w-12 mx-auto mb-3 text-gray-300" />
-            {rowSearchQuery ? (
-              <p>
-                No rows match{' '}
-                <span className="font-mono text-gray-700">
-                  &quot;{rowSearchQuery}&quot;
-                </span>
-                {diarisedStatusFilter !== 'all'
-                  ? ` with diarisation status ${diarisedStatusFilter}.`
-                  : '.'}
-              </p>
-            ) : diarisedStatusFilter !== 'all' ? (
-              <p>
-                No rows with diarisation status{' '}
-                <span className="font-medium text-gray-700">
-                  {diarisedStatusFilter}
-                </span>
-                .
-              </p>
-            ) : (data.source_format || '').toLowerCase() === 'platform' &&
-              platformSkipLines(data.skip_counts).length > 0 ? (
-              <div className="space-y-1">
-                <p>No new calls in this window.</p>
-                <p className="text-sm text-gray-700">
-                  {platformSkipLines(data.skip_counts).join(' · ')}
-                </p>
-              </div>
-            ) : (
-              <p>No rows in this slice.</p>
-            )}
-          </div>
-        ) : (
-          <CallRowDetailSplitLayout
-            panelOpen={!!selectedRow}
-            list={
-            <div className="space-y-2">
-            <div className="flex items-center gap-3 px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 flex-wrap">
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  aria-label="Select all rows on this page"
-                  checked={allOnPageSelected}
-                  ref={(el) => {
-                    if (el)
-                      el.indeterminate =
-                        selectedOnPageCount > 0 && !allOnPageSelected
-                  }}
-                  onChange={(e) => {
-                    if (e.target.checked) {
-                      // Add every on-page row to the selection without
-                      // disturbing rows the user already ticked on
-                      // other pages.
-                      setSelectedRowIds((prev) => {
-                        const next = new Set(prev)
-                        for (const r of rows) next.add(r.id)
-                        return next
-                      })
-                    } else {
-                      // Drop only the on-page rows from the selection
-                      // so the user can unselect this page without
-                      // wiping cross-page picks.
-                      setSelectedRowIds((prev) => {
-                        const next = new Set(prev)
-                        for (const r of rows) next.delete(r.id)
-                        return next
-                      })
-                    }
-                  }}
-                />
-                <span className="text-xs text-gray-600">
-                  {allOnPageSelected
-                    ? `All ${rows.length} on this page selected`
-                    : selectedOnPageCount > 0
-                    ? `${selectedOnPageCount} of ${rows.length} on this page selected`
-                    : `Select all on this page (${rows.length})`}
-                </span>
-              </div>
-              {/* "Select all in import" affordance — only shown once
-                  the on-page checkbox is satisfied AND there are off-page
-                  rows that the user could still benefit from selecting.
-                  Clicking it hits the lightweight ``/row-ids`` endpoint
-                  with the active filters so the selection respects the
-                  search / status chips. */}
-              {allOnPageSelected &&
-                filteredTotalRows > rows.length &&
-                !allMatchingSelected && (
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-gray-400">·</span>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        setSelectAllError(null)
-                        setBulkSelectionFilter(listRowFilter())
-                      }}
-                    >
-                      {`Select all ${filteredTotalRows} rows in this import${
-                        hasActiveFilter ? ' (matching filters)' : ''
-                      }`}
-                    </Button>
-                  </div>
-                )}
-              {allMatchingSelected &&
-                filteredTotalRows > rows.length && (
-                  <span className="text-xs text-primary-700">
-                    All {filteredTotalRows} matching rows selected.
-                  </span>
-                )}
-            </div>
-            {selectAllError && (
-              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
-                {selectAllError}
-              </div>
-            )}
-            {/* Top pagination — mirrors the bottom bar so users don't
-                have to scroll past hundreds of rows to flip pages.
-                Renders nothing when there's only one page of results. */}
-            <Pagination
-              page={rowPage}
-              pageCount={rowTotalPages}
-              total={filteredTotalRows}
-              pageSize={ROW_PAGE_SIZE}
-              variant="card"
-              className="mb-2"
-              onPrev={() =>
-                setRowOffset((o) => Math.max(0, o - ROW_PAGE_SIZE))
-              }
-              onNext={() =>
-                setRowOffset((o) =>
-                  o + ROW_PAGE_SIZE >= filteredTotalRows
-                    ? o
-                    : o + ROW_PAGE_SIZE,
-                )
-              }
-            />
-            {rows.map((row) => {
-              const hasRecording = !!row.recording_s3_key
-              const isPanelOpen = selectedRowId === row.id
-              const isSelected = selectedRowIds.has(row.id)
-              return (
-                <div
-                  key={row.id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() =>
-                    setSelectedRowId((prev) => (prev === row.id ? null : row.id))
-                  }
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault()
-                      setSelectedRowId((prev) => (prev === row.id ? null : row.id))
-                    }
-                  }}
-                  className={`border rounded-lg bg-white overflow-hidden transition-shadow hover:shadow-sm cursor-pointer ${
-                    isPanelOpen
-                      ? 'border-primary-500 ring-1 ring-primary-200'
-                      : isSelected
-                        ? 'border-primary-400 bg-primary-50/30'
-                        : 'border-gray-200'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 px-3 py-2.5">
-                    <input
-                      type="checkbox"
-                      aria-label={`Select row ${row.conversation_id}`}
-                      checked={isSelected}
-                      onChange={(e) => {
-                        setSelectedRowIds((prev) => {
-                          const next = new Set(prev)
-                          if (e.target.checked) next.add(row.id)
-                          else next.delete(row.id)
-                          return next
-                        })
-                      }}
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                    <div className="flex items-center gap-3 flex-1 min-w-0 text-left -mx-1 px-1 py-1">
-                      <span className="text-xs text-gray-400 w-10 tabular-nums flex-shrink-0">
-                        #{row.row_index + 1}
-                      </span>
-                      {/*
-                        Conversation ID stays selectable; a normal click
-                        still opens the docked detail panel on the row.
-                        Only the copy control stops propagation.
-                       */}
-                      <span
-                        className="font-mono text-sm text-gray-900 truncate flex-1 min-w-0 select-text"
-                        title={row.conversation_id}
-                      >
-                        {row.conversation_id}
-                      </span>
-                      <span
-                        role="button"
-                        tabIndex={0}
-                        aria-label={
-                          copiedRowId === row.id
-                            ? `Copied ${row.conversation_id}`
-                            : `Copy ${row.conversation_id}`
-                        }
-                        title={
-                          copiedRowId === row.id
-                            ? 'Copied!'
-                            : 'Copy conversation ID'
-                        }
-                        onClick={(e) => handleCopyConversationId(row, e)}
-                        onMouseDown={(e) => e.stopPropagation()}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            handleCopyConversationId(
-                              row,
-                              e as unknown as React.MouseEvent,
-                            )
-                          }
-                        }}
-                        className={`flex-shrink-0 inline-flex items-center justify-center w-6 h-6 rounded transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 cursor-pointer ${
-                          copiedRowId === row.id
-                            ? 'text-green-600 bg-green-50'
-                            : 'text-gray-400 hover:text-primary-600 hover:bg-primary-50'
-                        }`}
-                      >
-                        {copiedRowId === row.id ? (
-                          <Check className="h-3.5 w-3.5" />
-                        ) : (
-                          <Copy className="h-3.5 w-3.5" />
-                        )}
-                      </span>
-                      <StatusBadge status={row.status} size="sm" />
-                      <DiariseStatusPill status={row.diarised_transcript_status} />
-                    </div>
-
-                    <div
-                      className="flex items-center gap-1 flex-shrink-0"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      {hasRecording ? (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => setSelectedRowId(row.id)}
-                            title="Open recording in side panel"
-                            className={`p-1.5 rounded transition-colors ${
-                              isPanelOpen
-                                ? 'text-green-600 bg-green-50 hover:bg-green-100'
-                                : 'text-blue-600 hover:bg-blue-50'
-                            }`}
-                          >
-                            <Play className="h-4 w-4" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDownload(row)}
-                            title="Download recording"
-                            className="p-1.5 rounded text-gray-500 hover:text-primary-600 hover:bg-primary-50 transition-colors"
-                          >
-                            <Download className="h-4 w-4" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => openTranscribeModal([row])}
-                            disabled={
-                              row.diarised_transcript_status === 'pending' ||
-                              row.diarised_transcript_status === 'running'
-                            }
-                            title={
-                              row.diarised_transcript_status === 'pending' ||
-                              row.diarised_transcript_status === 'running'
-                                ? 'Diarisation in progress'
-                                : 'Diarise this row'
-                            }
-                            className="p-1.5 rounded text-gray-500 hover:text-purple-600 hover:bg-purple-50 transition-colors disabled:opacity-40"
-                          >
-                            {row.diarised_transcript_status === 'pending' ||
-                            row.diarised_transcript_status === 'running' ? (
-                              <RefreshCw className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <Mic className="h-4 w-4" />
-                            )}
-                          </button>
-                          {/*
-                            Stop / abort button. Only visible while
-                            the diarisation pipeline is actually in
-                            flight (``pending`` queued OR ``running``
-                            inside the worker). Calls the cancel
-                            endpoint which revokes the Celery task
-                            (SIGTERM) and stamps the row with a
-                            "Cancelled by user" failure so the UI
-                            immediately reflects the abort. Disabled
-                            while we already have an in-flight cancel
-                            request for THIS row so a double-click
-                            doesn't fire two revokes (it's idempotent
-                            on the server, but the spinner state would
-                            flicker).
-                           */}
-                          {(row.diarised_transcript_status === 'pending' ||
-                            row.diarised_transcript_status === 'running') && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                cancelDiarisationMutation.mutate({
-                                  rowId: row.id,
-                                })
-                              }
-                              disabled={cancellingRowId === row.id}
-                              title="Stop diarisation"
-                              aria-label={`Stop diarisation for ${row.conversation_id}`}
-                              className="p-1.5 rounded text-gray-500 hover:text-red-600 hover:bg-red-50 transition-colors disabled:opacity-40"
-                            >
-                              {cancellingRowId === row.id ? (
-                                <RefreshCw className="h-4 w-4 animate-spin" />
-                              ) : (
-                                <Square className="h-4 w-4" />
-                              )}
-                            </button>
-                          )}
-                        </>
-                      ) : (
-                        <span className="text-[11px] text-gray-400 px-2">
-                          {row.status === 'failed' ? 'no audio' : 'pending'}
-                        </span>
-                      )}
-                      <button
-                        type="button"
-                        aria-label={`Delete recording for ${row.conversation_id}`}
-                        title="Delete row"
-                        onClick={() => {
-                          setDeleteError(null)
-                          setPendingDeleteRow(row)
-                        }}
-                        disabled={
-                          deleteRowMutation.isPending &&
-                          pendingDeleteRow?.id === row.id
-                        }
-                        className="p-1.5 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors disabled:opacity-40"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
-                  </div>
-
-                  {row.status === 'failed' && row.error_message && (
-                    <div className="border-t border-red-100 bg-red-50 px-3 py-2 text-xs text-red-800 flex items-start gap-2">
-                      <AlertCircle className="h-3.5 w-3.5 text-red-600 flex-shrink-0 mt-0.5" />
-                      <div className="min-w-0 flex-1 break-words">
-                        <span className="font-medium">Error:</span> {row.error_message}
-                        {isNonRetryableError(row.error_message) && (
-                          <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-100 text-red-700">
-                            no retry
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {row.status === 'pending' && row.error_message && (
-                    <div className="border-t border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-900 flex items-start gap-2">
-                      <AlertCircle className="h-3.5 w-3.5 text-amber-600 flex-shrink-0 mt-0.5" />
-                      <div className="min-w-0 flex-1 break-words">
-                        <span className="font-medium">Retry pending:</span> {row.error_message}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Surface diarisation-specific failures even when
-                      the row's recording download itself succeeded.
-                      Previously these only showed inside the expanded
-                      panel, so the new "Failed" filter chip would land
-                      the user on rows with no inline indication of why
-                      they failed. */}
-                  {row.diarised_transcript_status === 'failed' &&
-                    row.diarised_transcript_error && (
-                      <div className="border-t border-red-100 bg-red-50 px-3 py-2 text-xs text-red-800 flex items-start gap-2">
-                        <AlertCircle className="h-3.5 w-3.5 text-red-600 flex-shrink-0 mt-0.5" />
-                        <div className="min-w-0 flex-1 break-words">
-                          <span className="font-medium">
-                            Diarisation error:
-                          </span>{' '}
-                          {formatDiarisationError(row.diarised_transcript_error)}
-                        </div>
-                      </div>
-                    )}
-                  {row.diarised_transcript_status === 'pending' &&
-                    row.diarised_transcript_error?.includes('Waiting for') && (
-                      <div className="border-t border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-900 flex items-start gap-2">
-                        <AlertCircle className="h-3.5 w-3.5 text-amber-600 flex-shrink-0 mt-0.5" />
-                        <div className="min-w-0 flex-1 break-words">
-                          {formatDiarisationError(row.diarised_transcript_error)}
-                        </div>
-                      </div>
-                    )}
-
-                </div>
-              )
-            })}
-
-            <Pagination
-              page={rowPage}
-              pageCount={rowTotalPages}
-              total={filteredTotalRows}
-              pageSize={ROW_PAGE_SIZE}
-              variant="card"
-              className="mt-3"
-              onPrev={() =>
-                setRowOffset((o) => Math.max(0, o - ROW_PAGE_SIZE))
-              }
-              onNext={() =>
-                setRowOffset((o) =>
-                  o + ROW_PAGE_SIZE >= filteredTotalRows
-                    ? o
-                    : o + ROW_PAGE_SIZE,
-                )
-              }
-            />
-            </div>
-            }
-            panel={
-              selectedRow ? (
-              <CallRowSidePanel
-                onClose={() => setSelectedRowId(null)}
-                title={selectedRow.conversation_id}
-                headerMeta={
-                  <>
-                    <StatusBadge status={selectedRow.status} size="sm" />
-                    <DiariseStatusPill status={selectedRow.diarised_transcript_status} />
-                    <span className="text-xs text-gray-500">
-                      Row #{selectedRow.row_index + 1}
-                    </span>
-                  </>
-                }
-                recordingS3Key={selectedRow.recording_s3_key}
-                recordingUrl={selectedRow.recording_url}
-                tabs={[
-                  { id: 'production', label: 'Production' },
-                  { id: 'diarised', label: 'Diarised' },
-                  { id: 'metadata', label: 'Metadata' },
-                ]}
-                activeTab={rowPanelTab}
-                onTabChange={(tabId) =>
-                  setRowPanelTab(tabId as CallImportRowSidePanelTabId)
-                }
-              >
-                {selectedRowDetail ? (
-                  <CallImportRowSidePanelContent
-                    row={selectedRowDetail}
-                    activeTab={rowPanelTab}
-                    rawColumnEntries={getRawColumnEntries(selectedRowDetail)}
-                    hasRecording={!!selectedRowDetail.recording_s3_key}
-                    copiedTranscriptField={copiedTranscriptField}
-                    onCopyTranscript={handleCopyTranscript}
-                    onDiarise={() => openTranscribeModal([selectedRowDetail])}
-                    onSwapSpeakers={() =>
-                      swapSpeakersMutation.mutate({ rowId: selectedRowDetail.id })
-                    }
-                    swappingRowId={swappingRowId}
-                    swapError={swapError}
-                    onDismissSwapError={() => setSwapError(null)}
-                  />
-                ) : (
-                  <p className="text-sm text-gray-500">Loading row…</p>
-                )}
-              </CallRowSidePanel>
-              ) : null
-            }
-          />
-        )}
-      </div>
+        <ImportRowsTab
+          data={data}
+          totalRows={totalRows}
+          rows={rows}
+          rowOffset={rowOffset}
+          setRowOffset={setRowOffset}
+          filteredTotalRows={filteredTotalRows}
+          hasActiveFilter={hasActiveFilter}
+          rowSearchInput={rowSearchInput}
+          setRowSearchInput={setRowSearchInput}
+          rowSearchQuery={rowSearchQuery}
+          diarisedStatusFilter={diarisedStatusFilter}
+          setDiarisedStatusFilter={setDiarisedStatusFilter}
+          selectedCount={selectedCount}
+          selectedRowIds={selectedRowIds}
+          setSelectedRowIds={setSelectedRowIds}
+          setBulkSelectionFilter={setBulkSelectionFilter}
+          setBulkActionError={setBulkActionError}
+          setBulkActionResult={setBulkActionResult}
+          setShowBulkActionsModal={setShowBulkActionsModal}
+          allOnPageSelected={allOnPageSelected}
+          selectedOnPageCount={selectedOnPageCount}
+          listRowFilter={listRowFilter}
+          bulkSelectionFilter={bulkSelectionFilter}
+          allMatchingSelected={allMatchingSelected}
+          selectAllError={selectAllError}
+          setSelectAllError={setSelectAllError}
+          rowPage={rowPage}
+          rowTotalPages={rowTotalPages}
+          selectedRowId={selectedRowId}
+          setSelectedRowId={setSelectedRowId}
+          selectedRow={selectedRow}
+          copiedRowId={copiedRowId}
+          handleCopyConversationId={handleCopyConversationId}
+          handleDownload={handleDownload}
+          openTranscribeModal={openTranscribeModal}
+          cancelDiarisationMutation={cancelDiarisationMutation}
+          cancellingRowId={cancellingRowId}
+          setDeleteError={setDeleteError}
+          setPendingDeleteRow={setPendingDeleteRow}
+          deleteRowMutation={deleteRowMutation}
+          pendingDeleteRow={pendingDeleteRow}
+          selectedRowDetail={selectedRowDetail}
+          rowPanelTab={rowPanelTab}
+          setRowPanelTab={setRowPanelTab}
+          copiedTranscriptField={copiedTranscriptField}
+          handleCopyTranscript={handleCopyTranscript}
+          swapSpeakersMutation={swapSpeakersMutation}
+          swappingRowId={swappingRowId}
+          swapError={swapError}
+          setSwapError={setSwapError}
+        />
       )}
 
       {showWorkflowTabs && activeTab === 'evaluations' && (
-      <div className="bg-white shadow rounded-lg p-6">
-        <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
-          <div>
-            <h2 className="text-lg font-semibold text-gray-900">Evaluations</h2>
-            <p className="text-xs text-gray-500 mt-0.5">
-              Click a run to view its results in detail. Use the Run Evaluation
-              button at the top to start a new run.
-            </p>
-          </div>
-          {selectedEvalIds.size > 0 && (() => {
-            // Surface "Abort selected" only when at least one selected
-            // run is still in a cancellable state (``pending`` /
-            // ``running``) — otherwise the button would be a no-op
-            // for the operator and just clutter the toolbar.
-            const items = itemsOf<CallImportEvaluation>(evaluationsData)
-            const cancellableSelected = items.filter(
-              (run) =>
-                selectedEvalIds.has(run.id) &&
-                (run.status === 'pending' || run.status === 'running'),
-            )
-            return (
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-gray-600">
-                  {selectedEvalIds.size} selected
-                </span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setSelectedEvalIds(new Set())}
-                >
-                  Clear
-                </Button>
-                {cancellableSelected.length > 0 && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    leftIcon={<XCircle className="h-4 w-4" />}
-                    isLoading={bulkCancelEvalsMutation.isPending}
-                    disabled={bulkCancelEvalsMutation.isPending}
-                    onClick={() =>
-                      bulkCancelEvalsMutation.mutate(
-                        cancellableSelected.map((run) => run.id),
-                      )
-                    }
-                    className="text-amber-700 hover:text-amber-800 hover:bg-amber-50"
-                    title={`Abort ${cancellableSelected.length} in-progress run${
-                      cancellableSelected.length === 1 ? '' : 's'
-                    }`}
-                  >
-                    Abort selected ({cancellableSelected.length})
-                  </Button>
-                )}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  leftIcon={<Trash2 className="h-4 w-4" />}
-                  onClick={() => {
-                    setBulkDeleteEvalsError(null)
-                    setShowBulkDeleteEvals(true)
-                  }}
-                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                >
-                  Delete selected
-                </Button>
-              </div>
-            )
-          })()}
-        </div>
-
-        {evaluationsWithBulkOperation.length > 0 && (
-          <div className="mb-4 bg-amber-50 border border-amber-200 rounded-lg p-3">
-            <div className="flex items-start gap-2">
-              <Loader2 className="h-4 w-4 text-amber-600 mt-0.5 animate-spin shrink-0" />
-              <div className="flex-1 space-y-2">
-                <p className="text-sm font-medium text-amber-900">
-                  Background operations in progress
-                </p>
-                <ul className="space-y-1">
-                  {evaluationsWithBulkOperation.map((evaluation) => {
-                    const headerLabel = evaluation.name?.trim()
-                      ? evaluation.name
-                      : `Evaluation ${evaluation.id.slice(0, 8)}`
-                    return (
-                      <li
-                        key={evaluation.id}
-                        className="text-xs text-amber-800 flex flex-wrap items-center gap-x-1.5 gap-y-0.5"
-                      >
-                        <Link
-                          to={`/call-imports/${id}/evaluations/${evaluation.id}`}
-                          className="font-medium text-amber-900 hover:text-amber-950 underline-offset-2 hover:underline"
-                        >
-                          {headerLabel}
-                        </Link>
-                        <span aria-hidden="true">·</span>
-                        <span>
-                          {evaluationBulkOperationLabel(
-                            evaluation.bulk_operation!,
-                          )}
-                        </span>
-                      </li>
-                    )
-                  })}
-                </ul>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {(evaluationsData?.items?.length || 0) === 0 ? (
-          <p className="text-sm text-gray-500">
-            No evaluations have been run for this dataset yet.
-          </p>
-        ) : (
-          <div className="overflow-x-auto border border-gray-200 rounded-lg">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="w-10 px-3 py-3">
-                    {(() => {
-                      const items = itemsOf<CallImportEvaluation>(evaluationsData)
-                      const allSelected =
-                        items.length > 0 &&
-                        items.every((row) => selectedEvalIds.has(row.id))
-                      return (
-                        <input
-                          type="checkbox"
-                          aria-label="Select all evaluations"
-                          checked={allSelected}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setSelectedEvalIds(new Set(items.map((row) => row.id)))
-                            } else {
-                              setSelectedEvalIds(new Set())
-                            }
-                          }}
-                        />
-                      )
-                    })()}
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Evaluation
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Run by
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Last updated by
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Progress
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Status
-                  </th>
-                  <th className="w-0 px-2 py-3" aria-hidden />
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-            {itemsOf<CallImportEvaluation>(evaluationsData).map((evaluation) => {
-              const isSelected = selectedEvalIds.has(evaluation.id)
-              const bulkOperationActive = evaluationHasActiveBulkOperation(
-                evaluation,
-              )
-              const headerLabel = evaluation.name?.trim()
-                ? evaluation.name
-                : `Evaluation ${evaluation.id.slice(0, 8)}`
-              const runBy = evaluation.created_by_email?.trim() || '—'
-              const lastUpdatedBy = evaluation.last_updated_by_email?.trim() || '—'
-              return (
-                <tr
-                  key={evaluation.id}
-                  role="link"
-                  tabIndex={0}
-                  onClick={() =>
-                    navigate(
-                      `/call-imports/${id}/evaluations/${evaluation.id}`,
-                    )
-                  }
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault()
-                      navigate(
-                        `/call-imports/${id}/evaluations/${evaluation.id}`,
-                      )
-                    }
-                  }}
-                  className={`cursor-pointer group hover:bg-gray-50 ${
-                    isSelected ? 'bg-primary-50/40' : ''
-                  }`}
-                >
-                  <td
-                    className="px-3 py-4 align-middle"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <input
-                      type="checkbox"
-                      aria-label={`Select ${headerLabel}`}
-                      checked={isSelected}
-                      onChange={(e) => {
-                        setSelectedEvalIds((prev) => {
-                          const next = new Set(prev)
-                          if (e.target.checked) next.add(evaluation.id)
-                          else next.delete(evaluation.id)
-                          return next
-                        })
-                      }}
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                  </td>
-                  <td className="px-4 py-4 align-top min-w-[10rem]">
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium text-gray-900 truncate group-hover:text-primary-700">
-                        {headerLabel}
-                      </div>
-                      <div className="text-xs text-gray-400 font-mono mt-0.5">
-                        {evaluation.id.slice(0, 8)}
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-4 py-4 align-top text-sm text-gray-700 max-w-[12rem]">
-                    <span className="break-all">{runBy}</span>
-                  </td>
-                  <td className="px-4 py-4 align-top text-sm text-gray-700 max-w-[12rem]">
-                    <span className="break-all">{lastUpdatedBy}</span>
-                  </td>
-                  <td className="px-4 py-4 align-top whitespace-nowrap text-sm text-gray-600">
-                    {evaluation.completed_rows}/{evaluation.total_rows} rows
-                  </td>
-                  <td className="px-4 py-4 align-top whitespace-nowrap">
-                    <StatusBadge status={evaluation.status} size="sm" />
-                    {evaluation.bulk_operation && (
-                      <p className="text-[11px] text-amber-700 mt-1 flex items-center gap-1">
-                        <Loader2 className="h-3 w-3 animate-spin shrink-0" />
-                        {evaluationBulkOperationLabel(evaluation.bulk_operation)}
-                      </p>
-                    )}
-                  </td>
-                  <td
-                    className="px-2 py-4 align-top text-right whitespace-nowrap"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    {(evaluation.status === 'pending' ||
-                      evaluation.status === 'running') && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        leftIcon={<XCircle className="h-4 w-4" />}
-                        isLoading={
-                          bulkOperationActive ||
-                          (cancellingEvalId === evaluation.id &&
-                            cancelEvaluationMutation.isPending)
-                        }
-                        disabled={
-                          bulkOperationActive ||
-                          (cancellingEvalId === evaluation.id &&
-                            cancelEvaluationMutation.isPending)
-                        }
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          if (bulkOperationActive) return
-                          cancelEvaluationMutation.mutate(evaluation.id)
-                        }}
-                        className="text-amber-700 hover:text-amber-800 hover:bg-amber-50"
-                        title={
-                          bulkOperationActive
-                            ? 'Wait for the current bulk operation to finish'
-                            : 'Abort this evaluation run'
-                        }
-                      >
-                        Abort
-                      </Button>
-                    )}
-                  </td>
-                </tr>
-              )
-            })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+        <ImportEvaluationsTab
+          importId={id}
+          evaluationsData={evaluationsData}
+          evaluationsWithBulkOperation={evaluationsWithBulkOperation}
+          selectedEvalIds={selectedEvalIds}
+          setSelectedEvalIds={setSelectedEvalIds}
+          setBulkDeleteEvalsError={setBulkDeleteEvalsError}
+          setShowBulkDeleteEvals={setShowBulkDeleteEvals}
+          bulkCancelEvalsMutation={bulkCancelEvalsMutation}
+          cancellingEvalId={cancellingEvalId}
+          cancelEvaluationMutation={cancelEvaluationMutation}
+        />
       )}
 
       {showWorkflowTabs && activeTab === 'insights' && (
-        <div className="bg-white shadow rounded-lg p-6 space-y-6">
-          <div>
-            <h2 className="text-lg font-semibold text-gray-900">Insights</h2>
-            <p className="text-xs text-gray-500 mt-0.5">
-              Cross-run signals for this call import. Trend lines show the
-              mean of each metric across every evaluation; transcript
-              coverage helps you spot rows that still need diarization.
-            </p>
-          </div>
-
-          {insightsLoading || !insightsData ? (
-            <div className="text-center py-12 text-gray-500">
-              <RefreshCw className="h-6 w-6 mx-auto mb-2 animate-spin" />
-              <p>Loading insights…</p>
-            </div>
-          ) : (
-            <>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                <KpiCard
-                  Icon={Database}
-                  label="Total rows"
-                  value={insightsData.total_rows}
-                  tone="indigo"
-                />
-                <KpiCard
-                  Icon={Mic}
-                  label="With transcript"
-                  value={insightsData.rows_with_transcript}
-                  sub={
-                    insightsData.total_rows > 0
-                      ? `${Math.round(
-                          (insightsData.rows_with_transcript /
-                            insightsData.total_rows) *
-                            100,
-                        )}% coverage`
-                      : null
-                  }
-                  tone="emerald"
-                />
-                <KpiCard
-                  Icon={MicOff}
-                  label="Missing transcript"
-                  value={insightsData.rows_without_transcript}
-                  tone={
-                    insightsData.rows_without_transcript > 0
-                      ? 'amber'
-                      : 'gray'
-                  }
-                />
-                <KpiCard
-                  Icon={Activity}
-                  label="Eval runs"
-                  value={insightsData.evaluation_count}
-                  tone="violet"
-                />
-              </div>
-
-              {Object.keys(insightsData.transcript_source_counts).length >
-                0 && (
-                <TranscriptSourceMix
-                  counts={insightsData.transcript_source_counts}
-                />
-              )}
-
-              {insightsData.metrics.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50/40 px-6 py-10 text-center">
-                  <Layers className="h-6 w-6 text-gray-400 mx-auto mb-2" />
-                  <p className="text-sm text-gray-600">
-                    Run at least one evaluation to populate metric trends.
-                  </p>
-                </div>
-              ) : (
-                <div>
-                  <h3 className="text-sm font-semibold text-gray-800 mb-3">
-                    Metric trends
-                  </h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {insightsData.metrics.map((m) => (
-                      <InsightsMetricCard key={m.metric_id} metric={m} />
-                    ))}
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-        </div>
+        <ImportInsightsTab
+          insightsLoading={insightsLoading}
+          insightsData={insightsData}
+        />
       )}
-
-      {partialsImportTarget !== null &&
-        renderModal(
-          <div
-            className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[10000]"
-            onClick={closePartialsImportModal}
-          >
-            <div
-              className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[85vh] overflow-hidden flex flex-col"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-                <h3 className="text-lg font-semibold text-gray-900">
-                  Import diarisation prompt from saved partials
-                </h3>
-                <button
-                  onClick={closePartialsImportModal}
-                  className="text-gray-400 hover:text-gray-600"
-                  aria-label="Close prompt partials modal"
-                  disabled={importPartialMutation.isPending}
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
-              <div className="p-6 space-y-4 overflow-y-auto flex-1">
-                <p className="text-xs text-gray-500">
-                  Pick a saved Prompt Partial; its content will replace
-                  the current diarisation prompt textarea.
-                </p>
-                <input
-                  type="text"
-                  value={partialsSearchInput}
-                  onChange={(e) => setPartialsSearchInput(e.target.value)}
-                  placeholder="Search saved prompts..."
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                />
-
-                {isLoadingPartials ? (
-                  <div className="flex items-center justify-center py-8 text-sm text-gray-500">
-                    <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                    Loading saved prompts...
-                  </div>
-                ) : promptPartials.length === 0 ? (
-                  <div className="rounded-lg border border-gray-200 p-8 text-center text-sm text-gray-500">
-                    {partialsSearchQuery
-                      ? `No saved prompt partials match “${partialsSearchQuery}”.`
-                      : 'No saved prompt partials yet.'}
-                  </div>
-                ) : (
-                  <div className="space-y-2 max-h-[45vh] overflow-y-auto">
-                    {promptPartials.map((partial) => {
-                      const isSelected = selectedPartialId === partial.id
-                      return (
-                        <label
-                          key={partial.id}
-                          className={`block cursor-pointer rounded-lg border p-3 transition-colors ${
-                            isSelected
-                              ? 'border-primary-300 bg-primary-50'
-                              : 'border-gray-200 hover:bg-gray-50'
-                          }`}
-                        >
-                          <div className="flex items-start gap-3">
-                            <input
-                              type="radio"
-                              name="call-import-prompt-partial"
-                              checked={isSelected}
-                              onChange={() =>
-                                setSelectedPartialId(partial.id)
-                              }
-                              className="mt-1 h-4 w-4 border-gray-300 text-primary-600 focus:ring-primary-500"
-                            />
-                            <div className="min-w-0 flex-1">
-                              <p className="text-sm font-semibold text-gray-900">
-                                {partial.name}
-                              </p>
-                              {partial.description ? (
-                                <p className="mt-0.5 text-xs text-gray-500">
-                                  {partial.description}
-                                </p>
-                              ) : null}
-                            </div>
-                          </div>
-                        </label>
-                      )
-                    })}
-                  </div>
-                )}
-
-                {partialsImportError && (
-                  <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
-                    {partialsImportError}
-                  </div>
-                )}
-              </div>
-              <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-2 bg-gray-50 rounded-b-lg">
-                <Button
-                  variant="outline"
-                  onClick={closePartialsImportModal}
-                  disabled={importPartialMutation.isPending}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  variant="primary"
-                  onClick={() =>
-                    importPartialMutation.mutate(selectedPartialId)
-                  }
-                  isLoading={importPartialMutation.isPending}
-                  disabled={!selectedPartialId}
-                >
-                  Use Selected Prompt
-                </Button>
-              </div>
-            </div>
-          </div>,
-        )}
-
-      {savePartialTarget !== null &&
-        renderModal(
-          (() => {
-            const currentContent =
-              savePartialTarget === 'standalone'
-                ? transcribeDiarisationPrompt
-                : evalDiarisationPrompt
-            const trimmedContent = currentContent.trim()
-            const canSubmit =
-              savePartialMode === 'new'
-                ? !!savePartialName.trim() && !!trimmedContent
-                : !!savePartialExistingId && !!trimmedContent
-            return (
-              <div
-                className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[10000]"
-                onClick={closeSavePartialModal}
-              >
-                <div
-                  className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[85vh] overflow-hidden flex flex-col"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-                    <h3 className="text-lg font-semibold text-gray-900">
-                      Save diarisation prompt to partials
-                    </h3>
-                    <button
-                      onClick={closeSavePartialModal}
-                      className="text-gray-400 hover:text-gray-600"
-                      aria-label="Close save prompt partial modal"
-                      disabled={savePartialMutation.isPending}
-                    >
-                      <X className="h-5 w-5" />
-                    </button>
-                  </div>
-                  <div className="p-6 space-y-4 overflow-y-auto flex-1">
-                    <div
-                      role="tablist"
-                      aria-label="Save prompt mode"
-                      className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5"
-                    >
-                      <button
-                        type="button"
-                        role="tab"
-                        aria-pressed={savePartialMode === 'new'}
-                        onClick={() => {
-                          setSavePartialMode('new')
-                          setSavePartialError(null)
-                        }}
-                        className={`px-3 py-1 text-xs font-medium rounded-md transition ${
-                          savePartialMode === 'new'
-                            ? 'bg-white text-gray-900 shadow-sm ring-1 ring-inset ring-gray-200'
-                            : 'text-gray-600 hover:text-gray-900'
-                        }`}
-                      >
-                        Save as new
-                      </button>
-                      <button
-                        type="button"
-                        role="tab"
-                        aria-pressed={savePartialMode === 'existing'}
-                        onClick={() => {
-                          setSavePartialMode('existing')
-                          setSavePartialError(null)
-                        }}
-                        className={`px-3 py-1 text-xs font-medium rounded-md transition ${
-                          savePartialMode === 'existing'
-                            ? 'bg-white text-gray-900 shadow-sm ring-1 ring-inset ring-gray-200'
-                            : 'text-gray-600 hover:text-gray-900'
-                        }`}
-                      >
-                        Update existing
-                      </button>
-                    </div>
-
-                    {!trimmedContent && (
-                      <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-                        The diarisation prompt textarea is empty — there's
-                        nothing to save yet.
-                      </div>
-                    )}
-
-                    {savePartialMode === 'new' ? (
-                      <div className="space-y-3">
-                        <div>
-                          <label className="block text-xs font-medium text-gray-700 mb-1">
-                            Name
-                            <span
-                              className="ml-1 text-red-600"
-                              aria-label="required"
-                            >
-                              *
-                            </span>
-                          </label>
-                          <input
-                            type="text"
-                            value={savePartialName}
-                            onChange={(e) =>
-                              setSavePartialName(e.target.value)
-                            }
-                            placeholder="e.g. Hindi support — Gemini diarisation"
-                            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-medium text-gray-700 mb-1">
-                            Description
-                          </label>
-                          <textarea
-                            value={savePartialDescription}
-                            onChange={(e) =>
-                              setSavePartialDescription(e.target.value)
-                            }
-                            rows={2}
-                            placeholder="Optional: short context for teammates browsing the library."
-                            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                          />
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="space-y-3">
-                        <p className="text-xs text-gray-500">
-                          Pick the saved Prompt Partial to overwrite. A new
-                          version row is appended — previous versions stay
-                          in the partial's history and can be reverted to.
-                        </p>
-                        <input
-                          type="text"
-                          value={partialsSearchInput}
-                          onChange={(e) =>
-                            setPartialsSearchInput(e.target.value)
-                          }
-                          placeholder="Search saved prompts..."
-                          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                        />
-
-                        {isLoadingPartials ? (
-                          <div className="flex items-center justify-center py-8 text-sm text-gray-500">
-                            <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                            Loading saved prompts...
-                          </div>
-                        ) : promptPartials.length === 0 ? (
-                          <div className="rounded-lg border border-gray-200 p-8 text-center text-sm text-gray-500">
-                            {partialsSearchQuery
-                              ? `No saved prompt partials match “${partialsSearchQuery}”.`
-                              : 'No saved prompt partials yet. Switch to "Save as new" to create one.'}
-                          </div>
-                        ) : (
-                          <div className="space-y-2 max-h-[35vh] overflow-y-auto">
-                            {promptPartials.map((partial) => {
-                              const isSelected =
-                                savePartialExistingId === partial.id
-                              return (
-                                <label
-                                  key={partial.id}
-                                  className={`block cursor-pointer rounded-lg border p-3 transition-colors ${
-                                    isSelected
-                                      ? 'border-primary-300 bg-primary-50'
-                                      : 'border-gray-200 hover:bg-gray-50'
-                                  }`}
-                                >
-                                  <div className="flex items-start gap-3">
-                                    <input
-                                      type="radio"
-                                      name="call-import-save-partial"
-                                      checked={isSelected}
-                                      onChange={() =>
-                                        setSavePartialExistingId(partial.id)
-                                      }
-                                      className="mt-1 h-4 w-4 border-gray-300 text-primary-600 focus:ring-primary-500"
-                                    />
-                                    <div className="min-w-0 flex-1">
-                                      <p className="text-sm font-semibold text-gray-900">
-                                        {partial.name}
-                                      </p>
-                                      {partial.description ? (
-                                        <p className="mt-0.5 text-xs text-gray-500">
-                                          {partial.description}
-                                        </p>
-                                      ) : null}
-                                    </div>
-                                  </div>
-                                </label>
-                              )
-                            })}
-                          </div>
-                        )}
-                        <div>
-                          <label className="block text-xs font-medium text-gray-700 mb-1">
-                            Change summary
-                          </label>
-                          <input
-                            type="text"
-                            value={savePartialChangeSummary}
-                            onChange={(e) =>
-                              setSavePartialChangeSummary(e.target.value)
-                            }
-                            placeholder="Optional: what changed in this version?"
-                            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                          />
-                        </div>
-                      </div>
-                    )}
-
-                    <details className="rounded-md border border-gray-200 bg-gray-50 p-3 text-xs">
-                      <summary className="cursor-pointer font-medium text-gray-700">
-                        Preview prompt content
-                        <span className="ml-1 font-normal text-gray-500">
-                          ({trimmedContent.length} chars)
-                        </span>
-                      </summary>
-                      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded border border-gray-200 bg-white p-2 font-mono text-[11px] text-gray-800">
-                        {trimmedContent || '(empty)'}
-                      </pre>
-                    </details>
-
-                    {savePartialError && (
-                      <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
-                        {savePartialError}
-                      </div>
-                    )}
-                    {savePartialSuccess && (
-                      <div className="rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-800">
-                        {savePartialSuccess}
-                      </div>
-                    )}
-                  </div>
-                  <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-2 bg-gray-50 rounded-b-lg">
-                    <Button
-                      variant="outline"
-                      onClick={closeSavePartialModal}
-                      disabled={savePartialMutation.isPending}
-                    >
-                      Cancel
-                    </Button>
-                    <Button
-                      variant="primary"
-                      onClick={() =>
-                        savePartialMutation.mutate({
-                          content: trimmedContent,
-                          mode: savePartialMode,
-                          name: savePartialName.trim(),
-                          description: savePartialDescription.trim(),
-                          partialId: savePartialExistingId,
-                          changeSummary: savePartialChangeSummary.trim(),
-                        })
-                      }
-                      isLoading={savePartialMutation.isPending}
-                      disabled={!canSubmit}
-                    >
-                      {savePartialMode === 'new'
-                        ? 'Create Partial'
-                        : 'Save New Version'}
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            )
-          })(),
-        )}
-
-      {showTranscribeModal &&
-        renderModal(
-          (() => {
-            const targets = transcribeTargetRows ?? []
-            const headerLabel = bulkSelectionFilter
-              ? `Transcribe ${selectedCount} rows (matching filters)`
-              : targets.length === 1
-                ? `Transcribe row #${(targets[0]?.row_index ?? 0) + 1}`
-                : `Transcribe ${targets.length} rows`
-            // The STT picker is only required in the legacy two-stage
-            // path; the new ``llm_only`` path skips STT entirely so we
-            // drop the STT-validity check from ``canSubmit`` when that
-            // mode is active. The diariser LLM picker is required in
-            // both modes (it's the model that produces the turns).
-            const canSubmit =
-              (transcribeMode === 'llm_only'
-                ? true
-                : !!transcribeSTT.provider && !!transcribeSTT.model) &&
-              isLLMSelectionComplete(transcribeDiariserLLM, aiProviders) &&
-              (bulkSelectionFilter !== null || targets.length > 0) &&
-              !transcribeRowsMutation.isPending
-            return (
-              <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">
-                <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] flex flex-col">
-                  <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-                    <h3 className="text-lg font-semibold">{headerLabel}</h3>
-                    <button
-                      onClick={() => {
-                        if (transcribeRowsMutation.isPending) return
-                        setShowTranscribeModal(false)
-                        setTranscribeTargetRows(null)
-                      }}
-                      className="text-gray-400 hover:text-gray-600"
-                    >
-                      <X className="h-5 w-5" />
-                    </button>
-                  </div>
-                  <div className="p-6 space-y-4 overflow-y-auto">
-                    {/* Mode toggle: STT+LLM vs LLM only. Rendered as a
-                        segmented control so the active path is
-                        unambiguous at a glance and the user can flip
-                        between the two without scrolling. */}
-                    <div className="space-y-2">
-                      <p className="text-xs uppercase tracking-wide text-gray-500 font-semibold">
-                        Diarisation mode
-                      </p>
-                      {/* Order intentionally puts LLM-only on the LEFT
-                          (the recommended default) and STT+LLM on the
-                          RIGHT, badged as "Advanced". This matches the
-                          product direction: audio-in multimodal is the
-                          first-class path and the two-stage STT pipeline
-                          is the escape hatch for orgs that need a
-                          specific STT contract or transcript artefact. */}
-                      <div
-                        role="tablist"
-                        aria-label="Diarisation mode"
-                        className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5"
-                      >
-                        <button
-                          type="button"
-                          role="tab"
-                          aria-pressed={transcribeMode === 'llm_only'}
-                          onClick={() => setTranscribeMode('llm_only')}
-                          className={`px-3 py-1.5 text-xs font-medium rounded-md transition ${
-                            transcribeMode === 'llm_only'
-                              ? 'bg-white text-gray-900 shadow-sm'
-                              : 'text-gray-600 hover:text-gray-900'
-                          }`}
-                        >
-                          LLM only (audio in)
-                        </button>
-                        <button
-                          type="button"
-                          role="tab"
-                          aria-pressed={transcribeMode === 'stt_llm'}
-                          onClick={() => setTranscribeMode('stt_llm')}
-                          className={`px-3 py-1.5 text-xs font-medium rounded-md transition inline-flex items-center gap-1.5 ${
-                            transcribeMode === 'stt_llm'
-                              ? 'bg-white text-gray-900 shadow-sm'
-                              : 'text-gray-600 hover:text-gray-900'
-                          }`}
-                        >
-                          STT + LLM diariser
-                          <span className="rounded-full bg-gray-200 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-gray-600">
-                            Advanced
-                          </span>
-                        </button>
-                      </div>
-                      <p className="text-[11px] text-gray-500">
-                        {transcribeMode === 'llm_only'
-                          ? 'Recommended. Single-stage pipeline: the audio is fed directly to a multimodal LLM along with your prompt; the model both transcribes and diarises in one call. Pick a model that accepts audio input (e.g. Gemini 1.5/2.0, GPT-4o audio-preview). Recordings longer than about 8 minutes depend on the model’s output token limit—if diarisation fails or looks cut off, switch to STT + LLM diariser.'
-                          : 'Advanced fallback. Two-stage pipeline: STT transcribes the audio, then an LLM splits it into agent / user turns using your prompt. Use this when you need a specific STT contract, longer recordings, or to reuse an existing transcript artefact.'}
-                      </p>
-                    </div>
-                    {transcribeMode === 'stt_llm' && (
-                      <div className="space-y-2">
-                        <p className="text-xs uppercase tracking-wide text-gray-500 font-semibold">
-                          1. Speech-to-text
-                        </p>
-                        <p className="text-sm text-gray-600">
-                          The STT step produces plain text only; the LLM
-                          below splits it into agent / user turns.
-                        </p>
-                        <ProviderModelPicker
-                          kind="stt"
-                          value={transcribeSTT}
-                          onChange={setTranscribeSTT}
-                          providerAllowList={STT_PROVIDER_ALLOWLIST}
-                          defaultLabel="Pick an STT provider"
-                          allowCredentialPick
-                        />
-                        <input
-                          type="text"
-                          value={transcribeLanguage}
-                          onChange={(e) =>
-                            setTranscribeLanguage(e.target.value)
-                          }
-                          placeholder="Language hint (e.g. en, hi)"
-                          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                        />
-                      </div>
-                    )}
-                    <div className="space-y-2 pt-1 border-t border-gray-100">
-                      <p className="text-xs uppercase tracking-wide text-gray-500 font-semibold pt-3">
-                        {transcribeMode === 'stt_llm'
-                          ? '2. LLM diariser'
-                          : 'Multimodal diariser LLM'}
-                      </p>
-                      <p className="text-sm text-gray-600">
-                        {transcribeMode === 'stt_llm' ? (
-                          <>
-                            Pick a chat model and tweak the prompt below.
-                            The model receives the STT plain text and the
-                            prompt and must return a JSON array of{' '}
-                            <code className="px-1 bg-gray-100 rounded text-[11px]">
-                              {'{ speaker, text }'}
-                            </code>{' '}
-                            turns.
-                          </>
-                        ) : (
-                          <>
-                            Pick a chat model that accepts audio input
-                            (e.g. <code className="px-1 bg-gray-100 rounded text-[11px]">gemini-2.5-flash</code>,{' '}
-                            <code className="px-1 bg-gray-100 rounded text-[11px]">gpt-4o-audio-preview</code>).
-                            The model receives the recording bytes and
-                            the prompt and must return a JSON array of{' '}
-                            <code className="px-1 bg-gray-100 rounded text-[11px]">
-                              {'{ speaker, text }'}
-                            </code>{' '}
-                            turns.
-                          </>
-                        )}
-                      </p>
-                      <ProviderModelPicker
-                        kind="llm"
-                        value={transcribeDiariserLLM}
-                        onChange={setTranscribeDiariserLLM}
-                        defaultLabel="Pick an LLM for diarisation"
-                        allowCredentialPick
-                        audioCapableOnly={transcribeMode === 'llm_only'}
-                      />
-                      <div className="flex items-center justify-between pt-1">
-                        <label className="text-xs font-medium text-gray-700">
-                          Diarisation prompt
-                        </label>
-                        <div className="flex items-center gap-3">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setPartialsImportError(null)
-                              setSelectedPartialId('')
-                              setPartialsSearchInput('')
-                              setPartialsSearchQuery('')
-                              setPartialsImportTarget('standalone')
-                            }}
-                            className="text-[11px] text-primary-600 hover:text-primary-700"
-                          >
-                            Import from saved partials
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => openSavePartialModal('standalone')}
-                            disabled={!transcribeDiarisationPrompt.trim()}
-                            title={
-                              transcribeDiarisationPrompt.trim()
-                                ? 'Save the current prompt to your Prompt Partials library'
-                                : 'Enter or import a prompt first'
-                            }
-                            className="text-[11px] text-primary-600 hover:text-primary-700 disabled:text-gray-400 disabled:cursor-not-allowed"
-                          >
-                            Save as partial
-                          </button>
-                          {defaultDiarisationPrompt && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setTranscribeDiarisationPrompt(
-                                  defaultDiarisationPrompt,
-                                )
-                              }
-                              className="text-[11px] text-primary-600 hover:text-primary-700"
-                            >
-                              Reset to default
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                      <textarea
-                        value={transcribeDiarisationPrompt}
-                        onChange={(e) =>
-                          setTranscribeDiarisationPrompt(e.target.value)
-                        }
-                        rows={10}
-                        placeholder={
-                          defaultDiarisationPrompt ||
-                          'Describe how the LLM should split the transcript into agent / user turns…'
-                        }
-                        className="w-full px-3 py-2 text-xs font-mono border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                      />
-                      <p className="text-[11px] text-gray-500">
-                        Leave blank to fall back to the canonical default
-                        prompt the worker ships with.
-                      </p>
-                    </div>
-                    <label className="flex items-start gap-2 text-xs pt-2 border-t border-gray-100">
-                      <input
-                        type="checkbox"
-                        className="mt-0.5"
-                        checked={transcribeOverwriteStandalone}
-                        onChange={(e) =>
-                          setTranscribeOverwriteStandalone(e.target.checked)
-                        }
-                      />
-                      <span>
-                        Overwrite existing transcripts (otherwise rows
-                        with a transcript are skipped).
-                      </span>
-                    </label>
-                    {transcribeError && (
-                      <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
-                        {transcribeError}
-                      </div>
-                    )}
-                  </div>
-                  <div className="px-6 py-4 border-t border-gray-200 flex gap-2 bg-gray-50 rounded-b-lg">
-                    <Button
-                      variant="outline"
-                      onClick={() => {
-                        if (transcribeRowsMutation.isPending) return
-                        setShowTranscribeModal(false)
-                        setTranscribeTargetRows(null)
-                      }}
-                      disabled={transcribeRowsMutation.isPending}
-                      className="flex-1"
-                    >
-                      Cancel
-                    </Button>
-                    <Button
-                      variant="primary"
-                      isLoading={transcribeRowsMutation.isPending}
-                      disabled={!canSubmit}
-                      onClick={() =>
-                        transcribeRowsMutation.mutate({
-                          rowIds: bulkSelectionFilter
-                            ? null
-                            : targets.map((r) => r.id),
-                          mode: transcribeMode,
-                          stt: transcribeSTT,
-                          diariserLLM: transcribeDiariserLLM,
-                          diarisationPrompt: transcribeDiarisationPrompt,
-                          language: transcribeLanguage,
-                          overwrite: transcribeOverwriteStandalone,
-                        })
-                      }
-                      className="flex-1"
-                    >
-                      Start
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            )
-          })(),
-        )}
-
-      {showRunEval &&
-        renderModal(
-          (() => {
-            const enabledMetrics = metrics.filter((m: any) => m.enabled)
-            const disabledMetrics = metrics.filter((m: any) => !m.enabled)
-            const allSelectableIds = enabledMetrics.flatMap((metric: any) => {
-              const children: any[] = Array.isArray(metric.children)
-                ? metric.children.filter((c: any) => c.enabled)
-                : []
-              const isParent =
-                !!metric.selection_mode && children.length > 0
-              if (isParent) {
-                return [metric.id, ...children.map((c: any) => c.id)]
-              }
-              return [metric.id]
-            })
-            const allMetricsSelected =
-              allSelectableIds.length > 0 &&
-              allSelectableIds.every((metricId) =>
-                selectedMetricIds.includes(metricId),
-              )
-            // Group the user's selection into "override targets" — one
-            // entry per parent categorization metric (regardless of how
-            // many of its labels are picked) and one entry per standalone
-            // metric. This drives the per-metric LLM override UI: we
-            // surface ONE picker per chosen metric, never one per label.
-            // The picker keys overrides by parent id for hierarchical
-            // metrics; the backend already accepts parent ids and
-            // expands them to every child of that parent.
-            type OverrideTarget = {
-              id: string
-              name: string
-              isHierarchical: boolean
-              selectedChildCount: number
-            }
-            const selectedSet = new Set(selectedMetricIds)
-            const overrideTargets: OverrideTarget[] = []
-            for (const metric of enabledMetrics as any[]) {
-              const children: any[] = Array.isArray(metric.children)
-                ? metric.children.filter((c: any) => c.enabled)
-                : []
-              const isHierarchical =
-                !!metric.selection_mode && children.length > 0
-              if (isHierarchical) {
-                const selectedChildCount = children.filter((c: any) =>
-                  selectedSet.has(c.id),
-                ).length
-                if (selectedChildCount > 0) {
-                  overrideTargets.push({
-                    id: metric.id,
-                    name: metric.name,
-                    isHierarchical: true,
-                    selectedChildCount,
-                  })
-                }
-              } else if (selectedSet.has(metric.id)) {
-                overrideTargets.push({
-                  id: metric.id,
-                  name: metric.name,
-                  isHierarchical: false,
-                  selectedChildCount: 0,
-                })
-              }
-            }
-            const overrideTargetIds = new Set(
-              overrideTargets.map((t) => t.id),
-            )
-            // Classification metrics are scored only by System 1 (Jev) models;
-            // standard metrics only by regular LLM judges. Split the selection so
-            // each group gets a compatible model picker.
-            const classificationTargetIds = new Set(
-              enabledMetrics
-                .filter((m) => isClassificationMetric(m) && overrideTargetIds.has(m.id))
-                .map((m) => m.id as string),
-            )
-            const classificationTargets = overrideTargets.filter((t) =>
-              classificationTargetIds.has(t.id),
-            )
-            const standardTargetCount =
-              overrideTargets.length - classificationTargets.length
-            const hasClassificationSelected = classificationTargets.length > 0
-            const hasStandardSelected = standardTargetCount > 0
-            const classificationLLMComplete =
-              aiProviders.length > 0 &&
-              isLLMSelectionComplete(classificationLLM, aiProviders) &&
-              isClassificationCapableModel(
-                resolveLLMModelForSubmit(classificationLLM, aiProviders) ??
-                  classificationLLM.model ??
-                  '',
-              )
-            const runError = runEvaluationMutation.isError
-              ? (runEvaluationMutation.error as any)?.response?.data?.detail ||
-                'Failed to start evaluation.'
-              : null
-            return (
-              <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">
-                <div className="bg-white rounded-lg shadow-xl max-w-5xl w-full mx-4">
-                  <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-                    <h3 className="text-lg font-semibold">Run Evaluation</h3>
-                    <button
-                      onClick={() => {
-                        if (runEvaluationMutation.isPending) return
-                        setShowRunEval(false)
-                      }}
-                      className="text-gray-400 hover:text-gray-600"
-                    >
-                      <X className="h-5 w-5" />
-                    </button>
-                  </div>
-                  <div className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
-                    <div className="flex items-start justify-between gap-3">
-                      <p className="text-sm text-gray-600">
-                        Fetches recordings, diarizes, and scores each row in this
-                        batch. Pick metrics and models below
-                        {data.status === 'mapped'
-                          ? ', plus telephony credentials for recording fetch.'
-                          : '.'}
-                      </p>
-                      <Link
-                        to="/metrics-management"
-                        className="text-xs font-medium text-primary-700 hover:text-primary-900 whitespace-nowrap"
-                      >
-                        Manage metrics →
-                      </Link>
-                    </div>
-
-                    <div>
-                      <label
-                        htmlFor="run-eval-name"
-                        className="block text-xs font-medium text-gray-700 mb-1"
-                      >
-                        Name this run{' '}
-                        <span className="text-gray-400 font-normal">(optional)</span>
-                      </label>
-                      <input
-                        id="run-eval-name"
-                        type="text"
-                        value={runDraftName}
-                        onChange={(e) => setRunDraftName(e.target.value)}
-                        placeholder="e.g. March QA pass"
-                        maxLength={255}
-                        disabled={runEvaluationMutation.isPending}
-                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent disabled:opacity-60"
-                      />
-                      <p className="mt-1 text-[11px] text-gray-500">
-                        Leave blank to fall back to the run's UUID prefix.
-                      </p>
-                    </div>
-
-                    {data.status === 'mapped' && (
-                      <div className="rounded-lg border border-gray-200 bg-gray-50/80 p-4 space-y-3">
-                        <div>
-                          <h4 className="text-sm font-semibold text-gray-900">
-                            Recording fetch
-                          </h4>
-                          <p className="text-xs text-gray-600 mt-0.5">
-                            Credentials used to download each row&apos;s recording as
-                            part of this evaluation run.
-                          </p>
-                        </div>
-                        <TelephonyCredentialPicker
-                          selectedProvider={evalTelephonyProvider}
-                          selectedIntegrationId={evalTelephonyIntegrationId}
-                          onProviderChange={setEvalTelephonyProvider}
-                          onIntegrationChange={setEvalTelephonyIntegrationId}
-                          disabled={runEvaluationMutation.isPending}
-                          compact
-                        />
-                      </div>
-                    )}
-
-                    {enabledMetrics.length === 0 ? (
-                      <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 space-y-2">
-                        <p className="font-medium">No enabled agent metrics yet.</p>
-                        <p>
-                          Evaluations only run against metrics that are <strong>enabled</strong> on
-                          your organization and support the <strong>agent</strong> surface.
-                        </p>
-                        {disabledMetrics.length > 0 ? (
-                          <p>
-                            You have {disabledMetrics.length} disabled metric
-                            {disabledMetrics.length === 1 ? '' : 's'} (
-                            {disabledMetrics
-                              .slice(0, 3)
-                              .map((m: any) => m.name)
-                              .join(', ')}
-                            {disabledMetrics.length > 3 ? ', …' : ''}). Open Metrics to enable
-                            them.
-                          </p>
-                        ) : (
-                          <p>You don't have any metrics yet — create one in Metrics first.</p>
-                        )}
-                        <Link
-                          to="/metrics-management"
-                          className="inline-block font-medium text-amber-900 underline hover:text-amber-700"
-                        >
-                          Open Metrics →
-                        </Link>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
-                        <div className="space-y-3">
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between gap-2">
-                            <p className="text-xs uppercase tracking-wide font-semibold text-gray-500">
-                              Enabled metrics ({enabledMetrics.length})
-                              <span
-                                className="ml-1 text-red-600 normal-case"
-                                aria-label="required"
-                                title="At least one metric is required"
-                              >
-                                *
-                              </span>
-                            </p>
-                            <div className="flex items-center gap-2">
-                              {enabledMetrics.length > 0 && (
-                                <button
-                                  type="button"
-                                  className="text-[11px] text-primary-600 hover:text-primary-700 disabled:opacity-50"
-                                  disabled={runEvaluationMutation.isPending}
-                                  onClick={() => {
-                                    if (allMetricsSelected) {
-                                      setSelectedMetricIds([])
-                                    } else {
-                                      setSelectedMetricIds(allSelectableIds)
-                                    }
-                                  }}
-                                >
-                                  {allMetricsSelected ? 'Clear all' : 'Select all'}
-                                </button>
-                              )}
-                              {selectedMetricIds.length === 0 ? (
-                                <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200">
-                                  <AlertCircle className="h-3 w-3" />
-                                  Pick at least one
-                                </span>
-                              ) : (
-                                <span className="text-[10px] font-medium text-gray-500">
-                                  {selectedMetricIds.length} selected
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                          <div className="border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-64 overflow-y-auto">
-                          {enabledMetrics.map((metric: any) => {
-                            const children: any[] = Array.isArray(metric.children)
-                              ? metric.children.filter((c: any) => c.enabled)
-                              : []
-                            const isParent =
-                              !!metric.selection_mode && children.length > 0
-                            if (!isParent) {
-                              return (
-                                <label
-                                  key={metric.id}
-                                  className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer text-sm"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={selectedMetricIds.includes(metric.id)}
-                                    onChange={() => toggleMetric(metric.id)}
-                                    disabled={runEvaluationMutation.isPending}
-                                    className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                                  />
-                                  <span className="font-medium text-gray-900 truncate">
-                                    {metric.name}
-                                  </span>
-                                </label>
-                              )
-                            }
-                            const childIds = children.map((c) => c.id)
-                            const selectedChildCount = childIds.filter((cid) =>
-                              selectedMetricIds.includes(cid),
-                            ).length
-                            const allChildrenSelected =
-                              selectedChildCount === childIds.length &&
-                              childIds.length > 0
-                            const someChildrenSelected =
-                              selectedChildCount > 0 && !allChildrenSelected
-                            return (
-                              <label
-                                key={metric.id}
-                                className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer text-sm"
-                              >
-                                <input
-                                  type="checkbox"
-                                  ref={(el) => {
-                                    if (el) {
-                                      el.indeterminate = someChildrenSelected
-                                    }
-                                  }}
-                                  checked={allChildrenSelected}
-                                  onChange={() => toggleParentMetric(metric)}
-                                  disabled={runEvaluationMutation.isPending}
-                                  className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                                />
-                                <span className="min-w-0 flex-1 flex items-baseline gap-2">
-                                  <span className="font-medium text-gray-900 truncate">
-                                    {metric.name}
-                                  </span>
-                                  {someChildrenSelected ? (
-                                    <span className="text-[11px] text-gray-500 whitespace-nowrap">
-                                      {selectedChildCount}/{childIds.length} labels
-                                    </span>
-                                  ) : null}
-                                </span>
-                              </label>
-                            )
-                          })}
-                          </div>
-                        </div>
-
-                        {disabledMetrics.length > 0 && (
-                          <details className="rounded-md border border-gray-200 bg-gray-50 p-3 text-sm">
-                            <summary className="cursor-pointer font-medium text-gray-700">
-                              {disabledMetrics.length} disabled metric
-                              {disabledMetrics.length === 1 ? '' : 's'} hidden
-                            </summary>
-                            <ul className="mt-2 space-y-1 text-xs text-gray-600">
-                              {disabledMetrics.map((metric: any) => (
-                                <li key={metric.id} className="flex items-baseline gap-2">
-                                  <span className="line-through">{metric.name}</span>
-                                  <span className="text-gray-400">— disabled</span>
-                                </li>
-                              ))}
-                            </ul>
-                            <Link
-                              to="/metrics-management"
-                              className="mt-2 inline-block text-xs font-medium text-primary-700 hover:text-primary-900"
-                            >
-                              Enable them in Metrics →
-                            </Link>
-                          </details>
-                        )}
-                        </div>
-
-                        <div className="space-y-3">
-                        {hasClassificationSelected && (
-                          <RunEvaluationClassificationModel
-                            value={classificationLLM}
-                            onChange={setClassificationLLM}
-                            metricNames={classificationTargets.map((t) => t.name)}
-                            hasCompatibleCredential={aiProviders.some(
-                              (p) =>
-                                p.is_active &&
-                                (p.enabled_models?.some?.((m: string) => isClassificationCapableModel(m)) ||
-                                  isClassificationCapableModel(p.gateway_model ?? '') ||
-                                  ['openrouter', 'typesafe'].includes(String(p.provider).toLowerCase())),
-                            )}
-                            complete={classificationLLMComplete}
-                          />
-                        )}
-                        {/* Run-level LLM config */}
-                        {(() => {
-                          const llmPartial =
-                            aiProviders.length > 0 &&
-                            isLLMSelectionPartial(runLLM, aiProviders)
-                          return (
-                            <div
-                              className={`rounded-md border p-3 space-y-2 ${
-                                llmPartial
-                                  ? 'border-red-300 bg-red-50/40'
-                                  : 'border-gray-200 bg-gray-50'
-                              }`}
-                            >
-                              <p className="text-xs uppercase tracking-wide font-semibold text-gray-500">
-                                {hasClassificationSelected ? 'Evaluation LLM · standard metrics' : 'Evaluation LLM'}
-                              </p>
-                              <p className="text-[11px] text-gray-500">
-                                {hasClassificationSelected && !hasStandardSelected
-                                  ? 'Only classification metrics are selected — they use the System 1 model above. Pick an LLM here only if you add standard metrics.'
-                                  : hasClassificationSelected
-                                    ? `Scores the ${standardTargetCount} standard metric${standardTargetCount === 1 ? '' : 's'}. Jev (classification) models are hidden here; Together Tev models are available. Leave empty to keep the default (OpenAI · gpt-4o).`
-                                    : 'Pick the LLM that scores every selected metric. Leave empty to keep the default (OpenAI · gpt-4o).'}
-                              </p>
-                              <AIProviderModelPicker
-                                provider={runLLM.provider ?? ''}
-                                model={runLLM.model ?? ''}
-                                credentialId={runLLM.credential_id ?? ''}
-                                modelFilter={isStandardJudgeModel}
-                                incompatibleHint="This credential only exposes Jev classification models, which cannot score standard metrics. Use Together Tev or a chat model instead."
-                                onSelectionChange={(next) =>
-                                  setRunLLM((prev) => ({
-                                    ...prev,
-                                    provider: next.provider || null,
-                                    model: next.model || null,
-                                    credential_id: next.credentialId || null,
-                                  }))
-                                }
-                                onProviderChange={(next) =>
-                                  setRunLLM((prev) => ({
-                                    ...prev,
-                                    provider: next || null,
-                                  }))
-                                }
-                                onCredentialIdChange={(next) =>
-                                  setRunLLM((prev) => ({
-                                    ...prev,
-                                    credential_id: next || null,
-                                  }))
-                                }
-                                onModelChange={(next) =>
-                                  setRunLLM((prev) => ({
-                                    ...prev,
-                                    model: next || null,
-                                  }))
-                                }
-                                llm_config={runLLM.llm_config ?? null}
-                                onLLMConfigChange={(llm_config) =>
-                                  setRunLLM((prev) => ({ ...prev, llm_config }))
-                                }
-                              />
-                              {llmPartial && (
-                                <p className="flex items-start gap-1 text-[11px] font-medium text-red-700">
-                                  <AlertCircle className="h-3 w-3 mt-0.5 flex-shrink-0" />
-                                  <span>
-                                    {runLLM.provider || runLLM.credential_id
-                                      ? 'Pick a complete LLM credential (including Custom gateway models), or clear the selection to use the default.'
-                                      : 'Pick a provider for this model, or clear the model to use the default.'}
-                                  </span>
-                                </p>
-                              )}
-
-                          {overrideTargets.length > 0 && (
-                            <div className="pt-2 border-t border-gray-200">
-                              <button
-                                type="button"
-                                onClick={() => setShowAdvancedLLM((s) => !s)}
-                                className="text-[11px] font-medium text-primary-700 hover:text-primary-900"
-                              >
-                                {showAdvancedLLM ? 'Hide' : 'Show'} per-metric overrides
-                                ({overrideTargets.length} metric
-                                {overrideTargets.length === 1 ? '' : 's'})
-                              </button>
-                              {showAdvancedLLM && (
-                                <div className="mt-2 space-y-3">
-                                  {overrideTargets.map((target) => {
-                                    const override = metricLLMOverrides[
-                                      target.id
-                                    ] || {
-                                      provider: null,
-                                      model: null,
-                                      credential_id: null,
-                                    }
-                                    const updateOverride = (
-                                      patch: Partial<ProviderModelValue>,
-                                    ) => {
-                                      setMetricLLMOverrides((prev) => {
-                                        const copy = { ...prev }
-                                        const existing =
-                                          copy[target.id] || {
-                                            provider: null,
-                                            model: null,
-                                            credential_id: null,
-                                          }
-                                        const updated: ProviderModelValue = {
-                                          ...existing,
-                                          ...patch,
-                                        }
-                                        const cleared =
-                                          !updated.provider &&
-                                          !updated.model?.trim() &&
-                                          !updated.credential_id &&
-                                          !updated.llm_config
-                                        if (cleared) {
-                                          delete copy[target.id]
-                                        } else {
-                                          copy[target.id] = updated
-                                        }
-                                        return copy
-                                      })
-                                    }
-                                    return (
-                                      <div
-                                        key={target.id}
-                                        className="rounded border border-gray-200 bg-white p-2"
-                                      >
-                                        <p className="text-xs font-medium text-gray-800 mb-1">
-                                          {target.name}
-                                          {target.isHierarchical && (
-                                            <span className="ml-2 text-[10px] font-normal text-gray-500">
-                                              ({target.selectedChildCount} label
-                                              {target.selectedChildCount === 1
-                                                ? ''
-                                                : 's'}{' '}
-                                              selected)
-                                            </span>
-                                          )}
-                                        </p>
-                                        <AIProviderModelPicker
-                                          provider={override.provider ?? ''}
-                                          model={override.model ?? ''}
-                                          credentialId={override.credential_id ?? ''}
-                                          modelFilter={
-                                            classificationTargetIds.has(target.id)
-                                              ? isClassificationCapableModel
-                                              : isStandardJudgeModel
-                                          }
-                                          onProviderChange={(next) =>
-                                            updateOverride({
-                                              provider: next || null,
-                                            })
-                                          }
-                                          onCredentialIdChange={(next) =>
-                                            updateOverride({
-                                              credential_id: next || null,
-                                            })
-                                          }
-                                          onModelChange={(next) =>
-                                            updateOverride({ model: next || null })
-                                          }
-                                          onLLMConfigChange={(llm_config) =>
-                                            updateOverride({ llm_config })
-                                          }
-                                          llm_config={override.llm_config ?? null}
-                                          size="sm"
-                                        />
-                                      </div>
-                                    )
-                                  })}
-                                </div>
-                              )}
-                            </div>
-                          )}
-                            </div>
-                          )
-                        })()}
-
-                        <div className="rounded-md border border-gray-200 bg-gray-50 p-3 space-y-3">
-                          <div>
-                            <p className="text-sm font-medium text-gray-900">
-                              Transcript for evaluation
-                            </p>
-                            <p className="text-[11px] text-gray-500 mt-0.5">
-                              {isManualAudioImport
-                                ? 'Recordings are already uploaded to this batch. Diarization uses the stored audio files — no CSV recording URL column is needed.'
-                                : 'Choose whether to score the CSV production transcript or diarize first, then score the diarized output.'}
-                            </p>
-                          </div>
-                          <div
-                            role="tablist"
-                            aria-label="Evaluation transcript source"
-                            className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5"
-                          >
-                            <button
-                              type="button"
-                              role="tab"
-                              aria-pressed={evalTranscriptSource === 'diarised'}
-                              onClick={() => setEvalTranscriptSource('diarised')}
-                              className={`px-3 py-1.5 text-[11px] font-medium rounded-md transition ${
-                                evalTranscriptSource === 'diarised'
-                                  ? 'bg-primary-50 text-primary-700 ring-1 ring-inset ring-primary-200'
-                                  : 'text-gray-600 hover:text-gray-900'
-                              }`}
-                            >
-                              Diarize then evaluate
-                            </button>
-                            <button
-                              type="button"
-                              role="tab"
-                              aria-pressed={evalTranscriptSource === 'production'}
-                              onClick={() =>
-                                setEvalTranscriptSource('production')
-                              }
-                              className={`px-3 py-1.5 text-[11px] font-medium rounded-md transition ${
-                                evalTranscriptSource === 'production'
-                                  ? 'bg-primary-50 text-primary-700 ring-1 ring-inset ring-primary-200'
-                                  : 'text-gray-600 hover:text-gray-900'
-                              }`}
-                            >
-                              Use production transcript
-                            </button>
-                          </div>
-                          {evalTranscriptSource === 'production' ? (
-                            <p className="text-[11px] text-gray-500">
-                              Skips diarization and recording download, and
-                              scores the transcript imported from your CSV
-                              directly. Audio metrics require a recording
-                              already stored on the row.
-                            </p>
-                          ) : null}
-                        </div>
-
-                        {evalTranscriptSource === 'diarised' &&
-                        (() => {
-                          // In ``llm_only`` mode there is no STT —
-                          // the diariser LLM consumes the audio
-                          // directly. We adapt the "is the auto-
-                          // diarise step ready?" check to reflect
-                          // that so the banner doesn't yell about a
-                          // missing STT picker that's intentionally
-                          // hidden.
-                          const sttMissing =
-                            evalTranscribeMode === 'stt_llm' &&
-                            (!evalSTT.provider || !evalSTT.model)
-                          const diariserMissing = !isLLMSelectionComplete(
-                            evalDiariserLLM,
-                            aiProviders,
-                          )
-                          const sectionIncomplete = sttMissing || (
-                            evalTranscribeMode === 'llm_only' && diariserMissing
-                          )
-                          return (
-                            <div
-                              className={`rounded-md border p-3 space-y-2 ${
-                                sectionIncomplete
-                                  ? 'border-red-300 bg-red-50/40 ring-1 ring-red-200'
-                                  : 'border-gray-200 bg-gray-50'
-                              }`}
-                            >
-                              <label className="flex items-start gap-2 text-sm">
-                                <input
-                                  type="checkbox"
-                                  checked
-                                  disabled
-                                  readOnly
-                                  className="mt-0.5"
-                                  aria-label="Auto-diarise rows missing a diarised transcript (always on)"
-                                />
-                                <span className="flex-1">
-                                  <span className="flex items-center gap-2 flex-wrap">
-                                    <span className="font-medium text-gray-900">
-                                      Auto-diarise rows missing a diarised
-                                      transcript
-                                    </span>
-                                    <span
-                                      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                                        sectionIncomplete
-                                          ? 'bg-red-100 text-red-700 ring-1 ring-inset ring-red-200'
-                                          : 'bg-green-50 text-green-700 ring-1 ring-inset ring-green-200'
-                                      }`}
-                                    >
-                                      {sectionIncomplete ? 'Required' : 'Set'}
-                                    </span>
-                                  </span>
-                                  <span className="block text-[11px] text-gray-500">
-                                    {evalTranscribeMode === 'stt_llm'
-                                      ? "Rows that don't already have a diarised transcript are diarised first via the STT provider you pick below."
-                                      : "Rows that don't already have a diarised transcript are diarised by feeding the audio directly to the multimodal LLM you pick below. Calls longer than about 8 minutes need enough output headroom—if results look cut off, use STT + LLM diariser instead."}
-                                  </span>
-                                </span>
-                              </label>
-                              <div className="pl-6 space-y-2">
-                                {/* Mode toggle. Hidden behind the
-                                    "Auto-diarise" checkbox row so the
-                                    flow reads top-to-bottom: enable
-                                    auto-diarise → pick pipeline → pick
-                                    models. */}
-                                {/* Same ordering rationale as the
-                                    standalone Transcribe modal:
-                                    LLM-only is the recommended default
-                                    and STT+LLM is the advanced
-                                    fallback. */}
-                                <div
-                                  role="tablist"
-                                  aria-label="Auto-diarise pipeline"
-                                  className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5"
-                                >
-                                  <button
-                                    type="button"
-                                    role="tab"
-                                    aria-pressed={evalTranscribeMode === 'llm_only'}
-                                    onClick={() =>
-                                      setEvalTranscribeMode('llm_only')
-                                    }
-                                    className={`px-3 py-1 text-[11px] font-medium rounded-md transition ${
-                                      evalTranscribeMode === 'llm_only'
-                                        ? 'bg-primary-50 text-primary-700 ring-1 ring-inset ring-primary-200'
-                                        : 'text-gray-600 hover:text-gray-900'
-                                    }`}
-                                  >
-                                    LLM only (audio in)
-                                  </button>
-                                  <button
-                                    type="button"
-                                    role="tab"
-                                    aria-pressed={evalTranscribeMode === 'stt_llm'}
-                                    onClick={() =>
-                                      setEvalTranscribeMode('stt_llm')
-                                    }
-                                    className={`px-3 py-1 text-[11px] font-medium rounded-md transition inline-flex items-center gap-1.5 ${
-                                      evalTranscribeMode === 'stt_llm'
-                                        ? 'bg-primary-50 text-primary-700 ring-1 ring-inset ring-primary-200'
-                                        : 'text-gray-600 hover:text-gray-900'
-                                    }`}
-                                  >
-                                    STT + LLM diariser
-                                    <span className="rounded-full bg-gray-200 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-gray-600">
-                                      Advanced
-                                    </span>
-                                  </button>
-                                </div>
-                                {evalTranscribeMode === 'stt_llm' && (
-                                  <>
-                                    <ProviderModelPicker
-                                      kind="stt"
-                                      value={evalSTT}
-                                      onChange={setEvalSTT}
-                                      providerAllowList={STT_PROVIDER_ALLOWLIST}
-                                      defaultLabel="Pick an STT provider"
-                                      allowCredentialPick
-                                    />
-                                    {sttMissing && (
-                                      <p className="flex items-start gap-1 text-[11px] font-medium text-red-700">
-                                        <AlertCircle className="h-3 w-3 mt-0.5 flex-shrink-0" />
-                                        <span>
-                                          {!evalSTT.provider
-                                            ? 'Pick an STT provider — auto-diarisation is mandatory for every run.'
-                                            : 'Pick a model for this STT provider to enable the run.'}
-                                        </span>
-                                      </p>
-                                    )}
-                                    <input
-                                      type="text"
-                                      value={evalSTTLanguage}
-                                      onChange={(e) =>
-                                        setEvalSTTLanguage(e.target.value)
-                                      }
-                                      placeholder="Language hint (e.g. en, hi)"
-                                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                                    />
-                                  </>
-                                )}
-                                <label className="flex items-start gap-2 text-xs">
-                                  <input
-                                    type="checkbox"
-                                    checked={transcribeOverwrite}
-                                    onChange={(e) =>
-                                      setTranscribeOverwrite(e.target.checked)
-                                    }
-                                  />
-                                  <span>
-                                    Overwrite existing diarised transcripts
-                                    (otherwise rows with a stored transcript
-                                    are reused).
-                                  </span>
-                                </label>
-                                <div className="pt-3 border-t border-gray-200 space-y-2">
-                                  <p className="text-xs font-medium text-gray-700">
-                                    {evalTranscribeMode === 'stt_llm'
-                                      ? 'Diariser LLM'
-                                      : 'Multimodal diariser LLM'}
-                                  </p>
-                                  <p className="text-[11px] text-gray-500">
-                                    {evalTranscribeMode === 'stt_llm'
-                                      ? 'After the STT step, this chat model splits the plain transcript into agent / user turns using the prompt below.'
-                                      : 'This chat model receives the audio bytes and the prompt and produces structured agent / user turns in one call. Pick a model that accepts audio input (e.g. Gemini 1.5/2.0 or GPT-4o audio-preview).'}
-                                  </p>
-                                  <ProviderModelPicker
-                                    kind="llm"
-                                    value={evalDiariserLLM}
-                                    onChange={setEvalDiariserLLM}
-                                    defaultLabel="Pick an LLM for diarisation"
-                                    allowCredentialPick
-                                    audioCapableOnly={evalTranscribeMode === 'llm_only'}
-                                  />
-                                  <div className="flex items-center justify-between pt-1">
-                                    <label className="text-[11px] font-medium text-gray-700">
-                                      Diarisation prompt
-                                    </label>
-                                    <div className="flex items-center gap-3">
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setPartialsImportError(null)
-                                          setSelectedPartialId('')
-                                          setPartialsSearchInput('')
-                                          setPartialsSearchQuery('')
-                                          setPartialsImportTarget('eval')
-                                        }}
-                                        className="text-[11px] text-primary-600 hover:text-primary-700"
-                                      >
-                                        Import from saved partials
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          openSavePartialModal('eval')
-                                        }
-                                        disabled={
-                                          !evalDiarisationPrompt.trim()
-                                        }
-                                        title={
-                                          evalDiarisationPrompt.trim()
-                                            ? 'Save the current prompt to your Prompt Partials library'
-                                            : 'Enter or import a prompt first'
-                                        }
-                                        className="text-[11px] text-primary-600 hover:text-primary-700 disabled:text-gray-400 disabled:cursor-not-allowed"
-                                      >
-                                        Save as partial
-                                      </button>
-                                      {defaultDiarisationPrompt && (
-                                        <button
-                                          type="button"
-                                          onClick={() =>
-                                            setEvalDiarisationPrompt(
-                                              defaultDiarisationPrompt,
-                                            )
-                                          }
-                                          className="text-[11px] text-primary-600 hover:text-primary-700"
-                                        >
-                                          Reset to default
-                                        </button>
-                                      )}
-                                    </div>
-                                  </div>
-                                  <textarea
-                                    value={evalDiarisationPrompt}
-                                    onChange={(e) =>
-                                      setEvalDiarisationPrompt(e.target.value)
-                                    }
-                                    rows={6}
-                                    placeholder={
-                                      defaultDiarisationPrompt ||
-                                      'Describe how the LLM should split the transcript into agent / user turns…'
-                                    }
-                                    className="w-full px-3 py-2 text-[11px] font-mono border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                                  />
-                                  <p className="text-[11px] text-gray-500">
-                                    Leave blank to fall back to the
-                                    canonical default prompt.
-                                  </p>
-                                </div>
-                              </div>
-                            </div>
-                          )
-                        })()}
-                        </div>
-                        </div>
-                      </>
-                    )}
-
-                    {runError ? (
-                      <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 space-y-1">
-                        <p>{runError}</p>
-                        {/metric/i.test(runError) ? (
-                          <Link
-                            to="/metrics-management"
-                            className="font-medium text-red-700 underline hover:text-red-900"
-                          >
-                            Check your metrics setup →
-                          </Link>
-                        ) : null}
-                      </div>
-                    ) : null}
-
-                    {(() => {
-                      const disabledReasons: string[] = []
-                      if (data.status === 'mapped') {
-                        if (
-                          !isCredentialSelectionValid(
-                            evalTelephonyProvider,
-                            evalTelephonyIntegrationId,
-                          )
-                        ) {
-                          disabledReasons.push(
-                            'Pick telephony credentials (or direct URL) for recording fetch.',
-                          )
-                        }
-                      }
-                      if (enabledMetrics.length === 0) {
-                        disabledReasons.push(
-                          'Enable at least one agent metric in Metrics.',
-                        )
-                      } else if (selectedMetricIds.length === 0) {
-                        disabledReasons.push('Select at least one metric to score.')
-                      }
-                      if (hasClassificationSelected && !classificationLLMComplete) {
-                        disabledReasons.push(
-                          'Pick a System 1 (Jev) model for the classification metrics.',
-                        )
-                      }
-                      // STT and diariser are only required when diarising.
-                      if (evalTranscriptSource === 'diarised') {
-                        if (evalTranscribeMode === 'stt_llm') {
-                          if (!evalSTT.provider) {
-                            disabledReasons.push(
-                              'Pick an STT provider (auto-diarisation is required).',
-                            )
-                          } else if (!evalSTT.model) {
-                            disabledReasons.push(
-                              'Pick an STT model for the selected provider.',
-                            )
-                          }
-                        }
-                        if (!isLLMSelectionComplete(evalDiariserLLM, aiProviders)) {
-                          disabledReasons.push(
-                            evalTranscribeMode === 'llm_only'
-                              ? 'Pick a multimodal LLM provider — the recording is fed to it directly in LLM-only mode.'
-                              : 'Pick a diariser LLM provider and model (or a Custom gateway credential).',
-                          )
-                        }
-                      }
-                      if (
-                        aiProviders.length > 0 &&
-                        isLLMSelectionPartial(runLLM, aiProviders)
-                      ) {
-                        disabledReasons.push(
-                          'Finish the Evaluation LLM selection (pick a provider and model, or a Custom gateway credential, or clear both to use the default).',
-                        )
-                      }
-                      const isDisabled =
-                        disabledReasons.length > 0 ||
-                        runEvaluationMutation.isPending
-                      return (
-                        <>
-                          {disabledReasons.length > 0 && (
-                            <div
-                              role="status"
-                              className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"
-                            >
-                              <p className="flex items-center gap-1.5 font-medium">
-                                <AlertCircle className="h-4 w-4" />
-                                Finish the required fields to start this run
-                              </p>
-                              <ul className="mt-1 list-disc pl-7 space-y-0.5 text-[12px]">
-                                {disabledReasons.map((reason) => (
-                                  <li key={reason}>{reason}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-
-                          <div className="flex gap-2 pt-2">
-                            <Button
-                              variant="outline"
-                              onClick={() => setShowRunEval(false)}
-                              disabled={runEvaluationMutation.isPending}
-                              className="flex-1"
-                            >
-                              Cancel
-                            </Button>
-                            <Button
-                              variant="primary"
-                              isLoading={runEvaluationMutation.isPending}
-                              disabled={isDisabled}
-                              title={
-                                disabledReasons.length > 0
-                                  ? `Can't start yet:\n• ${disabledReasons.join('\n• ')}`
-                                  : 'Start this evaluation run'
-                              }
-                        onClick={() => {
-                          // Build a clean overrides payload — drop any
-                          // entries that didn't end up with a complete
-                          // LLM selection so the API doesn't 400 on
-                          // partial fills. We also discard entries for
-                          // ids that are no longer in ``overrideTargets``
-                          // (e.g., the user set an override for a parent
-                          // then deselected every one of its labels) so
-                          // stale state doesn't trip backend validation.
-                          const overrides: Record<
-                            string,
-                            CallImportEvaluationLLMOverride
-                          > = {}
-                          for (const [mid, val] of Object.entries(
-                            metricLLMOverrides,
-                          )) {
-                            if (!overrideTargetIds.has(mid)) continue
-                            if (isLLMSelectionComplete(val, aiProviders)) {
-                              overrides[mid] = {
-                                provider: val.provider!,
-                                model:
-                                  resolveLLMModelForSubmit(val, aiProviders) ??
-                                  val.model!,
-                                credential_id: val.credential_id || null,
-                                llm_config: val.llm_config || null,
-                              }
-                            } else if (val.llm_config) {
-                              overrides[mid] = {
-                                llm_config: val.llm_config,
-                              }
-                            }
-                          }
-                          // Classification metrics always run on the System 1 model unless
-                          // the user picked a per-metric override for them.
-                          const runLevelLLM =
-                            hasClassificationSelected && !hasStandardSelected
-                              ? classificationLLM
-                              : runLLM
-                          if (hasClassificationSelected && hasStandardSelected) {
-                            for (const target of classificationTargets) {
-                              if (overrides[target.id]?.provider) continue
-                              overrides[target.id] = {
-                                provider: classificationLLM.provider,
-                                model:
-                                  resolveLLMModelForSubmit(classificationLLM, aiProviders) ??
-                                  classificationLLM.model,
-                                credential_id: classificationLLM.credential_id,
-                                llm_config: classificationLLM.llm_config,
-                              }
-                            }
-                          }
-                          const runLLMComplete = isLLMSelectionComplete(
-                            runLevelLLM,
-                            aiProviders,
-                          )
-                          runEvaluationMutation.mutate({
-                            metric_ids: selectedMetricIds,
-                            name: runDraftName.trim() || null,
-                            transcript_sources: [evalTranscriptSource],
-                            llm_provider: runLLMComplete
-                              ? runLevelLLM.provider || null
-                              : null,
-                            llm_model: runLLMComplete
-                              ? resolveLLMModelForSubmit(runLevelLLM, aiProviders) ??
-                                runLevelLLM.model ??
-                                null
-                              : null,
-                            llm_credential_id: runLLMComplete
-                              ? runLevelLLM.credential_id || null
-                              : null,
-                            llm_config: runLLMComplete
-                              ? runLevelLLM.llm_config || null
-                              : null,
-                            metric_llm_overrides: Object.keys(overrides).length
-                              ? overrides
-                              : null,
-                            auto_transcribe: evalTranscriptSource === 'diarised',
-                            ...(evalTranscriptSource === 'diarised'
-                              ? {
-                                  transcribe_overwrite: transcribeOverwrite,
-                                  transcribe_mode: evalTranscribeMode,
-                                  stt_provider:
-                                    evalTranscribeMode === 'stt_llm'
-                                      ? evalSTT.provider
-                                      : null,
-                                  stt_model:
-                                    evalTranscribeMode === 'stt_llm'
-                                      ? evalSTT.model
-                                      : null,
-                                  stt_credential_id:
-                                    evalTranscribeMode === 'stt_llm'
-                                      ? evalSTT.credential_id || null
-                                      : null,
-                                  stt_language:
-                                    evalTranscribeMode === 'stt_llm'
-                                      ? evalSTTLanguage.trim() || null
-                                      : null,
-                                  diarization_llm_provider:
-                                    evalDiariserLLM.provider,
-                                  diarization_llm_model:
-                                    resolveLLMModelForSubmit(
-                                      evalDiariserLLM,
-                                      aiProviders,
-                                    ) ?? evalDiariserLLM.model,
-                                  diarization_llm_credential_id:
-                                    evalDiariserLLM.credential_id || null,
-                                  diarization_prompt:
-                                    evalDiarisationPrompt.trim() || null,
-                                }
-                              : {}),
-                            discover_new_metrics: false,
-                            ...(data.status === 'mapped'
-                              ? (() => {
-                                  const cred = credentialSelectionFromState(
-                                    evalTelephonyProvider,
-                                    evalTelephonyIntegrationId,
-                                  )
-                                  return {
-                                    provider: cred.provider,
-                                    telephony_integration_id:
-                                      cred.telephonyIntegrationId,
-                                  }
-                                })()
-                              : {}),
-                          })
-                        }}
-                              className="flex-1"
-                            >
-                              Start
-                            </Button>
-                          </div>
-                        </>
-                      )
-                    })()}
-                  </div>
-                </div>
-              </div>
-            )
-          })(),
-        )}
 
       <RetryFailedImportModal
         isOpen={showRetryFailedImportConfirm}
@@ -4934,417 +1247,152 @@ export default function CallImportDetail() {
         }}
       />
 
-      <ConfirmModal
-        isOpen={showDeleteImport}
-        title="Delete call import?"
-        description={(() => {
-          const name = data.original_filename || '(unnamed)'
-          const inFlight =
-            data.status === 'pending' ||
-            data.status === 'processing' ||
-            data.status === 'deleting'
-          const lines = [
-            `“${name}” will be permanently deleted, along with all of its recordings.`,
-            inFlight
-              ? 'This batch is still processing — pending tasks will be revoked before deletion.'
-              : '',
-            'This cannot be undone.',
-            deleteError ? `Error: ${deleteError}` : '',
-          ]
-          return lines.filter(Boolean).join('\n\n')
-        })()}
-        confirmLabel="Delete"
-        cancelLabel="Cancel"
-        confirmPhrase="confirm"
-        variant="danger"
-        isLoading={deleteImportMutation.isPending}
-        onConfirm={() => deleteImportMutation.mutate(data.id)}
-        onCancel={() => {
-          if (deleteImportMutation.isPending) return
-          setShowDeleteImport(false)
-          setDeleteError(null)
-        }}
+      <ImportTranscribeModals
+        partialsImportTarget={partialsImportTarget}
+        closePartialsImportModal={closePartialsImportModal}
+        importPartialMutation={importPartialMutation}
+        partialsSearchInput={partialsSearchInput}
+        setPartialsSearchInput={setPartialsSearchInput}
+        isLoadingPartials={isLoadingPartials}
+        promptPartials={promptPartials}
+        partialsSearchQuery={partialsSearchQuery}
+        selectedPartialId={selectedPartialId}
+        setSelectedPartialId={setSelectedPartialId}
+        partialsImportError={partialsImportError}
+        savePartialTarget={savePartialTarget}
+        closeSavePartialModal={closeSavePartialModal}
+        savePartialMutation={savePartialMutation}
+        savePartialMode={savePartialMode}
+        setSavePartialMode={setSavePartialMode}
+        setSavePartialError={setSavePartialError}
+        transcribeDiarisationPrompt={transcribeDiarisationPrompt}
+        evalDiarisationPrompt={evalDiarisationPrompt}
+        savePartialName={savePartialName}
+        setSavePartialName={setSavePartialName}
+        savePartialDescription={savePartialDescription}
+        setSavePartialDescription={setSavePartialDescription}
+        savePartialExistingId={savePartialExistingId}
+        setSavePartialExistingId={setSavePartialExistingId}
+        savePartialChangeSummary={savePartialChangeSummary}
+        setSavePartialChangeSummary={setSavePartialChangeSummary}
+        savePartialError={savePartialError}
+        savePartialSuccess={savePartialSuccess}
+        showTranscribeModal={showTranscribeModal}
+        transcribeTargetRows={transcribeTargetRows}
+        bulkSelectionFilter={bulkSelectionFilter}
+        selectedCount={selectedCount}
+        transcribeMode={transcribeMode}
+        setTranscribeMode={setTranscribeMode}
+        transcribeSTT={transcribeSTT}
+        setTranscribeSTT={setTranscribeSTT}
+        transcribeLanguage={transcribeLanguage}
+        setTranscribeLanguage={setTranscribeLanguage}
+        transcribeDiariserLLM={transcribeDiariserLLM}
+        setTranscribeDiariserLLM={setTranscribeDiariserLLM}
+        aiProviders={aiProviders}
+        defaultDiarisationPrompt={defaultDiarisationPrompt}
+        openSavePartialModal={openSavePartialModal}
+        setPartialsImportError={setPartialsImportError}
+        setPartialsSearchQuery={setPartialsSearchQuery}
+        setPartialsImportTarget={setPartialsImportTarget}
+        setTranscribeDiarisationPrompt={setTranscribeDiarisationPrompt}
+        transcribeOverwriteStandalone={transcribeOverwriteStandalone}
+        setTranscribeOverwriteStandalone={setTranscribeOverwriteStandalone}
+        transcribeError={transcribeError}
+        transcribeRowsMutation={transcribeRowsMutation}
+        setShowTranscribeModal={setShowTranscribeModal}
+        setTranscribeTargetRows={setTranscribeTargetRows}
+        showBulkActionsModal={showBulkActionsModal}
+        setShowBulkActionsModal={setShowBulkActionsModal}
+        bulkActionError={bulkActionError}
+        setBulkActionError={setBulkActionError}
+        bulkActionResult={bulkActionResult}
+        setBulkActionResult={setBulkActionResult}
+        selectionSpansPages={selectionSpansPages}
+        transcribeReadySelection={transcribeReadySelection}
+        openTranscribeModal={openTranscribeModal}
+        selectedRowIds={selectedRowIds}
+        bulkCancelDiarisationMutation={bulkCancelDiarisationMutation}
+        cancellableSelection={cancellableSelection}
+        setBulkDeleteRowsError={setBulkDeleteRowsError}
+        setShowBulkDeleteRows={setShowBulkDeleteRows}
       />
 
-      <ConfirmModal
-        isOpen={showBulkDeleteEvals}
-        title={
-          selectedEvalIds.size === 1
-            ? 'Delete this evaluation run?'
-            : `Delete ${selectedEvalIds.size} evaluation runs?`
-        }
-        description={(() => {
-          const lines = [
-            selectedEvalIds.size === 1
-              ? 'This run and all of its per-row score records will be permanently removed.'
-              : `These ${selectedEvalIds.size} runs and all of their per-row score records will be permanently removed.`,
-            'In-flight runs will have their pending tasks revoked before deletion.',
-            'The underlying CSV import stays intact, so you can re-run later.',
-            'This cannot be undone.',
-            bulkDeleteEvalsError ? `Error: ${bulkDeleteEvalsError}` : '',
-          ]
-          return lines.filter(Boolean).join('\n\n')
-        })()}
-        confirmLabel="Delete"
-        cancelLabel="Cancel"
-        variant="danger"
-        isLoading={bulkDeleteEvalsMutation.isPending}
-        onConfirm={() => {
-          bulkDeleteEvalsMutation.mutate(Array.from(selectedEvalIds))
-        }}
-        onCancel={() => {
-          if (bulkDeleteEvalsMutation.isPending) return
-          setShowBulkDeleteEvals(false)
-          setBulkDeleteEvalsError(null)
-        }}
+      <ImportRunEvaluationModal
+        open={showRunEval}
+        setShowRunEval={setShowRunEval}
+        data={data}
+        metrics={metrics}
+        selectedMetricIds={selectedMetricIds}
+        setSelectedMetricIds={setSelectedMetricIds}
+        toggleMetric={toggleMetric}
+        toggleParentMetric={toggleParentMetric}
+        runDraftName={runDraftName}
+        setRunDraftName={setRunDraftName}
+        runEvaluationMutation={runEvaluationMutation}
+        evalTelephonyProvider={evalTelephonyProvider}
+        setEvalTelephonyProvider={setEvalTelephonyProvider}
+        evalTelephonyIntegrationId={evalTelephonyIntegrationId}
+        setEvalTelephonyIntegrationId={setEvalTelephonyIntegrationId}
+        classificationLLM={classificationLLM}
+        setClassificationLLM={setClassificationLLM}
+        runLLM={runLLM}
+        setRunLLM={setRunLLM}
+        metricLLMOverrides={metricLLMOverrides}
+        setMetricLLMOverrides={setMetricLLMOverrides}
+        showAdvancedLLM={showAdvancedLLM}
+        setShowAdvancedLLM={setShowAdvancedLLM}
+        transcribeOverwrite={transcribeOverwrite}
+        setTranscribeOverwrite={setTranscribeOverwrite}
+        evalTranscribeMode={evalTranscribeMode}
+        setEvalTranscribeMode={setEvalTranscribeMode}
+        evalTranscriptSource={evalTranscriptSource}
+        setEvalTranscriptSource={setEvalTranscriptSource}
+        evalSTT={evalSTT}
+        setEvalSTT={setEvalSTT}
+        evalSTTLanguage={evalSTTLanguage}
+        setEvalSTTLanguage={setEvalSTTLanguage}
+        evalDiariserLLM={evalDiariserLLM}
+        setEvalDiariserLLM={setEvalDiariserLLM}
+        evalDiarisationPrompt={evalDiarisationPrompt}
+        setEvalDiarisationPrompt={setEvalDiarisationPrompt}
+        isManualAudioImport={isManualAudioImport}
+        aiProviders={aiProviders}
+        defaultDiarisationPrompt={defaultDiarisationPrompt}
+        setPartialsImportError={setPartialsImportError}
+        setSelectedPartialId={setSelectedPartialId}
+        setPartialsSearchInput={setPartialsSearchInput}
+        setPartialsSearchQuery={setPartialsSearchQuery}
+        setPartialsImportTarget={setPartialsImportTarget}
+        openSavePartialModal={openSavePartialModal}
       />
 
-      <ConfirmModal
-        isOpen={pendingDeleteRow !== null}
-        title="Delete this recording?"
-        description={(() => {
-          if (!pendingDeleteRow) return ''
-          const callId = pendingDeleteRow.conversation_id
-          const hasRecording = !!pendingDeleteRow.recording_s3_key
-          const lines = [
-            `The row for CallID ${callId} will be permanently deleted.`,
-            hasRecording
-              ? 'The associated recording will also be permanently deleted.'
-              : 'No recording is stored for this row yet, so only the row record will be removed.',
-            'This cannot be undone.',
-            deleteError ? `Error: ${deleteError}` : '',
-          ]
-          return lines.filter(Boolean).join('\n\n')
-        })()}
-        confirmLabel="Delete"
-        cancelLabel="Cancel"
-        variant="danger"
-        isLoading={deleteRowMutation.isPending}
-        onConfirm={() => {
-          if (pendingDeleteRow && id) {
-            deleteRowMutation.mutate({ importId: id, rowId: pendingDeleteRow.id })
-          }
-        }}
-        onCancel={() => {
-          if (deleteRowMutation.isPending) return
-          setPendingDeleteRow(null)
-          setDeleteError(null)
-        }}
+      <ImportDeleteConfirmModals
+        importId={id}
+        data={data}
+        showDeleteImport={showDeleteImport}
+        setShowDeleteImport={setShowDeleteImport}
+        deleteError={deleteError}
+        setDeleteError={setDeleteError}
+        deleteImportMutation={deleteImportMutation}
+        showBulkDeleteEvals={showBulkDeleteEvals}
+        setShowBulkDeleteEvals={setShowBulkDeleteEvals}
+        selectedEvalIds={selectedEvalIds}
+        bulkDeleteEvalsError={bulkDeleteEvalsError}
+        setBulkDeleteEvalsError={setBulkDeleteEvalsError}
+        bulkDeleteEvalsMutation={bulkDeleteEvalsMutation}
+        pendingDeleteRow={pendingDeleteRow}
+        setPendingDeleteRow={setPendingDeleteRow}
+        deleteRowMutation={deleteRowMutation}
+        showBulkDeleteRows={showBulkDeleteRows}
+        setShowBulkDeleteRows={setShowBulkDeleteRows}
+        selectedRowIds={selectedRowIds}
+        bulkDeleteRowsError={bulkDeleteRowsError}
+        setBulkDeleteRowsError={setBulkDeleteRowsError}
+        bulkSelectionFilter={bulkSelectionFilter}
+        bulkDeleteRowsMutation={bulkDeleteRowsMutation}
       />
 
-      <ConfirmModal
-        isOpen={showBulkDeleteRows}
-        title={
-          selectedRowIds.size === 1
-            ? 'Delete this row?'
-            : `Delete ${selectedRowIds.size} rows?`
-        }
-        description={(() => {
-          const lines = [
-            selectedRowIds.size === 1
-              ? 'The selected row will be permanently deleted, along with its recording.'
-              : `${selectedRowIds.size} rows will be permanently deleted, along with their recordings.`,
-            'In-flight transcribe / download tasks for these rows will be revoked.',
-            'This cannot be undone.',
-            bulkDeleteRowsError ? `Error: ${bulkDeleteRowsError}` : '',
-          ]
-          return lines.filter(Boolean).join('\n\n')
-        })()}
-        confirmLabel="Delete"
-        cancelLabel="Cancel"
-        variant="danger"
-        isLoading={bulkDeleteRowsMutation.isPending}
-        onConfirm={() => {
-          if (bulkSelectionFilter) {
-            bulkDeleteRowsMutation.mutate({ rowFilter: bulkSelectionFilter })
-            return
-          }
-          if (selectedRowIds.size === 0) return
-          bulkDeleteRowsMutation.mutate({ rowIds: Array.from(selectedRowIds) })
-        }}
-        onCancel={() => {
-          if (bulkDeleteRowsMutation.isPending) return
-          setShowBulkDeleteRows(false)
-          setBulkDeleteRowsError(null)
-        }}
-      />
-
-      {/*
-        Consolidated bulk-actions modal.
-
-        Rationale: instead of growing the toolbar with one button per
-        verb (Transcribe / Stop / Delete / …), the toolbar exposes a
-        single "Bulk actions" entry point that opens this modal. Each
-        action lives in its own card, shows the count of rows it'll
-        actually affect (with a "selection spans pages" disclaimer
-        when we can only see the on-page slice), and either fires
-        immediately (Stop) or hands off to the existing dedicated
-        modal (Transcribe → Diarise modal, Delete → ConfirmModal) so
-        all the per-flow validation / config UI is preserved.
-       */}
-      {showBulkActionsModal &&
-        selectedCount > 0 &&
-        renderModal(
-          <div
-            className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50"
-            onClick={() => {
-              if (bulkCancelDiarisationMutation.isPending) return
-              setShowBulkActionsModal(false)
-              setBulkActionError(null)
-              setBulkActionResult(null)
-            }}
-          >
-            <div
-              className="bg-white rounded-lg shadow-xl max-w-xl w-full mx-4 max-h-[85vh] overflow-hidden flex flex-col"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-start gap-3">
-                <div className="min-w-0">
-                  <h3 className="text-lg font-semibold text-gray-900">
-                    Bulk actions
-                  </h3>
-                  <p className="text-xs text-gray-500 mt-0.5">
-                    {selectedCount} row{selectedCount === 1 ? '' : 's'}{' '}
-                    selected
-                    {selectionSpansPages
-                      ? ' · selection spans pages (per-action counts below are for on-page rows only; the backend filters the rest)'
-                      : ''}
-                    .
-                  </p>
-                </div>
-                <button
-                  onClick={() => {
-                    if (bulkCancelDiarisationMutation.isPending) return
-                    setShowBulkActionsModal(false)
-                    setBulkActionError(null)
-                    setBulkActionResult(null)
-                  }}
-                  className="text-gray-400 hover:text-gray-600 flex-shrink-0"
-                  aria-label="Close bulk actions modal"
-                  disabled={bulkCancelDiarisationMutation.isPending}
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
-
-              <div className="p-5 space-y-3 overflow-y-auto flex-1">
-                {/*
-                  Action card 1 — Diarise / re-diarise.
-
-                  ``transcribeReadySelection`` counts on-page rows that
-                  have a recording AND aren't already in-flight. With
-                  cross-page selections we hand off the full
-                  ``selectedRowIds`` set and rely on the worker's
-                  server-side filter to skip rows that don't qualify.
-                 */}
-                <div className="rounded-lg border border-gray-200 p-4 hover:border-purple-300 hover:bg-purple-50/40 transition-colors">
-                  <div className="flex items-start gap-3">
-                    <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-purple-100 text-purple-700 flex items-center justify-center">
-                      <Mic className="h-5 w-5" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <h4 className="text-sm font-semibold text-gray-900">
-                        Diarise / re-diarise
-                      </h4>
-                      <p className="text-xs text-gray-600 mt-1">
-                        {selectionSpansPages
-                          ? `Run diarisation on the ${selectedCount} selected rows. Rows without a recording or already in flight are skipped server-side.`
-                          : transcribeReadySelection.length === 0
-                          ? 'No rows in this selection are ready to diarise (each is either missing a recording or already in flight).'
-                          : `${transcribeReadySelection.length} of ${selectedCount} selected row${
-                              selectedCount === 1 ? '' : 's'
-                            } can be diarised right now. The rest will be skipped.`}
-                      </p>
-                    </div>
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      disabled={
-                        !bulkSelectionFilter &&
-                        !selectionSpansPages &&
-                        transcribeReadySelection.length === 0
-                      }
-                      onClick={() => {
-                        setShowBulkActionsModal(false)
-                        setBulkActionError(null)
-                        setBulkActionResult(null)
-                        if (bulkSelectionFilter) {
-                          openTranscribeModal([])
-                        } else if (selectionSpansPages) {
-                          // Cross-page selection: forward synthetic
-                          // rows (id-only) so the modal targets the
-                          // batch endpoint without inventing fake
-                          // row_index values for the header label.
-                          openTranscribeModal(
-                            Array.from(selectedRowIds).map(
-                              (rowId) =>
-                                ({
-                                  id: rowId,
-                                  row_index: 0,
-                                } as unknown as CallImportRow),
-                            ),
-                          )
-                        } else {
-                          openTranscribeModal(transcribeReadySelection)
-                        }
-                      }}
-                      className="flex-shrink-0"
-                    >
-                      Diarise
-                    </Button>
-                  </div>
-                </div>
-
-                {/*
-                  Action card 2 — Stop diarisation.
-
-                  The button is disabled when there's nothing in flight
-                  on the visible page; for cross-page selections we
-                  allow the click and let the server's
-                  ``cancelled / skipped`` summary do the talking.
-                 */}
-                <div className="rounded-lg border border-gray-200 p-4 hover:border-amber-300 hover:bg-amber-50/40 transition-colors">
-                  <div className="flex items-start gap-3">
-                    <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center">
-                      <Square className="h-5 w-5" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <h4 className="text-sm font-semibold text-gray-900">
-                        Stop diarisation
-                      </h4>
-                      <p className="text-xs text-gray-600 mt-1">
-                        {selectionSpansPages
-                          ? `Revoke any in-flight or queued diarisation across the ${selectedCount} selected rows. Rows that finished already are skipped.`
-                          : cancellableSelection.length === 0
-                          ? 'No rows in this selection are currently queued or running. Nothing to stop.'
-                          : `Stop diarisation for ${cancellableSelection.length} pending / running row${
-                              cancellableSelection.length === 1 ? '' : 's'
-                            }. Each row is flipped to "failed" with a "Cancelled by user" message.`}
-                      </p>
-                    </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      isLoading={bulkCancelDiarisationMutation.isPending}
-                      disabled={
-                        bulkCancelDiarisationMutation.isPending ||
-                        (!selectionSpansPages &&
-                          cancellableSelection.length === 0)
-                      }
-                      onClick={() => {
-                        if (bulkCancelDiarisationMutation.isPending) return
-                        // For on-page selections we narrow to the
-                        // cancellable subset so the server doesn't
-                        // need to discover skips; for cross-page we
-                        // send everything and let the server filter.
-                        if (bulkSelectionFilter) {
-                          bulkCancelDiarisationMutation.mutate({
-                            rowFilter: bulkSelectionFilter,
-                          })
-                          return
-                        }
-                        const ids = selectionSpansPages
-                          ? Array.from(selectedRowIds)
-                          : cancellableSelection.map((r) => r.id)
-                        if (ids.length === 0) return
-                        bulkCancelDiarisationMutation.mutate({ rowIds: ids })
-                      }}
-                      className="flex-shrink-0 text-amber-700 border-amber-300 hover:bg-amber-50"
-                    >
-                      Stop
-                    </Button>
-                  </div>
-                </div>
-
-                {/*
-                  Action card 3 — Delete rows.
-
-                  We close THIS modal and hand off to the existing
-                  ConfirmModal so the destructive flow keeps its
-                  "type-aware confirm" behaviour. No duplication of
-                  the irreversible-action copy here.
-                 */}
-                <div className="rounded-lg border border-gray-200 p-4 hover:border-red-300 hover:bg-red-50/40 transition-colors">
-                  <div className="flex items-start gap-3">
-                    <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-red-100 text-red-700 flex items-center justify-center">
-                      <Trash2 className="h-5 w-5" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <h4 className="text-sm font-semibold text-gray-900">
-                        Delete rows
-                      </h4>
-                      <p className="text-xs text-gray-600 mt-1">
-                        Permanently remove {selectedCount} selected row
-                        {selectedCount === 1 ? '' : 's'} from this import,
-                        along with their recordings. In-flight
-                        tasks for these rows will be revoked. This cannot
-                        be undone.
-                      </p>
-                    </div>
-                    <Button
-                      variant="danger"
-                      size="sm"
-                      onClick={() => {
-                        setShowBulkActionsModal(false)
-                        setBulkActionError(null)
-                        setBulkActionResult(null)
-                        setBulkDeleteRowsError(null)
-                        setShowBulkDeleteRows(true)
-                      }}
-                      className="flex-shrink-0"
-                    >
-                      Delete
-                    </Button>
-                  </div>
-                </div>
-
-                {bulkActionResult && (
-                  <div className="rounded-md border border-green-200 bg-green-50 p-3 text-xs text-green-800 flex items-start gap-2">
-                    <Check className="h-4 w-4 text-green-600 flex-shrink-0 mt-0.5" />
-                    <div className="min-w-0 flex-1">{bulkActionResult}</div>
-                    <button
-                      type="button"
-                      onClick={() => setBulkActionResult(null)}
-                      className="text-green-700 hover:text-green-900 flex-shrink-0"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                )}
-
-                {bulkActionError && (
-                  <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-800 flex items-start gap-2">
-                    <AlertCircle className="h-4 w-4 text-red-600 flex-shrink-0 mt-0.5" />
-                    <div className="min-w-0 flex-1">{bulkActionError}</div>
-                    <button
-                      type="button"
-                      onClick={() => setBulkActionError(null)}
-                      className="text-red-700 hover:text-red-900 flex-shrink-0"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              <div className="px-6 py-3 border-t border-gray-200 bg-gray-50 flex justify-end">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={bulkCancelDiarisationMutation.isPending}
-                  onClick={() => {
-                    if (bulkCancelDiarisationMutation.isPending) return
-                    setShowBulkActionsModal(false)
-                    setBulkActionError(null)
-                    setBulkActionResult(null)
-                  }}
-                >
-                  Close
-                </Button>
-              </div>
-            </div>
-          </div>,
-        )}
       <PlatformImportProgressDock />
     </div>
   )
