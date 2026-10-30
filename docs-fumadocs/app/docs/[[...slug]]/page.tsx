@@ -50,6 +50,7 @@ export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
   };
   const MDX = pageData.body;
   const isEnterprisePage = (page.slugs[0] ?? '') === 'enterprise';
+  const isChangelogIndex = page.slugs.join('/') === 'changelog' || page.slugs.join('/') === 'changelog/index';
   const markdownPath =
     page.slugs[0] === 'api-reference' && page.slugs.length > 2 && pageData._openapi?.method
       ? `/api-md/${page.slugs.slice(1).join('/')}.md`
@@ -82,7 +83,7 @@ export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
     >
       <DocsBody className={isEnterprisePage ? 'enterprise-doc' : undefined}>
         <div className={isEnterprisePage ? 'enterprise-doc-shell' : undefined}>
-          {markdownPath || pageMarkdown ? (
+          {!isChangelogIndex && (markdownPath || pageMarkdown) ? (
             <div className="not-prose mb-4 flex justify-end">
               <CopyPageMarkdown mdPath={markdownPath ?? undefined} markdown={pageMarkdown} />
             </div>

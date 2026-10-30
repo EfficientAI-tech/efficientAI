@@ -696,7 +696,7 @@ export default function Personas() {
                     <p className="text-sm text-gray-600">
                       No TTS providers are connected yet.{' '}
                       <Link
-                        to="/integrations"
+                        to="/settings/integrations"
                         className="text-primary-600 hover:text-primary-700 underline font-medium"
                       >
                         Connect a provider in Integrations

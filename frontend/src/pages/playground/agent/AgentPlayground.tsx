@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAgentStore } from '../../../store/agentStore'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
-import { Play, X, Phone, PhoneOff, RefreshCw, Mic, Bot, PhoneCall, Trash2, AlertTriangle, CheckSquare, Square, Bookmark, BookmarkCheck, Search } from 'lucide-react'
+import { Play, X, Phone, PhoneOff, RefreshCw, Mic, Bot, PhoneCall, Trash2, AlertTriangle, CheckSquare, Square, Bookmark, BookmarkCheck, Search, FlaskConical } from 'lucide-react'
 import Button from '../../../components/Button'
 import TableListPagination from '../../../components/TableListPagination'
 import { useToast } from '../../../hooks/useToast'
@@ -34,6 +34,7 @@ import {
   normalizeCallRecordingList,
 } from '../../../lib/evaluationStatus'
 import { itemsOf, shortId } from '../../../lib/safeData'
+import SandboxTab from '../sandbox/SandboxTab'
 
 const PLAYGROUND_LIST_PAGE_SIZE = 10
 
@@ -1242,6 +1243,20 @@ export default function AgentPlayground() {
                   <Mic className="h-4 w-4" />
                   Custom WebSocket Testing
                 </button>
+                <button
+                  onClick={() => setActiveTab('sandbox')}
+                  className={`
+                    flex items-center gap-2 py-4 px-1 border-b-2 font-medium text-sm
+                    ${
+                      activeTab === 'sandbox'
+                        ? 'border-blue-500 text-blue-600'
+                        : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                    }
+                  `}
+                >
+                  <FlaskConical className="h-4 w-4" />
+                  Sandbox
+                </button>
               </nav>
             </div>
             {/* Test Agents Tab Content */}
@@ -1633,6 +1648,8 @@ export default function AgentPlayground() {
                 )}
               </div>
             )}
+
+            {activeTab === 'sandbox' && <SandboxTab />}
 
             {activeTab === 'custom_websocket' && (
               <div className="mt-4 space-y-4">

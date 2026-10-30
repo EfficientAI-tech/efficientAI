@@ -236,7 +236,7 @@ export default function MetricPromptImprovementsPanel({
         <div className="rounded-md border border-dashed border-gray-200 bg-gray-50 px-3 py-3 text-sm text-gray-600">
           No imported agents yet.{' '}
           <Link
-            to="/prompt-partials?kind=imported_agent"
+            to="/prompts/partials?kind=imported_agent"
             className="text-primary-700 hover:text-primary-800"
           >
             Import a production prompt
@@ -369,7 +369,7 @@ export default function MetricPromptImprovementsPanel({
               ) : null}
             </p>
             <Link
-              to={`/prompt-partials/${selectedAgentId}?kind=imported_agent`}
+              to={`/prompts/partials/${selectedAgentId}?kind=imported_agent`}
               className="text-[11px] text-primary-700 hover:text-primary-800 inline-flex items-center gap-1"
             >
               Open full diagram

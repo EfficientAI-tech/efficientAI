@@ -122,7 +122,7 @@ export default function Settings() {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Settings</h1>
+          <h1 className="text-3xl font-bold text-gray-900">API Keys</h1>
           <p className="mt-1 text-sm text-gray-600">
             Manage your API keys for authenticating API requests
           </p>

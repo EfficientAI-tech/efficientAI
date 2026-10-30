@@ -207,7 +207,7 @@ export default function PromptOptimization() {
   }
 
   return (
-    <div className="h-[calc(100vh-7rem)] flex flex-col">
+    <div className="h-[calc(100vh-16rem)] flex flex-col">
       {/* Main layout — left sidebar + content */}
       <div className="flex-1 flex gap-3 min-h-0">
 

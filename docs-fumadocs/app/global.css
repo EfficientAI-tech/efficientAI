@@ -103,6 +103,43 @@ body::before {
   text-wrap: balance;
 }
 
+#nd-page .prose .changelog-board h1 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 650;
+  line-height: 1.3;
+  letter-spacing: -0.011em;
+  text-wrap: auto;
+}
+
+#nd-page .prose .changelog-board a {
+  color: inherit;
+  font-weight: inherit;
+  text-decoration: none;
+}
+
+#nd-page .prose .changelog-board a:hover {
+  color: inherit;
+  text-decoration: none;
+}
+
+#nd-page .prose .changelog-board a.changelog-text-link {
+  color: var(--color-fd-foreground);
+  font-weight: 560;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, var(--color-fd-foreground) 35%, transparent);
+  text-underline-offset: 2px;
+}
+
+#nd-page .prose .changelog-board a.changelog-text-link:hover {
+  color: var(--color-fd-foreground);
+}
+
+.changelog-board-columns {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--color-fd-border) 90%, transparent) transparent;
+}
+
 #nd-page .prose h2 {
   margin-top: 2rem;
   margin-bottom: 0.6rem;
@@ -388,6 +425,43 @@ body::before {
 #nd-sidebar p.inline-flex {
   color: var(--color-fd-foreground);
   font-weight: 700;
+}
+
+.docs-mode-changelog #nd-sidebar a:has(.changelog-sidebar-entry) {
+  width: 100%;
+}
+
+.changelog-sidebar-entry {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.changelog-sidebar-date {
+  flex: none;
+  font-size: 0.72rem;
+  font-weight: 450;
+  letter-spacing: 0;
+  color: var(--color-fd-muted-foreground);
+  white-space: nowrap;
+}
+
+@media (min-width: 48rem) {
+  .docs-mode-changelog [data-sidebar-placeholder] {
+    --fd-sidebar-width: 19.5rem;
+  }
+}
+
+.docs-mode-changelog #nd-notebook-layout[data-sidebar-collapsed="true"] #nd-page {
+  align-items: center;
+}
+
+.docs-mode-changelog #nd-notebook-layout[data-sidebar-collapsed="true"] #nd-page .prose {
+  width: 100%;
+  margin-inline: auto;
 }
 
 #nd-sidebar :is(a, button, div)[style*='calc(2 * var(--spacing))']:has(> [data-icon]) {
@@ -719,3 +793,4 @@ body::before {
     transition: background-color 0.15s ease;
   }
 }
+

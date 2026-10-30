@@ -36,7 +36,7 @@ export default function UsagePage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold text-gray-900">Usage</h1>
+      <h1 className="text-2xl font-semibold text-gray-900">Usage</h1>
 
       {canManagePricing ? (
         <div className="border-b border-gray-200">
@@ -68,5 +68,5 @@ export default function UsagePage() {
 }
 
 export function UsagePricingRedirect() {
-  return <Navigate to="/usage?tab=pricing" replace />
+  return <Navigate to="/observability/usage?tab=pricing" replace />
 }

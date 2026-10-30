@@ -7,35 +7,36 @@ import { apiClient } from '../lib/api'
 import { Profile } from '../types/api'
 import {
   LayoutDashboard,
-  FileCheck,
   LogOut,
   Menu,
   Phone,
   Users,
   FileText,
-  Shield,
-  Play,
   BarChart3,
-  Plug,
   ChevronRight,
   ChevronDown,
   ChevronLeft,
-  Database,
   Settings,
-  Mic,
   Bot,
   Activity,
   PieChart,
   Bell,
   History,
-  Key,
   Clock,
   Volume2,
   Gamepad2,
   ScrollText,
   Github,
-  Sparkles,
   Upload,
+  FlaskConical,
+  ClipboardCheck,
+  SlidersHorizontal,
+  MessageSquare,
+  Gauge,
+  Ruler,
+  LayoutGrid,
+  PhoneCall,
+  AudioLines,
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { Info, X } from 'lucide-react'
@@ -43,6 +44,7 @@ import Logo from './Logo'
 import { consumeJoinNotice } from '../lib/joinNotice'
 import WorkspaceSwitcher from './WorkspaceSwitcher'
 import WalkthroughRail from './walkthrough/WalkthroughRail'
+import { rememberSettingsReturnPath } from '../lib/settingsReturnPath'
 
 interface NavItem {
   name: string
@@ -60,71 +62,47 @@ interface NavSection {
 const navigationSections: NavSection[] = [
   {
     title: 'Simulations',
-    icon: Play,
+    icon: FlaskConical,
     items: [
       { name: 'Agents', href: '/agents', icon: Bot },
       { name: 'Personas', href: '/personas', icon: Users },
       { name: 'Scenarios', href: '/scenarios', icon: FileText },
+      { name: 'Evaluators', href: '/evaluate-test-agents', icon: Gauge },
+      { name: 'Results', href: '/results', icon: BarChart3 },
     ],
   },
   {
     title: 'Playground',
     icon: Gamepad2,
     items: [
-      { name: 'Agent Playground', href: '/playground', icon: Play },
+      { name: 'Agent Playground', href: '/playground', icon: MessageSquare },
       { name: 'Voice Playground', href: '/voice-playground', icon: Volume2, enterpriseFeature: 'voice_playground' },
     ],
   },
   {
     title: 'Evaluations',
-    icon: FileCheck,
+    icon: ClipboardCheck,
     items: [
-      { name: 'Evaluators', href: '/evaluate-test-agents', icon: Mic },
-      { name: 'Evaluation Results', href: '/results', icon: BarChart3 },
-      { name: 'Judge Alignment', href: '/judge-alignment', icon: Sparkles },
+      { name: 'Prompts', href: '/prompts', icon: ScrollText },
       { name: 'Call Imports', href: '/call-imports', icon: Upload, enterpriseFeature: 'call_imports' },
     ],
   },
   {
-    title: 'Prompts',
-    icon: ScrollText,
-    items: [
-      { name: 'Partials', href: '/prompt-partials', icon: FileText },
-      { name: 'Optimization', href: '/prompt-optimization', icon: Sparkles },
-    ],
-  },
-  {
     title: 'Observability',
-    icon: BarChart3,
+    icon: Activity,
     items: [
-      { name: 'Overview', href: '/observability', icon: Activity },
-      { name: 'Calls', href: '/observability/calls', icon: Phone },
-    ],
-  },
-  {
-    title: 'Usage',
-    icon: PieChart,
-    items: [
-      { name: 'Overview', href: '/usage', icon: PieChart },
-    ],
-  },
-  {
-    title: 'Alerting',
-    icon: Bell,
-    items: [
-      { name: 'Alerts', href: '/alerts', icon: Bell, enterpriseFeature: 'alerts' },
-      { name: 'Alert History', href: '/alerts/history', icon: History, enterpriseFeature: 'alerts' },
+      { name: 'Overview', href: '/observability', icon: LayoutGrid },
+      { name: 'Calls', href: '/observability/calls', icon: PhoneCall },
+      { name: 'Usage', href: '/observability/usage', icon: PieChart },
     ],
   },
   {
     title: 'Configurations',
-    icon: Settings,
+    icon: SlidersHorizontal,
     items: [
-      { name: 'Cloud Storage', href: '/data-sources', icon: Database },
-      { name: 'VoiceBundle', href: '/voicebundles', icon: Mic },
-      { name: 'Integrations', href: '/integrations', icon: Plug },
-      { name: 'Telephony Numbers', href: '/telephony-numbers', icon: Phone },
-      { name: 'API Keys', href: '/settings', icon: Key },
+      { name: 'Voice Bundles', href: '/voicebundles', icon: AudioLines },
+      { name: 'Alerts', href: '/alerts', icon: Bell, enterpriseFeature: 'alerts' },
+      { name: 'Alert History', href: '/alerts/history', icon: History, enterpriseFeature: 'alerts' },
       { name: 'Cron Jobs', href: '/cron-jobs', icon: Clock },
     ],
   },
@@ -132,14 +110,15 @@ const navigationSections: NavSection[] = [
 
 const otherNavigation: NavItem[] = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-  { name: 'Metrics', href: '/metrics-management', icon: BarChart3 },
+  { name: 'Metrics', href: '/metrics-management', icon: Ruler },
 ]
 
-const bottomNavigation = [
-  { name: 'IAM', href: '/iam', icon: Shield },
+const bottomNavigation: NavItem[] = [
+  { name: 'Settings', href: '/settings', icon: Settings },
 ]
 
-const SIDEBAR_COLLAPSED_KEY = 'sidebarCollapsed'
+const SIDEBAR_COLLAPSED_KEY = 'sidebarCollapsed.v2'
+const SIDEBAR_EXPANDED_SECTIONS_KEY = 'sidebarExpandedSections'
 
 function readSidebarCollapsedPreference(): boolean {
   if (typeof window === 'undefined') return false
@@ -155,13 +134,45 @@ function getFlattenedNavItems(): NavItem[] {
   return items
 }
 
+function readExpandedSections(): Set<string> {
+  const allTitles = navigationSections.map((section) => section.title)
+  if (typeof window === 'undefined') return new Set(allTitles)
+  try {
+    const raw = localStorage.getItem(SIDEBAR_EXPANDED_SECTIONS_KEY)
+    if (!raw) return new Set(allTitles)
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return new Set(allTitles)
+    }
+    const collapsed = (parsed as { collapsed?: unknown }).collapsed
+    if (!Array.isArray(collapsed)) return new Set(allTitles)
+    const collapsedSet = new Set(collapsed.filter((title): title is string => typeof title === 'string'))
+    return new Set(allTitles.filter((title) => !collapsedSet.has(title)))
+  } catch {
+    return new Set(allTitles)
+  }
+}
+
+function persistExpandedSections(expanded: Set<string>) {
+  const collapsed = navigationSections
+    .map((section) => section.title)
+    .filter((title) => !expanded.has(title))
+  localStorage.setItem(SIDEBAR_EXPANDED_SECTIONS_KEY, JSON.stringify({ collapsed }))
+}
+
 function isNavItemActive(href: string, pathname: string): boolean {
-  if (href === '/metrics-management') {
-    return (
-      pathname === href || pathname.startsWith('/metrics-management/')
+  if (href === '/') {
+    return pathname === '/'
+  }
+  if (href === '/observability') {
+    return pathname === '/observability'
+  }
+  if (href === '/alerts') {
+    return pathname === '/alerts' || (
+      pathname.startsWith('/alerts/') && !pathname.startsWith('/alerts/history')
     )
   }
-  return pathname === href
+  return pathname === href || pathname.startsWith(`${href}/`)
 }
 
 export default function Layout() {
@@ -219,6 +230,10 @@ export default function Layout() {
   useEffect(() => {
     setJoinNotice(consumeJoinNotice())
   }, [])
+
+  useEffect(() => {
+    rememberSettingsReturnPath(location.pathname, location.search)
+  }, [location.pathname, location.search])
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -382,6 +397,18 @@ export default function Layout() {
                 <Github className="h-4 w-4" />
                 <span>Star us on GitHub</span>
               </a>
+              <Link
+                to="/settings"
+                className={`flex items-center justify-center w-10 h-10 rounded-lg transition-colors ${
+                  location.pathname.startsWith('/settings')
+                    ? 'bg-gray-100 text-gray-900'
+                    : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700'
+                }`}
+                title="Settings"
+                aria-label="Settings"
+              >
+                <Settings className="h-5 w-5" />
+              </Link>
               <ProfileAvatar />
             </div>
           </div>
@@ -471,22 +498,23 @@ function SidebarContent({
   collapsed?: boolean
   onToggleCollapse?: () => void
 }) {
-  const [expandedSections, setExpandedSections] = useState<Set<string>>(
-    new Set(['Simulations', 'Playground', 'Evaluations', 'Prompts', 'Observability', 'Alerting', 'Configurations'])
-  )
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(readExpandedSections)
 
   const toggleSection = (title: string) => {
-    const newExpanded = new Set(expandedSections)
-    if (newExpanded.has(title)) {
-      newExpanded.delete(title)
-    } else {
-      newExpanded.add(title)
-    }
-    setExpandedSections(newExpanded)
+    setExpandedSections((prev) => {
+      const next = new Set(prev)
+      if (next.has(title)) {
+        next.delete(title)
+      } else {
+        next.add(title)
+      }
+      persistExpandedSections(next)
+      return next
+    })
   }
 
   const isSectionActive = (section: NavSection) => {
-    return section.items.some(item => location.pathname === item.href)
+    return section.items.some((item) => isNavItemActive(item.href, location.pathname))
   }
 
   if (collapsed) {

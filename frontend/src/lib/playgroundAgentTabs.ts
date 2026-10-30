@@ -1,9 +1,10 @@
-export type AgentPlaygroundTab = 'test_agents' | 'voice_ai_agents' | 'custom_websocket'
+export type AgentPlaygroundTab = 'test_agents' | 'voice_ai_agents' | 'custom_websocket' | 'sandbox'
 
 const VALID_TABS = new Set<AgentPlaygroundTab>([
   'test_agents',
   'voice_ai_agents',
   'custom_websocket',
+  'sandbox',
 ])
 
 export const DEFAULT_AGENT_PLAYGROUND_TAB: AgentPlaygroundTab = 'voice_ai_agents'

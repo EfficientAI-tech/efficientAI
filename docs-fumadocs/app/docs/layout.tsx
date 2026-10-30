@@ -3,6 +3,7 @@ import { baseOptions } from '@/lib/layout.shared';
 import type * as PageTree from 'fumadocs-core/page-tree';
 import type { LayoutTab } from 'fumadocs-ui/layouts/shared';
 import { DocsShell } from '@/components/docs-shell';
+import { getChangelogSidebarDates } from '@/lib/changelog-sidebar-dates';
 
 function folderUrls(folder: PageTree.Folder): string[] {
   const urls: string[] = [];
@@ -55,5 +56,9 @@ export default async function Layout({ children }: LayoutProps<'/docs'>) {
     },
   ];
 
-  return <DocsShell tree={tree} options={options} tabs={tabs}>{children}</DocsShell>;
+  return (
+    <DocsShell tree={tree} options={options} tabs={tabs} changelogDates={getChangelogSidebarDates()}>
+      {children}
+    </DocsShell>
+  );
 }

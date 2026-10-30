@@ -67,7 +67,7 @@ export default function PersonaVoiceFields({
         ) : providers.length === 0 ? (
           <p className="text-sm text-gray-600">
             No TTS providers are connected yet.{' '}
-            <Link to="/integrations" className="text-primary-600 hover:text-primary-700 underline font-medium">
+            <Link to="/settings/integrations" className="text-primary-600 hover:text-primary-700 underline font-medium">
               Connect a provider in Integrations
             </Link>{' '}
             to choose a voice.

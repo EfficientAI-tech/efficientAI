@@ -67,7 +67,7 @@ export default function ChatPlatformConnectionFields({
           {integrationsForPlatform(selectedPlatform).length === 0 ? (
             <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
               No active {platformLabel} integration.{' '}
-              <Link to="/integrations" className="font-medium underline">
+              <Link to="/settings/integrations" className="font-medium underline">
                 Add integration
               </Link>
             </p>

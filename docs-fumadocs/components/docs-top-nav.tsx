@@ -4,6 +4,7 @@ import Link from 'fumadocs-core/link';
 import { usePathname } from 'fumadocs-core/framework';
 import { isLayoutTabActive } from 'fumadocs-ui/layouts/shared';
 import type { ReactNode } from 'react';
+import { ChangelogSidebarExpand } from '@/components/changelog-sidebar-toggle';
 import { Logo } from '@/components/logo';
 import { NavHeaderActions } from '@/components/nav-header-actions';
 
@@ -38,7 +39,8 @@ export function DocsTopNav({ tabs }: { tabs: DocsTopNavTab[] }) {
         data-header-body=""
         className="docs-glass-nav mx-auto flex h-14 w-full max-w-[110rem] items-center gap-2 rounded-2xl border px-4 md:px-6"
       >
-        <div className="flex flex-1 items-center">
+        <div className="flex flex-1 items-center gap-2">
+          <ChangelogSidebarExpand />
           <Link href="/docs/quickstart/" className="inline-flex items-center gap-2.5 font-semibold">
             <Logo />
           </Link>

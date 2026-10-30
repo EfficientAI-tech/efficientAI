@@ -139,7 +139,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   custom: 'Custom',
 }
 
-export default function PromptPartials() {
+export default function PromptPartials({ embedded = false }: { embedded?: boolean }) {
   const { id: routePartialId } = useParams<{ id?: string }>()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -207,7 +207,7 @@ export default function PromptPartials() {
       if (selectedPartial && showDeleteConfirm === selectedPartial.id) {
         setSelectedPartial(null)
         navigate(
-          kindFilter === 'all' ? '/prompt-partials' : `/prompt-partials?kind=${kindFilter}`,
+          kindFilter === 'all' ? '/prompts/partials' : `/prompts/partials?kind=${kindFilter}`,
         )
       }
       setShowDeleteConfirm(null)
@@ -321,7 +321,7 @@ export default function PromptPartials() {
     setNodeMapError(null)
     setAgentDiagramCollapsed(false)
     navigate(
-      `/prompt-partials/${partial.id}${effectiveKind === 'all' ? '' : `?kind=${effectiveKind}`}`,
+      `/prompts/partials/${partial.id}${effectiveKind === 'all' ? '' : `?kind=${effectiveKind}`}`,
     )
   }
 
@@ -439,16 +439,19 @@ export default function PromptPartials() {
   ])
 
   return (
-    <div className="h-[calc(100vh-7rem)] flex flex-col">
+    <div className={`${embedded ? 'h-[calc(100vh-16rem)]' : 'h-[calc(100vh-7rem)]'} flex flex-col`}>
       <ToastContainer />
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Prompt Partials</h1>
-          <p className="mt-1 text-sm text-gray-500">
-            Create, manage, and version reusable prompts — including imported production agents
-          </p>
-        </div>
+        {!embedded && (
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">Prompt Partials</h1>
+            <p className="mt-1 text-sm text-gray-500">
+              Create, manage, and version reusable prompts — including imported production agents
+            </p>
+          </div>
+        )}
+        {embedded && <div />}
         <div className="flex items-center gap-2">
           <button
             onClick={() => setShowAIGenerateModal(true)}
