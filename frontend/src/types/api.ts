@@ -1271,6 +1271,8 @@ export interface CallImport {
   latest_evaluation_completed_rows?: number | null
   latest_evaluation_failed_rows?: number | null
   latest_evaluation_bulk_operation?: 'abort' | 'retry' | 'force_fail_pending' | null
+  /** Any eval on this import still running / bulk op / in-flight rows. */
+  any_evaluation_poll_active?: boolean
   created_at: string
   updated_at: string
   created_by_email?: string | null

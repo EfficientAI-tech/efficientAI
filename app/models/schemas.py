@@ -3902,6 +3902,13 @@ class CallImportResponse(BaseModel):
         None,
         description="In-flight bulk op on the latest evaluation (retry, abort, etc.).",
     )
+    any_evaluation_poll_active: bool = Field(
+        False,
+        description=(
+            "True when any evaluation on this import still has in-flight rows, "
+            "a bulk operation, or pending/running status (not only the latest run)."
+        ),
+    )
     created_at: datetime
     updated_at: datetime
     created_by_email: Optional[str] = None

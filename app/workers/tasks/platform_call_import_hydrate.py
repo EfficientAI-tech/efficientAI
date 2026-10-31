@@ -68,6 +68,7 @@ def _extension_for_content_type(content_type: str) -> str:
     return mapping.get(ct, "mp3")
 
 
+def _hand_off(
     *,
     row,
     db,

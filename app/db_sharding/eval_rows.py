@@ -454,12 +454,15 @@ def retry_eval_page_query(
             CallImportEvaluationRow.status == status,
         )
     )
+    from app.services.call_imports.row_text_search import apply_conversation_id_search
+
     needle = (search_term or "").strip()
     if needle:
         query = query.join(
             CallImportRow,
             CallImportEvaluationRow.call_import_row_id == CallImportRow.id,
-        ).filter(CallImportRow.conversation_id.ilike(f"%{needle}%"))
+        )
+        query = apply_conversation_id_search(query, needle)
     if after_id is not None:
         query = query.filter(CallImportEvaluationRow.id > after_id)
     if row_ids:
@@ -527,6 +530,8 @@ def count_evaluation_retry_targets(
     statuses: Sequence[str],
     search_term: str = "",
 ) -> int:
+    from app.services.call_imports.row_text_search import apply_conversation_id_search
+
     needle = (search_term or "").strip()
 
     def _count(session: Session) -> int:
@@ -540,7 +545,8 @@ def count_evaluation_retry_targets(
                 query = query.join(
                     CallImportRow,
                     CallImportEvaluationRow.call_import_row_id == CallImportRow.id,
-                ).filter(CallImportRow.conversation_id.ilike(f"%{needle}%"))
+                )
+                query = apply_conversation_id_search(query, needle)
             total += int(query.scalar() or 0)
         return total
 

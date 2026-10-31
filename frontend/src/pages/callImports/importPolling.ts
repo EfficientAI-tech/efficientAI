@@ -3,6 +3,7 @@ import {
   evaluationListPollMs,
   evaluationRunPollMs,
   evaluationShouldPollRun,
+  EVAL_PROGRESS_POLL_MS,
 } from './evaluationBulkOperation'
 
 export const IMPORT_LIST_ACTIVE_POLL_MS = 5000
@@ -18,6 +19,7 @@ export type LatestEvalSnapshot = Pick<
   | 'latest_evaluation_completed_rows'
   | 'latest_evaluation_failed_rows'
   | 'latest_evaluation_bulk_operation'
+  | 'any_evaluation_poll_active'
 >
 
 type ImportLifecycleHeader = {
@@ -56,6 +58,7 @@ export function evaluationSnapshotFromLatest(
 export function latestEvaluationShouldPoll(
   snapshot: LatestEvalSnapshot | undefined,
 ): boolean {
+  if (snapshot?.any_evaluation_poll_active) return true
   const evalRow = evaluationSnapshotFromLatest(snapshot)
   if (!evalRow) return false
   return evaluationShouldPollRun(evalRow)
@@ -64,9 +67,29 @@ export function latestEvaluationShouldPoll(
 export function latestEvaluationPollMs(
   snapshot: LatestEvalSnapshot | undefined,
 ): number | false {
+  if (snapshot?.any_evaluation_poll_active) {
+    const evalRow = evaluationSnapshotFromLatest(snapshot)
+    const fromLatest = evalRow ? evaluationRunPollMs(evalRow) : false
+    return fromLatest || EVAL_PROGRESS_POLL_MS
+  }
   const evalRow = evaluationSnapshotFromLatest(snapshot)
   if (!evalRow) return false
   return evaluationRunPollMs(evalRow)
+}
+
+export function importDetailHeaderPollMs(
+  header: (ImportLifecycleHeader & LatestEvalSnapshot) | undefined,
+  evaluations: CallImportEvaluation[],
+): number | false {
+  const lifecycleMs = importRowsPollMs(header)
+  const evalMs =
+    evaluations.length > 0
+      ? evaluationListPollMs(evaluations)
+      : latestEvaluationPollMs(header)
+  if (lifecycleMs && evalMs) {
+    return Math.min(lifecycleMs, evalMs)
+  }
+  return lifecycleMs || evalMs || false
 }
 
 /** Import header / list row: fetch, delete, platform, diarise, latest eval. */
@@ -140,6 +163,9 @@ export function callImportListPollMs(
 ): number | false {
   if (!items.length) return false
   if (items.some((i) => i.status === 'deleting')) {
+    return IMPORT_LIST_ACTIVE_POLL_MS
+  }
+  if (items.some((i) => i.any_evaluation_poll_active)) {
     return IMPORT_LIST_ACTIVE_POLL_MS
   }
   if (items.some((i) => latestEvaluationShouldPoll(i))) {

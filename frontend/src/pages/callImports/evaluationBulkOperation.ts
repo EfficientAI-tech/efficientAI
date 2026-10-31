@@ -43,6 +43,8 @@ const EVAL_PROGRESS_POLL_MS = 3000
 const EVAL_PROGRESS_POLL_LARGE_MS = 10000
 const EVAL_LARGE_ROW_THRESHOLD = 5000
 
+export { EVAL_PROGRESS_POLL_MS }
+
 export function evaluationTerminalStatus(status?: string): boolean {
   return (
     status === 'completed' ||

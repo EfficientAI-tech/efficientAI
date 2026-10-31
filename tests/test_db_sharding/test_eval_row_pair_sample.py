@@ -1,0 +1,51 @@
+"""Tests for evaluation row pair sampling."""
+
+from uuid import uuid4
+
+from app.db_sharding.scatter_gather import load_completed_evaluation_row_pairs_sample
+
+
+def test_sample_returns_all_when_under_cap(monkeypatch):
+    from app.models.database import CallImportEvaluationRow, CallImportRow
+
+    eval_id = uuid4()
+    pairs = [
+        (
+            CallImportEvaluationRow(
+                id=uuid4(),
+                evaluation_id=eval_id,
+                call_import_row_id=uuid4(),
+                status="completed",
+            ),
+            CallImportRow(id=uuid4(), row_index=i, conversation_id=f"c-{i}"),
+        )
+        for i in range(5)
+    ]
+
+    monkeypatch.setattr(
+        "app.db_sharding.scatter_gather.is_sharding_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "app.db_sharding.scatter_gather.count_completed_evaluation_row_pairs",
+        lambda _db, _eid: 5,
+    )
+    monkeypatch.setattr(
+        "app.db_sharding.scatter_gather._completed_evaluation_row_pairs_query",
+        lambda _db, _eid: _QueryStub(pairs),
+    )
+
+    out = load_completed_evaluation_row_pairs_sample(None, eval_id, max_pairs=100)
+    assert len(out) == 5
+    assert [p[1].row_index for p in out] == [0, 1, 2, 3, 4]
+
+
+class _QueryStub:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return list(self._rows)
+
+    def filter(self, *_a, **_k):
+        return self

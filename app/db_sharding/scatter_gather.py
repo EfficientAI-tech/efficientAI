@@ -97,10 +97,9 @@ def _apply_call_import_row_filters(
     search_term: str,
     diarised_status_filter: Optional[str],
 ):
-    if search_term:
-        query = query.filter(
-            CallImportRow.conversation_id.ilike(f"%{search_term}%")
-        )
+    from app.services.call_imports.row_text_search import apply_conversation_id_search
+
+    query = apply_conversation_id_search(query, search_term)
     if diarised_status_filter:
         query = query.filter(
             CallImportRow.diarised_transcript_status == diarised_status_filter
@@ -1780,3 +1779,121 @@ def load_evaluation_row_pairs(
             .all()
         )
     return _sort_evaluation_row_pairs(pairs)
+
+
+DEFAULT_EVAL_ROW_PAIR_SAMPLE = 1500
+INSIGHTS_TLDR_ROW_SAMPLE = 1000
+USER_INSIGHTS_ROW_INPUT_CAP = 3000
+
+
+def count_completed_evaluation_row_pairs(
+    catalog_db: Session,
+    evaluation_id: UUID,
+) -> int:
+    def count_session(db: Session) -> int:
+        return int(
+            db.query(func.count(CallImportEvaluationRow.id))
+            .filter(
+                CallImportEvaluationRow.evaluation_id == evaluation_id,
+                CallImportEvaluationRow.status == "completed",
+            )
+            .scalar()
+            or 0
+        )
+
+    if not is_sharding_enabled():
+        return count_session(catalog_db)
+
+    total = 0
+    router = db_pool_manager.router
+    assert router is not None
+    for shard_id in router.shard_ids:
+        factory = db_pool_manager.shard_session_factory(shard_id)
+        shard_db = factory()
+        try:
+            total += count_session(shard_db)
+        finally:
+            shard_db.close()
+    if total == 0:
+        total = count_session(catalog_db)
+    return total
+
+
+def _completed_evaluation_row_pairs_query(db: Session, evaluation_id: UUID):
+    return (
+        db.query(CallImportEvaluationRow, CallImportRow)
+        .join(
+            CallImportRow,
+            CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
+        )
+        .filter(
+            CallImportEvaluationRow.evaluation_id == evaluation_id,
+            CallImportEvaluationRow.status == "completed",
+        )
+    )
+
+
+def load_completed_evaluation_row_pairs_sample(
+    catalog_db: Session,
+    evaluation_id: UUID,
+    *,
+    max_pairs: int = DEFAULT_EVAL_ROW_PAIR_SAMPLE,
+    row_stride: int | None = None,
+) -> List[tuple[CallImportEvaluationRow, CallImportRow]]:
+    """Deterministic subsample of completed rows by ``row_index`` stride."""
+    cap = max(1, int(max_pairs))
+    total = count_completed_evaluation_row_pairs(catalog_db, evaluation_id)
+    if total <= cap:
+        if not is_sharding_enabled():
+            pairs = _completed_evaluation_row_pairs_query(
+                catalog_db, evaluation_id
+            ).all()
+            return _sort_evaluation_row_pairs(pairs)
+
+        pairs: List[tuple[CallImportEvaluationRow, CallImportRow]] = []
+        router = db_pool_manager.router
+        assert router is not None
+        for shard_id in router.shard_ids:
+            factory = db_pool_manager.shard_session_factory(shard_id)
+            shard_db = factory()
+            try:
+                pairs.extend(
+                    _completed_evaluation_row_pairs_query(
+                        shard_db, evaluation_id
+                    ).all()
+                )
+            finally:
+                shard_db.close()
+        if not pairs:
+            pairs = _completed_evaluation_row_pairs_query(
+                catalog_db, evaluation_id
+            ).all()
+        return _sort_evaluation_row_pairs(pairs)
+
+    stride = row_stride or max(1, (total + cap - 1) // cap)
+
+    def load_stride(db: Session) -> List[tuple[CallImportEvaluationRow, CallImportRow]]:
+        query = _completed_evaluation_row_pairs_query(db, evaluation_id).filter(
+            (CallImportRow.row_index % stride) == 0
+        )
+        return query.all()
+
+    if not is_sharding_enabled():
+        return _sort_evaluation_row_pairs(load_stride(catalog_db))[:cap]
+
+    merged: List[tuple[CallImportEvaluationRow, CallImportRow]] = []
+    router = db_pool_manager.router
+    assert router is not None
+    for shard_id in router.shard_ids:
+        factory = db_pool_manager.shard_session_factory(shard_id)
+        shard_db = factory()
+        try:
+            merged.extend(load_stride(shard_db))
+        finally:
+            shard_db.close()
+    if not merged:
+        merged = load_stride(catalog_db)
+    merged = _sort_evaluation_row_pairs(merged)
+    if len(merged) > cap:
+        return merged[:cap]
+    return merged

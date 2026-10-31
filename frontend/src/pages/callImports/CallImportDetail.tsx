@@ -7,7 +7,7 @@ import { itemsOf } from '../../lib/safeData'
 import { getApiErrorMessage } from '../../lib/apiErrors'
 import { useToast } from '../../hooks/useToast'
 import { useWorkspaceStore } from '../../store/workspaceStore'
-import type { CallImportEvaluation, CallImportRow } from '../../types/api'
+import type { CallImportEvaluation, CallImportEvaluationListResponse, CallImportRow } from '../../types/api'
 import { type ProviderModelValue } from '../../components/providers/ProviderModelPicker'
 import { resolveLLMModelForSubmit } from '../../lib/llmModelOptions'
 import PlatformImportProgressDock from './components/PlatformImportProgressDock'
@@ -28,7 +28,7 @@ import { ImportDeleteConfirmModals } from './components/importDetail/ImportDelet
 import { ImportRunEvaluationModal } from './components/importDetail/ImportRunEvaluationModal'
 import { useImportEvaluationsTab } from './hooks/useImportEvaluationsTab'
 import { evaluationListPollMs } from './evaluationBulkOperation'
-import { importHeaderPollMs } from './importPolling'
+import { importDetailHeaderPollMs } from './importPolling'
 
 
 
@@ -40,6 +40,11 @@ export default function CallImportDetail() {
   const { showToast, ToastContainer } = useToast()
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
 
+  const evaluationsQueryKey = [
+    'call-import-evaluations',
+    activeWorkspaceId,
+    id,
+  ] as const
 
   const {
     data,
@@ -53,7 +58,15 @@ export default function CallImportDetail() {
     enabled: !!id,
     staleTime: 60_000,
     refetchOnWindowFocus: false,
-    refetchInterval: (query) => importHeaderPollMs(query.state.data),
+    refetchInterval: (query) => {
+      const evalList = queryClient.getQueryData<CallImportEvaluationListResponse>(
+        evaluationsQueryKey,
+      )
+      return importDetailHeaderPollMs(
+        query.state.data,
+        itemsOf<CallImportEvaluation>(evalList),
+      )
+    },
   })
 
   const {

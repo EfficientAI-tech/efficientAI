@@ -264,10 +264,11 @@ def get_call_import_detail(
             rows_query = db.query(CallImportRow).filter(
                 CallImportRow.call_import_id == call_import.id
             )
-            if search_term:
-                rows_query = rows_query.filter(
-                    CallImportRow.conversation_id.ilike(f"%{search_term}%")
-                )
+            from app.services.call_imports.row_text_search import (
+                apply_conversation_id_search,
+            )
+
+            rows_query = apply_conversation_id_search(rows_query, search_term)
             if diarised_status_filter:
                 rows_query = rows_query.filter(
                     CallImportRow.diarised_transcript_status == diarised_status_filter
@@ -302,10 +303,9 @@ def get_call_import_detail(
         rows_query = db.query(CallImportRow).filter(
             CallImportRow.call_import_id == call_import.id
         )
-        if search_term:
-            rows_query = rows_query.filter(
-                CallImportRow.conversation_id.ilike(f"%{search_term}%")
-            )
+        from app.services.call_imports.row_text_search import apply_conversation_id_search
+
+        rows_query = apply_conversation_id_search(rows_query, search_term)
         if diarised_status_filter:
             rows_query = rows_query.filter(
                 CallImportRow.diarised_transcript_status == diarised_status_filter
@@ -384,10 +384,9 @@ def list_call_import_row_ids(
     rows_query = db.query(CallImportRow.id).filter(
         CallImportRow.call_import_id == call_import.id
     )
-    if search_term:
-        rows_query = rows_query.filter(
-            CallImportRow.conversation_id.ilike(f"%{search_term}%")
-        )
+    from app.services.call_imports.row_text_search import apply_conversation_id_search
+
+    rows_query = apply_conversation_id_search(rows_query, search_term)
     if status_filter:
         rows_query = rows_query.filter(
             CallImportRow.diarised_transcript_status == status_filter

@@ -1257,6 +1257,43 @@ def _latest_evaluation_progress_for_ui(
     }
 
 
+def _any_evaluation_needs_ui_poll(db: Session, call_import_id: UUID) -> bool:
+    """True when any evaluation on this import still needs UI polling."""
+    from sqlalchemy.orm import load_only
+
+    from app.services.call_imports.evaluation_bulk_op import (
+        get_evaluation_bulk_operation,
+    )
+
+    rows = (
+        db.query(CallImportEvaluation)
+        .options(
+            load_only(
+                CallImportEvaluation.id,
+                CallImportEvaluation.status,
+                CallImportEvaluation.total_rows,
+                CallImportEvaluation.completed_rows,
+                CallImportEvaluation.failed_rows,
+            )
+        )
+        .filter(CallImportEvaluation.call_import_id == call_import_id)
+        .all()
+    )
+    for row in rows:
+        if get_evaluation_bulk_operation(row.id):
+            return True
+        total = int(row.total_rows or 0)
+        accounted = int(row.completed_rows or 0) + int(row.failed_rows or 0)
+        if total > accounted:
+            return True
+        status = row.status
+        if hasattr(status, "value"):
+            status = status.value
+        if str(status) in ("pending", "running"):
+            return True
+    return False
+
+
 def rollup_call_import_batch_status(db: Session, call_import: CallImport) -> None:
     """Recompute batch counters and terminal status on the parent import.
 
@@ -1319,8 +1356,14 @@ def rollup_call_import_batch_status(db: Session, call_import: CallImport) -> Non
     from app.services.call_imports.debounced_rollup import (
         platform_discovery_blocks_terminal_status,
     )
+    from app.services.call_imports.platform_discovery_sync import (
+        sync_platform_discovery_when_import_rows_idle,
+    )
 
-    if platform_discovery_blocks_terminal_status(call_import):
+    sync_platform_discovery_when_import_rows_idle(db, call_import)
+    db.refresh(call_import)
+
+    if platform_discovery_blocks_terminal_status(call_import, db=db):
         call_import.status = CallImportStatus.PROCESSING
         return
 

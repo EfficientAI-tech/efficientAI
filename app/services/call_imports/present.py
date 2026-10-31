@@ -157,6 +157,7 @@ def _serialize_call_import(
 ) -> CallImportResponse:
     """Catalog parent fields; counters come from SQL rollup (not Redis merge)."""
     from app.services.call_imports.bulk_ops import (
+        _any_evaluation_needs_ui_poll,
         _latest_evaluation_progress_for_ui,
         rollup_call_import_batch_status,
     )
@@ -222,6 +223,9 @@ def _serialize_call_import(
             ],
             "imported_agent_partial_id": _imported_agent_partial_id(call_import),
             **_latest_evaluation_progress_for_ui(db, call_import.id),
+            "any_evaluation_poll_active": _any_evaluation_needs_ui_poll(
+                db, call_import.id
+            ),
             "created_by_email": created_email,
             "last_updated_by_email": updated_email,
         }

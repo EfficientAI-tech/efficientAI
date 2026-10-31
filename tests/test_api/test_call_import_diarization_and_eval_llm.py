@@ -23,15 +23,6 @@ import pytest
 from fastapi import HTTPException
 
 
-@pytest.fixture(autouse=True)
-def _allow_stt_in_transcribe_worker_tests(monkeypatch):
-    _ensure_real_concurrency_modules()
-    monkeypatch.setattr(
-        "app.workers.concurrency.stt_token_bucket.consume_stt_token",
-        lambda *_a, **_k: SimpleNamespace(allowed=True, wait_seconds=0),
-    )
-
-
 # ---------------------------------------------------------------------------
 # transcribe_call_import_row worker — plain-transcript mode
 # ---------------------------------------------------------------------------
@@ -101,7 +92,6 @@ def _ensure_real_concurrency_modules():
     for mod_name in (
         "app.workers.concurrency.limits",
         "app.workers.concurrency.import_dispatch",
-        "app.workers.concurrency.stt_token_bucket",
     ):
         cached = sys.modules.get(mod_name)
         if cached is not None and getattr(cached, "__file__", None):
@@ -136,10 +126,6 @@ def _patch_session(monkeypatch, task_module, fake_row):
     monkeypatch.setattr("app.db_sharding.row_ops.locate_call_import_row", _locate)
     monkeypatch.setattr("app.db_sharding.row_ops.close_row_sessions", lambda *_a: None)
     monkeypatch.setattr("app.database.SessionLocal", lambda: fake_db)
-    monkeypatch.setattr(
-        "app.workers.concurrency.stt_token_bucket.consume_stt_token",
-        lambda *_a, **_k: SimpleNamespace(allowed=True, wait_seconds=0),
-    )
     return fake_db
 
 

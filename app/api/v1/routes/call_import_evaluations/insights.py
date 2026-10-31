@@ -489,11 +489,15 @@ def _generate_and_persist_tldr_summary(
 ) -> EvaluationTldrSummary:
     """LLM TLDR generation used by the imports-queue Celery worker."""
     eval_id = evaluation.id
-    from app.db_sharding.scatter_gather import load_evaluation_row_pairs
+    from app.db_sharding.scatter_gather import (
+        INSIGHTS_TLDR_ROW_SAMPLE,
+        load_completed_evaluation_row_pairs_sample,
+    )
+    from app.services.call_imports.metric_aggregate_cache import (
+        evaluation_metric_aggregates_for_analysis,
+    )
 
-    pairs = load_evaluation_row_pairs(db, eval_id)
-    eval_rows = [eval_row for eval_row, _ in pairs]
-    aggregate = _compute_metric_aggregates(db, evaluation, eval_rows)
+    aggregate = evaluation_metric_aggregates_for_analysis(db, evaluation)
     if not aggregate:
         raise HTTPException(
             status_code=400,
@@ -512,7 +516,11 @@ def _generate_and_persist_tldr_summary(
     metrics = _metrics_for_ids(db, organization_id, metric_ids)
     metric_meta: Dict[str, Metric] = {str(m.id): m for m in metrics}
 
-    rationale_samples = _sample_rationales_per_metric(eval_rows)
+    rationale_samples = _sample_rationales_per_metric(
+        [eval_row for eval_row, _ in load_completed_evaluation_row_pairs_sample(
+            db, eval_id, max_pairs=INSIGHTS_TLDR_ROW_SAMPLE
+        )]
+    )
     messages = _build_insights_messages(
         evaluation, aggregate, rationale_samples, metric_meta
     )

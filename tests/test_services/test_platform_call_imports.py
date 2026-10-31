@@ -613,3 +613,59 @@ def test_discovery_blocks_terminal_status_while_running():
     assert platform_discovery_blocks_terminal_status(batch) is True
     batch.discovery_status = "completed"
     assert platform_discovery_blocks_terminal_status(batch) is False
+
+
+def test_discovery_does_not_block_terminal_when_rows_idle(monkeypatch):
+    from unittest.mock import MagicMock
+
+    batch = SimpleNamespace(
+        source_format="platform",
+        discovery_status="running",
+        id=uuid4(),
+    )
+    db = MagicMock()
+    monkeypatch.setattr(
+        "app.services.call_imports.bulk_ops._aggregate_import_row_status_counts",
+        lambda _db, _cid: (100, 100, 0, 0, 0),
+    )
+    assert platform_discovery_blocks_terminal_status(batch, db=db) is False
+
+
+def test_platform_hydration_complete_when_recordings_done_discovery_running(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from app.services.call_imports.import_batch_helpers import (
+        platform_import_hydration_complete,
+    )
+
+    call_import = MagicMock()
+    call_import.source_format = "platform"
+    call_import.discovery_status = "running"
+    call_import.id = uuid4()
+
+    monkeypatch.setattr("sqlalchemy.orm.object_session", lambda _obj: MagicMock())
+    monkeypatch.setattr(
+        "app.services.call_imports.bulk_ops._aggregate_import_row_status_counts",
+        lambda _db, _cid: (141, 50, 91, 0, 0),
+    )
+    assert platform_import_hydration_complete(call_import) is True
+
+
+def test_platform_hydration_complete_blocks_while_rows_in_flight(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from app.services.call_imports.import_batch_helpers import (
+        platform_import_hydration_complete,
+    )
+
+    call_import = MagicMock()
+    call_import.source_format = "platform"
+    call_import.discovery_status = "running"
+    call_import.id = uuid4()
+
+    monkeypatch.setattr("sqlalchemy.orm.object_session", lambda _obj: MagicMock())
+    monkeypatch.setattr(
+        "app.services.call_imports.bulk_ops._aggregate_import_row_status_counts",
+        lambda _db, _cid: (141, 40, 0, 1, 0),
+    )
+    assert platform_import_hydration_complete(call_import) is False

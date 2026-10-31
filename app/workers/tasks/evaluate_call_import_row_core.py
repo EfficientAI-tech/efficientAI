@@ -684,6 +684,7 @@ def commit_terminal_row_and_rollup(
     from app.db_sharding.row_ops import shard_row_write_context
 
     parent_db = catalog_db if catalog_db is not None and catalog_db is not row_db else row_db
+    replay_bill_only = False
     # Shard FK points at the catalogue evaluation; skip it for this write.
     write_ctx = (
         shard_row_write_context(row_db) if parent_db is not row_db else nullcontext()
@@ -706,26 +707,38 @@ def commit_terminal_row_and_rollup(
         )
         target = (target_status or "").lower()
         current_norm = (current or "").lower()
-        if transition.rowcount not in (1, -1):
-            if current_norm == target:
-                return
-            row_db.rollback()
-            return
-        if current_norm != target:
-            row_db.rollback()
-            return
         bill_after_commit = None
-        if (eval_row.status or "").lower() == "completed":
-            source_row = (
-                row_db.query(CallImportRow)
-                .filter(CallImportRow.id == eval_row.call_import_row_id)
-                .first()
-            )
-            if source_row is not None:
-                bill_after_commit = (evaluation, eval_row, source_row)
-        row_db.flush()
-        row_db.commit()
-        row_db.refresh(eval_row)
+        if transition.rowcount not in (1, -1):
+            if current_norm == target and target == "completed":
+                replay_bill_only = True
+                source_row = (
+                    row_db.query(CallImportRow)
+                    .filter(CallImportRow.id == eval_row.call_import_row_id)
+                    .first()
+                )
+                if source_row is not None:
+                    bill_after_commit = (evaluation, eval_row, source_row)
+            elif current_norm == target:
+                return
+            else:
+                row_db.rollback()
+                return
+        else:
+            if current_norm != target:
+                row_db.rollback()
+                return
+            bill_after_commit = None
+            if (eval_row.status or "").lower() == "completed":
+                source_row = (
+                    row_db.query(CallImportRow)
+                    .filter(CallImportRow.id == eval_row.call_import_row_id)
+                    .first()
+                )
+                if source_row is not None:
+                    bill_after_commit = (evaluation, eval_row, source_row)
+            row_db.flush()
+            row_db.commit()
+            row_db.refresh(eval_row)
     if bill_after_commit is not None:
         evaluation, eval_row, source_row = bill_after_commit
         from app.services.call_imports.eval_flexprice_billing import (
@@ -740,6 +753,8 @@ def commit_terminal_row_and_rollup(
             resolve_audio_seconds=resolve_eval_row_audio_seconds,
             billable_minutes_fn=billable_audio_minutes,
         )
+    if replay_bill_only:
+        return
     if (eval_row.status or "").lower() == "completed":
         from app.services.call_imports.discovered_running_cache import (
             record_row_discoveries,
@@ -850,6 +865,12 @@ def rollup_parent(
     in_progress = total - completed - failed
     if in_progress > 0:
         return
+
+    from app.services.call_imports.eval_flexprice_billing import (
+        flush_recording_minutes_remainder,
+    )
+
+    flush_recording_minutes_remainder(evaluation.id)
 
     already_billed = int(getattr(evaluation, "billed_completed_rows", 0) or 0)
     delta = completed - already_billed

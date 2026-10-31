@@ -11,8 +11,15 @@ from app.workers.config import celery_app
 @celery_app.task(name="flush_usage_counters")
 def flush_usage_counters_task() -> dict:
     from app.services.billing.flexprice_buffer import flush_buffered_flexprice_events
+    from app.services.call_imports.eval_flexprice_billing import (
+        republish_sealed_recording_batches,
+    )
     from app.services.usage.llm_usage import flush_all_usage_to_catalog
 
+    try:
+        republish_sealed_recording_batches()
+    except Exception as exc:
+        logger.warning("Flexprice sealed batch republish failed: {}", exc)
     flexprice_stats = flush_buffered_flexprice_events()
     flushed = flush_all_usage_to_catalog(SessionLocal)
     if flushed:

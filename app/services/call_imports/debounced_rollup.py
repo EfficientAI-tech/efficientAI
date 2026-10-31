@@ -55,11 +55,24 @@ def _schedule_trailing_import_rollup(call_import_id: UUID) -> None:
         logger.debug("import trailing rollup enqueue failed: {}", exc)
 
 
-def platform_discovery_blocks_terminal_status(call_import) -> bool:
+def platform_discovery_blocks_terminal_status(
+    call_import,
+    db: Session | None = None,
+) -> bool:
     if (getattr(call_import, "source_format", None) or "").lower() != "platform":
         return False
     discovery = (getattr(call_import, "discovery_status", None) or "").strip().lower()
-    return discovery in {"queued", "running"}
+    if discovery not in {"queued", "running"}:
+        return False
+    if db is not None:
+        from app.services.call_imports.bulk_ops import _aggregate_import_row_status_counts
+
+        total, _completed, _failed, pending, processing = (
+            _aggregate_import_row_status_counts(db, call_import.id)
+        )
+        if total > 0 and pending == 0 and processing == 0:
+            return False
+    return True
 
 
 def maybe_record_import_row_transition(
@@ -102,11 +115,22 @@ def schedule_debounced_import_rollup(
 
     flush_import_progress_to_catalog(db, cid)
 
-    if platform_discovery_blocks_terminal_status(call_import):
+    parent = db.query(CallImport).filter(CallImport.id == cid).first()
+    if parent is None:
+        return
+
+    from app.services.call_imports.platform_discovery_sync import (
+        sync_platform_discovery_when_import_rows_idle,
+    )
+
+    sync_platform_discovery_when_import_rows_idle(db, parent)
+    db.refresh(parent)
+
+    if platform_discovery_blocks_terminal_status(parent, db=db):
         from app.models.enums import CallImportStatus
 
-        if call_import.status != CallImportStatus.DELETING:
-            call_import.status = CallImportStatus.PROCESSING
+        if parent.status != CallImportStatus.DELETING:
+            parent.status = CallImportStatus.PROCESSING
         return
 
     should_aggregate = force
@@ -128,7 +152,4 @@ def schedule_debounced_import_rollup(
         _schedule_trailing_import_rollup(cid)
         return
 
-    parent = db.query(CallImport).filter(CallImport.id == cid).first()
-    if parent is None:
-        return
     rollup_call_import_batch_status(db, parent)

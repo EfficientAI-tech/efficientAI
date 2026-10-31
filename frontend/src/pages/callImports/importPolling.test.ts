@@ -36,6 +36,22 @@ describe('importPolling', () => {
     expect(callImportListPollMs(items)).toBe(5000)
   })
 
+  it('polls call import list when older eval still active but latest is idle', () => {
+    const items = [
+      {
+        id: '1',
+        status: 'completed' as const,
+        latest_evaluation_status: 'completed',
+        latest_evaluation_total_rows: 10,
+        latest_evaluation_completed_rows: 10,
+        latest_evaluation_failed_rows: 0,
+        latest_evaluation_bulk_operation: null,
+        any_evaluation_poll_active: true,
+      },
+    ] as Parameters<typeof callImportListPollMs>[0]
+    expect(callImportListPollMs(items)).toBe(5000)
+  })
+
   it('does not poll idle completed import', () => {
     const header = {
       status: 'completed' as const,

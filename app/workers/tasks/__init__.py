@@ -10,6 +10,7 @@ from . import tts_comparison
 from . import tts_report
 from . import run_prompt_optimization
 from . import process_call_import_row
+from . import platform_call_import_hydrate  # noqa: F401 — fail fast at worker boot
 from . import evaluate_call_import_row
 from . import evaluate_call_import_row_audio
 from . import transcribe_call_import_row

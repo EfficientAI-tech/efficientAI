@@ -145,8 +145,13 @@ s3:
   secret_access_key: "your-secret-access-key"
   endpoint_url: null  # Optional: for S3-compatible services (e.g., MinIO, DigitalOcean Spaces)
   prefix: "audio/"  # Prefix for audio files in bucket
-
-# GCS Configuration (alternative to S3 when storage.blob_provider is gcs)
+  #
+  # Browser call-import uploads (CSV/XLSX/audio) use presigned PUT directly to
+  # this bucket from the app origin. FastAPI CORS is not enough — the bucket
+  # must allow your frontend origins too. Example:
+  #   ./scripts/apply_s3_call_import_cors.sh --config config.yml
+  #   # or: aws s3api put-bucket-cors --bucket YOUR_BUCKET --cors-configuration file://scripts/s3-bucket-cors-call-imports.example.json
+  # Add production app URL to AllowedOrigins; use the same rules on MinIO/R2 CORS UI.
 gcs:
   enabled: false
   bucket_name: "your-gcs-bucket-name"
@@ -177,8 +182,9 @@ diarization:
 # CORS Settings
 cors:
   origins:
-    - "http://localhost:3000"
     - "http://localhost:8000"
+    - "https://sandbox.efficientai.cloud"
+    # Add http://localhost:3000 only if you run `npm run dev` in frontend/ (Vite), not docker :8000
 
 # API Settings
 api:

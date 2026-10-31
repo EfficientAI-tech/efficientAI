@@ -160,7 +160,16 @@ from app.api.v1.routes.call_import_evaluations._shared import (  # noqa: E402
 from app.api.v1.routes.call_import_evaluations.evaluation_cancel import (  # noqa: E402
     _apply_evaluation_cancel,
     _cancel_eval_row_with_source_diarisation,
+    _require_no_evaluation_bulk_operation,
     _revoke_eval_task,
+)
+from app.api.v1.routes.call_import_evaluations.discovered import (  # noqa: E402
+    _alias_map_for_parent,
+    _resolve_alias,
+    _slug_label,
+)
+from app.api.v1.routes.call_import_evaluations.flow import (  # noqa: E402
+    _DISCOVERED_NODE_PREFIX,
 )
 
 def _apply_classification_metric_filters(
@@ -215,8 +224,8 @@ async def list_call_import_evaluation_rows(
     q: Optional[str] = Query(
         None,
         description=(
-            "Free-text search across conversation_id and transcript "
-            "(case-insensitive substring match)."
+            "Free-text search across conversation_id, transcript, and "
+            "diarised_transcript (case-insensitive substring match)."
         ),
     ),
     metric_id: Optional[UUID] = Query(
@@ -349,18 +358,9 @@ async def list_call_import_evaluation_rows(
     )
 
     # --- Filters ----------------------------------------------------------
-    if q and q.strip():
-        needle = f"%{q.strip()}%"
-        # Search across both transcript columns so a hit in either the
-        # production or the diarised version surfaces the row,
-        # independent of which source the evaluation actually scored.
-        query = query.filter(
-            or_(
-                CallImportRow.conversation_id.ilike(needle),
-                CallImportRow.transcript.ilike(needle),
-                CallImportRow.diarised_transcript.ilike(needle),
-            )
-        )
+    from app.services.call_imports.row_text_search import apply_evaluation_row_search
+
+    query = apply_evaluation_row_search(query, q)
 
     if status_filter:
         # The CallImportEvaluationRow.status column is a string in PG so a

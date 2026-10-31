@@ -12,7 +12,6 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.models.database import CallImportEvaluation
 from app.models.schemas import CallImportMetricAggregate
 
-_AGGREGATE_REFRESH_EVERY_N_ROWS = 25
 _TERMINAL_EVAL_STATUSES = frozenset(
     {"completed", "failed", "partial", "cancelled", "aborted"}
 )
@@ -102,21 +101,20 @@ def maybe_refresh_aggregate_cache_after_row(
     *,
     new_row_status: str | None,
 ) -> None:
+    """Rebuild cache only when the evaluation run reaches a terminal status.
+
+    While a run is active, charts refresh on demand via
+    ``metrics_for_aggregate_endpoint`` (stale ``cached_metric_aggregates_at_count``).
+    """
     status = (new_row_status or "").lower()
     if status != "completed":
         return
+    parent_status = (evaluation.status or "").lower()
+    if parent_status not in _TERMINAL_EVAL_STATUSES:
+        return
     completed = int(evaluation.completed_rows or 0)
     cached_at = int(evaluation.cached_metric_aggregates_at_count or -1)
-    parent_status = (evaluation.status or "").lower()
-    if parent_status in _TERMINAL_EVAL_STATUSES:
-        force = completed != cached_at
-    elif completed == 0:
-        return
-    else:
-        force = completed % _AGGREGATE_REFRESH_EVERY_N_ROWS == 0
-        if not force and cached_at >= 0:
-            force = completed - cached_at >= _AGGREGATE_REFRESH_EVERY_N_ROWS
-    if not force:
+    if completed == cached_at:
         return
     try:
         rebuild_evaluation_metric_aggregate_cache(db, evaluation.id)
@@ -126,3 +124,13 @@ def maybe_refresh_aggregate_cache_after_row(
             evaluation.id,
             exc,
         )
+
+
+def evaluation_metric_aggregates_for_analysis(
+    db: Session,
+    evaluation: CallImportEvaluation,
+) -> List[CallImportMetricAggregate]:
+    cached = aggregates_from_cache(evaluation)
+    if cached is not None:
+        return cached
+    return rebuild_evaluation_metric_aggregate_cache(db, evaluation.id)

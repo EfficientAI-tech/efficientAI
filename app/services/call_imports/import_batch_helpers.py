@@ -112,11 +112,9 @@ def is_platform_call_import(call_import: CallImport) -> bool:
 
 
 def platform_import_hydration_complete(call_import: CallImport) -> bool:
+    """True when evaluation may start on the rows discovered so far."""
     if not is_platform_call_import(call_import):
         return True
-    discovery = (call_import.discovery_status or "").lower()
-    if discovery not in {"completed", "capped", "failed", "partial"}:
-        return False
     from sqlalchemy.orm import object_session
 
     from app.services.call_imports.bulk_ops import _aggregate_import_row_status_counts
@@ -124,10 +122,17 @@ def platform_import_hydration_complete(call_import: CallImport) -> bool:
     db = object_session(call_import)
     if db is None:
         return False
-    _total, _completed, _failed, pending, processing = _aggregate_import_row_status_counts(
+    total, _completed, _failed, pending, processing = _aggregate_import_row_status_counts(
         db, call_import.id
     )
-    return pending == 0 and processing == 0
+    if pending > 0 or processing > 0:
+        return False
+    discovery = (call_import.discovery_status or "").lower()
+    if discovery in {"completed", "capped", "failed", "partial"}:
+        return True
+    # Recording hydrate is done for every listed row; do not block eval on a
+    # stuck or slow last discovery window (listing can lag row downloads).
+    return total > 0
 
 
 def validate_diarised_eval_recording_ready(
