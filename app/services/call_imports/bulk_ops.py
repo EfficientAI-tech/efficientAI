@@ -776,6 +776,7 @@ def bulk_materialize_call_import_rows(
     *,
     defer_shard_commit: bool = False,
     shard_sessions=None,
+    row_index_offset: int = 0,
 ) -> tuple[int, List[Session]]:
     """Insert import rows in chunks without per-row ORM overhead.
 
@@ -794,7 +795,7 @@ def bulk_materialize_call_import_rows(
         chunk = parsed_rows[start : start + _BULK_INSERT_CHUNK]
         mappings = []
         for offset, row in enumerate(chunk):
-            idx = start + offset
+            idx = int(row_index_offset) + start + offset
             csv_transcript = row["transcript"]
             mappings.append(
                 {
@@ -899,9 +900,7 @@ def execute_call_import_materialization(
         if not is_sharding_enabled()
         else None
     )
-    if existing_rows is not None or (
-        is_sharding_enabled() and int(call_import.total_rows or 0) > 0
-    ):
+    if existing_rows is not None:
         if call_import.status == CallImportStatus.FAILED:
             return {
                 "total_rows": int(call_import.total_rows or 0),
@@ -1003,26 +1002,66 @@ def execute_call_import_materialization(
     call_import.failed_rows = 0
 
     row_count = len(parse_result.rows)
+    rows_payload = parse_result.rows
+    row_index_offset = 0
+    if is_sharding_enabled():
+        from app.db_sharding.scatter_gather import (
+            count_call_import_rows,
+            max_call_import_row_index,
+        )
+
+        existing_count = count_call_import_rows(db, call_import.id)
+        if existing_count >= row_count > 0:
+            call_import.total_rows = row_count
+            db.commit()
+            if schedule_import_dispatch:
+                _enqueue_row_tasks(db, call_import, [])
+            return {
+                "total_rows": row_count,
+                "status": "already_materialized",
+                "source_rows_skipped": skipped_count,
+            }
+        row_index_offset = max_call_import_row_index(db, call_import.id) + 1
+        if row_index_offset >= row_count:
+            call_import.total_rows = row_count
+            db.commit()
+            if schedule_import_dispatch:
+                _enqueue_row_tasks(db, call_import, [])
+            return {
+                "total_rows": row_count,
+                "status": "already_materialized",
+                "source_rows_skipped": skipped_count,
+            }
+        if row_index_offset > 0:
+            rows_payload = parse_result.rows[row_index_offset:]
+            logger.info(
+                "execute_call_import_materialization: resuming import {} at row_index {}",
+                call_import_id,
+                row_index_offset,
+            )
+
     committed_rows = 0
     shard_sessions = None
     try:
         if is_sharding_enabled():
             from app.db_sharding.row_ops import ShardWriteSessions, register_shard_slices
 
-            register_shard_slices(db, call_import.id, row_count)
-            db.commit()
-            from app.db_sharding.registry import publish_slice_registry_change
+            if row_index_offset == 0:
+                register_shard_slices(db, call_import.id, row_count)
+                db.commit()
+                from app.db_sharding.registry import publish_slice_registry_change
 
-            publish_slice_registry_change(call_import.id)
+                publish_slice_registry_change(call_import.id)
             shard_sessions = ShardWriteSessions()
             committed_rows, _pending = bulk_materialize_call_import_rows(
                 db,
                 call_import,
-                parse_result.rows,
+                rows_payload,
                 organization_id,
                 shard_sessions=shard_sessions,
+                row_index_offset=row_index_offset,
             )
-            call_import.total_rows = committed_rows
+            call_import.total_rows = row_count
             db.commit()
         else:
             from app.db_sharding.row_ops import register_shard_slices
@@ -1031,7 +1070,7 @@ def execute_call_import_materialization(
             committed_rows, _pending = bulk_materialize_call_import_rows(
                 db,
                 call_import,
-                parse_result.rows,
+                rows_payload,
                 organization_id,
             )
             register_shard_slices(db, call_import.id, row_count)

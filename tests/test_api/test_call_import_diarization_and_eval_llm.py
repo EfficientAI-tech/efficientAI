@@ -82,11 +82,22 @@ def _ensure_bound_task_run(task):
     def _run(*args, **kwargs):
         if args and _looks_like_celery_self(args[0]):
             return underlying(*args, **kwargs)
-        return underlying(_bound_celery_self(), *args, **kwargs)
+        try:
+            return underlying(_bound_celery_self(), *args, **kwargs)
+        except TypeError as exc:
+            if "positional argument" not in str(exc):
+                raise
+            return underlying(*args, **kwargs)
 
     _run._bound_for_tests = True
     task.run = _run
     return task
+
+
+def _run_transcribe_task(task_module, *args, **kwargs):
+    """Invoke bind=True worker with an explicit Celery ``self`` (CI-safe)."""
+    fn = task_module.transcribe_call_import_row_task
+    return fn(_bound_celery_self(), *args, **kwargs)
 
 
 def _ensure_real_concurrency_modules():
@@ -218,7 +229,8 @@ def test_transcribe_worker_skips_pyannote_and_calls_llm_diariser(monkeypatch):
     _patch_transcription_service(monkeypatch, fake_service)
     _patch_llm_diariser(monkeypatch, _fake_diarise)
 
-    result = task_module.transcribe_call_import_row_task.run(
+    result = _run_transcribe_task(
+        task_module,
         str(fake_row.id),
         "deepgram",
         "nova-2",
@@ -281,7 +293,8 @@ def test_transcribe_worker_fails_when_diariser_llm_missing(monkeypatch):
     _patch_session(monkeypatch, task_module, fake_row)
     _patch_transcription_service(monkeypatch, fake_service)
 
-    result = task_module.transcribe_call_import_row_task.run(
+    result = _run_transcribe_task(
+        task_module,
         str(fake_row.id), "deepgram", "nova-2"
     )
 
@@ -316,7 +329,8 @@ def test_transcribe_worker_surfaces_llm_diariser_errors(monkeypatch):
     _patch_transcription_service(monkeypatch, fake_service)
     _patch_llm_diariser(monkeypatch, _boom)
 
-    result = task_module.transcribe_call_import_row_task.run(
+    result = _run_transcribe_task(
+        task_module,
         str(fake_row.id),
         "deepgram",
         "nova-2",
@@ -354,7 +368,8 @@ def test_transcribe_worker_marks_failed_on_empty_transcript(monkeypatch):
     _patch_transcription_service(monkeypatch, fake_service)
     _patch_llm_diariser(monkeypatch, _track)
 
-    result = task_module.transcribe_call_import_row_task.run(
+    result = _run_transcribe_task(
+        task_module,
         str(fake_row.id),
         "deepgram",
         "nova-2",

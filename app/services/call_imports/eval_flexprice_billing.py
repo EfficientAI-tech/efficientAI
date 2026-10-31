@@ -489,3 +489,43 @@ def buffer_call_import_evaluation_pass(
         total_rows=int(evaluation.total_rows or 0),
         metric_count=metric_count,
     )
+
+
+def maybe_finalize_evaluation_flexprice_billing(
+    db: Session,
+    evaluation: CallImportEvaluation,
+) -> None:
+    """Flush partial recording-minute batches once no eval rows are in flight.
+
+    Called from the per-row worker rollup and from evaluation-wide reconciles
+    (abort/cancel, counter repair) so remainder batches are not left in Redis.
+    """
+    total = int(evaluation.total_rows or 0)
+    completed = int(evaluation.completed_rows or 0)
+    failed = int(evaluation.failed_rows or 0)
+    in_progress = total - completed - failed
+    if in_progress > 0:
+        return
+
+    evaluation_id = evaluation.id
+    flush_recording_minutes_remainder(evaluation_id)
+
+    already_billed = int(getattr(evaluation, "billed_completed_rows", 0) or 0)
+    delta = completed - already_billed
+    if delta <= 0:
+        return
+
+    locked = (
+        db.query(CallImportEvaluation)
+        .filter(CallImportEvaluation.id == evaluation_id)
+        .with_for_update()
+        .one()
+    )
+    billing_accepted = buffer_call_import_evaluation_pass(
+        locked,
+        rows_billed=delta,
+        completed_total=completed,
+    )
+    if billing_accepted:
+        locked.billed_completed_rows = completed
+        evaluation.billed_completed_rows = completed

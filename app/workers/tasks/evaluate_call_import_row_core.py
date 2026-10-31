@@ -867,31 +867,10 @@ def rollup_parent(
         return
 
     from app.services.call_imports.eval_flexprice_billing import (
-        flush_recording_minutes_remainder,
+        maybe_finalize_evaluation_flexprice_billing,
     )
 
-    flush_recording_minutes_remainder(evaluation.id)
-
-    already_billed = int(getattr(evaluation, "billed_completed_rows", 0) or 0)
-    delta = completed - already_billed
-    if delta > 0:
-        evaluation = (
-            db.query(CallImportEvaluation)
-            .filter(CallImportEvaluation.id == evaluation_id)
-            .with_for_update()
-            .one()
-        )
-        from app.services.call_imports.eval_flexprice_billing import (
-            buffer_call_import_evaluation_pass,
-        )
-
-        billing_accepted = buffer_call_import_evaluation_pass(
-            evaluation,
-            rows_billed=delta,
-            completed_total=completed,
-        )
-        if billing_accepted:
-            evaluation.billed_completed_rows = completed
+    maybe_finalize_evaluation_flexprice_billing(db, evaluation)
 
 
 def parse_restricted_metric_uuids(

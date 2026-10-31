@@ -603,6 +603,12 @@ def _rollup_evaluation_status(evaluation: CallImportEvaluation, db: Session) -> 
     _apply_parent_status_from_counters(evaluation)
     db.flush()
 
+    from app.services.call_imports.eval_flexprice_billing import (
+        maybe_finalize_evaluation_flexprice_billing,
+    )
+
+    maybe_finalize_evaluation_flexprice_billing(db, evaluation)
+
     if evaluation.status in {"completed", "failed", "partial"}:
         from app.models.database import CallImport
         from app.services.call_imports.bulk_ops import rollup_call_import_batch_status

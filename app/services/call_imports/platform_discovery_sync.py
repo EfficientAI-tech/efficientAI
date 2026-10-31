@@ -46,6 +46,30 @@ def reclaim_stale_platform_discovery_slices(
     return len(stale_slices)
 
 
+def _close_active_discovery_slices_when_rows_idle(
+    db: Session,
+    call_import_id: UUID,
+) -> int:
+    """Mark leftover discovery slices terminal once import row work is idle."""
+    from sqlalchemy import update
+
+    result = db.execute(
+        update(CallImportDiscoverySlice)
+        .where(
+            CallImportDiscoverySlice.call_import_id == call_import_id,
+            CallImportDiscoverySlice.status.in_(("pending", "queued", "running")),
+        )
+        .values(
+            status="failed",
+            error="Import row processing finished; discovery slice closed.",
+        )
+    )
+    closed = int(result.rowcount or 0)
+    if closed:
+        db.flush()
+    return closed
+
+
 def sync_platform_discovery_when_import_rows_idle(
     db: Session,
     call_import: CallImport,
@@ -72,6 +96,14 @@ def sync_platform_discovery_when_import_rows_idle(
         logger.info(
             "platform discovery reclaimed {} stale slice(s) for import {}",
             reclaimed,
+            call_import.id,
+        )
+
+    closed = _close_active_discovery_slices_when_rows_idle(db, call_import.id)
+    if closed:
+        logger.info(
+            "platform discovery closed {} active slice(s) for idle import {}",
+            closed,
             call_import.id,
         )
 
