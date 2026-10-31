@@ -618,6 +618,71 @@ class GcsService:
         except Exception as e:
             raise StorageError(f"Unexpected error generating signed URL: {str(e)}")
 
+    def generate_presigned_put_url_by_key(
+        self,
+        key: str,
+        *,
+        content_type: str,
+        expiration: int = 3600,
+    ) -> str:
+        """Signed PUT URL for direct browser upload to an object key."""
+        self._ensure_initialized()
+        if not self.is_enabled():
+            error_msg = self._initialization_error or "GCS is not enabled or not configured"
+            raise StorageError(error_msg)
+
+        _, _, GoogleCloudError = _get_gcs_exception_types()
+        credentials = self._get_signing_credentials()
+        iam_params = None if credentials is not None else self._get_iam_signing_params()
+        if credentials is None and iam_params is None:
+            raise StorageError(_GCS_SIGNING_UNAVAILABLE_MSG)
+
+        signed_url_kwargs: dict = {
+            "version": "v4",
+            "expiration": timedelta(seconds=expiration),
+            "method": "PUT",
+            "content_type": content_type,
+        }
+        try:
+            blob = self.bucket.blob(key)
+            if credentials is not None:
+                return blob.generate_signed_url(
+                    credentials=credentials,
+                    **signed_url_kwargs,
+                )
+            sa_email, access_token = iam_params
+            return blob.generate_signed_url(
+                service_account_email=sa_email,
+                access_token=access_token,
+                **signed_url_kwargs,
+            )
+        except GoogleCloudError as e:
+            raise StorageError(f"Failed to generate signed PUT URL: {str(e)}")
+        except Exception as e:
+            raise StorageError(f"Unexpected error generating signed PUT URL: {str(e)}")
+
+    def head_object_by_key(self, key: str) -> Optional[dict]:
+        """Return blob metadata or None when missing."""
+        self._ensure_initialized()
+        if not self.is_enabled():
+            return None
+        _, NotFound, GoogleCloudError = _get_gcs_exception_types()
+        try:
+            blob = self.bucket.blob(key)
+            if not blob.exists():
+                return None
+            blob.reload()
+            return {
+                "ContentLength": int(blob.size or 0),
+                "ContentType": blob.content_type,
+            }
+        except NotFound:
+            return None
+        except GoogleCloudError as e:
+            raise StorageError(f"Failed to head object {key}: {e}") from e
+        except Exception as e:
+            raise StorageError(f"Unexpected error reading object metadata: {e}") from e
+
 
 # Singleton instance
 gcs_service = GcsService()

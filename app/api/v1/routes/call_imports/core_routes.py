@@ -242,7 +242,7 @@ async def presign_call_import_source_stage(
     _ensure_blob_storage_enabled()
 
     from app.services.call_imports import staged_source_presign as stage_mod
-    from app.services.storage.s3_service import s3_service
+    from app.services.storage.blob_storage_service import blob_storage_service
 
     fmt = stage_mod.validate_staged_source_file(
         payload.filename,
@@ -265,7 +265,7 @@ async def presign_call_import_source_stage(
         fmt=fmt,
         content_type=content_type,
         source_s3_key=_source_s3_key,
-        generate_presigned_put_url_by_key=s3_service.generate_presigned_put_url_by_key,
+        generate_presigned_put_url_by_key=blob_storage_service.generate_presigned_put_url_by_key,
     )
     return CallImportSourceStagePresignResponse(
         call_import_id=call_import_id,
@@ -294,7 +294,7 @@ async def complete_call_import_source_stage(
     _ensure_blob_storage_enabled()
 
     from app.services.call_imports import staged_source_presign as stage_mod
-    from app.services.storage.s3_service import s3_service
+    from app.services.storage.blob_storage_service import blob_storage_service
 
     fmt = stage_mod.validate_staged_source_file(
         payload.filename,
@@ -320,8 +320,8 @@ async def complete_call_import_source_stage(
         file_bytes = stage_mod.load_staged_source_bytes(
             source_s3_key=s3_key,
             expected_size=payload.size_bytes,
-            head_object_by_key=s3_service.head_object_by_key,
-            download_file_by_key=s3_service.download_file_by_key,
+            head_object_by_key=blob_storage_service.head_object_by_key,
+            download_file_by_key=blob_storage_service.download_file_by_key,
         )
     except HTTPException:
         raise

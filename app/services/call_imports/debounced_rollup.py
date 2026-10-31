@@ -80,6 +80,7 @@ def maybe_record_import_row_transition(
     *,
     previous_status: Optional[str],
     new_status: Optional[str],
+    db: Session | None = None,
 ) -> None:
     if previous_status is None or new_status is None:
         return
@@ -95,6 +96,7 @@ def maybe_record_import_row_transition(
         call_import_id,
         previous_status=prev,
         new_status=new,
+        db=db,
     )
 
 

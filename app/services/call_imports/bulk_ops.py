@@ -1302,12 +1302,28 @@ def rollup_call_import_batch_status(db: Session, call_import: CallImport) -> Non
     rows were never enqueued on the legacy import worker and must not keep the
     parent stuck in ``processing`` once every evaluation run is terminal.
     """
-
+    db.flush()
+    db.expire_all()
     total, completed, failed, pending, processing = _aggregate_import_row_status_counts(
         db, call_import.id
     )
     pending_or_processing = pending + processing
 
+    from sqlalchemy import update
+
+    db.execute(
+        update(CallImport)
+        .where(CallImport.id == call_import.id)
+        .values(
+            total_rows=total,
+            completed_rows=completed,
+            failed_rows=failed,
+        )
+    )
+    db.expire(
+        call_import,
+        ["total_rows", "completed_rows", "failed_rows"],
+    )
     call_import.total_rows = total
     call_import.completed_rows = completed
     call_import.failed_rows = failed

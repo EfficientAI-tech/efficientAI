@@ -1038,13 +1038,17 @@ def _patched_s3(fake_s3):
     fake_module = types.ModuleType("app.services.storage.s3_service")
     fake_module.s3_service = fake_s3
     fake_module.StorageError = RuntimeError
+    fake_blob_module = types.ModuleType("app.services.storage.blob_storage_service")
+    fake_blob_module.blob_storage_service = fake_s3
     fake_pkg = types.ModuleType("app.services.storage")
     fake_pkg.s3_service = fake_module
+    fake_pkg.blob_storage_service = fake_blob_module
     with patch.dict(
         sys.modules,
         {
             "app.services.storage": fake_pkg,
             "app.services.storage.s3_service": fake_module,
+            "app.services.storage.blob_storage_service": fake_blob_module,
         },
     ):
         yield

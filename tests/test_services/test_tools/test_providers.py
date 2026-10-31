@@ -205,3 +205,7 @@ def test_postgres_guards(monkeypatch):
     monkeypatch.setattr(settings, "DEBUG", False)
     with pytest.raises(Exception, match="blocked"):
         assert_dsn_host_allowed("postgresql://u:p@10.0.0.5/app")
+    with pytest.raises(ValueError, match="hostaddr"):
+        assert_dsn_host_allowed(
+            "postgresql://u:p@8.8.8.8/app?hostaddr=10.0.0.5"
+        )

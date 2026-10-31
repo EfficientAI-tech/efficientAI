@@ -829,7 +829,7 @@ def test_process_call_import_row_partial_status_when_some_rows_fail(db_session, 
     # Pre-mark the second row as FAILED (e.g. from an earlier attempt).
     rows[1].status = CallImportRowStatus.FAILED
     rows[1].error_message = "previous failure"
-    db_session.commit()
+    db_session.flush()
 
     fake_client = _FakeExotelClient()
     fake_s3 = _FakeS3(enabled=True)

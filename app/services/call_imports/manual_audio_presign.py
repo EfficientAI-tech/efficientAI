@@ -141,6 +141,60 @@ def persist_manual_audio_row_mappings(
     call_import.source_size_bytes = (call_import.source_size_bytes or 0) + added_size
 
 
+def _load_rows_for_verify(
+    db: Session,
+    *,
+    call_import_id: UUID,
+    organization_id: UUID,
+    row_ids: List[UUID],
+) -> List[Tuple[Session, CallImportRow]]:
+    """Return (session, row) for each id; session must be closed by caller."""
+    unique_ids = list(dict.fromkeys(row_ids))
+    if not is_sharding_enabled():
+        rows = (
+            db.query(CallImportRow)
+            .filter(
+                CallImportRow.call_import_id == call_import_id,
+                CallImportRow.organization_id == organization_id,
+                CallImportRow.id.in_(unique_ids),
+            )
+            .all()
+        )
+        if len(rows) != len(unique_ids):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="One or more row ids are invalid for this import.",
+            )
+        return [(db, row) for row in rows]
+
+    from app.db_sharding.row_ops import locate_call_import_row
+
+    loaded: List[Tuple[Session, CallImportRow]] = []
+    try:
+        for rid in unique_ids:
+            row_db, catalog_db, row, _shard_id = locate_call_import_row(rid)
+            if catalog_db is not row_db:
+                catalog_db.close()
+            if (
+                row.call_import_id != call_import_id
+                or row.organization_id != organization_id
+            ):
+                row_db.close()
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="One or more row ids are invalid for this import.",
+                )
+            loaded.append((row_db, row))
+    except LookupError:
+        for row_db, _row in loaded:
+            row_db.close()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="One or more row ids are invalid for this import.",
+        ) from None
+    return loaded
+
+
 def verify_manual_audio_uploads(
     db: Session,
     *,
@@ -151,36 +205,37 @@ def verify_manual_audio_uploads(
 ) -> int:
     if not row_ids:
         return 0
-    rows = (
-        db.query(CallImportRow)
-        .filter(
-            CallImportRow.call_import_id == call_import_id,
-            CallImportRow.organization_id == organization_id,
-            CallImportRow.id.in_(row_ids),
-        )
-        .all()
+    sessions_rows = _load_rows_for_verify(
+        db,
+        call_import_id=call_import_id,
+        organization_id=organization_id,
+        row_ids=row_ids,
     )
-    if len(rows) != len(set(row_ids)):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="One or more row ids are invalid for this import.",
-        )
     verified = 0
-    for row in rows:
-        key = (row.recording_s3_key or "").strip()
-        if not key:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Row {row.id} has no recording key.",
-            )
-        meta = head_object_by_key(key)
-        if not meta:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Recording not found in storage for row {row.id}.",
-            )
-        size = int(meta.get("ContentLength") or 0)
-        if size > 0:
-            row.recording_size_bytes = size
-        verified += 1
+    modified_sessions: set[Session] = set()
+    try:
+        for row_db, row in sessions_rows:
+            key = (row.recording_s3_key or "").strip()
+            if not key:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Row {row.id} has no recording key.",
+                )
+            meta = head_object_by_key(key)
+            if not meta:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Recording not found in storage for row {row.id}.",
+                )
+            size = int(meta.get("ContentLength") or 0)
+            if size > 0:
+                row.recording_size_bytes = size
+                modified_sessions.add(row_db)
+            verified += 1
+        for sess in modified_sessions:
+            sess.commit()
+    finally:
+        for row_db, _row in sessions_rows:
+            if row_db is not db:
+                row_db.close()
     return verified

@@ -206,6 +206,8 @@ def _release_lease(
         return
     try:
         client = _get_redis()
+        if not client.exists(meta_key):
+            return
         client.eval(
             _RELEASE_LEASE_LUA,
             1,

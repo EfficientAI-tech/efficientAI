@@ -9,6 +9,7 @@ Secrets: ``{"dsn": "postgresql://user:pass@host:5432/db"}``. Config: optional
 from __future__ import annotations
 
 import json
+import re
 import threading
 from typing import Any, Optional
 
@@ -77,11 +78,23 @@ def assert_dsn_host_allowed(dsn: str) -> None:
     from app.config import settings
     from app.services.telephony.recording_download import assert_outbound_http_url_safe
 
-    url = make_url(dsn.strip())
+    raw = dsn.strip()
+    url = make_url(raw)
     if not url.host:
         raise ValueError("Connection string needs a host")
-    # Same private-network / metadata blocklist as other user-configured endpoints.
     assert_outbound_http_url_safe(f"http://{url.host}", allow_loopback=bool(settings.DEBUG))
+
+    query = url.query if isinstance(url.query, dict) else {}
+    if not query and url.query:
+        for part in str(url.query).split("&"):
+            if "=" in part:
+                key, _value = part.split("=", 1)
+                query[key.lower()] = _value
+    for override in ("hostaddr", "host"):
+        if override in {k.lower() for k in query}:
+            raise ValueError(
+                f"Connection string must not override the host via {override}"
+            )
 
 
 def _single_statement(sql: str) -> str:
@@ -91,6 +104,28 @@ def _single_statement(sql: str) -> str:
     if ";" in stripped:
         raise ValueError("Send one statement at a time")
     return stripped
+
+
+_FORBIDDEN_SQL_SCHEMAS = frozenset({"pg_catalog", "information_schema"})
+
+
+def _assert_query_uses_allowed_schemas(sql: str, allowed_schemas: list[str]) -> None:
+    lowered = sql.lower()
+    for blocked in _FORBIDDEN_SQL_SCHEMAS:
+        if blocked in lowered:
+            raise ValueError(f"Schema {blocked} is not allowed")
+    allowed = {s.lower() for s in allowed_schemas}
+    for match in re.finditer(
+        r'(?:from|join)\s+(?:"([^"]+)"|\'([^\']+)\'|([a-zA-Z_][\w$]*(?:\.[a-zA-Z_][\w$]*)?))',
+        sql,
+        flags=re.IGNORECASE,
+    ):
+        name = next(part for part in match.groups() if part)
+        if "." not in name:
+            continue
+        schema = name.split(".", 1)[0].lower()
+        if schema not in allowed:
+            raise ValueError(f"Schema {schema} is not allowed")
 
 
 class PostgresToolProvider:
@@ -149,6 +184,10 @@ class PostgresToolProvider:
             with conn.begin():
                 conn.execute(text("SET TRANSACTION READ ONLY"))
                 conn.execute(text(f"SET LOCAL statement_timeout = {STATEMENT_TIMEOUT_MS}"))
+                schemas_sql = ", ".join(
+                    f'"{schema.replace(chr(34), "")}"' for schema in self.schemas
+                )
+                conn.execute(text(f"SET LOCAL search_path TO {schemas_sql}"))
                 result = conn.execute(text(sql), params or {})
                 rows = result.mappings().fetchmany(self.max_rows + 1)
         return [dict(row) for row in rows]
@@ -185,7 +224,11 @@ class PostgresToolProvider:
                 if not rows:
                     return ToolResult(f"Table {raw} not found", is_error=True)
             else:
-                rows = self._read_only(_single_statement(str(arguments.get("sql") or "")))
+                sql = _single_statement(str(arguments.get("sql") or ""))
+                if not sql.lstrip().lower().startswith("select"):
+                    return ToolResult("Only SELECT queries are allowed", is_error=True)
+                _assert_query_uses_allowed_schemas(sql, self.schemas)
+                rows = self._read_only(sql)
         except Exception as exc:
             message = str(getattr(exc, "orig", None) or exc).strip().splitlines()[0]
             return ToolResult(f"Query failed: {message}", is_error=True)

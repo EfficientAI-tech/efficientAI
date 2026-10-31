@@ -224,6 +224,14 @@ def _enqueue_sealed_payload(evaluation_id: UUID, payload: str) -> bool:
     )
 
 
+_DELETE_SEAL_IF_MATCH_LUA = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
+
+
 def _publish_sealed(evaluation_id: UUID) -> bool:
     """Move a sealed batch onto the Flexprice queue, then delete the seal."""
     key = _sealed_key(evaluation_id)
@@ -246,7 +254,17 @@ def _publish_sealed(evaluation_id: UUID) -> bool:
             pass
         return False
     try:
-        _client().delete(key)
+        deleted = _client().eval(
+            _DELETE_SEAL_IF_MATCH_LUA,
+            1,
+            key,
+            payload,
+        )
+        if not deleted:
+            logger.warning(
+                "Flexprice sealed batch delete skipped evaluation={} (payload changed)",
+                evaluation_id,
+            )
     except redis.RedisError as exc:
         logger.warning(
             "Flexprice sealed batch delete failed evaluation={}: {}",

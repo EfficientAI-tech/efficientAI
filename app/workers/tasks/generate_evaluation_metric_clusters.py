@@ -15,7 +15,6 @@ from app.models.database import (
     CallImportRow,
 )
 from app.services.call_import_metric_clusters import (
-    filter_completed_row_pairs,
     generate_metric_clusters,
     metric_clusters_raw_is_cancelled,
     metric_clusters_state_to_db,
@@ -70,6 +69,7 @@ def generate_evaluation_metric_clusters_task(
 
         from app.db_sharding.scatter_gather import (
             DEFAULT_EVAL_ROW_PAIR_SAMPLE,
+            load_completed_evaluation_row_pairs_for_eval_row_ids,
             load_completed_evaluation_row_pairs_sample,
             load_evaluation_score_rows_for_aggregate,
         )
@@ -79,15 +79,17 @@ def generate_evaluation_metric_clusters_task(
 
         score_rows = load_evaluation_score_rows_for_aggregate(db, evaluation.id)
         aggregates = evaluation_metric_aggregates_for_analysis(db, evaluation)
-        completed_pairs = load_completed_evaluation_row_pairs_sample(
-            db,
-            evaluation.id,
-            max_pairs=DEFAULT_EVAL_ROW_PAIR_SAMPLE,
-        )
         if evaluation_row_ids:
-            completed_pairs = filter_completed_row_pairs(
-                completed_pairs,
+            completed_pairs = load_completed_evaluation_row_pairs_for_eval_row_ids(
+                db,
+                evaluation.id,
                 [UUID(rid) for rid in evaluation_row_ids],
+            )
+        else:
+            completed_pairs = load_completed_evaluation_row_pairs_sample(
+                db,
+                evaluation.id,
+                max_pairs=DEFAULT_EVAL_ROW_PAIR_SAMPLE,
             )
         eval_rows = score_rows
         metrics = _metrics_for_clustering(db, evaluation, eval_rows)

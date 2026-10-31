@@ -33,17 +33,21 @@ def _ingest_advisory_keys(document_id: UUID) -> tuple[int, int]:
 
 def ingest_knowledge_document(db: Session, *, document_id: UUID) -> None:
     lock_k1, lock_k2 = _ingest_advisory_keys(document_id)
-    db.execute(
-        text("SELECT pg_advisory_lock(:k1, :k2)"),
-        {"k1": lock_k1, "k2": lock_k2},
-    )
-    try:
-        _ingest_knowledge_document_locked(db, document_id=document_id)
-    finally:
-        db.execute(
-            text("SELECT pg_advisory_unlock(:k1, :k2)"),
+    bind = db.get_bind()
+    with bind.connect() as lock_conn:
+        lock_conn.execute(
+            text("SELECT pg_advisory_lock(:k1, :k2)"),
             {"k1": lock_k1, "k2": lock_k2},
         )
+        work = Session(bind=lock_conn, expire_on_commit=False)
+        try:
+            _ingest_knowledge_document_locked(work, document_id=document_id)
+        finally:
+            work.close()
+            lock_conn.execute(
+                text("SELECT pg_advisory_unlock(:k1, :k2)"),
+                {"k1": lock_k1, "k2": lock_k2},
+            )
 
 
 def _ingest_knowledge_document_locked(db: Session, *, document_id: UUID) -> None:

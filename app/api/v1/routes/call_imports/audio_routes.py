@@ -146,7 +146,7 @@ async def presign_call_import_audio_upload(
         original_filename = "Manual recordings"
 
     from app.services.call_imports import manual_audio_presign as presign_mod
-    from app.services.storage.s3_service import s3_service
+    from app.services.storage.blob_storage_service import blob_storage_service
 
     call_import = CallImport(
         organization_id=organization_id,
@@ -176,7 +176,7 @@ async def presign_call_import_audio_upload(
             call_import_id=call_import.id,
             prepared=prepared,
             audio_s3_key=_audio_s3_key,
-            generate_presigned_put_url_by_key=s3_service.generate_presigned_put_url_by_key,
+            generate_presigned_put_url_by_key=blob_storage_service.generate_presigned_put_url_by_key,
         )
         presign_mod.persist_manual_audio_row_mappings(
             db,
@@ -286,7 +286,7 @@ async def presign_append_call_import_audio(
     prepared = _prepare_audio_presign_items(payload.files, conversation_counts)
 
     from app.services.call_imports import manual_audio_presign as presign_mod
-    from app.services.storage.s3_service import s3_service
+    from app.services.storage.blob_storage_service import blob_storage_service
 
     try:
         uploads_raw, _keys = presign_mod.build_manual_audio_presign_uploads(
@@ -294,7 +294,7 @@ async def presign_append_call_import_audio(
             call_import_id=call_import.id,
             prepared=prepared,
             audio_s3_key=_audio_s3_key,
-            generate_presigned_put_url_by_key=s3_service.generate_presigned_put_url_by_key,
+            generate_presigned_put_url_by_key=blob_storage_service.generate_presigned_put_url_by_key,
         )
         presign_mod.persist_manual_audio_row_mappings(
             db,
@@ -376,14 +376,14 @@ async def complete_call_import_manual_audio_upload(
         raise HTTPException(status_code=404, detail="Call import not found")
 
     from app.services.call_imports import manual_audio_presign as presign_mod
-    from app.services.storage.s3_service import s3_service
+    from app.services.storage.blob_storage_service import blob_storage_service
 
     verified = presign_mod.verify_manual_audio_uploads(
         db,
         call_import_id=call_import.id,
         organization_id=organization_id,
         row_ids=payload.row_ids,
-        head_object_by_key=s3_service.head_object_by_key,
+        head_object_by_key=blob_storage_service.head_object_by_key,
     )
     db.commit()
     db.refresh(call_import)
@@ -455,7 +455,7 @@ async def upload_call_import_audio(
         original_filename = "Manual recordings"
     uploaded_keys: List[str] = []
 
-    from app.services.storage.s3_service import s3_service
+    from app.services.storage.blob_storage_service import blob_storage_service
 
     call_import = CallImport(
         organization_id=organization_id,
@@ -498,9 +498,9 @@ async def upload_call_import_audio(
             publish_slice_registry_change(call_import.id)
     except Exception as exc:
         db.rollback()
-        if uploaded_keys and s3_service.is_enabled():
+        if uploaded_keys and blob_storage_service.is_enabled():
             try:
-                s3_service.delete_keys(uploaded_keys)
+                blob_storage_service.delete_keys(uploaded_keys)
             except Exception:
                 logger.exception(
                     "Failed to clean up manual audio upload keys after error"
@@ -593,7 +593,7 @@ async def append_call_import_audio(
     prepared = await _prepare_audio_upload_files(files, conversation_counts)
     uploaded_keys: List[str] = []
 
-    from app.services.storage.s3_service import s3_service
+    from app.services.storage.blob_storage_service import blob_storage_service
 
     try:
         uploaded_keys = _persist_prepared_audio_rows(
@@ -611,9 +611,9 @@ async def append_call_import_audio(
             publish_slice_registry_change(call_import.id)
     except Exception as exc:
         db.rollback()
-        if uploaded_keys and s3_service.is_enabled():
+        if uploaded_keys and blob_storage_service.is_enabled():
             try:
-                s3_service.delete_keys(uploaded_keys)
+                blob_storage_service.delete_keys(uploaded_keys)
             except Exception:
                 logger.exception(
                     "Failed to clean up manual audio append keys after error"

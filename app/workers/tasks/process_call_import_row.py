@@ -103,11 +103,18 @@ def _mark_row_failed_for_fetch(
 ):
     from app.models.enums import CallImportRowStatus
 
+    previous_status = row.status
     row.status = CallImportRowStatus.FAILED
     row.error_message = message
     if not _safe_commit(db, row_id=row_id, context=context):
         return {"status": "skipped", "reason": "row_deleted"}
-    _rollup_parent_on_catalog(catalog_db, row_db, call_import)
+    _rollup_parent_on_catalog(
+        catalog_db,
+        row_db,
+        call_import,
+        terminal_row=row,
+        previous_row_status=previous_status,
+    )
     if not _safe_commit(db, row_id=row_id, context=f"rollup_{context}"):
         return {"status": "skipped", "reason": "row_deleted"}
     return {"status": "failed", "reason": reason}
@@ -177,6 +184,26 @@ def _consume_authenticated_import_credit(client) -> Optional[Exception]:
     )
 
 
+def _persist_session_changes(db) -> None:
+    """Commit in production; flush inside nested test transactions (savepoints)."""
+    from app.db_sharding.row_ops import commit_shard_row_session
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    trans = db.get_transaction()
+    nested_test_tx = (
+        trans is not None
+        and trans.parent is not None
+        and getattr(trans.parent, "nested", False)
+    )
+    if nested_test_tx:
+        db.flush()
+        return
+    if is_sharding_enabled():
+        commit_shard_row_session(db)
+    else:
+        db.commit()
+
+
 def _safe_commit(
     db,
     *,
@@ -184,14 +211,8 @@ def _safe_commit(
     context: str = "update",
 ) -> bool:
     """Commit pending ORM changes; return False when the row/import was deleted."""
-    from app.db_sharding.row_ops import commit_shard_row_session
-    from app.db_sharding.sessions import is_sharding_enabled
-
     try:
-        if is_sharding_enabled():
-            commit_shard_row_session(db)
-        else:
-            db.commit()
+        _persist_session_changes(db)
         return True
     except StaleDataError:
         db.rollback()
@@ -310,14 +331,30 @@ def _rollup_parent_status(db, call_import, *, force: bool = False) -> None:
 
 
 def _rollup_parent_on_catalog(
-    catalog_db, row_db, call_import, *, force: bool = False
+    catalog_db,
+    row_db,
+    call_import,
+    *,
+    force: bool = True,
+    terminal_row=None,
+    previous_row_status=None,
 ) -> None:
     from app.db_sharding.sessions import is_sharding_enabled
+    from app.services.call_imports.debounced_rollup import (
+        maybe_record_import_row_transition,
+    )
 
     target = catalog_db if is_sharding_enabled() and catalog_db is not row_db else row_db
+    if terminal_row is not None and previous_row_status is not None:
+        maybe_record_import_row_transition(
+            call_import.id,
+            previous_status=previous_row_status,
+            new_status=terminal_row.status,
+            db=target,
+        )
     _rollup_parent_status(target, call_import, force=force)
     if target is not row_db:
-        target.commit()
+        _persist_session_changes(target)
 
 
 @celery_app.task(name="process_call_import_row", bind=True, max_retries=3)
@@ -486,11 +523,18 @@ def process_call_import_row_task(
                 )
             except Exception as exc:
                 logger.exception("Failed to build provider client for row {}", row_id)
+                previous_status = row.status
                 row.status = CallImportRowStatus.FAILED
                 row.error_message = f"Provider client error: {exc}"
                 if not _safe_commit(db, row_id=row_id, context="provider_client_error"):
                     return {"status": "skipped", "reason": "row_deleted"}
-                _rollup_parent_on_catalog(catalog_db, row_db, call_import)
+                _rollup_parent_on_catalog(
+                    catalog_db,
+                    row_db,
+                    call_import,
+                    terminal_row=row,
+                    previous_row_status=previous_status,
+                )
                 if not _safe_commit(db, row_id=row_id, context="rollup_provider_client_error"):
                     return {"status": "skipped", "reason": "row_deleted"}
                 return {"status": "failed", "reason": "provider_client_error"}
@@ -511,22 +555,36 @@ def process_call_import_row_task(
                         "Cannot fetch recording: row has no recording URL."
                     )
                 logger.warning("{} (row {})", msg, row_id)
+                previous_status = row.status
                 row.status = CallImportRowStatus.FAILED
                 row.error_message = msg
                 if not _safe_commit(db, row_id=row_id, context="no_recording_source"):
                     return {"status": "skipped", "reason": "row_deleted"}
-                _rollup_parent_on_catalog(catalog_db, row_db, call_import)
+                _rollup_parent_on_catalog(
+                    catalog_db,
+                    row_db,
+                    call_import,
+                    terminal_row=row,
+                    previous_row_status=previous_status,
+                )
                 if not _safe_commit(
                     db, row_id=row_id, context="rollup_no_recording_source"
                 ):
                     return {"status": "skipped", "reason": "row_deleted"}
                 return {"status": "failed", "reason": "no_recording_source"}
 
+            previous_status = row.status
             row.status = CallImportRowStatus.COMPLETED
             row.error_message = None
             if not _safe_commit(db, row_id=row_id, context="mark_completed_no_recording"):
                 return {"status": "skipped", "reason": "row_deleted"}
-            _rollup_parent_on_catalog(catalog_db, row_db, call_import)
+            _rollup_parent_on_catalog(
+                catalog_db,
+                row_db,
+                call_import,
+                terminal_row=row,
+                previous_row_status=previous_status,
+            )
             if not _safe_commit(
                 db, row_id=row_id, context="rollup_completed_no_recording"
             ):
@@ -609,6 +667,7 @@ def process_call_import_row_task(
                             direct_failure, attempt=attempt
                         ),
                     )
+                previous_status = row.status
                 row.status = CallImportRowStatus.FAILED
                 row.error_message = (
                     f"recording URL: {direct_failure}"
@@ -617,7 +676,13 @@ def process_call_import_row_task(
                 )
                 if not _safe_commit(db, row_id=row_id, context="direct_url_failed"):
                     return {"status": "skipped", "reason": "row_deleted"}
-                _rollup_parent_on_catalog(catalog_db, row_db, call_import)
+                _rollup_parent_on_catalog(
+                    catalog_db,
+                    row_db,
+                    call_import,
+                    terminal_row=row,
+                    previous_row_status=previous_status,
+                )
                 if not _safe_commit(db, row_id=row_id, context="rollup_direct_url_failed"):
                     return {"status": "skipped", "reason": "row_deleted"}
                 return {"status": "failed", "reason": "non_retryable_provider_error"}
@@ -693,6 +758,7 @@ def process_call_import_row_task(
                         row_db=row_db,
                         call_import=call_import,
                     )
+                previous_status = row.status
                 row.status = CallImportRowStatus.FAILED
                 row.error_message = (
                     f"recording URL: {download_failure}"
@@ -701,7 +767,13 @@ def process_call_import_row_task(
                 )
                 if not _safe_commit(db, row_id=row_id, context="non_retryable_provider_error"):
                     return {"status": "skipped", "reason": "row_deleted"}
-                _rollup_parent_on_catalog(catalog_db, row_db, call_import)
+                _rollup_parent_on_catalog(
+                    catalog_db,
+                    row_db,
+                    call_import,
+                    terminal_row=row,
+                    previous_row_status=previous_status,
+                )
                 if not _safe_commit(db, row_id=row_id, context="rollup_non_retryable_provider_error"):
                     return {"status": "skipped", "reason": "row_deleted"}
                 return {"status": "failed", "reason": "non_retryable_provider_error"}
@@ -712,11 +784,18 @@ def process_call_import_row_task(
                 or "Cloud blob storage is not enabled or not configured"
             )
             logger.error("Cloud blob storage unavailable for row {}: {}", row_id, err)
+            previous_status = row.status
             row.status = CallImportRowStatus.FAILED
             row.error_message = f"Cloud blob storage unavailable: {err}"
             if not _safe_commit(db, row_id=row_id, context="s3_unavailable"):
                 return {"status": "skipped", "reason": "row_deleted"}
-            _rollup_parent_on_catalog(catalog_db, row_db, call_import)
+            _rollup_parent_on_catalog(
+                catalog_db,
+                row_db,
+                call_import,
+                terminal_row=row,
+                previous_row_status=previous_status,
+            )
             if not _safe_commit(db, row_id=row_id, context="rollup_s3_unavailable"):
                 return {"status": "skipped", "reason": "row_deleted"}
             return {"status": "failed", "reason": "s3_unavailable"}
@@ -794,7 +873,13 @@ def process_call_import_row_task(
         if not _safe_commit(db, row_id=row_id, context="mark_completed"):
             return {"status": "skipped", "reason": "row_deleted"}
 
-        _rollup_parent_on_catalog(catalog_db, row_db, call_import)
+        _rollup_parent_on_catalog(
+            catalog_db,
+            row_db,
+            call_import,
+            terminal_row=row,
+            previous_row_status=previous_import_status,
+        )
         if not _safe_commit(db, row_id=row_id, context="rollup_completed"):
             return {"status": "skipped", "reason": "row_deleted"}
 

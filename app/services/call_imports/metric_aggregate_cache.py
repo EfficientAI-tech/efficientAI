@@ -84,7 +84,7 @@ def metrics_for_aggregate_endpoint(
     aggregates = _compute_metric_aggregates(db, evaluation, eval_rows)
     try:
         save_aggregate_cache(db, evaluation, aggregates)
-        db.flush()
+        db.commit()
     except Exception as exc:
         logger.warning(
             "aggregate cache save failed for evaluation {}: {}",
