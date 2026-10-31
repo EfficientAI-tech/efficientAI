@@ -107,23 +107,146 @@ def _single_statement(sql: str) -> str:
 
 
 _FORBIDDEN_SQL_SCHEMAS = frozenset({"pg_catalog", "information_schema"})
+_FROM_OR_JOIN = re.compile(r"\b(?:from|join)\b", re.IGNORECASE)
+_TABLE_PREFIX_WORDS = frozenset({"only", "lateral"})
+_FROM_STOP_WORDS = frozenset({
+    "where",
+    "group",
+    "order",
+    "limit",
+    "union",
+    "except",
+    "intersect",
+    "window",
+    "having",
+    "offset",
+    "fetch",
+    "for",
+    "join",
+    "inner",
+    "left",
+    "right",
+    "full",
+    "cross",
+    "natural",
+    "on",
+    "using",
+})
+_IDENT = re.compile(r'"([^"]+)"|([A-Za-z_][\w$]*)')
+
+
+def _mask_sql_strings_and_comments(sql: str) -> str:
+    """Blank string literals and comments so schema checks ignore them."""
+    out: list[str] = []
+    i = 0
+    length = len(sql)
+    while i < length:
+        if sql.startswith("--", i):
+            while i < length and sql[i] != "\n":
+                out.append(" ")
+                i += 1
+            continue
+        if sql.startswith("/*", i):
+            end = sql.find("*/", i + 2)
+            end = length if end < 0 else end + 2
+            out.extend(" " * (end - i))
+            i = end
+            continue
+        if sql[i] == "'":
+            out.append(" ")
+            i += 1
+            while i < length:
+                if sql[i] == "'" and i + 1 < length and sql[i + 1] == "'":
+                    out.extend("  ")
+                    i += 2
+                    continue
+                ch = sql[i]
+                out.append(" ")
+                i += 1
+                if ch == "'":
+                    break
+            continue
+        out.append(sql[i])
+        i += 1
+    return "".join(out)
+
+
+def _skip_ws(sql: str, index: int) -> int:
+    while index < len(sql) and sql[index].isspace():
+        index += 1
+    return index
+
+
+def _read_ident(sql: str, index: int) -> tuple[str, int] | None:
+    match = _IDENT.match(sql, index)
+    if match is None:
+        return None
+    return (match.group(1) or match.group(2)), match.end()
+
+
+def _skip_table_alias(sql: str, index: int) -> int:
+    index = _skip_ws(sql, index)
+    ident = _read_ident(sql, index)
+    if ident is None:
+        return index
+    name, end = ident
+    lowered = name.lower()
+    if lowered in _FROM_STOP_WORDS:
+        return index
+    if lowered == "as":
+        index = _skip_ws(sql, end)
+        alias = _read_ident(sql, index)
+        return alias[1] if alias is not None else index
+    return end
+
+
+def _schemas_named_in_query(sql: str) -> list[str]:
+    """Schema qualifiers on table refs and ``schema.func(`` calls."""
+    masked = _mask_sql_strings_and_comments(sql)
+    found: list[str] = []
+    for match in re.finditer(
+        r'(?:"([^"]+)"|([A-Za-z_][\w$]*))\s*\.\s*(?:"[^"]+"|[A-Za-z_][\w$]*)\s*\(',
+        masked,
+    ):
+        found.append((match.group(1) or match.group(2)).lower())
+
+    for match in _FROM_OR_JOIN.finditer(masked):
+        index = match.end()
+        while index < len(masked):
+            index = _skip_ws(masked, index)
+            if index >= len(masked) or masked[index] == "(":
+                break
+            ident = _read_ident(masked, index)
+            if ident is None:
+                break
+            name, index = ident
+            if name.lower() in _TABLE_PREFIX_WORDS:
+                continue
+            index = _skip_ws(masked, index)
+            if index < len(masked) and masked[index] == ".":
+                found.append(name.lower())
+                index += 1
+                index = _skip_ws(masked, index)
+                second = _read_ident(masked, index)
+                if second is not None:
+                    index = second[1]
+            index = _skip_table_alias(masked, index)
+            index = _skip_ws(masked, index)
+            if index < len(masked) and masked[index] == ",":
+                index += 1
+                continue
+            break
+    return found
 
 
 def _assert_query_uses_allowed_schemas(sql: str, allowed_schemas: list[str]) -> None:
-    lowered = sql.lower()
+    masked = _mask_sql_strings_and_comments(sql)
+    lowered = masked.lower()
     for blocked in _FORBIDDEN_SQL_SCHEMAS:
-        if blocked in lowered:
+        if re.search(rf"\b{blocked}\b", lowered):
             raise ValueError(f"Schema {blocked} is not allowed")
-    allowed = {s.lower() for s in allowed_schemas}
-    for match in re.finditer(
-        r'(?:from|join)\s+(?:"([^"]+)"|\'([^\']+)\'|([a-zA-Z_][\w$]*(?:\.[a-zA-Z_][\w$]*)?))',
-        sql,
-        flags=re.IGNORECASE,
-    ):
-        name = next(part for part in match.groups() if part)
-        if "." not in name:
-            continue
-        schema = name.split(".", 1)[0].lower()
+    allowed = {schema.lower() for schema in allowed_schemas}
+    for schema in _schemas_named_in_query(sql):
         if schema not in allowed:
             raise ValueError(f"Schema {schema} is not allowed")
 

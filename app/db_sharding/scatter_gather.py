@@ -1330,6 +1330,45 @@ def max_call_import_row_index(
     return max_index
 
 
+def load_call_import_row_indices(
+    catalog_db: Session,
+    call_import_id: UUID,
+) -> set[int]:
+    """Every saved ``row_index`` for an import, across shards."""
+    if not is_sharding_enabled():
+        rows = (
+            catalog_db.query(CallImportRow.row_index)
+            .filter(CallImportRow.call_import_id == call_import_id)
+            .all()
+        )
+        return {int(row[0]) for row in rows if row[0] is not None}
+
+    found: set[int] = set()
+
+    def indices_on_shard(db: Session, _shard_id: str) -> list[int]:
+        rows = (
+            db.query(CallImportRow.row_index)
+            .filter(CallImportRow.call_import_id == call_import_id)
+            .all()
+        )
+        return [int(row[0]) for row in rows if row[0] is not None]
+
+    for part in scatter_gather_on_shards(
+        shard_ids_for_import(catalog_db, call_import_id),
+        indices_on_shard,
+    ):
+        found.update(part)
+
+    if not found:
+        rows = (
+            catalog_db.query(CallImportRow.row_index)
+            .filter(CallImportRow.call_import_id == call_import_id)
+            .all()
+        )
+        found = {int(row[0]) for row in rows if row[0] is not None}
+    return found
+
+
 def load_call_import_conversation_ids(
     catalog_db: Session,
     call_import_id: UUID,

@@ -209,3 +209,25 @@ def test_postgres_guards(monkeypatch):
         assert_dsn_host_allowed(
             "postgresql://u:p@8.8.8.8/app?hostaddr=10.0.0.5"
         )
+
+
+def test_postgres_query_rejects_schemas_outside_the_allow_list():
+    from app.services.tools.providers.postgres import _assert_query_uses_allowed_schemas
+
+    allowed = ["public"]
+    _assert_query_uses_allowed_schemas(
+        "SELECT u.id FROM public.users u WHERE u.id = 1",
+        allowed,
+    )
+    _assert_query_uses_allowed_schemas("SELECT * FROM users", allowed)
+    for sql in (
+        "SELECT * FROM secret.users",
+        'SELECT * FROM "secret"."users"',
+        "SELECT * FROM public.users u, secret.accounts a",
+        "SELECT * FROM public.users JOIN secret.accounts ON true",
+        "SELECT secret.private_fn()",
+        "SELECT * FROM (SELECT * FROM secret.users) s",
+        "SELECT * FROM information_schema.tables",
+    ):
+        with pytest.raises(ValueError, match="not allowed"):
+            _assert_query_uses_allowed_schemas(sql, allowed)

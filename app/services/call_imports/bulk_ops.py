@@ -768,6 +768,18 @@ def execute_call_import_delete(
     }
 
 
+def pending_source_row_indices(existing: set[int], row_count: int) -> list[int]:
+    """Source indexes in ``0 .. row_count-1`` that are not saved yet.
+
+    A resumed import must fill holes below the highest saved index. Shard
+    commits are not one contiguous prefix: one shard can commit rows 0–249
+    and 500–749 while the next shard's 250–499 never land.
+    """
+    if row_count <= 0:
+        return []
+    return [index for index in range(row_count) if index not in existing]
+
+
 def bulk_materialize_call_import_rows(
     db: Session,
     call_import: CallImport,
@@ -777,6 +789,7 @@ def bulk_materialize_call_import_rows(
     defer_shard_commit: bool = False,
     shard_sessions=None,
     row_index_offset: int = 0,
+    row_indices: List[int] | None = None,
 ) -> tuple[int, List[Session]]:
     """Insert import rows in chunks without per-row ORM overhead.
 
@@ -788,14 +801,22 @@ def bulk_materialize_call_import_rows(
 
     if not parsed_rows:
         return 0, []
+    if row_indices is not None and len(row_indices) != len(parsed_rows):
+        raise ValueError("row_indices length must match parsed rows")
+    if row_indices is not None:
+        indexed_rows = list(zip(row_indices, parsed_rows))
+    else:
+        indexed_rows = [
+            (int(row_index_offset) + offset, row)
+            for offset, row in enumerate(parsed_rows)
+        ]
 
     pending: List[Session] = []
     committed = 0
-    for start in range(0, len(parsed_rows), _BULK_INSERT_CHUNK):
-        chunk = parsed_rows[start : start + _BULK_INSERT_CHUNK]
+    for start in range(0, len(indexed_rows), _BULK_INSERT_CHUNK):
+        chunk = indexed_rows[start : start + _BULK_INSERT_CHUNK]
         mappings = []
-        for offset, row in enumerate(chunk):
-            idx = int(row_index_offset) + start + offset
+        for idx, row in chunk:
             csv_transcript = row["transcript"]
             mappings.append(
                 {
@@ -1003,15 +1024,13 @@ def execute_call_import_materialization(
 
     row_count = len(parse_result.rows)
     rows_payload = parse_result.rows
-    row_index_offset = 0
+    resume_indices: List[int] | None = None
     if is_sharding_enabled():
-        from app.db_sharding.scatter_gather import (
-            count_call_import_rows,
-            max_call_import_row_index,
-        )
+        from app.db_sharding.scatter_gather import load_call_import_row_indices
 
-        existing_count = count_call_import_rows(db, call_import.id)
-        if existing_count >= row_count > 0:
+        existing_indices = load_call_import_row_indices(db, call_import.id)
+        missing_indices = pending_source_row_indices(existing_indices, row_count)
+        if not missing_indices:
             call_import.total_rows = row_count
             db.commit()
             if schedule_import_dispatch:
@@ -1021,23 +1040,15 @@ def execute_call_import_materialization(
                 "status": "already_materialized",
                 "source_rows_skipped": skipped_count,
             }
-        row_index_offset = max_call_import_row_index(db, call_import.id) + 1
-        if row_index_offset >= row_count:
-            call_import.total_rows = row_count
-            db.commit()
-            if schedule_import_dispatch:
-                _enqueue_row_tasks(db, call_import, [])
-            return {
-                "total_rows": row_count,
-                "status": "already_materialized",
-                "source_rows_skipped": skipped_count,
-            }
-        if row_index_offset > 0:
-            rows_payload = parse_result.rows[row_index_offset:]
+        if len(missing_indices) < row_count:
+            rows_payload = [parse_result.rows[index] for index in missing_indices]
+            resume_indices = missing_indices
             logger.info(
-                "execute_call_import_materialization: resuming import {} at row_index {}",
+                "execute_call_import_materialization: resuming import {} "
+                "for {} missing row index(es) starting at {}",
                 call_import_id,
-                row_index_offset,
+                len(missing_indices),
+                missing_indices[0],
             )
 
     committed_rows = 0
@@ -1046,7 +1057,7 @@ def execute_call_import_materialization(
         if is_sharding_enabled():
             from app.db_sharding.row_ops import ShardWriteSessions, register_shard_slices
 
-            if row_index_offset == 0:
+            if resume_indices is None:
                 register_shard_slices(db, call_import.id, row_count)
                 db.commit()
                 from app.db_sharding.registry import publish_slice_registry_change
@@ -1059,7 +1070,7 @@ def execute_call_import_materialization(
                 rows_payload,
                 organization_id,
                 shard_sessions=shard_sessions,
-                row_index_offset=row_index_offset,
+                row_indices=resume_indices,
             )
             call_import.total_rows = row_count
             db.commit()

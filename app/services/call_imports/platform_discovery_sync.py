@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from uuid import UUID
 
 from loguru import logger
 from sqlalchemy.orm import Session
@@ -46,35 +45,18 @@ def reclaim_stale_platform_discovery_slices(
     return len(stale_slices)
 
 
-def _close_active_discovery_slices_when_rows_idle(
-    db: Session,
-    call_import_id: UUID,
-) -> int:
-    """Mark leftover discovery slices terminal once import row work is idle."""
-    from sqlalchemy import update
-
-    result = db.execute(
-        update(CallImportDiscoverySlice)
-        .where(
-            CallImportDiscoverySlice.call_import_id == call_import_id,
-            CallImportDiscoverySlice.status.in_(("pending", "queued", "running")),
-        )
-        .values(
-            status="failed",
-            error="Import row processing finished; discovery slice closed.",
-        )
-    )
-    closed = int(result.rowcount or 0)
-    if closed:
-        db.flush()
-    return closed
-
-
 def sync_platform_discovery_when_import_rows_idle(
     db: Session,
     call_import: CallImport,
 ) -> None:
-    """Reclaim stale slices and finalize discovery when row hydrate is done."""
+    """Reclaim stale slices once row hydrate is idle.
+
+    Unfinished slices stay eligible. Listing can still be waiting on a rate
+    limit or a later time window after the rows discovered so far have
+    finished. Stale ``queued``/``running`` slices are returned to ``pending``
+    from their heartbeat, and discovery is finalized only when every slice
+    is already terminal.
+    """
     if not is_platform_call_import(call_import):
         return
     discovery = (call_import.discovery_status or "").strip().lower()
@@ -96,14 +78,6 @@ def sync_platform_discovery_when_import_rows_idle(
         logger.info(
             "platform discovery reclaimed {} stale slice(s) for import {}",
             reclaimed,
-            call_import.id,
-        )
-
-    closed = _close_active_discovery_slices_when_rows_idle(db, call_import.id)
-    if closed:
-        logger.info(
-            "platform discovery closed {} active slice(s) for idle import {}",
-            closed,
             call_import.id,
         )
 

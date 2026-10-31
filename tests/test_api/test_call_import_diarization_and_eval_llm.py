@@ -69,25 +69,25 @@ def _bound_celery_self():
     return _Self()
 
 
-def _looks_like_celery_self(arg) -> bool:
-    return hasattr(arg, "request") and hasattr(arg, "max_retries")
-
-
 def _ensure_bound_task_run(task):
+    """Celery's bound ``run`` already supplies ``self``.
+
+    A second explicit self shifts every argument, so the row id is read as
+    the STT provider. Inject a fake self only when a stub replaced ``run``
+    with the raw function and the call is missing that argument.
+    """
     if getattr(task.run, "_bound_for_tests", False):
         return task
 
     underlying = task.run
 
     def _run(*args, **kwargs):
-        if args and _looks_like_celery_self(args[0]):
-            return underlying(*args, **kwargs)
         try:
-            return underlying(_bound_celery_self(), *args, **kwargs)
+            return underlying(*args, **kwargs)
         except TypeError as exc:
             if "positional argument" not in str(exc):
                 raise
-            return underlying(*args, **kwargs)
+            return underlying(_bound_celery_self(), *args, **kwargs)
 
     _run._bound_for_tests = True
     task.run = _run
@@ -95,9 +95,8 @@ def _ensure_bound_task_run(task):
 
 
 def _run_transcribe_task(task_module, *args, **kwargs):
-    """Invoke bind=True worker with an explicit Celery ``self`` (CI-safe)."""
-    fn = task_module.transcribe_call_import_row_task
-    return fn(_bound_celery_self(), *args, **kwargs)
+    """Invoke the bind=True worker through Celery's bound ``run``."""
+    return task_module.transcribe_call_import_row_task.run(*args, **kwargs)
 
 
 def _ensure_real_concurrency_modules():

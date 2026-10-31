@@ -671,7 +671,8 @@ def test_platform_hydration_complete_blocks_while_rows_in_flight(monkeypatch):
     assert platform_import_hydration_complete(call_import) is False
 
 
-def test_sync_discovery_closes_active_slices_when_rows_idle(monkeypatch):
+def test_sync_discovery_leaves_active_slices_when_rows_idle(monkeypatch):
+    """Idle imported rows must not fail slices that are still listing."""
     from unittest.mock import MagicMock
 
     from app.services.call_imports.platform_discovery_sync import (
@@ -685,7 +686,7 @@ def test_sync_discovery_closes_active_slices_when_rows_idle(monkeypatch):
 
     db = MagicMock()
     finalize_calls = []
-    close_calls = []
+    reclaim_calls = []
 
     monkeypatch.setattr(
         "app.services.call_imports.bulk_ops._aggregate_import_row_status_counts",
@@ -693,11 +694,7 @@ def test_sync_discovery_closes_active_slices_when_rows_idle(monkeypatch):
     )
     monkeypatch.setattr(
         "app.services.call_imports.platform_discovery_sync.reclaim_stale_platform_discovery_slices",
-        lambda *_a, **_k: 0,
-    )
-    monkeypatch.setattr(
-        "app.services.call_imports.platform_discovery_sync._close_active_discovery_slices_when_rows_idle",
-        lambda _db, cid: close_calls.append(cid) or 2,
+        lambda *_a, **_k: reclaim_calls.append(call_import.id) or 0,
     )
     monkeypatch.setattr(
         "app.services.call_imports.platform_discovery.finalize_platform_discovery_if_complete",
@@ -706,5 +703,6 @@ def test_sync_discovery_closes_active_slices_when_rows_idle(monkeypatch):
 
     sync_platform_discovery_when_import_rows_idle(db, call_import)
 
-    assert close_calls == [call_import.id]
+    assert reclaim_calls == [call_import.id]
     assert finalize_calls == [call_import.id]
+    db.execute.assert_not_called()
