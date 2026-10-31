@@ -39,15 +39,18 @@ def ingest_knowledge_document(db: Session, *, document_id: UUID) -> None:
             text("SELECT pg_advisory_lock(:k1, :k2)"),
             {"k1": lock_k1, "k2": lock_k2},
         )
+        lock_conn.commit()
         work = Session(bind=lock_conn, expire_on_commit=False)
         try:
             _ingest_knowledge_document_locked(work, document_id=document_id)
+            work.commit()
         finally:
             work.close()
             lock_conn.execute(
                 text("SELECT pg_advisory_unlock(:k1, :k2)"),
                 {"k1": lock_k1, "k2": lock_k2},
             )
+            lock_conn.commit()
 
 
 def _ingest_knowledge_document_locked(db: Session, *, document_id: UUID) -> None:

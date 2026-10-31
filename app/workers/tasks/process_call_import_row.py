@@ -335,7 +335,7 @@ def _rollup_parent_on_catalog(
     row_db,
     call_import,
     *,
-    force: bool = True,
+    force: bool = False,
     terminal_row=None,
     previous_row_status=None,
 ) -> None:

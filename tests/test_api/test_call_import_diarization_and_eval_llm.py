@@ -69,6 +69,10 @@ def _bound_celery_self():
     return _Self()
 
 
+def _looks_like_celery_self(arg) -> bool:
+    return hasattr(arg, "request") and hasattr(arg, "max_retries")
+
+
 def _ensure_bound_task_run(task):
     if getattr(task.run, "_bound_for_tests", False):
         return task
@@ -76,7 +80,7 @@ def _ensure_bound_task_run(task):
     underlying = task.run
 
     def _run(*args, **kwargs):
-        if args and not isinstance(args[0], str):
+        if args and _looks_like_celery_self(args[0]):
             return underlying(*args, **kwargs)
         return underlying(_bound_celery_self(), *args, **kwargs)
 

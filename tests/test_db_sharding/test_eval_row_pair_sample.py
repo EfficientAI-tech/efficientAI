@@ -31,8 +31,17 @@ def test_sample_subsample_by_sorted_position_not_row_index_parity(monkeypatch):
         lambda _db, _eid: len(pairs),
     )
     monkeypatch.setattr(
-        "app.db_sharding.scatter_gather._load_all_completed_evaluation_row_pairs",
-        lambda _db, _eid: pairs,
+        "app.db_sharding.scatter_gather._load_completed_evaluation_row_pair_keys",
+        lambda _db, _eid: [
+            (p[0].id, int(p[1].row_index or 0), p[0].call_import_row_id)
+            for p in pairs
+        ],
+    )
+    monkeypatch.setattr(
+        "app.db_sharding.scatter_gather.load_completed_evaluation_row_pairs_for_eval_row_ids",
+        lambda _db, _eid, eval_row_ids: [
+            p for p in pairs if p[0].id in eval_row_ids
+        ],
     )
 
     out = load_completed_evaluation_row_pairs_sample(None, eval_id, max_pairs=3)

@@ -169,29 +169,44 @@ def _load_rows_for_verify(
 
     from app.db_sharding.row_ops import locate_call_import_row
 
+    open_shard_sessions: dict[str, Session] = {}
     loaded: List[Tuple[Session, CallImportRow]] = []
     try:
         for rid in unique_ids:
-            row_db, catalog_db, row, _shard_id = locate_call_import_row(rid)
+            row_db, catalog_db, row, shard_id = locate_call_import_row(rid)
             if catalog_db is not row_db:
                 catalog_db.close()
+            shard_key = str(shard_id or "legacy")
+            if shard_key in open_shard_sessions:
+                row_db.close()
+                row_db = open_shard_sessions[shard_key]
+                row = (
+                    row_db.query(CallImportRow)
+                    .filter(CallImportRow.id == rid)
+                    .one()
+                )
+            else:
+                open_shard_sessions[shard_key] = row_db
             if (
                 row.call_import_id != call_import_id
                 or row.organization_id != organization_id
             ):
-                row_db.close()
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="One or more row ids are invalid for this import.",
                 )
             loaded.append((row_db, row))
     except LookupError:
-        for row_db, _row in loaded:
+        for row_db in open_shard_sessions.values():
             row_db.close()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="One or more row ids are invalid for this import.",
         ) from None
+    except HTTPException:
+        for row_db in open_shard_sessions.values():
+            row_db.close()
+        raise
     return loaded
 
 
@@ -235,7 +250,13 @@ def verify_manual_audio_uploads(
         for sess in modified_sessions:
             sess.commit()
     finally:
+        closed: set[int] = set()
         for row_db, _row in sessions_rows:
-            if row_db is not db:
-                row_db.close()
+            if row_db is db:
+                continue
+            token = id(row_db)
+            if token in closed:
+                continue
+            closed.add(token)
+            row_db.close()
     return verified

@@ -1848,6 +1848,65 @@ def _subsample_sorted_evaluation_row_pairs(
     return ordered[:cap]
 
 
+def _load_completed_evaluation_row_pair_keys(
+    catalog_db: Session,
+    evaluation_id: UUID,
+) -> List[tuple[UUID, int, UUID]]:
+    """Sort keys only: (eval_row_id, row_index, call_import_row_id)."""
+
+    def load_session(db: Session) -> List[tuple[UUID, int, UUID]]:
+        rows = (
+            db.query(
+                CallImportEvaluationRow.id,
+                CallImportRow.row_index,
+                CallImportEvaluationRow.call_import_row_id,
+            )
+            .join(
+                CallImportRow,
+                CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
+            )
+            .filter(
+                CallImportEvaluationRow.evaluation_id == evaluation_id,
+                CallImportEvaluationRow.status == "completed",
+            )
+            .order_by(CallImportRow.row_index, CallImportEvaluationRow.id)
+            .all()
+        )
+        return [(r[0], int(r[1] or 0), r[2]) for r in rows]
+
+    if not is_sharding_enabled():
+        return load_session(catalog_db)
+
+    merged: List[tuple[UUID, int, UUID]] = []
+    router = db_pool_manager.router
+    assert router is not None
+    for shard_id in router.shard_ids:
+        factory = db_pool_manager.shard_session_factory(shard_id)
+        shard_db = factory()
+        try:
+            merged.extend(load_session(shard_db))
+        finally:
+            shard_db.close()
+    if not merged:
+        merged = load_session(catalog_db)
+    return sorted(merged, key=lambda k: (k[1], str(k[0])))
+
+
+def _subsample_sorted_evaluation_row_pair_keys(
+    keys: List[tuple[UUID, int, UUID]],
+    *,
+    cap: int,
+) -> List[tuple[UUID, int, UUID]]:
+    ordered = sorted(keys, key=lambda k: (k[1], str(k[0])))
+    if len(ordered) <= cap:
+        return ordered
+    stride = max(1, (len(ordered) + cap - 1) // cap)
+    sampled = [ordered[i] for i in range(0, len(ordered), stride)][:cap]
+    if sampled:
+        return sampled
+    return ordered[:cap]
+
+
 def _load_all_completed_evaluation_row_pairs(
     catalog_db: Session,
     evaluation_id: UUID,
@@ -1950,5 +2009,11 @@ def load_completed_evaluation_row_pairs_sample(
         return _sort_evaluation_row_pairs(pairs)
 
     _ = row_stride  # legacy callers; sampling uses sorted positions only
-    pairs = _load_all_completed_evaluation_row_pairs(catalog_db, evaluation_id)
-    return _subsample_sorted_evaluation_row_pairs(pairs, cap=cap)
+    keys = _load_completed_evaluation_row_pair_keys(catalog_db, evaluation_id)
+    sampled_keys = _subsample_sorted_evaluation_row_pair_keys(keys, cap=cap)
+    eval_row_ids = [k[0] for k in sampled_keys]
+    return load_completed_evaluation_row_pairs_for_eval_row_ids(
+        catalog_db,
+        evaluation_id,
+        eval_row_ids,
+    )
