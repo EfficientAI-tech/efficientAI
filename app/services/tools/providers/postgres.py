@@ -133,6 +133,19 @@ _FROM_STOP_WORDS = frozenset({
     "using",
 })
 _IDENT = re.compile(r'"([^"]+)"|([A-Za-z_][\w$]*)')
+_DOLLAR_QUOTE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
+
+
+def _mask_dollar_quote(sql: str, index: int, out: list[str]) -> int | None:
+    """Blank one ``$$...$$`` or ``$tag$...$tag$`` literal. None if this ``$`` is not one."""
+    opener = _DOLLAR_QUOTE.match(sql, index)
+    if opener is None:
+        return None
+    delimiter = opener.group(0)
+    close = sql.find(delimiter, opener.end())
+    end = len(sql) if close < 0 else close + len(delimiter)
+    out.extend(" " * (end - index))
+    return end
 
 
 def _mask_sql_strings_and_comments(sql: str) -> str:
@@ -152,6 +165,11 @@ def _mask_sql_strings_and_comments(sql: str) -> str:
             out.extend(" " * (end - i))
             i = end
             continue
+        if sql[i] == "$":
+            end = _mask_dollar_quote(sql, i, out)
+            if end is not None:
+                i = end
+                continue
         if sql[i] == "'":
             out.append(" ")
             i += 1

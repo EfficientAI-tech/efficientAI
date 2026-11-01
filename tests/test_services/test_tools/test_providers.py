@@ -220,6 +220,14 @@ def test_postgres_query_rejects_schemas_outside_the_allow_list():
         allowed,
     )
     _assert_query_uses_allowed_schemas("SELECT * FROM users", allowed)
+    _assert_query_uses_allowed_schemas(
+        "SELECT * FROM public.snippets WHERE body = $$secret.lookup()$$",
+        allowed,
+    )
+    _assert_query_uses_allowed_schemas(
+        "SELECT * FROM public.snippets WHERE body = $fn$secret.lookup()$fn$",
+        allowed,
+    )
     for sql in (
         "SELECT * FROM secret.users",
         'SELECT * FROM "secret"."users"',
