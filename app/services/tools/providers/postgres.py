@@ -148,6 +148,32 @@ def _mask_dollar_quote(sql: str, index: int, out: list[str]) -> int | None:
     return end
 
 
+def _continues_identifier(sql: str, index: int) -> bool:
+    """True when ``sql[index]`` extends an unquoted identifier (``$`` included)."""
+    if index <= 0:
+        return False
+    previous = sql[index - 1]
+    return previous.isalnum() or previous in "_$"
+
+
+def _copy_quoted_identifier(sql: str, index: int, out: list[str]) -> int:
+    """Copy one double-quoted identifier, including a ``$`` inside it."""
+    out.append('"')
+    index += 1
+    length = len(sql)
+    while index < length:
+        out.append(sql[index])
+        index += 1
+        if out[-1] != '"':
+            continue
+        if index < length and sql[index] == '"':
+            out.append('"')
+            index += 1
+            continue
+        break
+    return index
+
+
 def _mask_sql_strings_and_comments(sql: str) -> str:
     """Blank string literals and comments so schema checks ignore them."""
     out: list[str] = []
@@ -165,7 +191,10 @@ def _mask_sql_strings_and_comments(sql: str) -> str:
             out.extend(" " * (end - i))
             i = end
             continue
-        if sql[i] == "$":
+        if sql[i] == '"':
+            i = _copy_quoted_identifier(sql, i, out)
+            continue
+        if sql[i] == "$" and not _continues_identifier(sql, i):
             end = _mask_dollar_quote(sql, i, out)
             if end is not None:
                 i = end

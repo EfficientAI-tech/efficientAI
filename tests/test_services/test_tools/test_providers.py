@@ -236,6 +236,8 @@ def test_postgres_query_rejects_schemas_outside_the_allow_list():
         "SELECT secret.private_fn()",
         "SELECT * FROM (SELECT * FROM secret.users) s",
         "SELECT * FROM information_schema.tables",
+        "SELECT s.* FROM public.orders AS a$$ JOIN secret.accounts AS s ON true LIMIT 1",
+        'SELECT s.* FROM public.orders AS "a$$" JOIN secret.accounts AS s ON true LIMIT 1',
     ):
         with pytest.raises(ValueError, match="not allowed"):
             _assert_query_uses_allowed_schemas(sql, allowed)
