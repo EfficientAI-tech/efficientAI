@@ -767,7 +767,9 @@ def _wire_bulk_ops_stubs(db_session):
         types.SimpleNamespace(delay=_sync_mapped_materialize_delay)
     )
 
-    def _sync_import_materialize_delay(call_import_id, organization_id, workspace_id):
+    def _sync_import_materialize_delay(
+        call_import_id, organization_id, workspace_id, **_kwargs
+    ):
         from uuid import UUID
 
         from app.services.call_imports.bulk_ops import execute_call_import_materialization
@@ -807,6 +809,8 @@ def _wire_bulk_ops_stubs(db_session):
             ),
             include_completed=bool(payload_dict.get("include_completed", False)),
             transcribe_overwrite=bool(payload_dict.get("transcribe_overwrite", False)),
+            retry_search_term=str(payload_dict.get("retry_search_term") or ""),
+            retry_status_filter=payload_dict.get("retry_status_filter"),
         )
         return types.SimpleNamespace(id="fake-sync-retry-task")
 
@@ -947,6 +951,7 @@ def _build_session_api_app():
         integrations,
         manual_evaluations,
         metrics,
+        scenario_metrics,
         model_config,
         observability,
         personas,
@@ -959,6 +964,7 @@ def _build_session_api_app():
         settings,
         telephony,
         test_agents,
+        tool_connections,
         voice_agent,
         voice_playground,
         voicebundles,
@@ -983,12 +989,14 @@ def _build_session_api_app():
     app.include_router(evaluator_suites.router, prefix="/api/v1")
     app.include_router(personas.router, prefix="/api/v1")
     app.include_router(scenarios.router, prefix="/api/v1")
+    app.include_router(tool_connections.router, prefix="/api/v1")
     app.include_router(settings.router, prefix="/api/v1")
     app.include_router(iam.router, prefix="/api/v1")
     app.include_router(audio.router, prefix="/api/v1")
     app.include_router(integrations.router, prefix="/api/v1")
     app.include_router(aiproviders.router, prefix="/api/v1")
     app.include_router(llm_gateway.router, prefix="/api/v1")
+    app.include_router(scenario_metrics.router, prefix="/api/v1")
     app.include_router(metrics.router, prefix="/api/v1")
     app.include_router(evaluator_result_metric_clusters.router, prefix="/api/v1")
     app.include_router(evaluator_results.router, prefix="/api/v1")

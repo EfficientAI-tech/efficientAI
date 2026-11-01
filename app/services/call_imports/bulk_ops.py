@@ -29,6 +29,8 @@ from app.models.schemas import CallImportTranscribeRequest
 
 _BULK_INSERT_CHUNK = 1000
 _REVOKE_TASK_BATCH = 500
+_IMPORT_ROW_FILTER_PAGE_SIZE = 500
+_MAX_EXPLICIT_EVAL_RETRY_IDS = 500
 
 _ROW_TRANSCRIBE_COLUMNS = (
     CallImportRow.id,
@@ -107,13 +109,34 @@ def select_rows_for_transcription(
     return selected, skip_counts
 
 
-def execute_bulk_diarization(
+def _apply_transcription_selection(
+    rows: List[CallImportRow],
+    payload: CallImportTranscribeRequest,
+    skip_counts: Dict[str, int],
+) -> List[CallImportRow]:
+    selected: List[CallImportRow] = []
+    for row in rows:
+        recording = (row.recording_s3_key or "").strip()
+        if not recording:
+            skip_counts["no_recording"] = skip_counts.get("no_recording", 0) + 1
+            continue
+        existing = (row.diarised_transcript or "").strip()
+        if existing and payload.only_missing and not payload.overwrite_existing:
+            skip_counts["transcript_present"] = (
+                skip_counts.get("transcript_present", 0) + 1
+            )
+            continue
+        selected.append(row)
+    return selected
+
+
+def _enqueue_diarization_for_rows(
     db: Session,
     call_import: CallImport,
     payload: CallImportTranscribeRequest,
-    requested_row_ids: Optional[List[UUID]] = None,
+    rows: List[CallImportRow],
+    skip_counts: Dict[str, int],
 ) -> BulkDiarizationResult:
-    """Store Redis params, then mark rows pending so dispatch never races ahead."""
     from app.workers.concurrency.diarization_dispatch import (
         _REDIS_PARAMS_STORE_ERROR,
         build_diarization_params_from_request,
@@ -121,10 +144,6 @@ def execute_bulk_diarization(
     )
     from app.workers.concurrency.fair_diarization_dispatch import (
         schedule_fair_diarization_dispatch,
-    )
-
-    rows, skip_counts = select_rows_for_transcription(
-        db, call_import, payload, requested_row_ids=requested_row_ids
     )
 
     if not rows:
@@ -188,6 +207,58 @@ def execute_bulk_diarization(
 
     return BulkDiarizationResult(
         queued=queued,
+        skipped_rows=sum(skip_counts.values()),
+        skipped_reason_counts=skip_counts,
+    )
+
+
+def execute_bulk_diarization(
+    db: Session,
+    call_import: CallImport,
+    payload: CallImportTranscribeRequest,
+    requested_row_ids: Optional[List[UUID]] = None,
+) -> BulkDiarizationResult:
+    """Store Redis params, then mark rows pending so dispatch never races ahead."""
+    if requested_row_ids:
+        rows, skip_counts = select_rows_for_transcription(
+            db, call_import, payload, requested_row_ids=requested_row_ids
+        )
+        return _enqueue_diarization_for_rows(
+            db, call_import, payload, rows, skip_counts
+        )
+
+    from app.services.call_imports.row_selection import normalize_row_selection_filter
+    from app.db_sharding.scatter_gather import fetch_call_import_rows_filtered_page
+
+    search_term, diarised_status = normalize_row_selection_filter(payload.row_filter)
+    skip_counts: Dict[str, int] = {}
+    queued_total = 0
+    offset = 0
+    page_size = _IMPORT_ROW_FILTER_PAGE_SIZE
+
+    while True:
+        page = fetch_call_import_rows_filtered_page(
+            db,
+            call_import.id,
+            offset=offset,
+            limit=page_size,
+            search_term=search_term,
+            diarised_status_filter=diarised_status,
+        )
+        if not page:
+            break
+        selected = _apply_transcription_selection(page, payload, skip_counts)
+        result = _enqueue_diarization_for_rows(
+            db, call_import, payload, selected, skip_counts
+        )
+        queued_total += result.queued
+        skip_counts = dict(result.skipped_reason_counts)
+        if len(page) < page_size:
+            break
+        offset += page_size
+
+    return BulkDiarizationResult(
+        queued=queued_total,
         skipped_rows=sum(skip_counts.values()),
         skipped_reason_counts=skip_counts,
     )
@@ -410,7 +481,6 @@ def execute_bulk_row_delete(
     call_import: CallImport,
     row_ids: List[UUID],
 ) -> int:
-    """Revoke tasks, batch-delete blob recordings, bulk-delete DB rows."""
     from app.api.v1.routes.call_imports import (
         _delete_s3_objects,
         _recompute_call_import_counters,
@@ -442,6 +512,42 @@ def execute_bulk_row_delete(
         organization_id,
     )
     return int(deleted or 0)
+
+
+def execute_bulk_row_delete_by_filter(
+    db: Session,
+    organization_id: UUID,
+    call_import: CallImport,
+    *,
+    search_term: str = "",
+    diarised_status_filter: Optional[str] = None,
+) -> int:
+    from app.db_sharding.scatter_gather import fetch_call_import_rows_filtered_page
+
+    deleted_total = 0
+    offset = 0
+    page_size = _IMPORT_ROW_FILTER_PAGE_SIZE
+    while True:
+        page = fetch_call_import_rows_filtered_page(
+            db,
+            call_import.id,
+            offset=offset,
+            limit=page_size,
+            search_term=search_term,
+            diarised_status_filter=diarised_status_filter,
+        )
+        if not page:
+            break
+        deleted_total += execute_bulk_row_delete(
+            db,
+            organization_id,
+            call_import,
+            [row.id for row in page],
+        )
+        if len(page) < page_size:
+            break
+        offset += page_size
+    return deleted_total
 
 
 def _revoke_call_import_task_ids(db: Session, call_import_id: UUID) -> int:
@@ -662,6 +768,18 @@ def execute_call_import_delete(
     }
 
 
+def pending_source_row_indices(existing: set[int], row_count: int) -> list[int]:
+    """Source indexes in ``0 .. row_count-1`` that are not saved yet.
+
+    A resumed import must fill holes below the highest saved index. Shard
+    commits are not one contiguous prefix: one shard can commit rows 0–249
+    and 500–749 while the next shard's 250–499 never land.
+    """
+    if row_count <= 0:
+        return []
+    return [index for index in range(row_count) if index not in existing]
+
+
 def bulk_materialize_call_import_rows(
     db: Session,
     call_import: CallImport,
@@ -670,6 +788,8 @@ def bulk_materialize_call_import_rows(
     *,
     defer_shard_commit: bool = False,
     shard_sessions=None,
+    row_index_offset: int = 0,
+    row_indices: List[int] | None = None,
 ) -> tuple[int, List[Session]]:
     """Insert import rows in chunks without per-row ORM overhead.
 
@@ -681,14 +801,22 @@ def bulk_materialize_call_import_rows(
 
     if not parsed_rows:
         return 0, []
+    if row_indices is not None and len(row_indices) != len(parsed_rows):
+        raise ValueError("row_indices length must match parsed rows")
+    if row_indices is not None:
+        indexed_rows = list(zip(row_indices, parsed_rows))
+    else:
+        indexed_rows = [
+            (int(row_index_offset) + offset, row)
+            for offset, row in enumerate(parsed_rows)
+        ]
 
     pending: List[Session] = []
     committed = 0
-    for start in range(0, len(parsed_rows), _BULK_INSERT_CHUNK):
-        chunk = parsed_rows[start : start + _BULK_INSERT_CHUNK]
+    for start in range(0, len(indexed_rows), _BULK_INSERT_CHUNK):
+        chunk = indexed_rows[start : start + _BULK_INSERT_CHUNK]
         mappings = []
-        for offset, row in enumerate(chunk):
-            idx = start + offset
+        for idx, row in chunk:
             csv_transcript = row["transcript"]
             mappings.append(
                 {
@@ -793,9 +921,7 @@ def execute_call_import_materialization(
         if not is_sharding_enabled()
         else None
     )
-    if existing_rows is not None or (
-        is_sharding_enabled() and int(call_import.total_rows or 0) > 0
-    ):
+    if existing_rows is not None:
         if call_import.status == CallImportStatus.FAILED:
             return {
                 "total_rows": int(call_import.total_rows or 0),
@@ -897,26 +1023,56 @@ def execute_call_import_materialization(
     call_import.failed_rows = 0
 
     row_count = len(parse_result.rows)
+    rows_payload = parse_result.rows
+    resume_indices: List[int] | None = None
+    if is_sharding_enabled():
+        from app.db_sharding.scatter_gather import load_call_import_row_indices
+
+        existing_indices = load_call_import_row_indices(db, call_import.id)
+        missing_indices = pending_source_row_indices(existing_indices, row_count)
+        if not missing_indices:
+            call_import.total_rows = row_count
+            db.commit()
+            if schedule_import_dispatch:
+                _enqueue_row_tasks(db, call_import, [])
+            return {
+                "total_rows": row_count,
+                "status": "already_materialized",
+                "source_rows_skipped": skipped_count,
+            }
+        if len(missing_indices) < row_count:
+            rows_payload = [parse_result.rows[index] for index in missing_indices]
+            resume_indices = missing_indices
+            logger.info(
+                "execute_call_import_materialization: resuming import {} "
+                "for {} missing row index(es) starting at {}",
+                call_import_id,
+                len(missing_indices),
+                missing_indices[0],
+            )
+
     committed_rows = 0
     shard_sessions = None
     try:
         if is_sharding_enabled():
             from app.db_sharding.row_ops import ShardWriteSessions, register_shard_slices
 
-            register_shard_slices(db, call_import.id, row_count)
-            db.commit()
-            from app.db_sharding.registry import publish_slice_registry_change
+            if resume_indices is None:
+                register_shard_slices(db, call_import.id, row_count)
+                db.commit()
+                from app.db_sharding.registry import publish_slice_registry_change
 
-            publish_slice_registry_change(call_import.id)
+                publish_slice_registry_change(call_import.id)
             shard_sessions = ShardWriteSessions()
             committed_rows, _pending = bulk_materialize_call_import_rows(
                 db,
                 call_import,
-                parse_result.rows,
+                rows_payload,
                 organization_id,
                 shard_sessions=shard_sessions,
+                row_indices=resume_indices,
             )
-            call_import.total_rows = committed_rows
+            call_import.total_rows = row_count
             db.commit()
         else:
             from app.db_sharding.row_ops import register_shard_slices
@@ -925,7 +1081,7 @@ def execute_call_import_materialization(
             committed_rows, _pending = bulk_materialize_call_import_rows(
                 db,
                 call_import,
-                parse_result.rows,
+                rows_payload,
                 organization_id,
             )
             register_shard_slices(db, call_import.id, row_count)
@@ -1127,6 +1283,7 @@ def _latest_evaluation_progress_for_ui(
             "latest_evaluation_total_rows": None,
             "latest_evaluation_completed_rows": None,
             "latest_evaluation_failed_rows": None,
+            "latest_evaluation_bulk_operation": None,
         }
     ui_completed_raw, ui_failed_raw = merge_eval_counters_for_ui(row)
     total = int(row.total_rows or 0)
@@ -1136,13 +1293,55 @@ def _latest_evaluation_progress_for_ui(
     if hasattr(status, "value"):
         status = status.value
     transcript_source = row.transcript_source
+    from app.services.call_imports.evaluation_bulk_op import (
+        get_evaluation_bulk_operation,
+    )
+
     return {
         "latest_evaluation_status": status,
         "latest_evaluation_transcript_source": transcript_source,
         "latest_evaluation_total_rows": total,
         "latest_evaluation_completed_rows": ui_completed,
         "latest_evaluation_failed_rows": ui_failed,
+        "latest_evaluation_bulk_operation": get_evaluation_bulk_operation(row.id),
     }
+
+
+def _any_evaluation_needs_ui_poll(db: Session, call_import_id: UUID) -> bool:
+    """True when any evaluation on this import still needs UI polling."""
+    from sqlalchemy.orm import load_only
+
+    from app.services.call_imports.evaluation_bulk_op import (
+        get_evaluation_bulk_operation,
+    )
+
+    rows = (
+        db.query(CallImportEvaluation)
+        .options(
+            load_only(
+                CallImportEvaluation.id,
+                CallImportEvaluation.status,
+                CallImportEvaluation.total_rows,
+                CallImportEvaluation.completed_rows,
+                CallImportEvaluation.failed_rows,
+            )
+        )
+        .filter(CallImportEvaluation.call_import_id == call_import_id)
+        .all()
+    )
+    for row in rows:
+        if get_evaluation_bulk_operation(row.id):
+            return True
+        total = int(row.total_rows or 0)
+        accounted = int(row.completed_rows or 0) + int(row.failed_rows or 0)
+        if total > accounted:
+            return True
+        status = row.status
+        if hasattr(status, "value"):
+            status = status.value
+        if str(status) in ("pending", "running"):
+            return True
+    return False
 
 
 def rollup_call_import_batch_status(db: Session, call_import: CallImport) -> None:
@@ -1153,12 +1352,28 @@ def rollup_call_import_batch_status(db: Session, call_import: CallImport) -> Non
     rows were never enqueued on the legacy import worker and must not keep the
     parent stuck in ``processing`` once every evaluation run is terminal.
     """
-
+    db.flush()
+    db.expire_all()
     total, completed, failed, pending, processing = _aggregate_import_row_status_counts(
         db, call_import.id
     )
     pending_or_processing = pending + processing
 
+    from sqlalchemy import update
+
+    db.execute(
+        update(CallImport)
+        .where(CallImport.id == call_import.id)
+        .values(
+            total_rows=total,
+            completed_rows=completed,
+            failed_rows=failed,
+        )
+    )
+    db.expire(
+        call_import,
+        ["total_rows", "completed_rows", "failed_rows"],
+    )
     call_import.total_rows = total
     call_import.completed_rows = completed
     call_import.failed_rows = failed
@@ -1207,8 +1422,14 @@ def rollup_call_import_batch_status(db: Session, call_import: CallImport) -> Non
     from app.services.call_imports.debounced_rollup import (
         platform_discovery_blocks_terminal_status,
     )
+    from app.services.call_imports.platform_discovery_sync import (
+        sync_platform_discovery_when_import_rows_idle,
+    )
 
-    if platform_discovery_blocks_terminal_status(call_import):
+    sync_platform_discovery_when_import_rows_idle(db, call_import)
+    db.refresh(call_import)
+
+    if platform_discovery_blocks_terminal_status(call_import, db=db):
         call_import.status = CallImportStatus.PROCESSING
         return
 
@@ -1353,26 +1574,12 @@ def _batch_revoke_celery_task_ids(
     terminate: bool,
 ) -> int:
     """Revoke Celery tasks in batches; best-effort on control-plane errors."""
-    cleaned = [tid for tid in task_ids if (tid or "").strip()]
-    if not cleaned:
-        return 0
-    try:
-        from app.workers.celery_app import celery_app
+    from app.workers.celery_revoke import revoke_celery_tasks
 
-        revoked = 0
-        for start in range(0, len(cleaned), _REVOKE_TASK_BATCH):
-            chunk = cleaned[start : start + _REVOKE_TASK_BATCH]
-            if terminate:
-                celery_app.control.revoke(
-                    chunk, terminate=True, signal="SIGTERM"
-                )
-            else:
-                celery_app.control.revoke(chunk, terminate=False)
-            revoked += len(chunk)
-        return revoked
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to batch-revoke {} Celery tasks: {}", len(cleaned), exc)
-        return 0
+    return revoke_celery_tasks(
+        task_ids,
+        terminate=None if terminate else False,
+    )
 
 
 def execute_evaluation_cancel(
@@ -2001,6 +2208,8 @@ def execute_evaluation_retry(
     metric_ids: Optional[List[UUID]] = None,
     include_completed: bool = False,
     transcribe_overwrite: bool = False,
+    retry_search_term: str = "",
+    retry_status_filter: Optional[str] = None,
 ) -> dict:
     """Page failed rows, bulk-reset them, then start throttled dispatch."""
     from app.api.v1.routes.call_import_evaluations import _rollup_evaluation_status
@@ -2029,6 +2238,9 @@ def execute_evaluation_retry(
 
     include = include_completed or bool(metric_ids)
     statuses = ["failed", "completed"] if include else ["failed"]
+    if retry_status_filter:
+        statuses = [retry_status_filter.strip().lower()]
+    search_term = (retry_search_term or "").strip()
     restricted = [str(mid) for mid in metric_ids] if metric_ids else None
     eval_pk = evaluation.id
     import_id = evaluation.call_import_id
@@ -2116,19 +2328,27 @@ def execute_evaluation_retry(
                     _reset_loaded_page(session, raw)
         else:
             for status in statuses:
+                after_id: Optional[UUID] = None
                 while True:
                     raw = load_retry_target_page(
                         session,
                         eval_pk,
                         status=status,
-                        exclude_ids=orphans or None,
+                        after_id=after_id,
                         include_metric_scores=bool(metric_ids),
-                        ordered=False,
+                        ordered=True,
                         limit=RETRY_ROW_PAGE_SIZE,
+                        search_term=search_term,
                     )
+                    if raw:
+                        page_last_id = raw[-1][0].id
+                    else:
+                        page_last_id = None
                     action = _reset_loaded_page(session, raw)
                     if action in {"empty", "stop"}:
                         break
+                    if page_last_id is not None:
+                        after_id = page_last_id
         if shard_reset:
             reset_groups.append((shard_id, shard_reset))
         return len(shard_reset)

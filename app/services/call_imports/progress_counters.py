@@ -195,11 +195,37 @@ def merge_import_counters_for_ui(call_import) -> tuple[int, int]:
     return completed + rc, failed + rf
 
 
+def apply_import_counter_deltas_to_catalog(
+    db: Session,
+    call_import_id: UUID | str,
+    *,
+    completed_delta: int = 0,
+    failed_delta: int = 0,
+) -> None:
+    if not completed_delta and not failed_delta:
+        return
+    from sqlalchemy import update
+
+    from app.models.database import CallImport
+
+    cid = call_import_id if isinstance(call_import_id, UUID) else UUID(str(call_import_id))
+    db.execute(
+        update(CallImport)
+        .where(CallImport.id == cid)
+        .values(
+            completed_rows=CallImport.completed_rows + completed_delta,
+            failed_rows=CallImport.failed_rows + failed_delta,
+        )
+    )
+    db.flush()
+
+
 def record_import_row_status_transition(
     call_import_id: UUID | str,
     *,
     previous_status: str,
     new_status: str,
+    db: Session | None = None,
 ) -> None:
     from app.workers.tasks.evaluate_call_import_row_core import (
         counter_deltas_for_status_transition,
@@ -213,12 +239,31 @@ def record_import_row_status_transition(
         _norm(previous_status),
         _norm(new_status),
     )
-    if completed_delta or failed_delta:
-        record_import_row_terminal(
-            call_import_id,
-            completed_delta=completed_delta,
-            failed_delta=failed_delta,
-        )
+    if not completed_delta and not failed_delta:
+        return
+    try:
+        client = _client()
+        if completed_delta:
+            client.hincrby(
+                "import:progress",
+                _import_completed_key(call_import_id),
+                completed_delta,
+            )
+        if failed_delta:
+            client.hincrby(
+                "import:progress",
+                _import_failed_key(call_import_id),
+                failed_delta,
+            )
+    except redis.RedisError as exc:
+        logger.debug("import progress counter skipped: {}", exc)
+        if db is not None:
+            apply_import_counter_deltas_to_catalog(
+                db,
+                call_import_id,
+                completed_delta=completed_delta,
+                failed_delta=failed_delta,
+            )
 
 
 def flush_import_progress_to_catalog(db: Session, call_import_id: UUID) -> None:

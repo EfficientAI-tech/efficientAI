@@ -110,3 +110,54 @@ jobs:
           platforms: linux/amd64
           build-args: |
             INSTALL_EXTRAS=qualitative-voice
+
+  build-worker-harbor:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (for multi-platform builds)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'workflow_dispatch' && inputs.publish == true
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Harbor worker image
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # Same GHCR package as worker; tags end with -harbor (matches compose + release-and-publish).
+          images: ${{ env.REGISTRY }}/${{ env.WORKER_IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch,suffix=-harbor
+            type=ref,event=pr,suffix=-harbor
+            type=raw,value=latest-harbor,enable={{is_default_branch}}
+
+      - name: Build Harbor worker image (amd64 only for speed)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.worker
+          push: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=worker-harbor-check
+          cache-to: type=gha,scope=worker-harbor-check,mode=max
+          platforms: linux/amd64
+          build-args: |
+            PYTHON_VERSION=3.12
+            INSTALL_EXTRAS=harbor
+            TORCH_CPU_ONLY=false

@@ -9,6 +9,9 @@ from app.api.v1.routes import (
     agents,
     personas,
     scenarios,
+    knowledge_bases,
+    simulation_runs,
+    tool_connections,
     iam,
     profile,
     integrations,
@@ -23,6 +26,7 @@ from app.api.v1.routes import (
     evaluators,
     evaluator_suites,
     metrics,
+    scenario_metrics,
     evaluator_results,
     evaluator_result_metric_clusters,
     chat,
@@ -71,6 +75,9 @@ api_router.include_router(results.router)
 api_router.include_router(agents.router)
 api_router.include_router(personas.router)
 api_router.include_router(scenarios.router)
+api_router.include_router(knowledge_bases.router)
+api_router.include_router(tool_connections.router)
+api_router.include_router(simulation_runs.router)
 api_router.include_router(iam.router)
 api_router.include_router(profile.router)
 api_router.include_router(integrations.router)
@@ -84,6 +91,9 @@ api_router.include_router(conversation_evaluations.router)
 api_router.include_router(voice_agent.router)
 api_router.include_router(evaluators.router)
 api_router.include_router(evaluator_suites.router)
+# Register before metrics.router so `/metrics/generate-from-scenarios` is not
+# captured by `/metrics/{metric_id}` (which yields 405 for POST).
+api_router.include_router(scenario_metrics.router)
 api_router.include_router(metrics.router)
 # Register before evaluator_results so `/evaluator-results/metric-clusters`
 # is not captured by `/evaluator-results/{id}` with id="metric-clusters".

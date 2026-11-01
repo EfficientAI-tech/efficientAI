@@ -62,7 +62,10 @@ export default function VoiceAgent({
   const [isConnecting, setIsConnecting] = useState(false)
   const [status, setStatus] = useState<string>('Disconnected')
   const [error, setError] = useState<string | null>(null)
-  const [logs, setLogs] = useState<Array<{ timestamp: string; message: string; type: 'user' | 'bot' | 'system' }>>([])
+  const [logs, setLogs] = useState<
+    Array<{ timestamp: string; message: string; type: 'user' | 'bot' | 'system' | 'kb' }>
+  >([])
+  const [kbToolCallCount, setKbToolCallCount] = useState(0)
   const [transcriptEntries, setTranscriptEntries] = useState<TranscriptEntry[]>([])
   const [sessionStartedAt, setSessionStartedAt] = useState<string | null>(null)
   const [sessionEndedAt, setSessionEndedAt] = useState<string | null>(null)
@@ -233,7 +236,34 @@ export default function VoiceAgent({
     }
   }, [])
 
-  const log = (message: string, type: 'user' | 'bot' | 'system' = 'system') => {
+  const unwrapRtviServerPayload = (raw: unknown): Record<string, unknown> | null => {
+    if (!raw || typeof raw !== 'object') return null
+    const obj = raw as Record<string, unknown>
+    if (obj.type === 'knowledge_base_tool_call') return obj
+    const nested = obj.data
+    if (nested && typeof nested === 'object') {
+      const data = nested as Record<string, unknown>
+      if (data.type === 'knowledge_base_tool_call') return data
+      const inner = data.d
+      if (inner && typeof inner === 'object' && (inner as Record<string, unknown>).type === 'knowledge_base_tool_call') {
+        return inner as Record<string, unknown>
+      }
+    }
+    return null
+  }
+
+  const logKnowledgeBaseToolCall = (payload: Record<string, unknown>) => {
+    const query = String(payload.query ?? '').trim()
+    const hits = typeof payload.hit_count === 'number' ? payload.hit_count : Number(payload.hit_count ?? 0)
+    const model = payload.llm_model ? ` · ${String(payload.llm_model)}` : ''
+    log(
+      `RAG search${model} — "${query}" → ${hits} chunk(s) from knowledge base`,
+      'kb',
+    )
+    setKbToolCallCount((n) => n + 1)
+  }
+
+  const log = (message: string, type: 'user' | 'bot' | 'system' | 'kb' = 'system') => {
     const entry = {
       timestamp: new Date().toISOString(),
       message,
@@ -283,6 +313,11 @@ export default function VoiceAgent({
         'system'
       )
     })
+
+    pcClientRef.current.on(RTVIEvent.ServerMessage, (message: unknown) => {
+      const payload = unwrapRtviServerPayload(message)
+      if (payload) logKnowledgeBaseToolCall(payload)
+    })
   }
 
   const setupAudioTrack = (track: MediaStreamTrack) => {
@@ -320,9 +355,10 @@ export default function VoiceAgent({
     }
 
     try {
-      isConnectingRef.current = true
-      setIsConnecting(true)
-      setError(null)
+    isConnectingRef.current = true
+    setIsConnecting(true)
+    setError(null)
+    setKbToolCallCount(0)
       updateStatus('Connecting...')
 
       if (customEndpoint) {
@@ -593,6 +629,7 @@ export default function VoiceAgent({
   const agentDescription = selectedAgent?.description || 'Interact with a real-time voice AI agent'
 
   if (compact) {
+    const kbLogEntries = logs.filter((entry) => entry.type === 'kb')
     const transcriptPanel = (
       <div className={`${sidebarLayout ? 'flex-1 min-h-0' : 'max-h-48'} overflow-y-auto space-y-2 ${sidebarLayout ? 'pb-2' : 'border-t border-gray-200 pt-3'}`}>
         {transcriptEntries.length === 0 ? (
@@ -611,6 +648,16 @@ export default function VoiceAgent({
               {entry.content}
             </div>
           ))
+        )}
+        {kbLogEntries.length > 0 && (
+          <div className="mt-2 space-y-1 border-t border-violet-100 pt-2">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-violet-600">RAG tool calls</p>
+            {kbLogEntries.map((entry, idx) => (
+              <div key={`kb-${idx}`} className="text-xs rounded-lg px-2 py-1.5 bg-violet-50 text-violet-900">
+                {entry.message}
+              </div>
+            ))}
+          </div>
         )}
       </div>
     )
@@ -635,6 +682,11 @@ export default function VoiceAgent({
                 ? 'Connected'
                 : status}
         </p>
+        {kbToolCallCount > 0 && (
+          <p className="text-xs text-violet-700 mb-2 font-medium">
+            Knowledge base searches this call: {kbToolCallCount}
+          </p>
+        )}
         {!isConnected ? (
           <Button
             onClick={connect}
@@ -766,7 +818,9 @@ export default function VoiceAgent({
                       ? 'text-blue-600'
                       : log.type === 'bot'
                         ? 'text-green-600'
-                        : 'text-gray-600'
+                        : log.type === 'kb'
+                          ? 'text-violet-700 font-medium'
+                          : 'text-gray-600'
                     }`}
                 >
                   <span className="text-gray-400">

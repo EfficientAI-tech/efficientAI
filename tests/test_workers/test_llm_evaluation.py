@@ -90,6 +90,11 @@ def test_normalize_enum_value_extracts_from_dict_response():
     assert llm_evaluation._normalize_enum_value(payload, ["Good", "Bad"]) == "Good"
 
 
+def test_normalize_enum_value_numeric_alias_only_when_unambiguous():
+    assert llm_evaluation._normalize_enum_value("1.0", ["1", "2", "3"]) == "1"
+    assert llm_evaluation._normalize_enum_value("1.0", ["01", "1"]) is None
+
+
 # ---------------------------------------------------------------------------
 # build_evaluation_prompt - custom data type rendering
 # ---------------------------------------------------------------------------

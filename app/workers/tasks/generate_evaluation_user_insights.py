@@ -31,7 +31,6 @@ def generate_evaluation_user_insights_task(
     max_llm_calls: int | None = None,
 ):
     from app.api.v1.routes.call_import_evaluations import (
-        _compute_metric_aggregates,
         _metrics_for_ids,
         _serialize_selected_metric_ids,
     )
@@ -55,19 +54,22 @@ def generate_evaluation_user_insights_task(
             model,
         )
 
-        from app.db_sharding.scatter_gather import load_evaluation_row_pairs
+        from app.db_sharding.scatter_gather import (
+            USER_INSIGHTS_ROW_INPUT_CAP,
+            load_completed_evaluation_row_pairs_sample,
+        )
+        from app.services.call_imports.metric_aggregate_cache import (
+            evaluation_metric_aggregates_for_analysis,
+        )
 
-        rows = load_evaluation_row_pairs(db, evaluation.id)
-        completed_pairs = [
-            (eval_row, source_row)
-            for eval_row, source_row in rows
-            if eval_row.status == "completed"
-        ]
+        completed_pairs = load_completed_evaluation_row_pairs_sample(
+            db,
+            evaluation.id,
+            max_pairs=USER_INSIGHTS_ROW_INPUT_CAP,
+        )
         selected_ids = _serialize_selected_metric_ids(evaluation.selected_metric_ids)
         metrics = _metrics_for_ids(db, evaluation.organization_id, selected_ids)
-        aggregate = _compute_metric_aggregates(
-            db, evaluation, [er for er, _ in rows]
-        )
+        aggregate = evaluation_metric_aggregates_for_analysis(db, evaluation)
 
         def on_progress(completed: int, total: int) -> None:
             evaluation.user_insights = {

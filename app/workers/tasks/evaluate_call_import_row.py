@@ -308,8 +308,19 @@ def evaluate_call_import_row_task(
                 release_slot = False
                 from celery.exceptions import MaxRetriesExceededError
 
+                from app.workers.concurrency.import_retry_backoff import (
+                    import_transient_retry_countdown,
+                )
+
+                attempt = int(getattr(self.request, "retries", 0) or 0)
+                slot_countdown = import_transient_retry_countdown(
+                    None,
+                    attempt=attempt,
+                    base_seconds=15,
+                    max_seconds=120,
+                )
                 try:
-                    self.retry(countdown=30, max_retries=40)
+                    self.retry(countdown=slot_countdown, max_retries=40)
                 except MaxRetriesExceededError:
                     release_slot = True
                     return {"status": "skipped", "reason": "already_claimed"}

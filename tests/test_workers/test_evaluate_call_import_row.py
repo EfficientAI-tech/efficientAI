@@ -19,6 +19,31 @@ from app.models.database import (
 from app.models.enums import CallImportRowStatus, CallImportStatus
 
 
+@pytest.fixture(autouse=True)
+def _isolate_eval_worker_tests(monkeypatch):
+    import importlib
+    import sys
+
+    for mod_name in (
+        "app.workers.concurrency.limits",
+        "app.workers.concurrency.eval_dispatch",
+        "app.workers.concurrency.fair_dispatch",
+    ):
+        cached = sys.modules.get(mod_name)
+        if cached is not None and not getattr(cached, "__file__", None):
+            sys.modules.pop(mod_name, None)
+            importlib.import_module(mod_name)
+
+    monkeypatch.setattr(
+        "app.db_sharding.sessions.is_sharding_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "app.services.call_imports.metric_aggregate_cache.maybe_refresh_aggregate_cache_after_row",
+        lambda *_a, **_k: None,
+    )
+
+
 class _NonClosingSession:
     """Session proxy that ignores .close() so the test can still inspect rows
     after the Celery task wraps everything in a try/finally that closes the DB.
@@ -1041,7 +1066,7 @@ def test_rollup_parent_emits_pass_delta_when_leaving_running(db_session, monkeyp
         return True
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _capture,
     )
 
@@ -1070,7 +1095,7 @@ def test_rollup_parent_bills_only_retry_delta(db_session, monkeypatch):
         return True
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _capture,
     )
 
@@ -1109,7 +1134,7 @@ def test_rollup_parent_repeat_call_does_not_double_bill(db_session, monkeypatch)
         return True
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _capture,
     )
 
@@ -1143,7 +1168,7 @@ def test_rollup_parent_skips_billing_when_metric_rerun_unchanged(
         return True
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _capture,
     )
 
@@ -1172,7 +1197,7 @@ def test_rollup_parent_does_not_advance_watermark_when_billing_fails(
         return False
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _billing_fails,
     )
 
@@ -1202,7 +1227,7 @@ def test_rollup_parent_retries_billing_after_failed_ingest(db_session, monkeypat
         return attempts["count"] >= 2
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _billing_succeeds_on_retry,
     )
 
@@ -1236,7 +1261,7 @@ def test_rollup_parent_does_not_decrease_watermark_when_completed_rows_drop(
         return True
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _capture,
     )
 
@@ -2171,6 +2196,7 @@ def test_second_terminal_write_does_not_advance_progress(db_session):
     eval_row.status = "running"
     db_session.commit()
 
+    eval_row_id = eval_row.id
     eval_row.status = "completed"
     eval_row.finished_at = datetime.now(timezone.utc)
     commit_terminal_row_and_rollup(
@@ -2182,6 +2208,7 @@ def test_second_terminal_write_does_not_advance_progress(db_session):
     db_session.refresh(evaluation)
     assert evaluation.completed_rows == 1
 
+    eval_row = db_session.get(CallImportEvaluationRow, eval_row_id)
     eval_row.status = "completed"
     commit_terminal_row_and_rollup(
         db_session,

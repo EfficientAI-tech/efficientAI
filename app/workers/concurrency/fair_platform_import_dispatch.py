@@ -21,7 +21,57 @@ PLATFORM_CONTROL_QUEUE = "import-control"
 _BOOTSTRAP_DEDUPE_KEY = "platform_import:discovery_bootstrap"
 _BOOTSTRAP_DEDUPE_SECONDS = 45
 _DISPATCH_DEDUPE_KEY = "platform_import:row_dispatch"
+_DISPATCH_BACKOFF_LEVEL_KEY = "platform_import:row_dispatch_backoff_level"
 _DISPATCH_DEDUPE_SECONDS = 5
+_DISPATCH_AT_CAPACITY_BACKOFF_SECONDS = 15
+_DISPATCH_AT_CAPACITY_BACKOFF_MAX_SECONDS = 120
+
+_redis_client = None
+
+
+def _get_redis():
+    global _redis_client
+    if _redis_client is None:
+        import redis
+
+        from app.config import settings
+
+        _redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+    return _redis_client
+
+
+def _reset_platform_dispatch_backoff_level() -> None:
+    try:
+        import redis
+
+        _get_redis().delete(_DISPATCH_BACKOFF_LEVEL_KEY)
+    except redis.RedisError:
+        pass
+
+
+def _bump_platform_dispatch_backoff_level() -> int:
+    try:
+        import redis
+
+        level = int(_get_redis().incr(_DISPATCH_BACKOFF_LEVEL_KEY))
+        _get_redis().expire(_DISPATCH_BACKOFF_LEVEL_KEY, 3600)
+        return max(1, level)
+    except redis.RedisError:
+        return 1
+
+
+def _pending_row_exists_on_session(row_db: Session, call_import_id: UUID) -> bool:
+    return (
+        row_db.query(CallImportRow.id)
+        .filter(
+            CallImportRow.call_import_id == call_import_id,
+            CallImportRow.status == CallImportRowStatus.PENDING,
+            CallImportRow.celery_task_id.is_(None),
+        )
+        .limit(1)
+        .first()
+        is not None
+    )
 
 
 def schedule_platform_discovery_bootstrap(*, countdown: int = 0) -> None:
@@ -214,28 +264,21 @@ def _row_sessions_for_import(db: Session, call_import_id: UUID) -> list[Session]
 
 
 def schedule_fair_platform_import_dispatch(*, countdown: int = 0) -> None:
-    """Enqueue at most one row-dispatch task per few seconds.
-
-    Every finished discovery day used to publish its own copy. Those copies
-    piled up even when there was nothing new to dispatch.
-    """
+    """Enqueue at most one row-dispatch task per dedupe window."""
     try:
         import redis
 
-        from app.config import settings
-
-        client = redis.from_url(settings.REDIS_URL, decode_responses=True)
-        ttl = max(_DISPATCH_DEDUPE_SECONDS, countdown + 2)
-        if not client.set(_DISPATCH_DEDUPE_KEY, "1", nx=True, ex=ttl):
+        ttl = max(_DISPATCH_DEDUPE_SECONDS, int(countdown) + 2)
+        if not _get_redis().set(_DISPATCH_DEDUPE_KEY, "1", nx=True, ex=ttl):
             return
-    except Exception as exc:
+    except redis.RedisError as exc:
         logger.error("platform import dispatch dedupe failed: {}", exc)
         return
 
     try:
         dispatch_fair_platform_import_rows_task.apply_async(
             queue=PLATFORM_CONTROL_QUEUE,
-            countdown=countdown,
+            countdown=max(0, int(countdown)),
         )
     except Exception as exc:
         logger.warning("Failed to schedule platform import dispatch: {}", exc)
@@ -260,6 +303,7 @@ def dispatch_fair_platform_import_rows_task() -> dict:
     db = SessionLocal()
     dispatched = 0
     dropped = 0
+    hit_capacity = False
     try:
         imports = _active_platform_imports(db)
         platform_ids = {item.id for item in imports}
@@ -296,6 +340,10 @@ def dispatch_fair_platform_import_rows_task() -> dict:
                             claimed = True
                             break
                     if not claimed:
+                        for row_db in sessions:
+                            if _pending_row_exists_on_session(row_db, call_import_id):
+                                hit_capacity = True
+                                break
                         break
             finally:
                 for row_db in sessions:
@@ -309,6 +357,21 @@ def dispatch_fair_platform_import_rows_task() -> dict:
             queue_depth(PLATFORM_CONTROL_QUEUE),
             lease_count("platform_import:lease:global"),
         )
+        still_pending = _platform_import_ids_with_pending(db, imports)
+        if dispatched > 0:
+            _reset_platform_dispatch_backoff_level()
+        if still_pending and (dispatched == 0 or hit_capacity):
+            from app.workers.concurrency.import_retry_backoff import (
+                import_dispatch_at_capacity_countdown,
+            )
+
+            level = _bump_platform_dispatch_backoff_level()
+            backoff = import_dispatch_at_capacity_countdown(
+                level=level,
+                base_seconds=_DISPATCH_AT_CAPACITY_BACKOFF_SECONDS,
+                max_seconds=_DISPATCH_AT_CAPACITY_BACKOFF_MAX_SECONDS,
+            )
+            schedule_fair_platform_import_dispatch(countdown=backoff)
         return {"status": "ok", "dispatched": dispatched, "dropped_expired": dropped}
     finally:
         db.close()

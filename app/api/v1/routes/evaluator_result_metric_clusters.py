@@ -189,9 +189,9 @@ def _revoke_cluster_task(job) -> None:
     if not task_id:
         return
     try:
-        from app.workers.celery_app import celery_app
+        from app.workers.celery_revoke import revoke_celery_tasks
 
-        celery_app.control.revoke(task_id, terminate=True, signal="SIGTERM")
+        revoke_celery_tasks([task_id])
         logger.info("Revoked evaluator metric-clusters task {} for job {}", task_id, job.id)
     except Exception as exc:  # noqa: BLE001
         logger.warning(

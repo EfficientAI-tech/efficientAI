@@ -58,6 +58,75 @@ def _make_fake_row():
     )
 
 
+def _bound_celery_self():
+    class _Request:
+        id = "test-celery-id"
+
+    class _Self:
+        request = _Request()
+        max_retries = 2
+
+    return _Self()
+
+
+def _ensure_bound_task_run(task):
+    """Celery's bound ``run`` already supplies ``self``.
+
+    A second explicit self shifts every argument, so the row id is read as
+    the STT provider. Inject a fake self only when a stub replaced ``run``
+    with the raw function and the call is missing that argument.
+    """
+    if getattr(task.run, "_bound_for_tests", False):
+        return task
+
+    underlying = task.run
+
+    def _run(*args, **kwargs):
+        try:
+            return underlying(*args, **kwargs)
+        except TypeError as exc:
+            if "positional argument" not in str(exc):
+                raise
+            return underlying(_bound_celery_self(), *args, **kwargs)
+
+    _run._bound_for_tests = True
+    task.run = _run
+    return task
+
+
+def _run_transcribe_task(task_module, *args, **kwargs):
+    """Invoke the bind=True worker through Celery's bound ``run``."""
+    return task_module.transcribe_call_import_row_task.run(*args, **kwargs)
+
+
+def _ensure_real_concurrency_modules():
+    import importlib
+    import sys
+
+    for mod_name in (
+        "app.workers.concurrency.limits",
+        "app.workers.concurrency.import_dispatch",
+    ):
+        cached = sys.modules.get(mod_name)
+        if cached is not None and getattr(cached, "__file__", None):
+            continue
+        sys.modules.pop(mod_name, None)
+        importlib.import_module(mod_name)
+
+
+def _load_transcribe_task_module():
+    """Load the real worker module (API tests may stub ``app.workers.tasks``)."""
+    import importlib
+    import sys
+
+    _ensure_real_concurrency_modules()
+    module_name = "app.workers.tasks.transcribe_call_import_row"
+    sys.modules.pop(module_name, None)
+    module = importlib.import_module(module_name)
+    _ensure_bound_task_run(module.transcribe_call_import_row_task)
+    return module
+
+
 def _patch_session(monkeypatch, task_module, fake_row):
     fake_db = SimpleNamespace(
         commit=lambda: None,
@@ -126,7 +195,7 @@ def test_transcribe_worker_skips_pyannote_and_calls_llm_diariser(monkeypatch):
     transcript to the LLM diariser helper. Output lands on
     ``diarised_transcript`` / ``diarised_segments`` with the diariser
     provenance recorded."""
-    from app.workers.tasks import transcribe_call_import_row as task_module
+    task_module = _load_transcribe_task_module()
 
     captured: dict = {}
 
@@ -159,7 +228,8 @@ def test_transcribe_worker_skips_pyannote_and_calls_llm_diariser(monkeypatch):
     _patch_transcription_service(monkeypatch, fake_service)
     _patch_llm_diariser(monkeypatch, _fake_diarise)
 
-    result = task_module.transcribe_call_import_row_task.run(
+    result = _run_transcribe_task(
+        task_module,
         str(fake_row.id),
         "deepgram",
         "nova-2",
@@ -209,7 +279,7 @@ def test_transcribe_worker_skips_pyannote_and_calls_llm_diariser(monkeypatch):
 def test_transcribe_worker_fails_when_diariser_llm_missing(monkeypatch):
     """Missing diariser provider/model is a typed failure: the row is
     marked failed with an actionable message, no STT call is made."""
-    from app.workers.tasks import transcribe_call_import_row as task_module
+    task_module = _load_transcribe_task_module()
 
     stt_calls = []
 
@@ -222,7 +292,8 @@ def test_transcribe_worker_fails_when_diariser_llm_missing(monkeypatch):
     _patch_session(monkeypatch, task_module, fake_row)
     _patch_transcription_service(monkeypatch, fake_service)
 
-    result = task_module.transcribe_call_import_row_task.run(
+    result = _run_transcribe_task(
+        task_module,
         str(fake_row.id), "deepgram", "nova-2"
     )
 
@@ -239,7 +310,7 @@ def test_transcribe_worker_surfaces_llm_diariser_errors(monkeypatch):
     ``diarised_transcript_error`` so the modal can show "your prompt
     didn't return JSON" without the operator having to read worker
     logs."""
-    from app.workers.tasks import transcribe_call_import_row as task_module
+    task_module = _load_transcribe_task_module()
     from app.workers.tasks.helpers.llm_diarisation import LLMDiarisationError
 
     fake_service = SimpleNamespace(
@@ -257,7 +328,8 @@ def test_transcribe_worker_surfaces_llm_diariser_errors(monkeypatch):
     _patch_transcription_service(monkeypatch, fake_service)
     _patch_llm_diariser(monkeypatch, _boom)
 
-    result = task_module.transcribe_call_import_row_task.run(
+    result = _run_transcribe_task(
+        task_module,
         str(fake_row.id),
         "deepgram",
         "nova-2",
@@ -277,7 +349,7 @@ def test_transcribe_worker_surfaces_llm_diariser_errors(monkeypatch):
 def test_transcribe_worker_marks_failed_on_empty_transcript(monkeypatch):
     """Empty STT output short-circuits before the LLM diariser runs —
     we don't burn LLM tokens on a transcript that's already empty."""
-    from app.workers.tasks import transcribe_call_import_row as task_module
+    task_module = _load_transcribe_task_module()
 
     fake_service = SimpleNamespace(
         transcribe=lambda **_kw: {"transcript": "   ", "speaker_segments": None}
@@ -295,7 +367,8 @@ def test_transcribe_worker_marks_failed_on_empty_transcript(monkeypatch):
     _patch_transcription_service(monkeypatch, fake_service)
     _patch_llm_diariser(monkeypatch, _track)
 
-    result = task_module.transcribe_call_import_row_task.run(
+    result = _run_transcribe_task(
+        task_module,
         str(fake_row.id),
         "deepgram",
         "nova-2",

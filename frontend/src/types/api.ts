@@ -615,6 +615,12 @@ export interface TestAgent {
   test_llm_credential_id?: string | null
   chat_connection_config?: Record<string, unknown> | null
   chat_eval_mode?: string | null
+  /** Production agent's knowledge bases. */
+  knowledge_base_ids?: string[]
+  /** True when the signed-in user starred this agent. Other people do not see it. */
+  is_favorite?: boolean
+  /** Test agent's (simulated customer's) knowledge bases. */
+  test_knowledge_base_ids?: string[]
   created_at: string
   updated_at: string
 }
@@ -1264,6 +1270,9 @@ export interface CallImport {
   latest_evaluation_total_rows?: number | null
   latest_evaluation_completed_rows?: number | null
   latest_evaluation_failed_rows?: number | null
+  latest_evaluation_bulk_operation?: 'abort' | 'retry' | 'force_fail_pending' | null
+  /** Any eval on this import still running / bulk op / in-flight rows. */
+  any_evaluation_poll_active?: boolean
   created_at: string
   updated_at: string
   created_by_email?: string | null
@@ -1371,6 +1380,33 @@ export interface CallImportUploadResponse {
   message: string
 }
 
+export interface CallImportManualAudioPresignUploadItem {
+  row_id: string
+  recording_s3_key: string
+  conversation_id: string
+  upload_url: string
+  content_type: string
+  filename: string
+}
+
+export interface CallImportManualAudioPresignResponse {
+  call_import_id: string
+  uploads: CallImportManualAudioPresignUploadItem[]
+  total_rows: number
+  status: CallImportStatus
+  dataset: string | null
+  tags: CallImportTag[]
+  message: string
+}
+
+export interface CallImportSourceStagePresignResponse {
+  call_import_id: string
+  source_s3_key: string
+  source_format: string
+  upload_url: string
+  content_type: string
+}
+
 /** One worksheet (or one CSV file synthesized as a single sheet). */
 export interface CallImportPreviewSheet {
   /** Sheet name for xlsx; filename for csv. */
@@ -1424,7 +1460,7 @@ export interface CallImportEvaluation {
   /** parent_id -> [child_id, ...] snapshot captured at run time. */
   selected_metric_groups?: Record<string, string[]> | null
   metrics: CallImportMetricSummary[]
-  status: 'pending' | 'running' | 'completed' | 'partial' | 'failed'
+  status: 'pending' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled'
   total_rows: number
   completed_rows: number
   failed_rows: number
@@ -2043,13 +2079,18 @@ export interface CallImportEvaluationRowListResponse {
 
 // --- Retry (re-enqueue failed rows on an existing evaluation run) ---
 
+export interface CallImportEvaluationRowRetryFilter {
+  q?: string | null
+  status?: string | null
+}
+
 export interface CallImportEvaluationRetryRequest {
   /**
-   * Restrict the retry to a specific subset of evaluation rows.
-   * When omitted, every row with status='failed' in this run is
-   * re-enqueued.
+   * Restrict the retry to a small explicit subset of evaluation rows.
+   * Prefer ``row_filter`` for bulk select-all.
    */
   eval_row_ids?: string[]
+  row_filter?: CallImportEvaluationRowRetryFilter | null
 
   /**
    * Optional LLM overrides. When provided, persisted onto the run so
@@ -2102,10 +2143,17 @@ export interface CallImportEvaluationRetryResponse {
 export interface CallImportEvaluationBulkActionResponse {
   accepted: boolean
   target_count: number
+  /** Background cancel/force-fail worker was queued (incl. diarisation-only abort). */
+  worker_enqueued?: boolean
   evaluation_id: string
 }
 
 // --- Diarization / transcription ---
+
+export interface CallImportRowSelectionFilter {
+  q?: string | null
+  diarised_status?: string | null
+}
 
 export interface CallImportTranscribeRequest {
   /**
@@ -2126,6 +2174,7 @@ export interface CallImportTranscribeRequest {
   only_missing?: boolean
   overwrite_existing?: boolean
   row_ids?: string[]
+  row_filter?: CallImportRowSelectionFilter | null
   /**
    * LLM diariser. In `stt_llm` mode it splits the STT plain-text into
    * agent/user turns; in `llm_only` mode it directly receives the
@@ -2444,4 +2493,346 @@ export interface ObservabilityCall {
   call_data?: ObservabilityCallData | null
   live_transcript?: Array<{ role: string; content: string; timestamp?: string }>
   display_name?: string | null
+}
+
+// Harbor simulation runs (test agent ↔ production agent)
+export type SimulationRunStatus =
+  | 'queued'
+  | 'preparing'
+  | 'running'
+  | 'ingesting'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+
+export interface SimulationRunMetricSummary {
+  metric_id: string
+  name: string
+  mean: number
+  n: number
+  pass_rate?: number
+  scenario_ids?: string[]
+  agent_ids?: string[]
+}
+
+export interface SimulationRunComboSummary {
+  scenario_id: string
+  scenario_name?: string | null
+  persona_id: string
+  persona_name?: string | null
+  attempts: number
+  passed: number
+  mean_reward?: number | null
+  tool_errors?: number
+  tool_expectations_failed?: number
+}
+
+export interface SimulationRunToolRow {
+  tool: string
+  provider?: string | null
+  calls: number
+  errors: number
+  mocked: number
+  error_rate: number
+  avg_latency_ms?: number | null
+  trials: number
+}
+
+export interface SimulationRunToolSummary {
+  total_calls: number
+  errored_calls: number
+  success_rate?: number | null
+  trials_with_calls: number
+  expectations_checked: number
+  expectations_met_rate?: number | null
+  tools: SimulationRunToolRow[]
+}
+
+export interface SimulationRunFailedTrialError {
+  result_id: string
+  scenario_id?: string | null
+  scenario_name?: string | null
+  persona_name?: string | null
+  error_message: string
+}
+
+export interface SimulationRunSummary {
+  n_trials: number
+  n_completed: number
+  n_failed: number
+  n_passed: number
+  failed_trial_errors?: SimulationRunFailedTrialError[]
+  uses_success_criteria?: boolean
+  pass_rate?: number | null
+  mean_reward?: number | null
+  golden_mean_reward?: number | null
+  pass_all_rate?: number | null
+  pass_any_rate?: number | null
+  avg_turns?: number | null
+  metrics: SimulationRunMetricSummary[]
+  combos: SimulationRunComboSummary[]
+  tools?: SimulationRunToolSummary | null
+  harbor?: {
+    n_errored_trials?: number | null
+    n_retries?: number | null
+    exception_stats?: Record<string, string[]>
+  } | null
+}
+
+/** What answered on one side of a simulation (resolved when the run was created). */
+export interface SimulationSideLlm {
+  kind: 'llm' | 'live'
+  provider?: string | null
+  model?: string | null
+  source: string
+  label: string
+  source_label: string
+}
+
+export interface SimulationLlms {
+  production?: SimulationSideLlm | null
+  test?: SimulationSideLlm | null
+}
+
+export interface SimulationRun {
+  id: string
+  run_id: string
+  agent_id: string
+  name?: string | null
+  scenario_ids: string[]
+  persona_ids: string[]
+  metric_ids?: string[] | null
+  metric_success_criteria?: MetricSuccessCriterion[] | null
+  n_attempts: number
+  n_concurrent: number
+  pass_threshold: number
+  production_llm_provider?: string | null
+  production_llm_model?: string | null
+  test_llm_provider?: string | null
+  test_llm_model?: string | null
+  resolved_llms?: SimulationLlms | null
+  status: SimulationRunStatus
+  expected_trials: number
+  completed_trials: number
+  failed_trials: number
+  summary?: SimulationRunSummary | null
+  error_message?: string | null
+  harbor_job_name?: string | null
+  has_artifacts: boolean
+  cancel_requested: boolean
+  started_at?: string | null
+  finished_at?: string | null
+  created_at?: string | null
+}
+
+export type SimulationSuccessCriteriaKind =
+  | 'boolean'
+  | 'rating'
+  | 'number'
+  | 'enum'
+  | 'category_single'
+  | 'category_multi'
+  | 'classification'
+  | 'text'
+
+export interface MetricSuccessCriterionLabelRule {
+  child_id: string
+  expect: 'yes' | 'no'
+}
+
+export interface MetricSuccessCriterionClassificationQuestions {
+  noul?: { success_when: 'yes' | 'no' }
+  choice?: { success_values: string[] }
+  score?: { success_values: string[] }
+}
+
+export interface MetricSuccessCriterion {
+  metric_id: string
+  kind: SimulationSuccessCriteriaKind
+  success_when?: 'yes' | 'no'
+  op?: 'lt' | 'lte' | 'gt' | 'gte'
+  threshold?: number
+  success_values?: string[]
+  label_rules?: MetricSuccessCriterionLabelRule[]
+  questions?: MetricSuccessCriterionClassificationQuestions
+}
+
+export interface SimulationRunCreate {
+  agent_id: string
+  name?: string
+  scenario_ids: string[]
+  persona_ids: string[]
+  metric_ids: string[]
+  metric_success_criteria: MetricSuccessCriterion[]
+  n_attempts: number
+  n_concurrent: number
+  pass_threshold?: number
+  production_llm_provider?: string | null
+  production_llm_model?: string | null
+  test_llm_provider?: string | null
+  test_llm_model?: string | null
+}
+
+export interface SimulationTrialMetricScore {
+  value: number | boolean | string | null
+  type?: string
+  metric_name?: string
+  rationale?: string
+  error?: string
+  skipped?: string
+  passed?: boolean
+}
+
+export interface SimulationTrial {
+  id: string
+  result_id: string
+  harbor_trial_name?: string | null
+  scenario_id?: string | null
+  scenario_name?: string | null
+  persona_id?: string | null
+  persona_name?: string | null
+  attempt_index?: number | null
+  status: string
+  reward?: number | null
+  passed?: boolean | null
+  turns: number
+  metric_scores?: Record<string, SimulationTrialMetricScore> | null
+  error_message?: string | null
+  tool_call_count?: number
+  tool_error_count?: number
+  tool_expectations_met?: boolean | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export type SimulationToolCallStatus = 'ok' | 'error' | 'mocked'
+
+/** One production-agent tool call (``call_data.tool_calls``). */
+export interface SimulationToolCall {
+  call_id?: string | null
+  tool: string
+  provider: string
+  arguments: Record<string, unknown>
+  status: SimulationToolCallStatus
+  result_preview: string
+  latency_ms: number
+  side?: 'production' | 'test'
+  turn_index?: number | null
+  error?: string | null
+  hit_count?: number
+  documents?: string[]
+}
+
+export interface SimulationToolExpectationResult extends ExpectedToolCall {
+  satisfied: boolean
+  matched_calls: number
+  reason?: string | null
+}
+
+export interface SimulationToolEvaluation {
+  total_calls: number
+  errored_calls: number
+  success_rate?: number | null
+  kb_calls: number
+  kb_hit_rate?: number | null
+  expectations: SimulationToolExpectationResult[]
+  expectation_score?: number | null
+  all_expectations_met?: boolean | null
+  forbidden_violations: number
+}
+
+export interface SimulationTrajectoryStep {
+  step_id: number
+  source: 'system' | 'user' | 'agent'
+  message: string
+  timestamp?: string
+  model_name?: string
+  extra?: { latency_ms?: number } & Record<string, unknown>
+  tool_calls?: Array<{
+    tool_call_id: string
+    function_name: string
+    arguments: Record<string, unknown>
+    extra?: { provider?: string; status?: SimulationToolCallStatus; latency_ms?: number } | null
+  }>
+  observation?: { results: Array<{ source_call_id?: string | null; content?: string | null }> }
+}
+
+export interface SimulationTrialDetail extends SimulationTrial {
+  speaker_segments?: Array<{ speaker: string; text: string }> | null
+  call_analysis?: { call_summary?: string; user_sentiment?: string; call_successful?: boolean } | null
+  trajectory?: { steps: SimulationTrajectoryStep[] } | null
+  tool_calls?: SimulationToolCall[] | null
+  tool_evaluation?: SimulationToolEvaluation | null
+  llms?: SimulationLlms | null
+}
+
+export type ToolConnectionType = 'mcp' | 'http' | 'postgres'
+export type ToolSimulationMode = 'live' | 'mock_writes' | 'mock_all'
+export type ToolSideEffect = 'read' | 'write'
+
+export interface ToolConnectionTool {
+  name: string
+  exposed_name: string
+  description?: string | null
+  side_effect: ToolSideEffect
+  input_schema?: Record<string, unknown> | null
+}
+
+/** External tool source (MCP server, HTTP API, Postgres) attachable to production agents. */
+export interface ToolConnection {
+  id: string
+  name: string
+  slug: string
+  connection_type: ToolConnectionType
+  preset?: string | null
+  config: Record<string, unknown>
+  simulation_mode: ToolSimulationMode
+  /** Names of stored secrets (e.g. ``headers.Authorization``); values are never returned. */
+  secret_keys: string[]
+  tools: ToolConnectionTool[]
+  last_tested_at?: string | null
+  last_error?: string | null
+  agent_count: number
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface ToolConnectionSecrets {
+  headers?: Record<string, string>
+  env?: Record<string, string>
+  dsn?: string
+}
+
+export interface ToolConnectionCreate {
+  name: string
+  connection_type: ToolConnectionType
+  preset?: string | null
+  config: Record<string, unknown>
+  secrets?: ToolConnectionSecrets
+  simulation_mode: ToolSimulationMode
+}
+
+export interface AgentToolConnectionLink {
+  tool_connection_id: string
+  /** Raw tool names; null = every tool of the connection. */
+  enabled_tools?: string[] | null
+}
+
+export interface AgentToolCatalogEntry {
+  name: string
+  description?: string | null
+  source: string
+  side_effect: ToolSideEffect
+  simulation_behavior: 'live' | 'mocked'
+}
+
+/** Tool-use expectation on a scenario, checked on every simulation trial. */
+export interface ExpectedToolCall {
+  tool: string
+  args_contains?: Record<string, string>
+  min_calls?: number
+  max_calls?: number | null
+  must_succeed?: boolean
+  forbidden?: boolean
+  mock_response?: unknown
 }

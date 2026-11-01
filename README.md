@@ -520,8 +520,8 @@ gcs:
 # CORS Settings
 cors:
   origins:
-    - "http://localhost:3000"
     - "http://localhost:8000"
+    - "https://sandbox.efficientai.cloud"
 
 # API Settings
 api:

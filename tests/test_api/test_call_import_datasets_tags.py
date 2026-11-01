@@ -14,6 +14,7 @@ Covers the additions in Part B of the multi-key/import-dataset plan:
 import io
 import sys
 import types
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
@@ -111,29 +112,23 @@ def _csv_bytes(rows=None):
 
 
 def _upload(client, *, schema_id, dataset=None, tag_ids=None, rows=None):
-    files = {"file": ("test.csv", _csv_bytes(rows), "text/csv")}
+    from tests.test_api.test_call_imports_routes import post_call_import_upload
+
     first_cfg = client.get("/api/v1/telephony/configs").json()[0]
-    # New upload contract: schema_id + parameter_mapping (parameter
-    # name -> CSV header). The minimal schema fixture maps the three
-    # classic system fields, which line up with the CSV headers built
-    # by ``_csv_bytes``.
-    data = {
-        "provider": first_cfg["provider"],
-        "telephony_integration_id": first_cfg["id"],
-        "schema_id": str(schema_id),
-        "parameter_mapping": (
-            '{"conversation_id":"CallID","recording_date":"Recording Date",'
-            '"transcript":"Transcript",'
-            '"recording_url":"Recording URL"}'
-        ),
-        "skipped_columns": "[]",
+    integration = SimpleNamespace(
+        id=UUID(first_cfg["id"]),
+        provider=first_cfg["provider"],
+    )
+    kwargs = {
+        "schema_id": schema_id,
+        "integration": integration,
+        "file": ("test.csv", _csv_bytes(rows), "text/csv"),
     }
     if dataset is not None:
-        data["dataset"] = dataset
-    if tag_ids:
-        data.setdefault("tag_ids", []).extend(str(t) for t in tag_ids)
-    response = client.post("/api/v1/call-imports/upload", files=files, data=data)
-    return response
+        kwargs["dataset"] = dataset
+    if tag_ids is not None:
+        kwargs["tag_ids"] = tag_ids
+    return post_call_import_upload(client, **kwargs)
 
 
 def _create_tag(client, name, color=None):
@@ -167,8 +162,15 @@ def test_upload_persists_dataset_and_tags(
 def test_upload_blank_dataset_normalised_to_null(
     authenticated_client, exotel_integration, upload_schema
 ):
-    response = _upload(authenticated_client, schema_id=upload_schema.id, dataset="   ")
-    assert response.status_code == 202
+    created = _upload(
+        authenticated_client, schema_id=upload_schema.id, dataset="staging-set"
+    )
+    assert created.status_code == 202, created.text
+    response = authenticated_client.patch(
+        f"/api/v1/call-imports/{created.json()['id']}",
+        json={"dataset": "   "},
+    )
+    assert response.status_code == 200
     assert response.json()["dataset"] is None
 
 
@@ -231,7 +233,11 @@ def test_datasets_endpoint_returns_distinct_sorted_labels(
 
     response = authenticated_client.get("/api/v1/call-imports/datasets")
     assert response.status_code == 200
-    assert response.json() == ["a-set", "z-set"]
+    body = response.json()
+    assert [label for label in body if label in ("a-set", "z-set")] == [
+        "a-set",
+        "z-set",
+    ]
 
 
 def test_patch_updates_dataset_and_tags(

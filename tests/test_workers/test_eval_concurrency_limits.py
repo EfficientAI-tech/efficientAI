@@ -3,6 +3,8 @@
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
+import redis
+
 from app.workers.concurrency import limits as limits_module
 
 
@@ -30,8 +32,21 @@ def test_acquire_eval_slot_returns_true_when_lua_returns_one():
     assert acquired is True
 
 
+def test_acquire_eval_slot_fails_closed_on_redis_error():
+    client = MagicMock()
+    client.eval.side_effect = redis.RedisError("down")
+    with patch.object(limits_module, "_get_redis", return_value=client):
+        acquired = limits_module.acquire_eval_slot(
+            workspace_id=uuid4(),
+            organization_id=uuid4(),
+            celery_task_id="task-err",
+        )
+    assert acquired is False
+
+
 def test_release_eval_slot_for_celery_task_noops_when_task_unregistered():
     client = MagicMock()
+    client.exists.return_value = False
     client.hgetall.return_value = {}
     with patch.object(limits_module, "_get_redis", return_value=client):
         limits_module.release_eval_slot_for_celery_task("missing-task")
@@ -40,10 +55,7 @@ def test_release_eval_slot_for_celery_task_noops_when_task_unregistered():
 
 def test_release_eval_slot_for_celery_task_decrements_counters():
     client = MagicMock()
-    client.hgetall.return_value = {
-        "workspace_id": str(uuid4()),
-        "organization_id": str(uuid4()),
-    }
+    client.exists.return_value = True
     with patch.object(limits_module, "_get_redis", return_value=client):
         limits_module.release_eval_slot_for_celery_task("task-3")
     client.eval.assert_called_once()

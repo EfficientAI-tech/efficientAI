@@ -843,6 +843,7 @@ def start_all(
     worker_imports_process = None
     worker_usage_process = None
     worker_traces_process = None
+    worker_harbor_process = None
     beat_process = None
     platform_worker_process = None
     telephony_process = None
@@ -866,6 +867,7 @@ def start_all(
         """Clean up spawned processes."""
         nonlocal worker_process, worker_imports_process, worker_usage_process
         nonlocal worker_traces_process, beat_process, platform_worker_process, telephony_process
+        nonlocal worker_harbor_process
         _terminate(telephony_process, "Telephony media server")
         _terminate(beat_process, "Celery Beat")
         _terminate(platform_worker_process, "Celery platform worker")
@@ -873,6 +875,7 @@ def start_all(
         _terminate(worker_imports_process, "Celery worker (imports)")
         _terminate(worker_usage_process, "Celery worker (usage)")
         _terminate(worker_traces_process, "Celery worker (traces)")
+        _terminate(worker_harbor_process, "Celery worker (harbor)")
     
     # Register cleanup on exit
     atexit.register(cleanup_processes)
@@ -1089,6 +1092,36 @@ def start_all(
             prefix="[WORKER-TRACES]",
         )
 
+        import importlib.util
+
+        from app.workers.config import HARBOR_WORKER_QUEUE
+
+        # Harbor simulation runs need the optional ``harbor`` extra (Python 3.12+).
+        # Each task runs one Harbor job subprocess that fans out its own trials.
+        if importlib.util.find_spec("harbor") is not None:
+            worker_harbor_process = _spawn_worker(
+                [
+                    "celery",
+                    "-A",
+                    "app.workers.celery_app",
+                    "worker",
+                    f"--loglevel={worker_loglevel}",
+                    "-Q",
+                    HARBOR_WORKER_QUEUE,
+                    "-P",
+                    "threads",
+                    "-c",
+                    "2",
+                ],
+                label=f"Celery Harbor worker ({HARBOR_WORKER_QUEUE} queue, concurrency=2)",
+                prefix="[WORKER-HARBOR]",
+            )
+        else:
+            click.echo(
+                f"⚠️  Harbor not installed: simulation runs stay queued on '{HARBOR_WORKER_QUEUE}'. "
+                "Install with: pip install -e '.[harbor]'"
+            )
+
         if beat:
             from app.workers.config import PLATFORM_WORKER_QUEUE
 
@@ -1268,8 +1301,8 @@ storage:
 # CORS Settings
 cors:
   origins:
-    - "http://localhost:3000"
     - "http://localhost:8000"
+    - "https://sandbox.efficientai.cloud"
 
 # API Settings
 api:

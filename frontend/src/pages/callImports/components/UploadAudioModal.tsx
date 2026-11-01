@@ -86,13 +86,13 @@ export default function UploadAudioModal({
 
   const { data: existingDatasets = [] } = useQuery({
     queryKey: ['call-import-datasets', activeWorkspaceId],
-    queryFn: () => apiClient.listCallImportDatasets(),
+    queryFn: () => apiClient.callImports.listCallImportDatasets(),
     enabled: open && !isAppendMode,
   })
 
   const { data: allTags = [] } = useQuery({
     queryKey: ['call-import-tags', activeWorkspaceId],
-    queryFn: () => apiClient.listCallImportTags(),
+    queryFn: () => apiClient.callImports.listCallImportTags(),
     enabled: open && !isAppendMode,
   })
 
@@ -137,13 +137,13 @@ export default function UploadAudioModal({
       }
       setUploadProgress(null)
       if (isAppendMode) {
-        return apiClient.uploadCallImportAudioAppendChunked(
+        return apiClient.callImports.uploadCallImportAudioAppendChunked(
           appendToImportId!,
           selectedFiles,
           { onProgress: setUploadProgress },
         )
       }
-      return apiClient.uploadCallImportAudioChunked(selectedFiles, {
+      return apiClient.callImports.uploadCallImportAudioChunked(selectedFiles, {
         dataset: dataset.trim(),
         tagIds: selectedTagIds,
         batchName: batchName.trim() || undefined,

@@ -637,9 +637,7 @@ def test_evaluations_unknown_import_returns_404(authenticated_client, seed_org):
 # 1. Each cancellable row flips to ``failed`` with the
 #    ``"Evaluation cancelled by user"`` sentinel + cleared ``celery_task_id``.
 # 2. The parent rollup picks the new state up (``failed``/``partial``).
-# 3. The Celery revoke was called with ``terminate=True, signal="SIGTERM"`` ΓÇö
-#    that's the contract that lets the worker actually interrupt an in-flight
-#    LLM/audio call rather than waiting up to 10 minutes for the time limit.
+# 3. Celery revoke uses terminate=False by default (worker-imports thread pool).
 
 
 def _stub_celery_revoke(monkeypatch):
@@ -749,8 +747,7 @@ def test_cancel_evaluation_flips_rows_and_revokes_tasks(
     revoked_task_ids = _revoked_task_ids_from_calls(revoke)
     assert revoked_task_ids == expected_task_ids
     for call in revoke.call_args_list:
-        assert call.kwargs.get("terminate") is True
-        assert call.kwargs.get("signal") == "SIGTERM"
+        assert call.kwargs.get("terminate") is False
 
 
 def test_cancel_evaluation_rollup_call_import_from_processing_partial(
@@ -899,10 +896,12 @@ def test_cancel_evaluation_row_flips_only_target_row(
     assert parent.status == "running"
 
     revoke.assert_called_once()
-    assert revoke.call_args.args[0] == target_original_task_id or (
+    revoked_arg = revoke.call_args.args[0]
+    revoked_task_id = revoked_arg[0] if isinstance(revoked_arg, list) else revoked_arg
+    assert revoked_task_id == target_original_task_id or (
         # ``celery_task_id`` is cleared post-revoke; cross-check via the
         # original snapshot we captured before the call.
-        revoke.call_args.args[0] in original_task_ids
+        revoked_task_id in original_task_ids
     )
 
 

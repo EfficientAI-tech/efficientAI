@@ -241,6 +241,9 @@ class AgentCreate(BaseModel):
         le=600,
         description="End live calls after this many seconds of silence (0 disables)",
     )
+    # Production agent's knowledge bases; the test agent has its own list.
+    knowledge_base_ids: Optional[List[UUID]] = None
+    test_knowledge_base_ids: Optional[List[UUID]] = None
 
     @field_validator('phone_number')
     @classmethod
@@ -365,6 +368,8 @@ class AgentUpdate(BaseModel):
     test_agent_template: Optional[TestAgentTemplateInput] = None
     prompt_variables: Optional[Dict[str, str]] = None
     silence_hangup_secs: Optional[int] = Field(default=None, ge=0, le=600)
+    knowledge_base_ids: Optional[List[UUID]] = None
+    test_knowledge_base_ids: Optional[List[UUID]] = None
 
     @model_validator(mode='after')
     def validate_voice_config(self):
@@ -429,6 +434,25 @@ class GeneratedScenarioDraftResponse(BaseModel):
     goal: Optional[str] = None
 
 
+
+
+class GenerateProductionPromptRequest(BaseModel):
+    """Generate a production system prompt from a short agent brief."""
+    agent_name: str = Field(..., min_length=1, max_length=255)
+    brief: str = Field(..., min_length=1)
+    language: Optional[str] = None
+    call_type: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    credential_id: Optional[UUID] = None
+    llm_config: Optional[Dict[str, Any]] = None
+    additional_context: Optional[str] = None
+
+
+class GenerateProductionPromptResponse(BaseModel):
+    production_prompt: str
+    provider: str
+    model: str
 
 
 class GenerateTestPromptRequest(BaseModel):
@@ -545,6 +569,9 @@ class AgentResponse(BaseModel):
         description="End live calls after this many seconds of silence (0 disables)",
     )
     provider_prompt_synced_at: Optional[datetime] = None
+    knowledge_base_ids: List[UUID] = Field(default_factory=list)
+    test_knowledge_base_ids: List[UUID] = Field(default_factory=list)
+    is_favorite: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -808,12 +835,25 @@ class GeneratePersonaPromptResponse(BaseModel):
 
 # Scenario Schemas
 
+class ExpectedToolCall(BaseModel):
+    """One tool-use expectation checked on simulation trials."""
+    tool: str = Field(..., min_length=1, max_length=255)
+    args_contains: Dict[str, str] = Field(default_factory=dict)
+    min_calls: int = Field(1, ge=1, le=50)
+    max_calls: Optional[int] = Field(None, ge=0, le=50)
+    must_succeed: bool = False
+    forbidden: bool = False
+    # Returned instead of running the tool (simulations only).
+    mock_response: Optional[Any] = None
+
+
 class ScenarioCreate(BaseModel):
     """Schema for creating a new scenario"""
     name: str = Field(..., min_length=1, max_length=255)
     agent_id: Optional[UUID] = None
     description: Optional[str] = None
     required_info: Dict[str, str] = Field(default_factory=dict)
+    expected_tool_calls: Optional[List[ExpectedToolCall]] = None
 
 
 class ScenarioUpdate(BaseModel):
@@ -822,6 +862,7 @@ class ScenarioUpdate(BaseModel):
     agent_id: Optional[UUID] = None
     description: Optional[str] = None
     required_info: Optional[Dict[str, str]] = None
+    expected_tool_calls: Optional[List[ExpectedToolCall]] = None
 
 
 class ScenarioResponse(BaseModel):
@@ -831,10 +872,110 @@ class ScenarioResponse(BaseModel):
     agent_id: Optional[UUID]
     description: Optional[str]
     required_info: Dict[str, str]
+    expected_tool_calls: Optional[List[ExpectedToolCall]] = None
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# Knowledge base schemas
+
+class KnowledgeBaseCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    embedding_provider: Optional[str] = None
+    embedding_model: Optional[str] = None
+    embedding_credential_id: Optional[UUID] = None
+
+
+class KnowledgeBaseUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    status: Optional[str] = None
+    embedding_provider: Optional[str] = None
+    embedding_model: Optional[str] = None
+    embedding_credential_id: Optional[UUID] = None
+
+
+class EmbeddingModelOption(BaseModel):
+    id: str
+    label: str
+
+
+class EmbeddingProviderOption(BaseModel):
+    id: str
+    label: str
+    suggested_models: List[EmbeddingModelOption] = Field(default_factory=list)
+
+
+class EmbeddingConfigHelpResponse(BaseModel):
+    default_provider: str
+    default_model: str
+    required_dimensions: int
+    providers: List[EmbeddingProviderOption] = Field(default_factory=list)
+
+
+class KnowledgeDocumentPagePreview(BaseModel):
+    page: Optional[int] = None
+    text: str
+
+
+class KnowledgeDocumentViewResponse(BaseModel):
+    knowledge_base_id: UUID
+    knowledge_base_name: str
+    document_id: UUID
+    view_mode: str
+    original_filename: Optional[str] = None
+    content_type: Optional[str] = None
+    text_content: Optional[str] = None
+    pages: Optional[List[KnowledgeDocumentPagePreview]] = None
+    page_count: Optional[int] = None
+
+
+class KnowledgeDocumentResponse(BaseModel):
+    id: UUID
+    knowledge_base_id: UUID
+    source_type: str
+    original_filename: Optional[str] = None
+    content_type: Optional[str] = None
+    byte_size: Optional[int] = None
+    status: str
+    error_text: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class KnowledgeBaseSummaryResponse(BaseModel):
+    id: UUID
+    name: str
+    description: Optional[str] = None
+    embedding_provider: str = "openai"
+    embedding_model: str = "text-embedding-3-small"
+    embedding_credential_id: Optional[UUID] = None
+    status: str
+    document_count: int = 0
+    ready_document_count: int = 0
+    failed_document_count: int = 0
+    linked_agent_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class KnowledgeBaseDetailResponse(BaseModel):
+    id: UUID
+    name: str
+    description: Optional[str] = None
+    embedding_provider: str = "openai"
+    embedding_model: str = "text-embedding-3-small"
+    embedding_credential_id: Optional[UUID] = None
+    status: str
+    documents: List[KnowledgeDocumentResponse] = Field(default_factory=list)
+    linked_agent_count: int = 0
+    created_at: datetime
+    updated_at: datetime
 
 
 # ============================================
@@ -2085,6 +2226,10 @@ class MetricCreate(BaseModel):
     # Ignored when ``parent_metric_id`` is set (children inherit the
     # parent's scope unconditionally).
     scope: MetricScope = "workspace"
+    # Empty or omitted = golden (scored on every scenario). Non-empty = only these scenarios.
+    scenario_ids: Optional[List[UUID]] = Field(default=None)
+    # Empty or omitted = golden (scored for every agent). Non-empty = only these agents.
+    agent_ids: Optional[List[UUID]] = Field(default=None)
 
     @model_validator(mode='after')
     def validate_compare_transcripts_exclusions(self):
@@ -2193,6 +2338,8 @@ class MetricCreateWithChildren(BaseModel):
     # the whole category subtree is shared across every workspace in
     # the org.
     scope: MetricScope = "workspace"
+    scenario_ids: Optional[List[UUID]] = Field(default=None)
+    agent_ids: Optional[List[UUID]] = Field(default=None)
 
 
 class MetricUpdate(BaseModel):
@@ -2221,6 +2368,9 @@ class MetricUpdate(BaseModel):
     # ``selection_mode`` when this is set to True, because the patch
     # body alone doesn't have enough context to validate cross-state.
     compare_transcripts: Optional[bool] = None
+    # ``None`` = leave links unchanged; ``[]`` = clear links (golden).
+    scenario_ids: Optional[List[UUID]] = None
+    agent_ids: Optional[List[UUID]] = None
 
     @model_validator(mode='after')
     def validate_compare_transcripts_exclusions(self):
@@ -2314,6 +2464,8 @@ class MetricResponse(BaseModel):
     promoted_from_draft_at: Optional[datetime] = None
     studio_notes: Optional[str] = None
     children: List["MetricResponse"] = Field(default_factory=list)
+    scenario_ids: List[UUID] = Field(default_factory=list)
+    agent_ids: List[UUID] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
     created_by: Optional[str]
@@ -3746,6 +3898,17 @@ class CallImportResponse(BaseModel):
             "unflushed Redis deltas."
         ),
     )
+    latest_evaluation_bulk_operation: Optional[str] = Field(
+        None,
+        description="In-flight bulk op on the latest evaluation (retry, abort, etc.).",
+    )
+    any_evaluation_poll_active: bool = Field(
+        False,
+        description=(
+            "True when any evaluation on this import still has in-flight rows, "
+            "a bulk operation, or pending/running status (not only the latest run)."
+        ),
+    )
     created_at: datetime
     updated_at: datetime
     created_by_email: Optional[str] = None
@@ -3860,6 +4023,82 @@ class CallImportDispatchDiagnosticsResponse(BaseModel):
     fair_dispatch: CallImportDispatchFairDispatchSnapshot
     workspaces: List[CallImportDispatchWorkspaceSnapshot]
     generated_at: datetime
+
+
+class CallImportManualAudioFilePresignItem(BaseModel):
+    filename: str = Field(..., max_length=512)
+    size_bytes: int = Field(..., ge=1)
+    content_type: Optional[str] = Field(default=None, max_length=200)
+
+
+class CallImportManualAudioPresignRequest(BaseModel):
+    files: List[CallImportManualAudioFilePresignItem] = Field(..., min_length=1)
+    dataset: Optional[str] = Field(
+        default=None,
+        description="Required when creating a new manual-audio batch.",
+    )
+    tag_ids: Optional[List[UUID]] = None
+    batch_name: Optional[str] = Field(default=None, max_length=255)
+
+
+class CallImportManualAudioPresignUploadItem(BaseModel):
+    row_id: UUID
+    recording_s3_key: str
+    conversation_id: str
+    upload_url: str
+    content_type: str
+    filename: str
+
+
+class CallImportManualAudioPresignResponse(BaseModel):
+    call_import_id: UUID
+    uploads: List[CallImportManualAudioPresignUploadItem]
+    total_rows: int
+    status: CallImportStatus
+    dataset: Optional[str] = None
+    tags: List[CallImportTagResponse] = Field(default_factory=list)
+    message: str
+
+
+class CallImportManualAudioCompleteRequest(BaseModel):
+    row_ids: List[UUID] = Field(..., min_length=1)
+
+
+class CallImportManualAudioCompleteResponse(BaseModel):
+    verified: int
+    call_import_id: UUID
+    total_rows: int
+
+
+class CallImportSourceStagePresignRequest(BaseModel):
+    filename: str = Field(..., max_length=512)
+    size_bytes: int = Field(..., ge=1)
+    content_type: Optional[str] = Field(default=None, max_length=200)
+    dataset: str = Field(..., min_length=1)
+    tag_ids: Optional[List[UUID]] = None
+    schema_id: Optional[UUID] = None
+    content_modality: Optional[str] = Field(
+        default=None,
+        description="Optional 'chat' for transcript-only imports.",
+    )
+
+
+class CallImportSourceStagePresignResponse(BaseModel):
+    call_import_id: UUID
+    source_s3_key: str
+    source_format: str
+    upload_url: str
+    content_type: str
+
+
+class CallImportSourceStageCompleteRequest(BaseModel):
+    call_import_id: UUID
+    filename: str = Field(..., max_length=512)
+    size_bytes: int = Field(..., ge=1)
+    dataset: str = Field(..., min_length=1)
+    tag_ids: Optional[List[UUID]] = None
+    schema_id: Optional[UUID] = None
+    content_modality: Optional[str] = None
 
 
 class CallImportUploadResponse(BaseModel):
@@ -4263,6 +4502,24 @@ class CallImportEvaluationBulkDelete(BaseModel):
     )
 
 
+class CallImportEvaluationRowRetryFilter(BaseModel):
+    """Retry matching evaluation rows in keyset pages instead of by id list."""
+
+    q: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description="Search conversation_id on the linked import row.",
+    )
+    status: Optional[str] = Field(
+        default=None,
+        max_length=32,
+        description=(
+            "When set, only rows with this evaluation status are retried. "
+            "Omit to use the default failed-only or metric-subset statuses."
+        ),
+    )
+
+
 class CallImportEvaluationRetryRequest(BaseModel):
     """Body for retrying a subset (or all failed rows) of an evaluation run.
 
@@ -4285,11 +4542,24 @@ class CallImportEvaluationRetryRequest(BaseModel):
     eval_row_ids: Optional[List[UUID]] = Field(
         default=None,
         description=(
-            "Restrict the retry to a specific subset of evaluation rows. "
-            "When omitted, every row with status='failed' in this run is "
-            "re-enqueued."
+            "Restrict the retry to a small explicit subset of evaluation rows. "
+            "Prefer ``row_filter`` for select-all. When omitted, every matching "
+            "failed row in this run is re-enqueued in pages."
         ),
     )
+    row_filter: Optional[CallImportEvaluationRowRetryFilter] = Field(
+        default=None,
+        description=(
+            "Server-side filter for bulk retry (search / status) without "
+            "posting every eval_row id."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _retry_ids_or_filter(self) -> "CallImportEvaluationRetryRequest":
+        if self.eval_row_ids and self.row_filter is not None:
+            raise ValueError("Pass either eval_row_ids or row_filter, not both.")
+        return self
 
     # --- Metric-subset re-run ---
     # When ``metric_ids`` is set, the retry recomputes ONLY those
@@ -4531,6 +4801,13 @@ class CallImportEvaluationBulkActionResponse(BaseModel):
         ...,
         description="How many rows the background worker will process.",
     )
+    worker_enqueued: bool = Field(
+        default=False,
+        description=(
+            "True when a background worker was queued (even if target_count is 0, "
+            "e.g. diarisation-only abort)."
+        ),
+    )
     evaluation_id: UUID
 
 
@@ -4695,14 +4972,40 @@ class CallImportEvaluationRowListResponse(BaseModel):
     page_size: int
 
 
+class CallImportRowSelectionFilter(BaseModel):
+    """Server-side row selection for bulk import operations (no id list)."""
+
+    q: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description="Case-insensitive substring match on conversation_id.",
+    )
+    diarised_status: Optional[str] = Field(
+        default=None,
+        max_length=32,
+        description="Filter on diarised_transcript_status (pending, running, etc.).",
+    )
+
+
 class CallImportRowBulkDelete(BaseModel):
     """Request body for deleting multiple rows from a call-import batch."""
 
-    row_ids: List[UUID] = Field(
-        ...,
-        min_length=1,
-        description="Row ids to delete (must belong to the same call import).",
+    row_ids: Optional[List[UUID]] = Field(
+        default=None,
+        description="Explicit row ids for a small on-page selection.",
     )
+    row_filter: Optional[CallImportRowSelectionFilter] = Field(
+        default=None,
+        description="Delete every row matching the import list filters.",
+    )
+
+    @model_validator(mode="after")
+    def _require_rows_or_filter(self) -> "CallImportRowBulkDelete":
+        if self.row_filter is not None:
+            return self
+        if not self.row_ids:
+            raise ValueError("Provide row_ids or row_filter.")
+        return self
 
 
 class CallImportRowBulkDeleteResponse(BaseModel):
@@ -4855,8 +5158,16 @@ class CallImportTranscribeRequest(BaseModel):
     row_ids: Optional[List[UUID]] = Field(
         default=None,
         description=(
-            "Restrict the run to a specific subset of rows. NULL = every "
-            "row in the import (subject to only_missing)."
+            "Restrict the run to a small explicit subset of rows. Prefer "
+            "``row_filter`` for cross-page select-all. NULL = every row "
+            "in the import (subject to only_missing), walked in pages."
+        ),
+    )
+    row_filter: Optional[CallImportRowSelectionFilter] = Field(
+        default=None,
+        description=(
+            "Retry/diarise/delete rows matching these list filters without "
+            "sending every row id from the browser."
         ),
     )
     # --- LLM diariser config ---
@@ -4924,6 +5235,8 @@ class CallImportTranscribeRequest(BaseModel):
                     "mode='llm_only'; the LLM consumes the audio "
                     "directly."
                 )
+        if self.row_ids and self.row_filter is not None:
+            raise ValueError("Pass either row_ids or row_filter, not both.")
         return self
 
 
@@ -5012,6 +5325,16 @@ class CallImportCancelDiarisationRequest(BaseModel):
             "every pending / running diarisation in the import."
         ),
     )
+    row_filter: Optional[CallImportRowSelectionFilter] = Field(
+        default=None,
+        description="Cancel diarisation for rows matching import list filters.",
+    )
+
+    @model_validator(mode="after")
+    def _cancel_ids_or_filter(self) -> "CallImportCancelDiarisationRequest":
+        if self.row_ids is not None and self.row_filter is not None:
+            raise ValueError("Pass either row_ids or row_filter, not both.")
+        return self
 
 
 class CallImportCancelDiarisationResponse(BaseModel):
@@ -5978,3 +6301,243 @@ class CapabilityDomainResponse(BaseModel):
     key: str
     label: str
     capabilities: List[CapabilityInfoResponse]
+
+
+# ============================================
+# Harbor simulation runs
+# ============================================
+
+SimulationSuccessCriteriaKind = Literal[
+    "boolean",
+    "rating",
+    "number",
+    "enum",
+    "category_single",
+    "category_multi",
+    "classification",
+    "text",
+]
+SimulationSuccessWhen = Literal["yes", "no"]
+SimulationNumericOp = Literal["lt", "lte", "gt", "gte"]
+
+
+class MetricSuccessCriterionLabelRule(BaseModel):
+    child_id: UUID
+    expect: SimulationSuccessWhen
+
+
+class MetricSuccessCriterionClassificationNoul(BaseModel):
+    success_when: SimulationSuccessWhen
+
+
+class MetricSuccessCriterionClassificationChoice(BaseModel):
+    success_values: List[str] = Field(..., min_length=1)
+
+
+class MetricSuccessCriterionClassificationScore(BaseModel):
+    success_values: List[str] = Field(..., min_length=1)
+
+
+class MetricSuccessCriterionClassificationQuestions(BaseModel):
+    noul: Optional[MetricSuccessCriterionClassificationNoul] = None
+    choice: Optional[MetricSuccessCriterionClassificationChoice] = None
+    score: Optional[MetricSuccessCriterionClassificationScore] = None
+
+
+class MetricSuccessCriterion(BaseModel):
+    metric_id: UUID
+    kind: SimulationSuccessCriteriaKind
+    success_when: Optional[SimulationSuccessWhen] = None
+    op: Optional[SimulationNumericOp] = None
+    threshold: Optional[float] = None
+    success_values: Optional[List[str]] = None
+    label_rules: Optional[List[MetricSuccessCriterionLabelRule]] = None
+    questions: Optional[MetricSuccessCriterionClassificationQuestions] = None
+
+
+class SimulationRunCreate(BaseModel):
+    agent_id: UUID
+    name: Optional[str] = None
+    scenario_ids: List[UUID] = Field(..., min_length=1)
+    persona_ids: List[UUID] = Field(..., min_length=1)
+    metric_ids: Optional[List[UUID]] = Field(None, min_length=1)
+    metric_success_criteria: Optional[List[MetricSuccessCriterion]] = None
+    n_attempts: int = Field(1, ge=1, le=10)
+    n_concurrent: int = Field(4, ge=1, le=32)
+    pass_threshold: float = Field(0.7, ge=0.0, le=1.0)
+    production_llm_provider: Optional[str] = None
+    production_llm_model: Optional[str] = None
+    test_llm_provider: Optional[str] = None
+    test_llm_model: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _llm_overrides_paired(self):
+        for leg in ("production", "test"):
+            provider = getattr(self, f"{leg}_llm_provider")
+            model = getattr(self, f"{leg}_llm_model")
+            if bool((provider or "").strip()) != bool((model or "").strip()):
+                raise ValueError(f"{leg}_llm_provider and {leg}_llm_model must be set together")
+        return self
+
+    @model_validator(mode="after")
+    def _criteria_requires_metrics(self):
+        if self.metric_success_criteria:
+            if not self.metric_ids:
+                raise ValueError("metric_ids is required when metric_success_criteria is set")
+            expected = {str(m) for m in self.metric_ids}
+            seen = {str(c.metric_id) for c in self.metric_success_criteria}
+            if seen != expected:
+                raise ValueError(
+                    "metric_success_criteria must include exactly one rule per selected metric_id"
+                )
+        return self
+
+
+class SimulationRunRename(BaseModel):
+    """New display name. Blank clears it back to the default run title."""
+
+    name: Optional[str] = Field(None, max_length=200)
+
+    @field_validator("name")
+    @classmethod
+    def _strip_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+
+class SimulationRunResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    run_id: str
+    agent_id: UUID
+    name: Optional[str] = None
+    scenario_ids: List[UUID] = []
+    persona_ids: List[UUID] = []
+    metric_ids: Optional[List[UUID]] = None
+    metric_success_criteria: Optional[List[MetricSuccessCriterion]] = None
+    n_attempts: int
+    n_concurrent: int
+    pass_threshold: float
+    production_llm_provider: Optional[str] = None
+    production_llm_model: Optional[str] = None
+    test_llm_provider: Optional[str] = None
+    test_llm_model: Optional[str] = None
+    resolved_llms: Optional[Dict[str, Any]] = None
+    status: str
+    expected_trials: int
+    completed_trials: int
+    failed_trials: int
+    summary: Optional[Dict[str, Any]] = None
+    error_message: Optional[str] = None
+    harbor_job_name: Optional[str] = None
+    has_artifacts: bool = False
+    cancel_requested: bool = False
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    created_by: Optional[str] = None
+
+
+class SimulationTrialResponse(BaseModel):
+    id: UUID
+    result_id: str
+    harbor_trial_name: Optional[str] = None
+    scenario_id: Optional[UUID] = None
+    scenario_name: Optional[str] = None
+    persona_id: Optional[UUID] = None
+    persona_name: Optional[str] = None
+    attempt_index: Optional[int] = None
+    status: str
+    reward: Optional[float] = None
+    passed: Optional[bool] = None
+    turns: int = 0
+    metric_scores: Optional[Dict[str, Any]] = None
+    error_message: Optional[str] = None
+    tool_call_count: int = 0
+    tool_error_count: int = 0
+    tool_expectations_met: Optional[bool] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class SimulationTrialDetailResponse(SimulationTrialResponse):
+    speaker_segments: Optional[List[Dict[str, Any]]] = None
+    call_analysis: Optional[Dict[str, Any]] = None
+    trajectory: Optional[Dict[str, Any]] = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None
+    tool_evaluation: Optional[Dict[str, Any]] = None
+    llms: Optional[Dict[str, Any]] = None
+
+
+class SimulationArtifactsResponse(BaseModel):
+    url: str
+
+
+# Tool connections (MCP servers, HTTP tools, Postgres) for production agents
+
+ToolConnectionType = Literal["mcp", "http", "postgres"]
+ToolSimulationMode = Literal["live", "mock_writes", "mock_all"]
+
+
+class ToolConnectionCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    connection_type: ToolConnectionType
+    preset: Optional[str] = Field(None, max_length=64)
+    config: Dict[str, Any] = Field(default_factory=dict)
+    # Write-only: {"headers": {...}, "env": {...}} or {"dsn": "..."}; never returned.
+    secrets: Optional[Dict[str, Any]] = None
+    simulation_mode: ToolSimulationMode = "mock_writes"
+
+
+class ToolConnectionUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    config: Optional[Dict[str, Any]] = None
+    # Merged into stored secrets; an empty string removes a key.
+    secrets: Optional[Dict[str, Any]] = None
+    simulation_mode: Optional[ToolSimulationMode] = None
+
+
+class ToolConnectionTool(BaseModel):
+    name: str
+    exposed_name: str
+    description: Optional[str] = None
+    side_effect: Literal["read", "write"]
+    input_schema: Optional[Dict[str, Any]] = None
+
+
+class ToolConnectionResponse(BaseModel):
+    id: UUID
+    name: str
+    slug: str
+    connection_type: str
+    preset: Optional[str] = None
+    config: Dict[str, Any] = Field(default_factory=dict)
+    simulation_mode: str
+    secret_keys: List[str] = Field(default_factory=list)
+    tools: List[ToolConnectionTool] = Field(default_factory=list)
+    last_tested_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+    agent_count: int = 0
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class AgentToolConnectionLink(BaseModel):
+    tool_connection_id: UUID
+    # Raw tool names from the connection; null = every tool.
+    enabled_tools: Optional[List[str]] = None
+
+
+class AgentToolConnectionsUpdate(BaseModel):
+    links: List[AgentToolConnectionLink] = Field(default_factory=list)
+
+
+class AgentToolCatalogEntry(BaseModel):
+    name: str
+    description: Optional[str] = None
+    source: str
+    side_effect: Literal["read", "write"]
+    simulation_behavior: Literal["live", "mocked"]

@@ -23,6 +23,7 @@ import StatusBadge from '../../components/shared/StatusBadge'
 import CallImportProgressBar from './components/CallImportProgressBar'
 import UploadChatCsvModal from './components/UploadChatCsvModal'
 import { itemsOf } from '../../lib/safeData'
+import { callImportListPollMs } from './importPolling'
 
 const PAGE_SIZE = 20
 
@@ -56,11 +57,11 @@ export default function ChatImports() {
 
   const { data: datasets = [] } = useQuery({
     queryKey: ['call-import-datasets', activeWorkspaceId],
-    queryFn: () => apiClient.listCallImportDatasets(),
+    queryFn: () => apiClient.callImports.listCallImportDatasets(),
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => apiClient.deleteCallImport(id),
+    mutationFn: (id: string) => apiClient.callImports.deleteCallImport(id),
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['chat-imports'] })
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
@@ -92,16 +93,10 @@ export default function ChatImports() {
 
   const { data, isLoading, isFetching, refetch } = useQuery({
     queryKey: ['chat-imports', activeWorkspaceId, queryParams],
-    queryFn: () => apiClient.listCallImports(queryParams),
-    refetchInterval: (query) => {
-      const items = itemsOf<CallImport>(query.state.data)
-      const hasActive = items.some(
-        (i) => i.status === 'pending' || i.status === 'processing',
-      )
-      const hasDeleting = items.some((i) => i.status === 'deleting')
-      if (hasDeleting) return 3000
-      return hasActive ? 5000 : false
-    },
+    queryFn: () => apiClient.callImports.listCallImports(queryParams),
+    refetchOnWindowFocus: false,
+    refetchInterval: (query) =>
+      callImportListPollMs(itemsOf<CallImport>(query.state.data)),
   })
 
   const items = itemsOf<CallImport>(data)

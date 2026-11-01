@@ -2,6 +2,8 @@
 
 import textwrap
 
+from app.services.metrics.option_labels import custom_config_for_api
+
 
 def test_create_classification_metric(authenticated_client):
     payload = {
@@ -822,3 +824,35 @@ def test_update_classification_metric_allows_text_and_other_fields(authenticated
 
     assert renamed.status_code == 200, renamed.text
     assert same_type.status_code == 200, same_type.text
+
+
+def test_custom_config_for_api_normalizes_enum_object_options():
+    cfg = {
+        "options": [
+            {"value": "professional", "description": "Clean close"},
+            "abrupt",
+        ]
+    }
+    out = custom_config_for_api("enum", cfg)
+    assert out["options"] == ["professional", "abrupt"]
+
+
+def test_list_metrics_normalizes_enum_options_in_response(authenticated_client):
+    payload = {
+        "name": "Enum With Object Options",
+        "metric_type": "text",
+        "custom_data_type": "enum",
+        "custom_config": {
+            "options": [{"value": "a", "description": "Alpha"}, {"value": "b"}],
+        },
+        "trigger": "always",
+        "enabled": True,
+    }
+    create = authenticated_client.post("/api/v1/metrics", json=payload)
+    assert create.status_code == 201, create.text
+    metric_id = create.json()["id"]
+
+    listed = authenticated_client.get("/api/v1/metrics", params={"flat": "true"})
+    assert listed.status_code == 200, listed.text
+    row = next(m for m in listed.json() if m["id"] == metric_id)
+    assert row["custom_config"]["options"] == ["a", "b"]

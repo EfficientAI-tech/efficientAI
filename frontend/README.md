@@ -181,9 +181,23 @@ The production build will be in the `dist/` directory.
 
 ### CORS Issues
 
-If you see CORS errors, ensure:
-1. The backend API allows requests from `http://localhost:3000`
-2. The API is running and accessible
+**API CORS (FastAPI):** If API calls fail from the browser, ensure `cors.origins` in `config.yml` includes your UI origin (typically `http://localhost:8000` when the API serves the SPA, plus `https://sandbox.efficientai.cloud` for hosted sandbox).
+
+**S3 CORS (call-import uploads):** Staged CSV/XLSX and presigned audio uploads use `fetch(..., PUT)` **directly to S3**. That is a cross-origin request to `*.s3.amazonaws.com`, not to the API. The bucket must expose CORS allowing your app origin and `PUT`/`Content-Type`, or you will see:
+
+`blocked by CORS policy ... No 'Access-Control-Allow-Origin' header`
+
+Fix: apply bucket CORS once per environment (see `scripts/s3-bucket-cors-call-imports.example.json`):
+
+```bash
+export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... AWS_DEFAULT_REGION=us-east-1
+./scripts/apply_s3_call_import_cors.sh --config config.yml
+# or: aws s3api put-bucket-cors --bucket voiceai-evals-test --cors-configuration file://scripts/s3-bucket-cors-call-imports.example.json
+```
+
+Edit `AllowedOrigins` in that file first (localhost + production URL).
+
+**401 on `/api/v1/...`:** Session or API key expired — sign in again. A failed S3 PUT often appears as a separate CORS error, not 401.
 
 ### API Key Issues
 

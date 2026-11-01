@@ -933,6 +933,19 @@ def transcribe_call_import_row_task(
                 row_db.commit()
                 return {"status": "failed", "reason": "missing_llm_diariser"}
 
+            try:
+                stt_credential_uuid = UUID(credential_id) if credential_id else None
+            except (TypeError, ValueError):
+                stt_credential_uuid = None
+            try:
+                llm_credential_uuid = (
+                    UUID(diarization_llm_credential_id)
+                    if diarization_llm_credential_id
+                    else None
+                )
+            except (TypeError, ValueError):
+                llm_credential_uuid = None
+
             row.diarised_transcript_status = "running"
             row.diarised_transcript_error = None
             if normalised_mode == "stt_llm" and provider_enum is not None:
@@ -943,14 +956,6 @@ def transcribe_call_import_row_task(
                 row.diarised_transcript_model = llm_model_value
             row.diarised_llm_provider = llm_provider_value
             row.diarised_llm_model = llm_model_value
-            try:
-                llm_credential_uuid = (
-                    UUID(diarization_llm_credential_id)
-                    if diarization_llm_credential_id
-                    else None
-                )
-            except (TypeError, ValueError):
-                llm_credential_uuid = None
             row.diarised_llm_credential_id = llm_credential_uuid
             row.celery_task_id = self.request.id
 
@@ -958,11 +963,6 @@ def transcribe_call_import_row_task(
                 DEFAULT_DIARIZATION_PROMPT
             )
             row.diarised_prompt = effective_prompt
-
-            try:
-                credential_uuid = UUID(credential_id) if credential_id else None
-            except (TypeError, ValueError):
-                credential_uuid = None
 
             row_db.commit()
 
@@ -983,7 +983,7 @@ def transcribe_call_import_row_task(
                 ),
                 "stt_provider": provider_enum.value if provider_enum else None,
                 "stt_model": stt_model,
-                "credential_uuid": credential_uuid,
+                "credential_uuid": stt_credential_uuid,
                 "language": language,
                 "llm_provider_value": llm_provider_value,
                 "llm_model_value": llm_model_value,

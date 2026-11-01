@@ -70,19 +70,19 @@ export default function UploadChatCsvModal({
 
   const { data: existingDatasets = [] } = useQuery({
     queryKey: ['call-import-datasets', activeWorkspaceId],
-    queryFn: () => apiClient.listCallImportDatasets(),
+    queryFn: () => apiClient.callImports.listCallImportDatasets(),
     enabled: open,
   })
 
   const { data: allTags = [] } = useQuery({
     queryKey: ['call-import-tags', activeWorkspaceId],
-    queryFn: () => apiClient.listCallImportTags(),
+    queryFn: () => apiClient.callImports.listCallImportTags(),
     enabled: open,
   })
 
   const { data: schemasResponse } = useQuery({
     queryKey: ['call-import-schemas', activeWorkspaceId],
-    queryFn: () => apiClient.listCallImportSchemas(),
+    queryFn: () => apiClient.callImports.listCallImportSchemas(),
     enabled: open,
   })
   const schemas = useMemo(
@@ -127,7 +127,7 @@ export default function UploadChatCsvModal({
       if (!selectedFile) {
         throw new Error('Pick a file first.')
       }
-      return apiClient.createCallImport(selectedFile, {
+      return apiClient.callImports.createCallImport(selectedFile, {
         dataset: dataset.trim(),
         tagIds: selectedTagIds,
         schemaId: selectedSchemaId || chatSchema?.id || null,

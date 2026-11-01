@@ -15,7 +15,6 @@ from app.models.database import (
     CallImportRow,
 )
 from app.services.call_import_metric_clusters import (
-    filter_completed_row_pairs,
     generate_metric_clusters,
     metric_clusters_raw_is_cancelled,
     metric_clusters_state_to_db,
@@ -36,7 +35,6 @@ def generate_evaluation_metric_clusters_task(
 ):
     from app.api.v1.routes.call_import_evaluations import (
         _child_names_by_parent,
-        _compute_metric_aggregates,
         _metrics_for_clustering,
     )
     from app.services.metric_failure_policy import effective_policies
@@ -69,22 +67,32 @@ def generate_evaluation_metric_clusters_task(
             UUID(credential_id) if credential_id else None,
         )
 
-        from app.db_sharding.scatter_gather import load_evaluation_row_pairs
+        from app.db_sharding.scatter_gather import (
+            DEFAULT_EVAL_ROW_PAIR_SAMPLE,
+            load_completed_evaluation_row_pairs_for_eval_row_ids,
+            load_completed_evaluation_row_pairs_sample,
+            load_evaluation_score_rows_for_aggregate,
+        )
+        from app.services.call_imports.metric_aggregate_cache import (
+            evaluation_metric_aggregates_for_analysis,
+        )
 
-        rows = load_evaluation_row_pairs(db, evaluation.id)
-        completed_pairs = [
-            (eval_row, source_row)
-            for eval_row, source_row in rows
-            if eval_row.status == "completed"
-        ]
+        score_rows = load_evaluation_score_rows_for_aggregate(db, evaluation.id)
+        aggregates = evaluation_metric_aggregates_for_analysis(db, evaluation)
         if evaluation_row_ids:
-            completed_pairs = filter_completed_row_pairs(
-                completed_pairs,
+            completed_pairs = load_completed_evaluation_row_pairs_for_eval_row_ids(
+                db,
+                evaluation.id,
                 [UUID(rid) for rid in evaluation_row_ids],
             )
-        eval_rows = [eval_row for eval_row, _source_row in rows]
+        else:
+            completed_pairs = load_completed_evaluation_row_pairs_sample(
+                db,
+                evaluation.id,
+                max_pairs=DEFAULT_EVAL_ROW_PAIR_SAMPLE,
+            )
+        eval_rows = score_rows
         metrics = _metrics_for_clustering(db, evaluation, eval_rows)
-        aggregates = _compute_metric_aggregates(db, evaluation, eval_rows)
         parent_ids = [
             m.id
             for m in metrics
