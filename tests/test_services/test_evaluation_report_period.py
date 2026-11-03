@@ -13,8 +13,8 @@ def test_report_period_from_recording_bounds_uses_latest_date_for_week():
     )
     assert start == date(2026, 10, 1)
     assert end == date(2026, 10, 19)
-    assert label == "2026-W42"
-    assert "W42" in display
+    assert label == "2026-W43"
+    assert "W43" in display
 
 
 def test_evaluation_report_period_is_current_matches_completed_rows():

@@ -245,6 +245,19 @@ def _metric_scores_for_retry(existing, metric_ids: Optional[List[UUID]]) -> dict
     }
 
 
+def _mark_evaluation_running_for_retry(evaluation: CallImportEvaluation) -> None:
+    """Open a new retry pass.
+
+    The stale-run sweep ages a parent from ``started_at``. Keeping the
+    original timestamp makes a retry of a run older than 24 hours eligible
+    for cancellation on the next sweep.
+    """
+    evaluation.error_message = None
+    evaluation.finished_at = None
+    evaluation.status = "running"
+    evaluation.started_at = datetime.now(timezone.utc)
+
+
 def _reset_eval_row_for_retry(
     eval_row: CallImportEvaluationRow,
     *,
@@ -930,13 +943,7 @@ async def retry_call_import_evaluation(
             payload=payload,
         )
 
-    evaluation.error_message = None
-    evaluation.finished_at = None
-    evaluation.status = "running"
-    if not evaluation.started_at:
-        from datetime import datetime, timezone
-
-        evaluation.started_at = datetime.now(timezone.utc)
+    _mark_evaluation_running_for_retry(evaluation)
 
     _claim_evaluation_bulk_operation(eval_id, "retry")
     stamp_evaluation_actor(evaluation, principal)
@@ -1056,13 +1063,7 @@ async def retry_call_import_evaluation_row(
             _prepare_source_row_for_retry(source_row, transcribe_overwrite=False)
             _reset_eval_row_for_retry(er)
 
-    evaluation.error_message = None
-    evaluation.finished_at = None
-    evaluation.status = "running"
-    if not evaluation.started_at:
-        from datetime import datetime, timezone
-
-        evaluation.started_at = datetime.now(timezone.utc)
+    _mark_evaluation_running_for_retry(evaluation)
     db.flush()
     _rollup_evaluation_status(evaluation, db)
     stamp_evaluation_actor(evaluation, principal)

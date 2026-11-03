@@ -3157,9 +3157,10 @@ class CallImportEvaluation(Base):
     report_period_display = Column(String(128), nullable=True)
     report_period_at_count = Column(Integer, nullable=True)
 
-    # Numeric ``period_deltas`` keyed by baseline id + row-count watermark
-    # (same key shape as ``period_delta_explanations``). Avoids rescanning
-    # rows on every Visualizations tab load.
+    # Numeric ``period_deltas`` keyed by baseline id, row-count watermark,
+    # and failure-policy version (same key shape as
+    # ``period_delta_explanations``). Avoids rescanning rows on every
+    # Visualizations tab load.
     cached_period_deltas = Column(JSON, nullable=True)
 
     status = Column(String(20), nullable=False, default="pending", index=True)

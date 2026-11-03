@@ -511,6 +511,7 @@ def _period_delta_explanation_cache_key(
     *,
     completed_rows: int,
     baseline_completed_rows: int,
+    metric_clusters: Any = None,
 ) -> str:
     from app.services.call_imports.evaluation_period_delta_cache import (
         period_delta_numeric_cache_key,
@@ -520,6 +521,7 @@ def _period_delta_explanation_cache_key(
         baseline_evaluation_id,
         completed_rows=completed_rows,
         baseline_completed_rows=baseline_completed_rows,
+        metric_clusters=metric_clusters,
     )
 
 
@@ -831,6 +833,7 @@ def _explain_period_deltas(
         baseline_evaluation.id,
         completed_rows=evaluation.completed_rows,
         baseline_completed_rows=baseline_evaluation.completed_rows,
+        metric_clusters=evaluation.metric_clusters,
     )
     cached = _load_period_delta_explanations_cache(evaluation, cache_key)
     if cached is not None:
@@ -1662,6 +1665,7 @@ async def get_call_import_evaluation_aggregate(
             baseline_evaluation.id,
             completed_rows=int(evaluation.completed_rows or 0),
             baseline_completed_rows=int(baseline_evaluation.completed_rows or 0),
+            metric_clusters=evaluation.metric_clusters,
         )
         raw_deltas = load_cached_period_deltas(evaluation, cache_key)
         if raw_deltas is None:

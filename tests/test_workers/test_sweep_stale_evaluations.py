@@ -289,6 +289,42 @@ def test_enqueue_is_org_wide_and_skips_runs_younger_than_24_hours(
     }
 
 
+def test_retry_resets_started_at_so_an_old_run_is_not_stale(
+    db_session, seed_org, default_workspace
+):
+    from app.api.v1.routes.call_import_evaluations.evaluation_retry import (
+        _mark_evaluation_running_for_retry,
+    )
+
+    old = datetime.now(timezone.utc) - timedelta(hours=30)
+    evaluation, _rows = _eval(
+        db_session,
+        seed_org,
+        default_workspace,
+        ["failed"],
+        started_at=old,
+        status="failed",
+    )
+    assert evaluation_is_stale_running(db_session, evaluation.id) is False
+
+    _mark_evaluation_running_for_retry(evaluation)
+    db_session.commit()
+
+    now = datetime.now(timezone.utc)
+    started_at = evaluation.started_at
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    assert started_at > old
+    assert evaluation_is_stale_running(db_session, evaluation.id, now=now) is False
+    selected = {
+        evaluation_id
+        for _org_id, evaluation_id in list_stale_running_evaluation_ids(
+            db_session, now=now
+        )
+    }
+    assert evaluation.id not in selected
+
+
 def test_later_rollup_keeps_auto_aborted():
     evaluation = CallImportEvaluation(
         status="auto_aborted",
