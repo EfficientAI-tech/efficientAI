@@ -20,6 +20,7 @@ function evaluationRowsQueryEnabled(
     status === 'running' ||
     status === 'pending' ||
     status === 'cancelled' ||
+    status === 'auto_aborted' ||
     status === 'completed' ||
     status === 'partial' ||
     status === 'failed'

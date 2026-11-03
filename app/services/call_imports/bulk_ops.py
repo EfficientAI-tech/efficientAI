@@ -1235,7 +1235,7 @@ def _call_import_status_from_evaluation_status(eval_status: str) -> CallImportSt
         return CallImportStatus.COMPLETED
     if normalized == "partial":
         return CallImportStatus.PARTIAL
-    if normalized in ("failed", "cancelled"):
+    if normalized in ("failed", "cancelled", "auto_aborted"):
         return CallImportStatus.FAILED
     if normalized in ("pending", "running"):
         return CallImportStatus.PROCESSING
@@ -1587,9 +1587,14 @@ def execute_evaluation_cancel(
     evaluation_id: UUID,
     *,
     mode: Literal["abort", "force_fail_pending"],
+    row_error_message: str | None = None,
+    sticky_status: str | None = None,
 ) -> dict:
     """Cancel eval rows in chunks off the API thread."""
-    from app.api.v1.routes.call_import_evaluations import _rollup_evaluation_status
+    from app.api.v1.routes.call_import_evaluations import (
+        EVAL_CANCELLED_BY_USER_ERROR,
+        _rollup_evaluation_status,
+    )
 
     evaluation = (
         db.query(CallImportEvaluation)
@@ -1603,18 +1608,29 @@ def execute_evaluation_cancel(
         )
         return {"evaluation_id": str(evaluation_id), "cancelled": 0, "mode": mode}
 
+    eval_error_message = row_error_message or EVAL_CANCELLED_BY_USER_ERROR
+
     try:
+        if sticky_status and (evaluation.status or "").strip().lower() != "running":
+            return {
+                "evaluation_id": str(evaluation_id),
+                "cancelled": 0,
+                "mode": mode,
+            }
+
         cancelled_total = 0
         if is_sharding_enabled():
             cancelled_total = _cancel_evaluation_rows_all_shards(
                 evaluation_id,
                 mode=mode,
+                eval_error_message=eval_error_message,
             )
         else:
             cancelled_total = _cancel_evaluation_rows_on_session(
                 db,
                 evaluation_id,
                 mode=mode,
+                eval_error_message=eval_error_message,
             )
 
         if mode == "abort":
@@ -1626,6 +1642,13 @@ def execute_evaluation_cancel(
 
         db.refresh(evaluation)
         _rollup_evaluation_status(evaluation, db)
+        if (
+            sticky_status
+            and cancelled_total > 0
+            and (evaluation.status or "").strip().lower()
+            not in {"pending", "running"}
+        ):
+            evaluation.status = sticky_status
         db.commit()
 
         return {
@@ -1657,9 +1680,9 @@ def _write_cancel_page(
     status: str,
     source_ids: List[UUID],
     now: datetime,
+    eval_error_message: str,
 ) -> int:
     """One UPDATE per table for this page. Eval rowcount, or source rowcount when the page is diarisation-only."""
-    from app.api.v1.routes.call_import_evaluations import EVAL_CANCELLED_BY_USER_ERROR
     from app.api.v1.routes.call_imports import CANCELLED_BY_USER_ERROR
     from app.db_sharding.row_ops import shard_row_write_context
 
@@ -1676,7 +1699,7 @@ def _write_cancel_page(
                 )
                 .values(
                     status="failed",
-                    error_message=EVAL_CANCELLED_BY_USER_ERROR,
+                    error_message=eval_error_message,
                     finished_at=now,
                     celery_task_id=None,
                 ),
@@ -1749,6 +1772,7 @@ def _sweep_diarisation_on_session(
                 status=status,
                 source_ids=page_ids,
                 now=datetime.now(timezone.utc),
+                eval_error_message="",
             )
             _batch_revoke_celery_task_ids(task_ids, terminate=True)
             if updated == 0:
@@ -1799,6 +1823,7 @@ def _cancel_evaluation_rows_on_session(
     evaluation_id: UUID,
     *,
     mode: Literal["abort", "force_fail_pending"],
+    eval_error_message: str,
 ) -> int:
     statuses = ("pending", "running") if mode == "abort" else ("pending",)
     cascade_diarisation = mode == "abort"
@@ -1840,6 +1865,7 @@ def _cancel_evaluation_rows_on_session(
                 status=status,
                 source_ids=source_ids,
                 now=datetime.now(timezone.utc),
+                eval_error_message=eval_error_message,
             )
             _batch_revoke_celery_task_ids(task_ids, terminate=True)
             if updated == 0:
@@ -1857,6 +1883,7 @@ def _cancel_evaluation_rows_all_shards(
     evaluation_id: UUID,
     *,
     mode: Literal["abort", "force_fail_pending"],
+    eval_error_message: str,
 ) -> int:
     from app.db_sharding.pool_manager import db_pool_manager
 
@@ -1871,6 +1898,7 @@ def _cancel_evaluation_rows_all_shards(
                 shard_db,
                 evaluation_id,
                 mode=mode,
+                eval_error_message=eval_error_message,
             )
         finally:
             shard_db.close()

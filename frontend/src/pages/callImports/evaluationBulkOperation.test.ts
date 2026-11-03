@@ -18,6 +18,18 @@ describe('evaluationRunPollMs', () => {
     expect(evaluationRunPollMs(evaluation)).toBe(5000)
   })
 
+  it('does not poll an auto-aborted run', () => {
+    const evaluation = {
+      status: 'auto_aborted' as const,
+      bulk_operation: null,
+      total_rows: 100,
+      completed_rows: 90,
+      failed_rows: 10,
+    }
+    expect(evaluationShouldPollRun(evaluation)).toBe(false)
+    expect(evaluationRunPollMs(evaluation)).toBe(false)
+  })
+
   it('does not poll a finished partial run with no bulk op', () => {
     const evaluation = {
       status: 'partial',

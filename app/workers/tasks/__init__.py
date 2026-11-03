@@ -13,6 +13,7 @@ from . import process_call_import_row
 from . import platform_call_import_hydrate  # noqa: F401 — fail fast at worker boot
 from . import evaluate_call_import_row
 from . import evaluate_call_import_row_audio
+from . import sweep_stale_evaluations
 from . import transcribe_call_import_row
 from . import run_judge_alignment
 from . import generate_evaluation_user_insights

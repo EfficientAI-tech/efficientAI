@@ -949,7 +949,7 @@ def process_call_import_row_task(
                     source_row_import_blocks_eval,
                 )
                 from app.workers.tasks.evaluate_call_import_row_core import (
-                    EVAL_CANCELLED_BY_USER_ERROR,
+                    is_eval_row_user_cancelled,
                 )
 
                 user_cancelled = False
@@ -963,11 +963,7 @@ def process_call_import_row_task(
                     pass
                 else:
                     try:
-                        user_cancelled = (
-                            (eval_row.status or "").lower() == "failed"
-                            and (eval_row.error_message or "")
-                            == EVAL_CANCELLED_BY_USER_ERROR
-                        )
+                        user_cancelled = is_eval_row_user_cancelled(eval_row)
                         if user_cancelled:
                             pass
                         elif source_row_import_blocks_eval(source_row):

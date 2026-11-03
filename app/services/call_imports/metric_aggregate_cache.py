@@ -13,7 +13,7 @@ from app.models.database import CallImportEvaluation
 from app.models.schemas import CallImportMetricAggregate
 
 _TERMINAL_EVAL_STATUSES = frozenset(
-    {"completed", "failed", "partial", "cancelled", "aborted"}
+    {"completed", "failed", "partial", "cancelled", "aborted", "auto_aborted"}
 )
 
 

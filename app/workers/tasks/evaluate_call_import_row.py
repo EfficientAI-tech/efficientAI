@@ -630,6 +630,12 @@ def evaluate_call_import_row_task(
                 "running_discovered_metrics": running_discovered_metrics,
                 "transcript_unavailable": transcript_unavailable,
                 "missing_label": missing_label,
+                "workspace_id": evaluation.workspace_id,
+                "resume_llm_metric_scores": (
+                    dict(eval_row.metric_scores)
+                    if isinstance(eval_row.metric_scores, dict)
+                    else {}
+                ),
                 "pre_llm_metric_scores": dict(metric_scores),
             }
         finally:
@@ -637,7 +643,36 @@ def evaluate_call_import_row_task(
                 close_row_sessions(row_db, catalog_db)
 
         pre_llm_metric_scores = scoring_inputs.pop("pre_llm_metric_scores")
+        scoring_inputs["rate_limit_attempt"] = int(
+            getattr(self.request, "retries", 0) or 0
+        )
         llm_result = _run_llm_scoring(**scoring_inputs)
+        if llm_result.get("rate_limited"):
+            from celery.exceptions import MaxRetriesExceededError
+
+            from app.workers.concurrency.import_retry_backoff import (
+                import_transient_retry_countdown,
+            )
+
+            release_slot = False
+            attempt = int(getattr(self.request, "retries", 0) or 0)
+            partial_scores = {
+                **pre_llm_metric_scores,
+                **llm_result.get("metric_scores", {}),
+            }
+            _persist_eval_row_metric_scores_checkpoint(
+                UUID(eval_row_id),
+                partial_scores,
+            )
+            countdown = int(
+                llm_result.get("wait_seconds")
+                or import_transient_retry_countdown(None, attempt=attempt)
+            )
+            try:
+                self.retry(countdown=countdown, max_retries=40)
+            except MaxRetriesExceededError:
+                release_slot = True
+                return {"status": "skipped", "reason": "llm_rate_limited"}
         metric_scores = {
             **pre_llm_metric_scores,
             **llm_result["metric_scores"],

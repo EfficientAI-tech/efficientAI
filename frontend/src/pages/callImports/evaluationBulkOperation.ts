@@ -50,6 +50,7 @@ export function evaluationTerminalStatus(status?: string): boolean {
     status === 'completed' ||
     status === 'failed' ||
     status === 'cancelled' ||
+    status === 'auto_aborted' ||
     status === 'partial'
   )
 }

@@ -134,6 +134,10 @@ def _platform_beat_schedule() -> dict:
             "task": "sweep_orphan_s3_batches",
             "schedule": 900.0,
         },
+        "sweep-stale-running-evaluations": {
+            "task": "sweep_stale_running_evaluations",
+            "schedule": 86400.0,
+        },
     }
     if not getattr(settings, "CLICKHOUSE_URL", None):
         schedule["sweep-staging-ingest"] = {
@@ -228,6 +232,8 @@ celery_app.conf.task_routes = {
     "evaluate_alerts_for_org": {"queue": PLATFORM_WORKER_QUEUE},
     "send_alert_notifications": {"queue": NOTIFICATIONS_WORKER_QUEUE},
     "refresh_fx_rates": {"queue": PLATFORM_WORKER_QUEUE},
+    "sweep_stale_running_evaluations": {"queue": PLATFORM_WORKER_QUEUE},
+    "auto_abort_stale_evaluation": {"queue": EVAL_CONTROL_QUEUE},
     "prune_oss_usage_history": {"queue": PLATFORM_WORKER_QUEUE},
     "dispatch_cron_jobs": {"queue": USAGE_WORKER_QUEUE},
     "run_cron_evaluator_job": {"queue": "celery"},

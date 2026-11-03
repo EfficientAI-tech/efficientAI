@@ -23,6 +23,8 @@ from app.workers.tasks.helpers.llm_evaluation import MetricPromptGroup
 from app.workers.tasks.helpers.score_utils import get_metric_type_value
 
 EVAL_CANCELLED_BY_USER_ERROR: str = "Evaluation cancelled by user"
+EVAL_AUTO_ABORTED_ERROR: str = "Automatically aborted after 24 hours"
+AUTO_ABORTED_STATUS: str = "auto_aborted"
 
 _BILLING_META_KEY = "_billing"
 
@@ -161,10 +163,9 @@ def was_cancelled_externally(db, eval_row: CallImportEvaluationRow) -> bool:
 
 def is_eval_row_user_cancelled(eval_row: CallImportEvaluationRow) -> bool:
     """True when the row was aborted by the operator."""
-    return (
-        (eval_row.status or "").lower() == "failed"
-        and (eval_row.error_message or "") == EVAL_CANCELLED_BY_USER_ERROR
-    )
+    return (eval_row.status or "").lower() == "failed" and (
+        eval_row.error_message or ""
+    ) in {EVAL_CANCELLED_BY_USER_ERROR, EVAL_AUTO_ABORTED_ERROR}
 
 
 def metric_text_references_production(
@@ -592,8 +593,14 @@ def _apply_parent_status_from_counters(
     completed = int(evaluation.completed_rows or 0)
     failed = int(evaluation.failed_rows or 0)
     in_progress = total - completed - failed
+    status = (evaluation.status or "").strip().lower()
 
-    if (evaluation.status or "").strip().lower() == "cancelled":
+    if status == AUTO_ABORTED_STATUS:
+        if in_progress <= 0:
+            evaluation.finished_at = now_utc()
+        return
+
+    if status == "cancelled":
         if in_progress > 0:
             return
         evaluation.finished_at = now_utc()

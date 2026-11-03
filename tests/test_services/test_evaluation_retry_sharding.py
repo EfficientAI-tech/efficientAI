@@ -222,6 +222,7 @@ def test_cancel_page_is_one_update_per_table():
         status="pending",
         source_ids=source_ids,
         now=datetime.now(timezone.utc),
+        eval_error_message="Evaluation cancelled by user",
     )
 
     assert session.execute.call_count == 2

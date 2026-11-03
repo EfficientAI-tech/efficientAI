@@ -1,4 +1,3 @@
-import type { Dispatch, SetStateAction } from 'react'
 import { Link } from 'react-router-dom'
 import {
   AlertCircle,
@@ -54,7 +53,7 @@ export type ImportDetailHeaderProps = {
   draftDataset: string
   setDraftDataset: (v: string) => void
   draftTagIds: string[]
-  setDraftTagIds: Dispatch<SetStateAction<string[]>>
+  setDraftTagIds: React.Dispatch<React.SetStateAction<string[]>>
   existingDatasets: string[]
   allTags: CallImportTag[]
   updateMetaMutation: UseMutationResult<
