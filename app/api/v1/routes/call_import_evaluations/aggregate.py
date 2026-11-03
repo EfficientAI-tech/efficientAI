@@ -213,6 +213,16 @@ def _baseline_candidate_evaluations(
     *,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
+    from app.services.call_imports.evaluation_report_period import (
+        ensure_evaluation_report_period,
+        evaluation_report_period_is_current,
+        report_period_tuple,
+    )
+
+    ensure_evaluation_report_period(db, current_evaluation)
+    if current_period_start is None:
+        current_period_start, _, _, _ = report_period_tuple(current_evaluation)
+
     candidates = (
         db.query(CallImportEvaluation, CallImport)
         .join(CallImport, CallImport.id == CallImportEvaluation.call_import_id)
@@ -223,15 +233,28 @@ def _baseline_candidate_evaluations(
             CallImportEvaluation.status == "completed",
             CallImportEvaluation.completed_rows > 0,
         )
-        .order_by(desc(CallImportEvaluation.created_at))
-        .limit(limit * 3)
-        .all()
     )
+    if current_period_start is not None:
+        candidates = candidates.filter(
+            or_(
+                CallImportEvaluation.report_period_start.is_(None),
+                CallImportEvaluation.report_period_start < current_period_start,
+            )
+        )
+    candidates = candidates.order_by(desc(CallImportEvaluation.created_at)).limit(
+        limit * 4
+    ).all()
     items: list[dict[str, Any]] = []
     for candidate_eval, candidate_import in candidates:
-        rows = _evaluation_rows_for_period(db, candidate_eval.id)
-        period_start, period_end, period_label, period_display = _report_period_from_rows(rows)
-        if current_period_start and period_start and period_start >= current_period_start:
+        if not evaluation_report_period_is_current(candidate_eval):
+            ensure_evaluation_report_period(db, candidate_eval)
+        period_start = candidate_eval.report_period_start
+        period_end = candidate_eval.report_period_end
+        period_label = candidate_eval.report_period_label
+        period_display = candidate_eval.report_period_display or "Not specified"
+        if period_start is None:
+            continue
+        if current_period_start and period_start >= current_period_start:
             continue
         dataset = (
             (candidate_import.dataset or "").strip()
@@ -393,12 +416,14 @@ def _period_deltas_from_evaluation(
     current_evaluation: CallImportEvaluation,
     current_eval_rows: List[CallImportEvaluationRow],
 ) -> dict[str, dict[str, str]]:
+    from app.db_sharding.scatter_gather import load_evaluation_score_rows_for_aggregate
     from app.services.call_imports.metric_aggregate_cache import (
         metrics_for_aggregate_endpoint,
     )
 
-    baseline_rows = _evaluation_rows_for_period(db, baseline_evaluation.id)
-    baseline_eval_rows = [eval_row for eval_row, _source_row in baseline_rows]
+    baseline_eval_rows = load_evaluation_score_rows_for_aggregate(
+        db, baseline_evaluation.id
+    )
     baseline_aggregate_models = metrics_for_aggregate_endpoint(
         db, baseline_evaluation
     )
@@ -487,9 +512,14 @@ def _period_delta_explanation_cache_key(
     completed_rows: int,
     baseline_completed_rows: int,
 ) -> str:
-    return (
-        f"{baseline_evaluation_id}:{completed_rows}:"
-        f"{baseline_completed_rows}:reconciled-v2"
+    from app.services.call_imports.evaluation_period_delta_cache import (
+        period_delta_numeric_cache_key,
+    )
+
+    return period_delta_numeric_cache_key(
+        baseline_evaluation_id,
+        completed_rows=completed_rows,
+        baseline_completed_rows=baseline_completed_rows,
     )
 
 
@@ -1611,7 +1641,14 @@ async def get_call_import_evaluation_aggregate(
     resolved_baseline_id: Optional[UUID] = None
     if baseline_evaluation_id is not None:
         call_import = _require_import(db, call_import_id, organization_id)
-        from app.db_sharding.scatter_gather import load_evaluation_row_pairs
+        from app.db_sharding.scatter_gather import (
+            load_evaluation_score_rows_for_aggregate,
+        )
+        from app.services.call_imports.evaluation_period_delta_cache import (
+            load_cached_period_deltas,
+            period_delta_numeric_cache_key,
+            save_cached_period_deltas,
+        )
 
         baseline_evaluation = _load_baseline_evaluation_for_aggregate(
             db,
@@ -1621,21 +1658,38 @@ async def get_call_import_evaluation_aggregate(
             baseline_evaluation_id,
         )
         resolved_baseline_id = baseline_evaluation.id
-        rows = load_evaluation_row_pairs(db, eval_id)
-        eval_rows = [eval_row for eval_row, _source_row in rows]
-        metric_aggregates_dicts = [_aggregate_to_dict(agg) for agg in metrics]
-        raw_deltas = _period_deltas_from_evaluation(
-            db,
-            baseline_evaluation,
-            metric_aggregates_dicts,
-            evaluation,
-            eval_rows,
-        )
-        cache_key = _period_delta_explanation_cache_key(
+        cache_key = period_delta_numeric_cache_key(
             baseline_evaluation.id,
-            completed_rows=evaluation.completed_rows,
-            baseline_completed_rows=baseline_evaluation.completed_rows,
+            completed_rows=int(evaluation.completed_rows or 0),
+            baseline_completed_rows=int(baseline_evaluation.completed_rows or 0),
         )
+        raw_deltas = load_cached_period_deltas(evaluation, cache_key)
+        if raw_deltas is None:
+            current_eval_rows = load_evaluation_score_rows_for_aggregate(
+                db, eval_id
+            )
+            metric_aggregates_dicts = [
+                _aggregate_to_dict(agg) for agg in metrics
+            ]
+            raw_deltas = _period_deltas_from_evaluation(
+                db,
+                baseline_evaluation,
+                metric_aggregates_dicts,
+                evaluation,
+                current_eval_rows,
+            )
+            try:
+                save_cached_period_deltas(
+                    db, evaluation, cache_key, raw_deltas
+                )
+                db.commit()
+            except Exception as exc:
+                logger.warning(
+                    "period delta cache save failed for evaluation {}: {}",
+                    evaluation.id,
+                    exc,
+                )
+                db.rollback()
         cached_why = _load_period_delta_explanations_cache(evaluation, cache_key)
         if cached_why:
             raw_deltas = _merge_delta_why(raw_deltas, cached_why)

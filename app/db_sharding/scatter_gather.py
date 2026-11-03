@@ -1858,6 +1858,64 @@ def count_completed_evaluation_row_pairs(
     return total
 
 
+def query_completed_recording_date_bounds(
+    catalog_db: Session,
+    evaluation_id: UUID,
+) -> tuple[Optional["date"], Optional["date"]]:
+    """Min/max ``recording_date`` for completed rows (scatter-gather when sharded)."""
+    from datetime import date as date_type
+
+    def bounds(db: Session) -> tuple[Optional[date_type], Optional[date_type]]:
+        row = (
+            db.query(
+                func.min(CallImportRow.recording_date),
+                func.max(CallImportRow.recording_date),
+            )
+            .select_from(CallImportEvaluationRow)
+            .join(
+                CallImportRow,
+                CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
+            )
+            .filter(
+                CallImportEvaluationRow.evaluation_id == evaluation_id,
+                CallImportEvaluationRow.status == "completed",
+                CallImportRow.recording_date.isnot(None),
+            )
+            .one()
+        )
+        return row[0], row[1]
+
+    if not is_sharding_enabled():
+        return bounds(catalog_db)
+
+    global_min: Optional[date_type] = None
+    global_max: Optional[date_type] = None
+    router = db_pool_manager.router
+    assert router is not None
+    for shard_id in router.shard_ids:
+        factory = db_pool_manager.shard_session_factory(shard_id)
+        shard_db = factory()
+        try:
+            shard_min, shard_max = bounds(shard_db)
+            if shard_min is not None:
+                global_min = (
+                    shard_min
+                    if global_min is None
+                    else min(global_min, shard_min)
+                )
+            if shard_max is not None:
+                global_max = (
+                    shard_max
+                    if global_max is None
+                    else max(global_max, shard_max)
+                )
+        finally:
+            shard_db.close()
+    if global_min is None and global_max is None:
+        return bounds(catalog_db)
+    return global_min, global_max
+
+
 def _completed_evaluation_row_pairs_query(db: Session, evaluation_id: UUID):
     return (
         db.query(CallImportEvaluationRow, CallImportRow)

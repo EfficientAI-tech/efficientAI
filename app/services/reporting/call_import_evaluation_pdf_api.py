@@ -471,10 +471,13 @@ def baseline_candidates_response(
     evaluation: CallImportEvaluation,
     organization_id: UUID,
 ) -> CallImportEvaluationBaselineCandidatesResponse:
-    rows = _evaluation_rows_for_period(db, evaluation.id)
-    period_start, _period_end, _derived_period_label, _period_display = _report_period_from_rows(
-        rows
+    from app.services.call_imports.evaluation_report_period import (
+        ensure_evaluation_report_period,
+        report_period_tuple,
     )
+
+    ensure_evaluation_report_period(db, evaluation)
+    period_start, _, _, _ = report_period_tuple(evaluation)
     candidates = _baseline_candidate_evaluations(
         db,
         organization_id,
@@ -482,6 +485,7 @@ def baseline_candidates_response(
         evaluation,
         period_start,
     )
+    db.commit()
     default_evaluation_id = next(
         (item["evaluation_id"] for item in candidates if item.get("is_default")),
         None,

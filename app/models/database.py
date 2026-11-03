@@ -3148,6 +3148,20 @@ class CallImportEvaluation(Base):
     cached_metric_aggregates = Column(JSON, nullable=True)
     cached_metric_aggregates_at_count = Column(Integer, nullable=True)
 
+    # ISO-week period derived from completed rows' recording_date on the
+    # parent import. Refreshed whenever ``report_period_at_count`` !=
+    # ``completed_rows`` (same watermark as aggregate cache).
+    report_period_start = Column(Date, nullable=True, index=True)
+    report_period_end = Column(Date, nullable=True)
+    report_period_label = Column(String(64), nullable=True)
+    report_period_display = Column(String(128), nullable=True)
+    report_period_at_count = Column(Integer, nullable=True)
+
+    # Numeric ``period_deltas`` keyed by baseline id + row-count watermark
+    # (same key shape as ``period_delta_explanations``). Avoids rescanning
+    # rows on every Visualizations tab load.
+    cached_period_deltas = Column(JSON, nullable=True)
+
     status = Column(String(20), nullable=False, default="pending", index=True)
 
     total_rows = Column(Integer, nullable=False, default=0)

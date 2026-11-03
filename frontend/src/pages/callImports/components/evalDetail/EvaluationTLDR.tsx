@@ -1,5 +1,10 @@
 import { useEffect, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  type UseQueryResult,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
 import {
   AlertTriangle,
   CheckCircle2,
@@ -72,6 +77,7 @@ function EvaluationTLDR({
   callImportId,
   evaluation,
   aggregate,
+  insightsQuery,
 }: {
   callImportId: string
   evaluation: CallImportEvaluation
@@ -81,6 +87,7 @@ function EvaluationTLDR({
     failed_rows: number
     metrics: CallImportMetricAggregate[]
   }
+  insightsQuery: UseQueryResult<EvaluationTldrSummary | null, Error>
 }) {
   const totalRows = aggregate.total_rows
   const completed = aggregate.completed_rows
@@ -198,6 +205,7 @@ function EvaluationTLDR({
         evaluationId={evaluation.id}
         completedRows={completed}
         totalRows={totalRows}
+        insightsQuery={insightsQuery}
       />
     </section>
   )
@@ -219,11 +227,13 @@ function EvaluationTLDRInsights({
   evaluationId,
   completedRows,
   totalRows,
+  insightsQuery,
 }: {
   callImportId: string
   evaluationId: string
   completedRows: number
   totalRows: number
+  insightsQuery: UseQueryResult<EvaluationTldrSummary | null, Error>
 }) {
   const queryClient = useQueryClient()
   const [pickerProvider, setPickerProvider] = useState<string>('')
@@ -234,17 +244,6 @@ function EvaluationTLDRInsights({
   const [showPicker, setShowPicker] = useState<boolean>(false)
   const [error, setError] = useState<string | null>(null)
 
-  const insightsQuery = useQuery<EvaluationTldrSummary | null>({
-    queryKey: ['call-import-evaluation-insights', getActiveWorkspaceId(), callImportId, evaluationId],
-    queryFn: () =>
-      apiClient.callImports.getCallImportEvaluationInsights(callImportId, evaluationId),
-    // Single shot per page-load. We refetch only after a successful
-    // mutation; auto-refetching here would be misleading because the
-    // backend never auto-generates the summary.
-    refetchOnWindowFocus: false,
-    refetchInterval: false,
-  })
-
   const cached = insightsQuery.data ?? null
 
   const userInsightsStateQuery = useQuery<EvaluationUserInsightsState | null>({
@@ -252,6 +251,7 @@ function EvaluationTLDRInsights({
     queryFn: () =>
       apiClient.callImports.getCallImportEvaluationUserInsights(callImportId, evaluationId),
     refetchOnWindowFocus: false,
+    enabled: insightsQuery.isSuccess && cached != null,
   })
 
   // Re-seed the picker with the previously-used provider/model so a

@@ -186,6 +186,7 @@ export function useEvalEvaluationRows({
   })
 
   useEffect(() => {
+    if (resultsTab !== 'table') return
     if (!callImportId || !evaluationId || !rowsQuery.data) return
     if (page * EVAL_ROWS_PAGE_SIZE >= rowsQuery.data.total) return
     const nextPage = page + 1
@@ -242,6 +243,7 @@ export function useEvalEvaluationRows({
       staleTime: 60_000,
     })
   }, [
+    resultsTab,
     callImportId,
     evaluationId,
     page,

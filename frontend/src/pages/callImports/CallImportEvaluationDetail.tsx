@@ -150,6 +150,22 @@ export default function CallImportEvaluationDetail() {
     queryClient.invalidateQueries({
       queryKey: ['call-import', activeWorkspaceId, id],
     })
+    queryClient.invalidateQueries({
+      queryKey: [
+        'call-import-evaluation-aggregate',
+        activeWorkspaceId,
+        id,
+        evalId,
+      ],
+    })
+    queryClient.invalidateQueries({
+      queryKey: [
+        'call-import-evaluation-aggregate-deltas',
+        activeWorkspaceId,
+        id,
+        evalId,
+      ],
+    })
   }
 
   const bulkOperationConflictMessage =
@@ -493,50 +509,58 @@ export default function CallImportEvaluationDetail() {
       baselineEvaluationId: vizBaselineEvaluationId,
       enabled: vizTabActive,
       chartsReady: (aggregateQuery.data?.metrics?.length ?? 0) > 0,
+      completedRows: evaluationQuery.data?.completed_rows,
     })
 
-  const visualizationInsightsQuery = useQuery<EvaluationTldrSummary | null>({
+  const chartsHaveMetrics = (aggregateQuery.data?.metrics?.length ?? 0) > 0
+
+  const evaluationInsightsQuery = useQuery<EvaluationTldrSummary | null>({
     queryKey: ['call-import-evaluation-insights', activeWorkspaceId, id, evalId],
-    queryFn: () => apiClient.callImports.getCallImportEvaluationInsights(id!, evalId!),
-    enabled: !!id && !!evalId && resultsTab === 'visualizations',
+    queryFn: () =>
+      apiClient.callImports.getCallImportEvaluationInsights(id!, evalId!),
+    enabled: vizTabActive && chartsHaveMetrics,
+    staleTime: 60_000,
     refetchOnWindowFocus: false,
     refetchInterval: false,
   })
+
+  const vizAiInsightsSubtab =
+    vizTabActive && visualizationSubtab === 'aiInsights'
+  const vizClustersSubtab =
+    vizTabActive &&
+    (visualizationSubtab === 'clusters' ||
+      visualizationSubtab === 'improvements')
+  const vizImprovementsSubtab =
+    vizTabActive && visualizationSubtab === 'improvements'
 
   const userInsightsQuery = useQuery<EvaluationUserInsightsState | null>({
     queryKey: ['call-import-evaluation-user-insights', activeWorkspaceId, id, evalId],
     queryFn: () =>
       apiClient.callImports.getCallImportEvaluationUserInsights(id!, evalId!),
-    enabled:
-      !!id &&
-      !!evalId &&
-      (resultsTab === 'visualizations' || pdfReportOpen),
+    enabled: !!id && !!evalId && (pdfReportOpen || vizAiInsightsSubtab),
     refetchOnWindowFocus: false,
-    refetchInterval: () => evalDetailPollInterval(),
+    refetchInterval: () =>
+      pdfReportOpen || vizAiInsightsSubtab ? evalDetailPollInterval() : false,
   })
 
   const metricClustersQuery = useQuery<EvaluationMetricClustersState | null>({
     queryKey: ['call-import-evaluation-metric-clusters', activeWorkspaceId, id, evalId],
     queryFn: () =>
       apiClient.callImports.getCallImportEvaluationMetricClusters(id!, evalId!),
-    enabled:
-      !!id &&
-      !!evalId &&
-      (resultsTab === 'visualizations' || pdfReportOpen),
+    enabled: !!id && !!evalId && (pdfReportOpen || vizClustersSubtab),
     refetchOnWindowFocus: false,
-    refetchInterval: () => evalDetailPollInterval(),
+    refetchInterval: () =>
+      pdfReportOpen || vizClustersSubtab ? evalDetailPollInterval() : false,
   })
 
   const promptImprovementsQuery = useQuery<EvaluationPromptImprovementsState | null>({
     queryKey: ['call-import-evaluation-prompt-improvements', activeWorkspaceId, id, evalId],
     queryFn: () =>
       apiClient.callImports.getCallImportEvaluationPromptImprovements(id!, evalId!),
-    enabled:
-      !!id &&
-      !!evalId &&
-      (resultsTab === 'visualizations' || pdfReportOpen),
+    enabled: !!id && !!evalId && (pdfReportOpen || vizImprovementsSubtab),
     refetchOnWindowFocus: false,
-    refetchInterval: () => evalDetailPollInterval(),
+    refetchInterval: () =>
+      pdfReportOpen || vizImprovementsSubtab ? evalDetailPollInterval() : false,
   })
 
   const retry = useEvalRetryMutations({
@@ -594,6 +618,22 @@ export default function CallImportEvaluationDetail() {
       })
       queryClient.invalidateQueries({
         queryKey: ['call-import-evaluations', activeWorkspaceId, id],
+      })
+      queryClient.invalidateQueries({
+        queryKey: [
+          'call-import-evaluation-aggregate',
+          activeWorkspaceId,
+          id,
+          evalId,
+        ],
+      })
+      queryClient.invalidateQueries({
+        queryKey: [
+          'call-import-evaluation-aggregate-deltas',
+          activeWorkspaceId,
+          id,
+          evalId,
+        ],
       })
       setPendingDeleteRow(null)
       setRowDeleteError(null)
@@ -1094,7 +1134,12 @@ export default function CallImportEvaluationDetail() {
   }
 
   useEffect(() => {
+    setVizBaselineEvaluationId(null)
+  }, [evalId])
+
+  useEffect(() => {
     if (resultsTab !== 'visualizations' || !id || !evalId) return
+    if ((aggregateQuery.data?.metrics?.length ?? 0) === 0) return
     let cancelled = false
     apiClient.callImports
       .listCallImportEvaluationBaselineCandidates(id, evalId)
@@ -1113,7 +1158,7 @@ export default function CallImportEvaluationDetail() {
     return () => {
       cancelled = true
     }
-  }, [resultsTab, id, evalId])
+  }, [resultsTab, id, evalId, aggregateQuery.data?.metrics?.length])
 
   useEffect(() => {
     if (resultsTab !== 'visualizations') {
@@ -1771,6 +1816,7 @@ export default function CallImportEvaluationDetail() {
                 callImportId={id!}
                 evaluation={evaluation}
                 aggregate={aggregateQuery.data!}
+                insightsQuery={evaluationInsightsQuery}
               />
               <div className="mt-4 mb-3 flex items-center justify-between gap-3 flex-wrap">
                 <p className="text-xs text-gray-500 inline-flex items-center gap-1.5">
@@ -1858,7 +1904,7 @@ export default function CallImportEvaluationDetail() {
                         isActive={isActive}
                         activeValue={activeValue}
                         businessInsight={
-                          visualizationInsightsQuery.data?.metric_insights?.[
+                          evaluationInsightsQuery.data?.metric_insights?.[
                             m.metric_id
                           ] || null
                         }

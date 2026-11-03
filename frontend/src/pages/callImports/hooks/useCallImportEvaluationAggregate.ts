@@ -42,6 +42,8 @@ export function useCallImportEvaluationAggregatePeriodDeltas(options: {
   baselineEvaluationId: string | null
   enabled: boolean
   chartsReady: boolean
+  /** Must match backend delta cache watermark (``completed_rows``). */
+  completedRows: number | undefined
 }) {
   const {
     callImportId,
@@ -50,6 +52,7 @@ export function useCallImportEvaluationAggregatePeriodDeltas(options: {
     baselineEvaluationId,
     enabled,
     chartsReady,
+    completedRows,
   } = options
 
   return useQuery({
@@ -59,6 +62,7 @@ export function useCallImportEvaluationAggregatePeriodDeltas(options: {
       callImportId,
       evaluationId,
       baselineEvaluationId,
+      completedRows ?? 0,
     ],
     queryFn: () =>
       apiClient.callImports.getCallImportEvaluationAggregate(

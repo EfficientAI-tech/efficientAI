@@ -67,6 +67,11 @@ def rebuild_evaluation_metric_aggregate_cache(
     eval_rows = load_evaluation_score_rows_for_aggregate(db, evaluation_id)
     aggregates = _compute_metric_aggregates(db, evaluation, eval_rows)
     save_aggregate_cache(db, evaluation, aggregates)
+    from app.services.call_imports.evaluation_report_period import (
+        ensure_evaluation_report_period,
+    )
+
+    ensure_evaluation_report_period(db, evaluation, force=True)
     return aggregates
 
 
@@ -84,6 +89,11 @@ def metrics_for_aggregate_endpoint(
     aggregates = _compute_metric_aggregates(db, evaluation, eval_rows)
     try:
         save_aggregate_cache(db, evaluation, aggregates)
+        from app.services.call_imports.evaluation_report_period import (
+            ensure_evaluation_report_period,
+        )
+
+        ensure_evaluation_report_period(db, evaluation, force=True)
         db.commit()
     except Exception as exc:
         logger.warning(
