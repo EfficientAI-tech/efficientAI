@@ -44,7 +44,10 @@ import { EvaluationAuditMeta } from '../../components/callImports/AuditMetaChips
 import CallImportProgressBar from './components/CallImportProgressBar'
 import { type CallImportEvaluationRowSidePanelTabId } from './components/CallImportEvaluationRowSidePanelContent'
 import MetricPromptImprovementsPanel from './components/MetricPromptImprovementsPanel'
-import { useCallImportEvaluationAggregate } from './hooks/useCallImportEvaluationAggregate'
+import {
+  useCallImportEvaluationAggregate,
+  useCallImportEvaluationAggregatePeriodDeltas,
+} from './hooks/useCallImportEvaluationAggregate'
 import { useEvalEvaluationRows } from './hooks/useEvalEvaluationRows'
 import {
   bulkCancelResponseKeepsBulkOperation,
@@ -167,6 +170,7 @@ export default function CallImportEvaluationDetail() {
   const [downloadMenuOpen, setDownloadMenuOpen] = useState(false)
   const downloadMenuRef = useRef<HTMLDivElement>(null)
   const exportPollRef = useRef(0)
+  const vizRunPollingPrevRef = useRef<boolean | null>(null)
   const [exportPreparing, setExportPreparing] = useState(false)
   const [exportParts, setExportParts] = useState<CallImportEvaluationExportPart[]>([])
   const [rowDeleteError, setRowDeleteError] = useState<string | null>(null)
@@ -471,14 +475,25 @@ export default function CallImportEvaluationDetail() {
   // Lazy: only fetch aggregates when the user lands on the
   // visualizations tab. Refetches while the run is still in flight so
   // the chart fills in as workers complete rows.
+  const vizTabActive = !!id && !!evalId && resultsTab === 'visualizations'
+
   const aggregateQuery = useCallImportEvaluationAggregate({
     callImportId: id,
     evaluationId: evalId,
     workspaceId: activeWorkspaceId,
-    baselineEvaluationId: vizBaselineEvaluationId,
-    enabled: !!id && !!evalId && resultsTab === 'visualizations',
+    enabled: vizTabActive,
     evaluation: evaluationQuery.data,
   })
+
+  const aggregatePeriodDeltasQuery =
+    useCallImportEvaluationAggregatePeriodDeltas({
+      callImportId: id,
+      evaluationId: evalId,
+      workspaceId: activeWorkspaceId,
+      baselineEvaluationId: vizBaselineEvaluationId,
+      enabled: vizTabActive,
+      chartsReady: (aggregateQuery.data?.metrics?.length ?? 0) > 0,
+    })
 
   const visualizationInsightsQuery = useQuery<EvaluationTldrSummary | null>({
     queryKey: ['call-import-evaluation-insights', activeWorkspaceId, id, evalId],
@@ -1101,6 +1116,31 @@ export default function CallImportEvaluationDetail() {
   }, [resultsTab, id, evalId])
 
   useEffect(() => {
+    if (resultsTab !== 'visualizations') {
+      vizRunPollingPrevRef.current = null
+      return
+    }
+    const polling = evaluationRunPollMs(evaluationQuery.data) !== false
+    if (vizRunPollingPrevRef.current === true && !polling) {
+      void aggregateQuery.refetch()
+      if (vizBaselineEvaluationId) {
+        void aggregatePeriodDeltasQuery.refetch()
+      }
+    }
+    vizRunPollingPrevRef.current = polling
+  }, [
+    resultsTab,
+    evaluationQuery.data?.status,
+    evaluationQuery.data?.completed_rows,
+    evaluationQuery.data?.failed_rows,
+    evaluationQuery.data?.total_rows,
+    evaluationQuery.data?.bulk_operation,
+    vizBaselineEvaluationId,
+    aggregateQuery.refetch,
+    aggregatePeriodDeltasQuery.refetch,
+  ])
+
+  useEffect(() => {
     if (!downloadMenuOpen) return
     const handleClickOutside = (event: MouseEvent) => {
       if (
@@ -1702,21 +1742,35 @@ export default function CallImportEvaluationDetail() {
             )}
           </div>
         ) : resultsTab === 'visualizations' ? (
-          aggregateQuery.isLoading || !aggregateQuery.data ? (
+          aggregateQuery.isLoading && !aggregateQuery.data ? (
             <div className="text-center py-12 text-gray-500">
               <RefreshCw className="h-6 w-6 mx-auto mb-2 animate-spin" />
               <p>Loading visualizations…</p>
             </div>
-          ) : (aggregateQuery.data.metrics?.length ?? 0) === 0 ? (
+          ) : aggregateQuery.isError && !aggregateQuery.data ? (
+            <p className="text-sm text-red-600">
+              {getApiErrorMessage(
+                aggregateQuery.error,
+                'Failed to load visualizations.',
+              )}
+            </p>
+          ) : (aggregateQuery.data?.metrics?.length ?? 0) === 0 ? (
             <p className="text-sm text-gray-500">
               No metric data yet. Charts populate as rows finish scoring.
             </p>
           ) : (
             <>
+              {aggregatePeriodDeltasQuery.isFetching &&
+              vizBaselineEvaluationId ? (
+                <p className="text-xs text-gray-500 mb-2 inline-flex items-center gap-1.5">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Comparing to prior run…
+                </p>
+              ) : null}
               <EvaluationTLDR
                 callImportId={id!}
                 evaluation={evaluation}
-                aggregate={aggregateQuery.data}
+                aggregate={aggregateQuery.data!}
               />
               <div className="mt-4 mb-3 flex items-center justify-between gap-3 flex-wrap">
                 <p className="text-xs text-gray-500 inline-flex items-center gap-1.5">
@@ -1751,7 +1805,7 @@ export default function CallImportEvaluationDetail() {
               {(() => {
                 // Suppress category sub-label children so each logical
                 // metric gets one chart card — same rule as the table.
-                const visibleAggregates = aggregateQuery.data.metrics.filter(
+                const visibleAggregates = aggregateQuery.data!.metrics.filter(
                   (m) => !childrenInGroups.has(m.metric_id),
                 )
                 const qualityAggregates = visibleAggregates.filter(
@@ -1809,8 +1863,9 @@ export default function CallImportEvaluationDetail() {
                           ] || null
                         }
                         periodDelta={
-                          aggregateQuery.data?.period_deltas?.[m.metric_id] ??
-                          null
+                          aggregatePeriodDeltasQuery.data?.period_deltas?.[
+                            m.metric_id
+                          ] ?? null
                         }
                         failurePoliciesSource={
                           aggregateQuery.data?.failure_policies_source ?? null

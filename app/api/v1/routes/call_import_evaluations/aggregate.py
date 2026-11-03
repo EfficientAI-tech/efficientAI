@@ -314,6 +314,39 @@ def _resolve_baseline_evaluation(
     )
 
 
+def _load_baseline_evaluation_for_aggregate(
+    db: Session,
+    organization_id: UUID,
+    workspace_id: UUID,
+    current_evaluation: CallImportEvaluation,
+    baseline_evaluation_id: UUID,
+) -> CallImportEvaluation:
+    """Validate a client-supplied baseline without scanning candidate runs."""
+    if baseline_evaluation_id == current_evaluation.id:
+        raise HTTPException(
+            status_code=400,
+            detail="Selected baseline evaluation is not a valid prior run for this report.",
+        )
+    baseline = (
+        db.query(CallImportEvaluation)
+        .join(CallImport, CallImport.id == CallImportEvaluation.call_import_id)
+        .filter(
+            CallImportEvaluation.id == baseline_evaluation_id,
+            CallImportEvaluation.organization_id == organization_id,
+            CallImport.workspace_id == workspace_id,
+            CallImportEvaluation.status == "completed",
+            CallImportEvaluation.completed_rows > 0,
+        )
+        .first()
+    )
+    if baseline is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Selected baseline evaluation is not a valid prior run for this report.",
+        )
+    return baseline
+
+
 def _benchmark_context_for_evaluation(
     db: Session,
     baseline_evaluation: Optional[CallImportEvaluation],
@@ -360,12 +393,14 @@ def _period_deltas_from_evaluation(
     current_evaluation: CallImportEvaluation,
     current_eval_rows: List[CallImportEvaluationRow],
 ) -> dict[str, dict[str, str]]:
+    from app.services.call_imports.metric_aggregate_cache import (
+        metrics_for_aggregate_endpoint,
+    )
+
     baseline_rows = _evaluation_rows_for_period(db, baseline_evaluation.id)
     baseline_eval_rows = [eval_row for eval_row, _source_row in baseline_rows]
-    baseline_aggregate_models = _compute_metric_aggregates(
-        db,
-        baseline_evaluation,
-        baseline_eval_rows,
+    baseline_aggregate_models = metrics_for_aggregate_endpoint(
+        db, baseline_evaluation
     )
     baseline_metric_aggregates = [
         _aggregate_to_dict(aggregate) for aggregate in baseline_aggregate_models
@@ -1578,44 +1613,40 @@ async def get_call_import_evaluation_aggregate(
         call_import = _require_import(db, call_import_id, organization_id)
         from app.db_sharding.scatter_gather import load_evaluation_row_pairs
 
-        rows = load_evaluation_row_pairs(db, eval_id)
-        eval_rows = [eval_row for eval_row, _source_row in rows]
-        period_start, _, _, _ = _report_period_from_rows(rows)
-        baseline_evaluation = _resolve_baseline_evaluation(
+        baseline_evaluation = _load_baseline_evaluation_for_aggregate(
             db,
             organization_id,
             call_import.workspace_id,
             evaluation,
-            period_start,
-            str(baseline_evaluation_id),
+            baseline_evaluation_id,
         )
-        if baseline_evaluation:
-            resolved_baseline_id = baseline_evaluation.id
-            metric_aggregates_dicts = [
-                _aggregate_to_dict(agg) for agg in metrics
-            ]
-            raw_deltas = _period_deltas_from_evaluation(
-                db,
-                baseline_evaluation,
-                metric_aggregates_dicts,
-                evaluation,
-                eval_rows,
+        resolved_baseline_id = baseline_evaluation.id
+        rows = load_evaluation_row_pairs(db, eval_id)
+        eval_rows = [eval_row for eval_row, _source_row in rows]
+        metric_aggregates_dicts = [_aggregate_to_dict(agg) for agg in metrics]
+        raw_deltas = _period_deltas_from_evaluation(
+            db,
+            baseline_evaluation,
+            metric_aggregates_dicts,
+            evaluation,
+            eval_rows,
+        )
+        cache_key = _period_delta_explanation_cache_key(
+            baseline_evaluation.id,
+            completed_rows=evaluation.completed_rows,
+            baseline_completed_rows=baseline_evaluation.completed_rows,
+        )
+        cached_why = _load_period_delta_explanations_cache(evaluation, cache_key)
+        if cached_why:
+            raw_deltas = _merge_delta_why(raw_deltas, cached_why)
+        period_deltas = {
+            metric_id: MetricPeriodDelta(
+                label=delta.get("label") or "",
+                detail=delta.get("detail") or "",
+                why=(delta.get("why") or "").strip() or None,
             )
-            raw_deltas = _period_deltas_with_explanations(
-                db,
-                organization_id,
-                evaluation,
-                baseline_evaluation,
-                raw_deltas,
-            )
-            period_deltas = {
-                metric_id: MetricPeriodDelta(
-                    label=delta.get("label") or "",
-                    detail=delta.get("detail") or "",
-                    why=(delta.get("why") or "").strip() or None,
-                )
-                for metric_id, delta in raw_deltas.items()
-            }
+            for metric_id, delta in raw_deltas.items()
+        }
 
     _fp_stored, failure_policies_source = policies_from_evaluation_raw(
         evaluation.metric_clusters
