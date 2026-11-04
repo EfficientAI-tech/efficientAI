@@ -57,11 +57,6 @@ import {
   type BulkEvaluationOperation,
 } from './evaluationBulkOperation'
 import { importHeaderPollMs } from './importPolling'
-import {
-  callImportEvalSurface,
-  metricsForCallImportRunEvaluation,
-  type CallImportMetricRow,
-} from './callImportMetricList'
 import { isReservedMetricScoreKey } from './metricScoresMeta'
 import MetricVisualization from './components/evalCharts/MetricVisualization'
 import {
@@ -452,22 +447,15 @@ export default function CallImportEvaluationDetail() {
     queryFn: () => apiClient.listAIProviders(),
   })
 
-  // Metric definitions, used to tell classification metrics apart from
-  // standard ones. Same query key as the Run Evaluation modal (shared cache).
-  const evalMetricSurface = callImportEvalSurface(callImportQuery.data?.content_modality)
-  const { data: metricDefinitionsRaw = [] } = useQuery({
-    queryKey: ['metrics', activeWorkspaceId, evalMetricSurface],
-    queryFn: () => apiClient.listMetrics(evalMetricSurface),
+  // Metric definitions for THIS run (classification vs standard, retry pickers,
+  // column names). Do not apply Run Evaluation surface/eligibility filters here —
+  // those only govern new runs on CallImportDetail. If a metric's surfaces change
+  // after the run was saved, we still need its definition for retry/re-run UX.
+  const { data: metricDefinitions = [] } = useQuery({
+    queryKey: ['metrics', activeWorkspaceId, 'all'],
+    queryFn: () => apiClient.listMetrics(),
     enabled: !!evalId,
   })
-  const metricDefinitions = useMemo(
-    () =>
-      metricsForCallImportRunEvaluation(
-        metricDefinitionsRaw as CallImportMetricRow[],
-        evalMetricSurface,
-      ),
-    [metricDefinitionsRaw, evalMetricSurface],
-  )
   const classificationMetricIdSet = useMemo(() => {
     const ids = new Set<string>()
     const visit = (metric: { id: string; custom_data_type?: string | null; children?: unknown }) => {
