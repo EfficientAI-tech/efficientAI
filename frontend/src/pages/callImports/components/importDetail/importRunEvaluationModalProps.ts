@@ -3,12 +3,13 @@ import type { UseMutationResult } from '@tanstack/react-query'
 import type { ProviderModelValue } from '../../../../components/providers/ProviderModelPicker'
 import type { AIProvider, CallImport, CallImportEvaluation } from '../../../../types/api'
 import type { apiClient } from '../../../../lib/api'
+import type { CallImportMetricRow } from '../../callImportMetricList'
 
 export type ImportRunEvaluationModalProps = {
   open: boolean
   setShowRunEval: (open: boolean) => void
   data: CallImport
-  metrics: Array<Record<string, unknown> & { id: string; name: string; enabled?: boolean; children?: unknown[]; selection_mode?: string | null }>
+  metrics: CallImportMetricRow[]
   selectedMetricIds: string[]
   setSelectedMetricIds: Dispatch<SetStateAction<string[]>>
   toggleMetric: (metricId: string) => void

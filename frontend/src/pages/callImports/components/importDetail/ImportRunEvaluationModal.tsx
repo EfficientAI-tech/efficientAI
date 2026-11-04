@@ -1,4 +1,6 @@
 import { Link } from 'react-router-dom'
+import { useMemo } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { AlertCircle, X } from 'lucide-react'
 import Button from '../../../../components/Button'
 import AIProviderModelPicker from '../../../../components/AIProviderModelPicker'
@@ -18,7 +20,10 @@ import {
   isStandardJudgeModel,
   resolveLLMModelForSubmit,
 } from '../../../../lib/llmModelOptions'
+import { apiClient } from '../../../../lib/api'
 import type { CallImportEvaluationLLMOverride } from '../../../../types/api'
+import { formatMetricScopeLabel } from '../../../simulations/simulationMetricScope'
+import type { MetricRow } from '../../../evaluators/components/metricSelectionUtils'
 import { renderImportDetailModal } from './modalPortal'
 import { STT_PROVIDER_ALLOWLIST } from './sttAllowlist'
 import type { ImportRunEvaluationModalProps } from './importRunEvaluationModalProps'
@@ -72,6 +77,33 @@ export function ImportRunEvaluationModal(props: ImportRunEvaluationModalProps) {
   setPartialsImportTarget,
   openSavePartialModal,
   } = props
+
+  const { data: agents = [] } = useQuery({
+    queryKey: ['agents', 'call-import-metric-scope'],
+    queryFn: () => apiClient.listAgents(0, 500),
+    enabled: open,
+  })
+  const { data: scenarios = [] } = useQuery({
+    queryKey: ['scenarios', 'call-import-metric-scope'],
+    queryFn: () => apiClient.listScenarios(0, 500),
+    enabled: open,
+  })
+  const scenarioNameById = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const s of scenarios as { id: string; name: string }[]) {
+      map.set(s.id, s.name)
+    }
+    return map
+  }, [scenarios])
+  const agentNameById = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const a of agents as { id: string; name: string }[]) {
+      map.set(a.id, a.name)
+    }
+    return map
+  }, [agents])
+  const metricScopeHint = (metric: MetricRow) =>
+    formatMetricScopeLabel(metric, scenarioNameById, agentNameById)
 
   return (
     <>
@@ -343,10 +375,15 @@ export function ImportRunEvaluationModal(props: ImportRunEvaluationModalProps) {
                                     checked={selectedMetricIds.includes(metric.id)}
                                     onChange={() => toggleMetric(metric.id)}
                                     disabled={runEvaluationMutation.isPending}
-                                    className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                                    className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 shrink-0"
                                   />
-                                  <span className="font-medium text-gray-900 truncate">
-                                    {metric.name}
+                                  <span className="min-w-0 flex-1">
+                                    <span className="font-medium text-gray-900 truncate block">
+                                      {metric.name}
+                                    </span>
+                                    <span className="text-[11px] text-gray-500 block truncate">
+                                      {metricScopeHint(metric as MetricRow)}
+                                    </span>
                                   </span>
                                 </label>
                               )
@@ -377,15 +414,20 @@ export function ImportRunEvaluationModal(props: ImportRunEvaluationModalProps) {
                                   disabled={runEvaluationMutation.isPending}
                                   className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
                                 />
-                                <span className="min-w-0 flex-1 flex items-baseline gap-2">
-                                  <span className="font-medium text-gray-900 truncate">
-                                    {metric.name}
-                                  </span>
-                                  {someChildrenSelected ? (
-                                    <span className="text-[11px] text-gray-500 whitespace-nowrap">
-                                      {selectedChildCount}/{childIds.length} labels
+                                <span className="min-w-0 flex-1">
+                                  <span className="flex items-baseline gap-2">
+                                    <span className="font-medium text-gray-900 truncate">
+                                      {metric.name}
                                     </span>
-                                  ) : null}
+                                    {someChildrenSelected ? (
+                                      <span className="text-[11px] text-gray-500 whitespace-nowrap">
+                                        {selectedChildCount}/{childIds.length} labels
+                                      </span>
+                                    ) : null}
+                                  </span>
+                                  <span className="text-[11px] text-gray-500 block truncate">
+                                    {metricScopeHint(metric as MetricRow)}
+                                  </span>
                                 </span>
                               </label>
                             )

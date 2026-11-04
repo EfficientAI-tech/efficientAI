@@ -17,13 +17,16 @@ import { isChatMedium } from '../../lib/agentMedium'
 import type { AgentOption, Scenario } from './scenarioTypes'
 import {
   MAX_SCENARIO_METRICS_BATCH,
-  customDataTypeForMetricType,
+  applyScenarioMetricTypeChange,
+  captureRationaleForScenarioMetricSave,
+  defaultCaptureRationaleForMetricType,
   mergeRequiredMetricTags,
   scenarioToMetricWorkflowDraft,
   type GeneratedScenarioMetricDraft,
   type PlannedScenarioMetricType,
   type ScenarioMetricWorkflowDraft,
 } from './scenarioMetricWorkflowTypes'
+import ScenarioMetricCaptureRationaleField from './ScenarioMetricCaptureRationaleField'
 
 interface ScenarioMetricsFromScenariosModalProps {
   open: boolean
@@ -255,6 +258,7 @@ export default function ScenarioMetricsFromScenariosModal({
               supported_surfaces: generated.supported_surfaces,
               enabled_surfaces: generated.enabled_surfaces,
               tags: generated.tags ?? [],
+              capture_rationale: defaultCaptureRationaleForMetricType(generated.metric_type),
             },
           }
         })
@@ -300,6 +304,7 @@ export default function ScenarioMetricsFromScenariosModal({
             : undefined,
         tags,
         scope: 'workspace',
+        capture_rationale: captureRationaleForScenarioMetricSave(metric),
         agent_ids: [promptAgentId],
         scenario_ids: draft.sourceScenarioId ? [draft.sourceScenarioId] : undefined,
       })
@@ -609,10 +614,10 @@ export default function ScenarioMetricsFromScenariosModal({
                             onChange={(e) => {
                               const metric_type = e.target
                                 .value as GeneratedScenarioMetricDraft['metric_type']
-                              updateDraftMetric(draft.id, {
-                                metric_type,
-                                custom_data_type: customDataTypeForMetricType(metric_type),
-                              })
+                              updateDraftMetric(
+                                draft.id,
+                                applyScenarioMetricTypeChange(draft.metric!, metric_type),
+                              )
                             }}
                             className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white text-sm"
                           >
@@ -637,6 +642,19 @@ export default function ScenarioMetricsFromScenariosModal({
                             placeholder="Tags"
                           />
                         </div>
+                        {draft.metric ? (
+                          <ScenarioMetricCaptureRationaleField
+                            metricType={draft.metric.metric_type}
+                            checked={
+                              draft.metric.capture_rationale ??
+                              defaultCaptureRationaleForMetricType(draft.metric.metric_type)
+                            }
+                            disabled={draft.metricPushed}
+                            onChange={(capture_rationale) =>
+                              updateDraftMetric(draft.id, { capture_rationale })
+                            }
+                          />
+                        ) : null}
                         {!draft.metricPushed && scenarioMetricsEnabled && (
                           <div className="flex justify-end">
                             <Button

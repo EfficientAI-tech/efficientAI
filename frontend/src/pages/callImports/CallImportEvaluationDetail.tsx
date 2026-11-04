@@ -57,6 +57,11 @@ import {
   type BulkEvaluationOperation,
 } from './evaluationBulkOperation'
 import { importHeaderPollMs } from './importPolling'
+import {
+  callImportEvalSurface,
+  metricsForCallImportRunEvaluation,
+  type CallImportMetricRow,
+} from './callImportMetricList'
 import { isReservedMetricScoreKey } from './metricScoresMeta'
 import MetricVisualization from './components/evalCharts/MetricVisualization'
 import {
@@ -449,11 +454,20 @@ export default function CallImportEvaluationDetail() {
 
   // Metric definitions, used to tell classification metrics apart from
   // standard ones. Same query key as the Run Evaluation modal (shared cache).
-  const { data: metricDefinitions = [] } = useQuery({
-    queryKey: ['metrics', activeWorkspaceId, 'agent'],
-    queryFn: () => apiClient.listMetrics('agent'),
+  const evalMetricSurface = callImportEvalSurface(callImportQuery.data?.content_modality)
+  const { data: metricDefinitionsRaw = [] } = useQuery({
+    queryKey: ['metrics', activeWorkspaceId, evalMetricSurface],
+    queryFn: () => apiClient.listMetrics(evalMetricSurface),
     enabled: !!evalId,
   })
+  const metricDefinitions = useMemo(
+    () =>
+      metricsForCallImportRunEvaluation(
+        metricDefinitionsRaw as CallImportMetricRow[],
+        evalMetricSurface,
+      ),
+    [metricDefinitionsRaw, evalMetricSurface],
+  )
   const classificationMetricIdSet = useMemo(() => {
     const ids = new Set<string>()
     const visit = (metric: { id: string; custom_data_type?: string | null; children?: unknown }) => {

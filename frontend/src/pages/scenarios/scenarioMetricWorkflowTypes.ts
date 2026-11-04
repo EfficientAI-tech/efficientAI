@@ -11,6 +11,8 @@ export interface GeneratedScenarioMetricDraft {
   supported_surfaces: string[]
   enabled_surfaces: string[]
   tags: string[]
+  /** Client-only; persisted on Add to Metrics via ``createMetric``. */
+  capture_rationale?: boolean
 }
 
 export interface ScenarioMetricWorkflowDraft {
@@ -67,6 +69,40 @@ export function customDataTypeForMetricType(
   if (metricType === 'number') return 'number_range'
   if (metricType === 'text') return null
   return 'enum'
+}
+
+export function defaultCaptureRationaleForMetricType(
+  metricType: GeneratedScenarioMetricDraft['metric_type'],
+): boolean {
+  return metricType !== 'text'
+}
+
+export function captureRationaleForScenarioMetricSave(
+  metric: GeneratedScenarioMetricDraft,
+): boolean {
+  if (metric.metric_type === 'text') return false
+  return (
+    metric.capture_rationale ?? defaultCaptureRationaleForMetricType(metric.metric_type)
+  )
+}
+
+export function applyScenarioMetricTypeChange(
+  prev: GeneratedScenarioMetricDraft,
+  metric_type: GeneratedScenarioMetricDraft['metric_type'],
+): Partial<GeneratedScenarioMetricDraft> {
+  const prevType = prev.metric_type
+  let capture_rationale = prev.capture_rationale
+  if (metric_type === 'text') {
+    capture_rationale = false
+  } else if (prevType === 'text') {
+    capture_rationale = true
+  }
+  return {
+    metric_type,
+    custom_data_type: customDataTypeForMetricType(metric_type),
+    custom_config: metric_type === 'text' ? {} : prev.custom_config,
+    capture_rationale,
+  }
 }
 
 export const MAX_SCENARIO_METRICS_BATCH = 10
