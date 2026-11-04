@@ -26,6 +26,11 @@ import { formatMetricScopeLabel } from '../../../simulations/simulationMetricSco
 import type { MetricRow } from '../../../evaluators/components/metricSelectionUtils'
 import { renderImportDetailModal } from './modalPortal'
 import { STT_PROVIDER_ALLOWLIST } from './sttAllowlist'
+import {
+  callImportHasEvalRecordings,
+  callImportHasProductionTranscriptMapping,
+  isTranscriptAgreementMetric,
+} from '../../callImportMetricList'
 import type { ImportRunEvaluationModalProps } from './importRunEvaluationModalProps'
 
 export function ImportRunEvaluationModal(props: ImportRunEvaluationModalProps) {
@@ -112,6 +117,23 @@ export function ImportRunEvaluationModal(props: ImportRunEvaluationModalProps) {
         renderImportDetailModal(
           (() => {
             const enabledMetrics = metrics.filter((m: any) => m.enabled)
+            const transcriptAgreementMetrics = enabledMetrics.filter((m: any) =>
+              isTranscriptAgreementMetric(m),
+            )
+            const llmEnabledMetrics = enabledMetrics.filter(
+              (m: any) => !isTranscriptAgreementMetric(m),
+            )
+            const transcriptAgreementBlocked =
+              !callImportHasProductionTranscriptMapping(data) ||
+              !callImportHasEvalRecordings(data)
+            const transcriptAgreementBlockReason = !callImportHasProductionTranscriptMapping(
+              data,
+            )
+              ? 'Map a production transcript column on this import.'
+              : 'Recordings are required so diarization can build the reference transcript.'
+            const transcriptAgreementSelected = transcriptAgreementMetrics.some((m: any) =>
+              selectedMetricIds.includes(m.id),
+            )
             const disabledMetrics = metrics.filter((m: any) => !m.enabled)
             const allSelectableIds = enabledMetrics.flatMap((metric: any) => {
               const children: any[] = Array.isArray(metric.children)
@@ -358,7 +380,58 @@ export function ImportRunEvaluationModal(props: ImportRunEvaluationModalProps) {
                             </div>
                           </div>
                           <div className="border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-64 overflow-y-auto">
-                          {enabledMetrics.map((metric: any) => {
+                          {transcriptAgreementMetrics.length > 0 ? (
+                            <div className="px-3 py-2 bg-slate-50 border-b border-gray-200">
+                              <p className="text-[11px] font-semibold text-slate-700">
+                                Transcript agreement (no LLM cost)
+                              </p>
+                              <p className="text-[10px] text-slate-500 mt-0.5">
+                                Diarized user speech is the reference; production user
+                                speech is scored against it. Lower is better.
+                              </p>
+                              {transcriptAgreementSelected ? (
+                                <p className="text-[10px] text-amber-700 mt-1">
+                                  Diarization will run for rows without a diarized
+                                  transcript.
+                                </p>
+                              ) : null}
+                            </div>
+                          ) : null}
+                          {transcriptAgreementMetrics.map((metric: any) => (
+                            <label
+                              key={metric.id}
+                              title={
+                                transcriptAgreementBlocked
+                                  ? transcriptAgreementBlockReason
+                                  : undefined
+                              }
+                              className={`flex items-center gap-3 px-3 py-2 text-sm ${
+                                transcriptAgreementBlocked
+                                  ? 'opacity-50 cursor-not-allowed bg-gray-50'
+                                  : 'hover:bg-gray-50 cursor-pointer'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={selectedMetricIds.includes(metric.id)}
+                                onChange={() => toggleMetric(metric.id)}
+                                disabled={
+                                  runEvaluationMutation.isPending ||
+                                  transcriptAgreementBlocked
+                                }
+                                className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 shrink-0"
+                              />
+                              <span className="min-w-0 flex-1">
+                                <span className="font-medium text-gray-900 truncate block">
+                                  {metric.name}
+                                </span>
+                                <span className="text-[11px] text-gray-500 block truncate">
+                                  {metricScopeHint(metric as MetricRow)}
+                                </span>
+                              </span>
+                            </label>
+                          ))}
+                          {llmEnabledMetrics.map((metric: any) => {
                             const children: any[] = Array.isArray(metric.children)
                               ? metric.children.filter((c: any) => c.enabled)
                               : []

@@ -50,6 +50,7 @@ def stub_worker_task_modules():
         )
 
     fake_core.is_eval_row_user_cancelled = _is_eval_row_user_cancelled
+    fake_core.evaluation_needs_diarised_reference = lambda *_a, **_kw: False
 
     fake_process_import = types.ModuleType("app.workers.tasks.process_call_import_row")
     fake_process_import.process_call_import_row_task = MagicMock()

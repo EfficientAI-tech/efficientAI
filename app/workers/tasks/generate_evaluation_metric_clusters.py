@@ -9,15 +9,19 @@ from loguru import logger
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.database import SessionLocal
-from app.models.database import (
-    CallImportEvaluation,
-    CallImportEvaluationRow,
-    CallImportRow,
-)
+from app.models.database import CallImportEvaluation
 from app.services.call_import_metric_clusters import (
-    generate_metric_clusters,
+    ClusterOutputTruncated,
     metric_clusters_raw_is_cancelled,
     metric_clusters_state_to_db,
+)
+from app.services.call_import_metric_clusters_wave import (
+    process_metric_clusters_wave_step,
+    start_metric_clusters_job_header,
+)
+from app.services.evaluation_analysis_checkpoints import (
+    new_job_run_id,
+    normalize_transcript_source,
 )
 from app.workers.config import celery_app
 
@@ -32,7 +36,10 @@ def generate_evaluation_metric_clusters_task(
     credential_id: str | None = None,
     max_llm_calls: int | None = None,
     evaluation_row_ids: list[str] | None = None,
+    transcript_source: str | None = None,
+    resume: bool = False,
 ):
+    del max_llm_calls, evaluation_row_ids
     from app.api.v1.routes.call_import_evaluations import _child_names_by_parent
     from app.api.v1.routes.call_import_evaluations.clusters import (
         _metrics_for_clustering,
@@ -67,30 +74,13 @@ def generate_evaluation_metric_clusters_task(
             UUID(credential_id) if credential_id else None,
         )
 
-        from app.db_sharding.scatter_gather import (
-            DEFAULT_EVAL_ROW_PAIR_SAMPLE,
-            load_completed_evaluation_row_pairs_for_eval_row_ids,
-            load_completed_evaluation_row_pairs_sample,
-            load_evaluation_score_rows_for_aggregate,
-        )
+        from app.db_sharding.scatter_gather import load_evaluation_score_rows_for_aggregate
         from app.services.call_imports.metric_aggregate_cache import (
             evaluation_metric_aggregates_for_analysis,
         )
 
         score_rows = load_evaluation_score_rows_for_aggregate(db, evaluation.id)
         aggregates = evaluation_metric_aggregates_for_analysis(db, evaluation)
-        if evaluation_row_ids:
-            completed_pairs = load_completed_evaluation_row_pairs_for_eval_row_ids(
-                db,
-                evaluation.id,
-                [UUID(rid) for rid in evaluation_row_ids],
-            )
-        else:
-            completed_pairs = load_completed_evaluation_row_pairs_sample(
-                db,
-                evaluation.id,
-                max_pairs=DEFAULT_EVAL_ROW_PAIR_SAMPLE,
-            )
         eval_rows = score_rows
         metrics = _metrics_for_clustering(db, evaluation, eval_rows)
         parent_ids = [
@@ -108,6 +98,28 @@ def generate_evaluation_metric_clusters_task(
             aggregates,
             child_names_by_parent=child_names_by_parent,
         )
+
+        raw = evaluation.metric_clusters if isinstance(evaluation.metric_clusters, dict) else {}
+        source = normalize_transcript_source(
+            transcript_source or raw.get("transcript_source") or evaluation.transcript_source
+        )
+
+        if raw.get("job_run_id"):
+            run_id = UUID(str(raw["job_run_id"]))
+        else:
+            run_id = new_job_run_id()
+            merged_raw = {**raw} if isinstance(raw, dict) else {}
+            evaluation.metric_clusters = start_metric_clusters_job_header(
+                evaluation,
+                db,
+                job_run_id=run_id,
+                transcript_source=source,
+                provider=provider_enum.value,
+                model=model_str,
+                metric_clusters_raw=merged_raw,
+            )
+            flag_modified(evaluation, "metric_clusters")
+            db.commit()
 
         def _reload_cancelled() -> bool:
             db.expire(evaluation, ["metric_clusters"])
@@ -129,33 +141,53 @@ def generate_evaluation_metric_clusters_task(
         from app.services.usage.context import llm_usage_context
 
         with llm_usage_context(usage_context_for_evaluation(evaluation)):
-            state = generate_metric_clusters(
+            action, terminal_state = process_metric_clusters_wave_step(
                 db,
                 evaluation,
                 evaluation.organization_id,
                 provider_enum,
                 model_str,
-                completed_row_pairs=completed_pairs,
                 metrics=metrics,
                 policies=policies,
+                job_run_id=run_id,
                 on_progress=on_progress,
-                max_llm_calls=max_llm_calls,
                 is_cancelled=_reload_cancelled,
             )
 
         if _reload_cancelled():
             return
 
-        persisted = metric_clusters_state_to_db(state)
-        if isinstance(evaluation.metric_clusters, dict):
-            evaluation.metric_clusters = {
-                **persisted,
-                "celery_task_id": None,
-            }
-        else:
+        if terminal_state is not None:
+            persisted = metric_clusters_state_to_db(terminal_state)
+            persisted["job_run_id"] = str(run_id)
+            persisted["transcript_source"] = source
+            persisted["celery_task_id"] = None
+            if isinstance(evaluation.metric_clusters, dict):
+                cursor = evaluation.metric_clusters.get("cursor")
+                if cursor:
+                    persisted["cursor"] = cursor
             evaluation.metric_clusters = persisted
+            flag_modified(evaluation, "metric_clusters")
+            db.commit()
+            return
+
         flag_modified(evaluation, "metric_clusters")
         db.commit()
+
+        if action == "continue":
+            generate_evaluation_metric_clusters_task.apply_async(
+                kwargs={
+                    "evaluation_id": evaluation_id,
+                    "provider": provider,
+                    "model": model,
+                    "credential_id": credential_id,
+                    "transcript_source": source,
+                    "resume": True,
+                },
+                queue="imports",
+            )
+    except ClusterOutputTruncated:
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.exception(
             "Metric clusters generation failed for evaluation {}: {}",
@@ -171,7 +203,13 @@ def generate_evaluation_metric_clusters_task(
             if evaluation is not None and not metric_clusters_raw_is_cancelled(
                 evaluation.metric_clusters
             ):
+                prior = (
+                    evaluation.metric_clusters
+                    if isinstance(evaluation.metric_clusters, dict)
+                    else {}
+                )
                 evaluation.metric_clusters = {
+                    **prior,
                     "status": "failed",
                     "error_message": str(exc),
                     "generated_at": datetime.now(timezone.utc).isoformat(),

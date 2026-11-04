@@ -251,6 +251,15 @@ class MetricTrigger(str, enum.Enum):
     """Metric trigger enumeration."""
     ALWAYS = "always"
 
+
+class MetricScoringMethod(str, enum.Enum):
+    """How a metric is scored during call-import evaluation."""
+
+    LLM = "llm"
+    AUDIO = "audio"
+    USER_WER = "user_wer"
+    USER_CER = "user_cer"
+
 class CallRecordingStatus(str, enum.Enum):
     """Call recording status enumeration."""
     PENDING = "pending"

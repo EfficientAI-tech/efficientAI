@@ -3558,6 +3558,18 @@ class ApiClient {
     return this.callImports.getCallImportEvaluationRow(callImportId, evaluationId, rowId)
   }
 
+  async getCallImportEvaluationRowWerAlignment(
+    callImportId: string,
+    evaluationId: string,
+    rowId: string,
+  ) {
+    return this.callImports.getCallImportEvaluationRowWerAlignment(
+      callImportId,
+      evaluationId,
+      rowId,
+    )
+  }
+
   async startCallImportEvaluationExport(
     callImportId: string,
     evaluationId: string,

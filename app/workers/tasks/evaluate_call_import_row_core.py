@@ -6,7 +6,7 @@ import math
 import os
 import tempfile
 from datetime import datetime, timezone
-from typing import Any, List, Optional
+from typing import Any, List, NamedTuple, Optional
 from uuid import UUID
 
 from sqlalchemy import and_, case, func, or_, update
@@ -27,6 +27,14 @@ EVAL_AUTO_ABORTED_ERROR: str = "Automatically aborted after 24 hours"
 AUTO_ABORTED_STATUS: str = "auto_aborted"
 
 _BILLING_META_KEY = "_billing"
+
+
+class CategorizedMetrics(NamedTuple):
+    transcript_metrics: list[Metric]
+    audio_metrics: list[Metric]
+    comparison_metrics: list[Metric]
+    computed_metrics: list[Metric]
+    skipped_scores: dict[str, dict[str, Any]]
 
 _ALL_COLUMNS_BLOCK_MAX_CHARS = 16_000
 _ALL_COLUMNS_CELL_MAX_CHARS = 4_000
@@ -230,21 +238,61 @@ def build_all_columns_block(
     return "\n".join(lines)
 
 
+def load_call_import_eval_context(
+    catalog_db: Session,
+    call_import_id: UUID | None,
+) -> tuple[dict[str, Any], Any]:
+    """Load import-level fields for eval without ORM lazy-load of ``CallImport``.
+
+    Uses narrow SQL so pre-migration-114 databases (no ``speaker_aliases``) still
+    score LLM metrics; computed metrics fall back to default speaker aliases.
+    """
+    if call_import_id is None:
+        return {}, None
+    from sqlalchemy import text
+    from sqlalchemy.exc import ProgrammingError
+
+    params = {"id": str(call_import_id)}
+    try:
+        row = catalog_db.execute(
+            text(
+                "SELECT custom_column_mapping, speaker_aliases "
+                "FROM call_imports WHERE CAST(id AS TEXT) = :id"
+            ),
+            params,
+        ).one_or_none()
+    except ProgrammingError:
+        catalog_db.rollback()
+        row = catalog_db.execute(
+            text(
+                "SELECT custom_column_mapping FROM call_imports "
+                "WHERE CAST(id AS TEXT) = :id"
+            ),
+            params,
+        ).one_or_none()
+        if row is None:
+            return {}, None
+        mapping = row[0] if isinstance(row[0], dict) else {}
+        return mapping, None
+    if row is None:
+        return {}, None
+    mapping = row[0] if isinstance(row[0], dict) else {}
+    return mapping, row[1]
+
+
 def categorize_metrics(
     metrics: list[Metric],
     has_audio: bool,
     has_production_transcript: bool = False,
     has_diarised_transcript: bool = False,
-) -> tuple[
-    list[Metric],
-    list[Metric],
-    list[Metric],
-    dict[str, dict[str, Any]],
-]:
+) -> CategorizedMetrics:
     transcript_metrics: list[Metric] = []
     audio_metrics: list[Metric] = []
     comparison_metrics: list[Metric] = []
+    computed_metrics: list[Metric] = []
     skipped_scores: dict[str, dict[str, Any]] = {}
+
+    from app.services.metrics.computed_metrics import is_computed_metric
 
     for m in metrics:
         normalized = (m.name or "").strip().lower()
@@ -260,6 +308,24 @@ def categorize_metrics(
                 }
             continue
 
+        if is_computed_metric(m):
+            missing: list[str] = []
+            if not has_production_transcript:
+                missing.append("production")
+            if not has_diarised_transcript:
+                missing.append("diarised")
+            if missing:
+                skipped_scores[str(m.id)] = {
+                    "value": None,
+                    "type": get_metric_type_value(m),
+                    "metric_name": m.name,
+                    "skipped": "comparison_missing_transcript",
+                    "missing_transcripts": missing,
+                }
+                continue
+            computed_metrics.append(m)
+            continue
+
         is_explicit_compare = bool(getattr(m, "compare_transcripts", False))
         is_standalone = not getattr(m, "parent_metric_id", None)
         is_auto_compare = (
@@ -269,7 +335,7 @@ def categorize_metrics(
             and metric_text_references_production(m)
         )
         if is_explicit_compare or is_auto_compare:
-            missing: list[str] = []
+            missing = []
             if not has_production_transcript:
                 missing.append("production")
             if not has_diarised_transcript:
@@ -288,11 +354,12 @@ def categorize_metrics(
 
         transcript_metrics.append(m)
 
-    return (
-        transcript_metrics,
-        audio_metrics,
-        comparison_metrics,
-        skipped_scores,
+    return CategorizedMetrics(
+        transcript_metrics=transcript_metrics,
+        audio_metrics=audio_metrics,
+        comparison_metrics=comparison_metrics,
+        computed_metrics=computed_metrics,
+        skipped_scores=skipped_scores,
     )
 
 
@@ -900,7 +967,7 @@ def load_enabled_metrics(
     *,
     restricted_metric_ids: Optional[List[str]] = None,
 ) -> list[Metric]:
-    metric_ids_raw = evaluation.selected_metric_ids or []
+    metric_ids_raw = getattr(evaluation, "selected_metric_ids", None) or []
     metric_ids: list[UUID] = []
     for item in metric_ids_raw:
         try:
@@ -941,6 +1008,19 @@ def load_enabled_metrics(
     return list(cached_catalog_fetch("enabled_metrics", cache_key, _load))
 
 
+def evaluation_needs_diarised_reference(
+    db: Session,
+    evaluation: CallImportEvaluation,
+) -> bool:
+    from app.services.metrics.computed_metrics import (
+        metrics_require_transcript_agreement,
+    )
+
+    return metrics_require_transcript_agreement(
+        load_enabled_metrics(db, evaluation)
+    )
+
+
 def load_active_ai_providers(db: Session, organization_id: UUID) -> list:
     """Active org providers, cached so each scoring call does not re-read them."""
     from app.models.database import AIProvider
@@ -964,17 +1044,60 @@ def load_active_ai_providers(db: Session, organization_id: UUID) -> list:
     )
 
 
+def run_computed_metrics_for_row(
+    *,
+    source_row: CallImportRow,
+    computed_metrics: list[Metric],
+    metric_scores: dict[str, dict[str, Any]],
+    speaker_aliases: Any = None,
+) -> None:
+    """Score deterministic computed metrics into ``metric_scores``."""
+    if not computed_metrics:
+        return
+
+    from app.services.metrics.computed_metrics import (
+        ComputedMetricContext,
+        run_computed_scorer,
+    )
+
+    segments = (
+        source_row.diarised_segments
+        if isinstance(source_row.diarised_segments, list)
+        else None
+    )
+    ctx = ComputedMetricContext(
+        production_transcript=(source_row.transcript or "").strip(),
+        diarised_transcript=(source_row.diarised_transcript or "").strip(),
+        diarised_segments=segments,
+        diarised_speaker_swap=bool(
+            getattr(source_row, "diarised_speaker_swap", False)
+        ),
+        speaker_aliases=speaker_aliases,
+        diarised_native_transcript=(
+            getattr(source_row, "diarised_native_transcript", None) or ""
+        ).strip(),
+    )
+
+    for metric in computed_metrics:
+        mid = str(metric.id)
+        result = run_computed_scorer(metric, ctx)
+        if "skipped" in result:
+            metric_scores[mid] = {
+                "value": None,
+                "type": get_metric_type_value(metric),
+                "metric_name": metric.name,
+                "skipped": result["skipped"],
+            }
+            continue
+        metric_scores[mid] = result
+
+
 def categorize_row_metrics(
     db: Session,
     evaluation: CallImportEvaluation,
     source_row: CallImportRow,
     metrics: list[Metric],
-) -> tuple[
-    list[Metric],
-    list[Metric],
-    list[Metric],
-    dict[str, dict[str, Any]],
-]:
+) -> CategorizedMetrics:
     from app.db_sharding.scatter_gather import row_text_present
 
     production_transcript = row_text_present(
@@ -983,13 +1106,16 @@ def categorize_row_metrics(
     diarised_transcript = row_text_present(
         source_row, "diarised_transcript", "diarised_transcript_char_length"
     )
+    has_diarised_segments = isinstance(source_row.diarised_segments, list) and bool(
+        source_row.diarised_segments
+    )
     recording_s3_key = (source_row.recording_s3_key or "").strip() or None
     has_audio = recording_s3_key is not None
     return categorize_metrics(
         metrics,
         has_audio,
         has_production_transcript=bool(production_transcript),
-        has_diarised_transcript=bool(diarised_transcript),
+        has_diarised_transcript=bool(diarised_transcript) or has_diarised_segments,
     )
 
 
@@ -1005,10 +1131,10 @@ def row_needs_audio_phase(
     )
     if not metrics:
         return False
-    _, audio_metrics, _, _ = categorize_row_metrics(
+    categorized = categorize_row_metrics(
         db, evaluation, source_row, metrics
     )
-    return bool(audio_metrics)
+    return bool(categorized.audio_metrics)
 
 
 def row_needs_llm_phase(
@@ -1023,10 +1149,14 @@ def row_needs_llm_phase(
     )
     if not metrics:
         return False
-    transcript_metrics, _audio, comparison_metrics, _ = categorize_row_metrics(
+    categorized = categorize_row_metrics(
         db, evaluation, source_row, metrics
     )
-    return bool(transcript_metrics or comparison_metrics)
+    return bool(
+        categorized.transcript_metrics
+        or categorized.comparison_metrics
+        or categorized.computed_metrics
+    )
 
 
 def cache_eval_row_audio_seconds(

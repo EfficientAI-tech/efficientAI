@@ -33,6 +33,40 @@ def test_seed_defaults_excludes_user_insights_and_problem_resolution(
     assert user_insight_rows == []
 
 
+def test_seed_defaults_includes_user_wer_cer_with_scoring_method(
+    authenticated_client, db_session, org_id, default_workspace
+):
+    response = authenticated_client.post("/api/v1/metrics/seed-defaults")
+    assert response.status_code == 201
+
+    metrics = authenticated_client.get("/api/v1/metrics?surface=agent").json()
+    by_name = {m["name"]: m for m in metrics}
+    assert by_name["User WER"]["scoring_method"] == "user_wer"
+    assert by_name["User CER"]["scoring_method"] == "user_cer"
+    assert "production user turns (reference)" in by_name["User WER"]["description"]
+    assert "Headline" in by_name["User CER"]["description"]
+    assert "Agent turns are ignored" in by_name["User CER"]["description"]
+
+    stored = (
+        db_session.query(Metric)
+        .filter(
+            Metric.organization_id == org_id,
+            Metric.workspace_id == default_workspace.id,
+            Metric.name == "User WER",
+        )
+        .one()
+    )
+    stored.description = "stale diarized-reference copy"
+    db_session.commit()
+
+    response2 = authenticated_client.post("/api/v1/metrics/seed-defaults")
+    assert response2.status_code == 201
+    metrics2 = authenticated_client.get("/api/v1/metrics?surface=agent").json()
+    wer_rows = [m for m in metrics2 if m["name"] == "User WER"]
+    assert len(wer_rows) == 1
+    assert "production user turns (reference)" in wer_rows[0]["description"]
+
+
 def test_seed_defaults_disables_legacy_user_insight_metrics(
     authenticated_client, db_session, org_id, default_workspace
 ):

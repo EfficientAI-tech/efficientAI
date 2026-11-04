@@ -119,6 +119,50 @@ def create_call_import_evaluations(
     metric_rows = effective_metrics
     valid_metric_id_strs = {str(m.id) for m in metric_rows}
 
+    from app.services.metrics.computed_metrics import (
+        metrics_require_transcript_agreement,
+    )
+
+    requires_transcript_agreement = metrics_require_transcript_agreement(metric_rows)
+
+    if requires_transcript_agreement:
+        from app.models.enums import CallImportParameterType
+        from app.api.v1.routes.call_imports import (
+            _is_manual_audio_call_import,
+            _is_platform_call_import,
+        )
+
+        has_production_transcript = False
+        if _is_platform_call_import(call_import) or _is_manual_audio_call_import(
+            call_import
+        ):
+            has_production_transcript = True
+        elif call_import.schema_id:
+            from app.api.v1.routes.call_imports import _resolve_schema
+
+            schema = _resolve_schema(
+                db,
+                organization_id,
+                call_import.workspace_id,
+                call_import.schema_id,
+            )
+            has_production_transcript = any(
+                param.type == CallImportParameterType.TRANSCRIPT
+                and (call_import.parameter_mapping or {}).get(param.name)
+                for param in schema.parameters
+            )
+        else:
+            legacy_transcript = (
+                (call_import.column_mapping or {}).get("transcript") or ""
+            ).strip()
+            has_production_transcript = bool(legacy_transcript)
+
+        if not has_production_transcript:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="WER/CER requires a production transcript column",
+            )
+
     # ----- Validate run-level + per-metric LLM config -----
     llm_provider_norm: Optional[str] = None
     llm_model_norm: Optional[str] = None
@@ -245,7 +289,7 @@ def create_call_import_evaluations(
     # require STT + diariser LLM config. Production runs score the CSV
     # transcript directly and skip diarisation entirely.
     use_diarised = payload.transcript_sources[0] == "diarised"
-    auto_transcribe = use_diarised
+    auto_transcribe = use_diarised or requires_transcript_agreement
 
     transcribe_mode_norm: Optional[str] = None
     stt_provider_norm: Optional[str] = None
@@ -254,7 +298,7 @@ def create_call_import_evaluations(
     diarisation_llm_model_norm: Optional[str] = None
     diarisation_prompt_norm: Optional[str] = None
 
-    if use_diarised:
+    if auto_transcribe:
         transcribe_mode_norm = (payload.transcribe_mode or "stt_llm").strip().lower()
         if transcribe_mode_norm not in {"stt_llm", "llm_only"}:
             raise HTTPException(
@@ -362,7 +406,7 @@ def create_call_import_evaluations(
         count_source_rows_with_production_transcript,
     )
 
-    if use_diarised:
+    if auto_transcribe:
         from app.api.v1.routes.call_imports import (
             _is_manual_audio_call_import,
             _is_platform_call_import,
@@ -492,7 +536,7 @@ def create_call_import_evaluations(
 
     all_source_row_count = count_all_source_rows(db, call_import.id)
 
-    if use_diarised:
+    if auto_transcribe:
         # Diarized runs materialize every import row; recording fetch may
         # still be pending when switching from a production eval-primary run.
         total_row_count = all_source_row_count
@@ -504,7 +548,7 @@ def create_call_import_evaluations(
         )
 
     if (
-        use_diarised
+        (use_diarised or requires_transcript_agreement)
         and not starting_from_mapped
         and all_source_row_count > 0
         and call_import.status != CallImportStatus.DELETING

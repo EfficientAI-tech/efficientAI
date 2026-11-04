@@ -216,11 +216,21 @@ Respond in this exact JSON format:
 
 def _categorize_metrics(enabled_metrics, has_audio):
     """Split metrics into LLM-evaluable and audio-only categories."""
+    from app.services.metrics.computed_metrics import is_computed_metric
+
     llm_metrics = []
     audio_metrics = []
     skipped_scores = {}
 
     for m in enabled_metrics:
+        if is_computed_metric(m):
+            skipped_scores[str(m.id)] = {
+                "value": None,
+                "type": get_metric_type_value(m),
+                "metric_name": m.name,
+                "skipped": "not_applicable_surface",
+            }
+            continue
         if m.name.lower() in AUDIO_ONLY_METRIC_NAMES:
             if has_audio:
                 audio_metrics.append(m)

@@ -590,7 +590,7 @@ def user_insights_state_from_raw(
     if not isinstance(raw, dict):
         return None
     status = raw.get("status")
-    if status not in {"idle", "running", "completed", "failed"}:
+    if status not in {"idle", "running", "completed", "failed", "cancelled"}:
         status = "idle"
 
     insights: List[EvaluationUserInsightItem] = []

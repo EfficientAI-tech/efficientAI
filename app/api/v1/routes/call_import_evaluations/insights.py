@@ -736,6 +736,7 @@ async def generate_call_import_evaluation_insights(
         model=summary.model or model_str,
         force=body.regenerate,
         max_llm_calls=body.max_llm_calls,
+        transcript_source=body.transcript_source,
         db=db,
         principal=principal,
     )
@@ -794,39 +795,40 @@ def _enqueue_user_insights_job(
     model: Optional[str] = None,
     force: bool = False,
     max_llm_calls: Optional[int] = None,
+    transcript_source: Optional[str] = None,
+    resume: bool = False,
     db: Optional[Session] = None,
     principal: Optional[Principal] = None,
 ) -> None:
     """Enqueue background user-insights generation unless already running."""
+    del max_llm_calls
     current = _user_insights_payload(evaluation)
-    if current is not None and current.status == "running" and not force:
+    if current is not None and current.status == "running" and not force and not resume:
         return
 
-    llm_budget = normalize_max_llm_calls(max_llm_calls)
+    from app.services.call_import_user_insights_wave import start_user_insights_job_header
+    from app.services.evaluation_analysis_checkpoints import new_job_run_id, normalize_transcript_source
 
-    completed_count = (
-        _count_completed_eval_rows(db, evaluation.id)
-        if db is not None
-        else evaluation.completed_rows
+    prior = evaluation.user_insights if isinstance(evaluation.user_insights, dict) else {}
+    source = normalize_transcript_source(
+        transcript_source or prior.get("transcript_source") or evaluation.transcript_source
     )
-    total_calls = total_llm_calls_for_rows(completed_count, max_llm_calls=llm_budget)
-    evaluation.user_insights = {
-        "status": "running",
-        "insights": (
-            (evaluation.user_insights or {}).get("insights", [])
-            if isinstance(evaluation.user_insights, dict)
-            else []
-        ),
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "generated_at_completed_rows": evaluation.completed_rows,
-        "progress": {"completed_llm_calls": 0, "total_llm_calls": total_calls},
-        "provider": provider,
-        "model": model,
-        "max_llm_calls": llm_budget,
-        "llm_calls_used": 0,
-        "error_message": None,
-    }
+    prior_insights = prior.get("insights") if isinstance(prior.get("insights"), list) else []
+    run_id = (
+        UUID(str(prior["job_run_id"]))
+        if resume and prior.get("job_run_id")
+        else new_job_run_id()
+    )
     if db is not None:
+        evaluation.user_insights = start_user_insights_job_header(
+            evaluation,
+            db,
+            job_run_id=run_id,
+            transcript_source=source,
+            provider=provider,
+            model=model,
+            prior_insights=prior_insights if prior.get("status") == "completed" else [],
+        )
         if principal is not None:
             stamp_evaluation_actor(evaluation, principal)
         flag_modified(evaluation, "user_insights")
@@ -836,12 +838,20 @@ def _enqueue_user_insights_job(
         generate_evaluation_user_insights_task,
     )
 
-    generate_evaluation_user_insights_task.delay(
-        str(evaluation.id),
-        provider=provider,
-        model=model,
-        max_llm_calls=llm_budget,
+    async_result = generate_evaluation_user_insights_task.apply_async(
+        kwargs={
+            "evaluation_id": str(evaluation.id),
+            "provider": provider,
+            "model": model,
+            "transcript_source": source,
+            "resume": resume,
+        },
+        queue="imports",
     )
+    if db is not None and isinstance(evaluation.user_insights, dict):
+        evaluation.user_insights["celery_task_id"] = async_result.id
+        flag_modified(evaluation, "user_insights")
+        db.commit()
 
 
 @router.get(
@@ -908,7 +918,7 @@ async def generate_call_import_evaluation_user_insights(
             status_code=404, detail="Call import evaluation not found"
         )
 
-    if not body.regenerate and not body.force:
+    if not body.regenerate and not body.force and not body.resume:
         cached = _user_insights_payload(evaluation)
         if cached is not None and cached.status in {"running", "completed"}:
             return cached
@@ -935,6 +945,8 @@ async def generate_call_import_evaluation_user_insights(
         model=model_str,
         force=body.force or body.regenerate,
         max_llm_calls=body.max_llm_calls,
+        transcript_source=body.transcript_source,
+        resume=body.resume,
         db=db,
         principal=principal,
     )
@@ -942,5 +954,85 @@ async def generate_call_import_evaluation_user_insights(
     db.refresh(evaluation)
     return _user_insights_payload(evaluation) or EvaluationUserInsightsState(
         status="running"
+    )
+
+
+def _revoke_user_insights_task(evaluation: CallImportEvaluation) -> None:
+    raw = evaluation.user_insights
+    if not isinstance(raw, dict):
+        return
+    task_id = str(raw.get("celery_task_id") or "").strip()
+    if not task_id:
+        return
+    try:
+        from app.workers.celery_revoke import revoke_celery_tasks
+
+        revoke_celery_tasks([task_id])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Failed to revoke user-insights task for evaluation {}: {}",
+            evaluation.id,
+            exc,
+        )
+
+
+def _apply_user_insights_cancel(evaluation: CallImportEvaluation) -> bool:
+    from app.services.evaluation_analysis_checkpoints import USER_INSIGHTS_CANCELLED_BY_USER_ERROR
+
+    raw = evaluation.user_insights
+    if not isinstance(raw, dict):
+        return False
+    if (raw.get("status") or "").lower() != "running":
+        return False
+    _revoke_user_insights_task(evaluation)
+    progress = raw.get("progress") if isinstance(raw.get("progress"), dict) else {}
+    evaluation.user_insights = {
+        **raw,
+        "status": "cancelled",
+        "error_message": USER_INSIGHTS_CANCELLED_BY_USER_ERROR,
+        "progress": progress,
+        "celery_task_id": None,
+    }
+    return True
+
+
+@router.post(
+    "/{eval_id}/user-insights/cancel",
+    response_model=EvaluationUserInsightsState,
+    operation_id="cancelCallImportEvaluationUserInsights",
+)
+async def cancel_call_import_evaluation_user_insights(
+    call_import_id: UUID,
+    eval_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> EvaluationUserInsightsState:
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    _apply_user_insights_cancel(evaluation)
+    flag_modified(evaluation, "user_insights")
+    stamp_evaluation_actor(evaluation, principal)
+    db.commit()
+    db.refresh(evaluation)
+
+    return _user_insights_payload(evaluation) or EvaluationUserInsightsState(
+        status="idle"
     )
 

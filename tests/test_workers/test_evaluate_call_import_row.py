@@ -637,6 +637,7 @@ def _make_categorize_metric(
     name: str,
     *,
     compare_transcripts: bool = False,
+    scoring_method: str = "llm",
     description: str | None = None,
     parent_metric_id=None,
 ):
@@ -650,6 +651,7 @@ def _make_categorize_metric(
         name=name,
         metric_type="rating",
         compare_transcripts=compare_transcripts,
+        scoring_method=scoring_method,
         description=description,
         parent_metric_id=parent_metric_id,
     )
@@ -667,6 +669,7 @@ def test_categorize_metrics_buckets_comparison_metric_when_both_transcripts_pres
         transcript_metrics,
         audio_metrics,
         comparison_metrics,
+        computed_metrics,
         skipped,
     ) = _categorize_metrics(
         [cmp_metric, regular],
@@ -678,6 +681,7 @@ def test_categorize_metrics_buckets_comparison_metric_when_both_transcripts_pres
     assert [m.id for m in comparison_metrics] == [cmp_metric.id]
     assert [m.id for m in transcript_metrics] == [regular.id]
     assert audio_metrics == []
+    assert computed_metrics == []
     assert skipped == {}
 
 
@@ -691,6 +695,7 @@ def test_categorize_metrics_skips_comparison_metric_when_production_missing():
         transcript_metrics,
         _audio,
         comparison_metrics,
+        _computed,
         skipped,
     ) = _categorize_metrics(
         [cmp_metric],
@@ -718,6 +723,7 @@ def test_categorize_metrics_skips_comparison_metric_when_both_transcripts_missin
         _transcript_metrics,
         _audio,
         comparison_metrics,
+        _computed,
         skipped,
     ) = _categorize_metrics(
         [cmp_metric],
@@ -752,6 +758,7 @@ def test_categorize_metrics_auto_promotes_standalone_when_description_references
         transcript_metrics,
         _audio,
         comparison_metrics,
+        _computed,
         skipped,
     ) = _categorize_metrics(
         [auto_compare, plain],
@@ -763,6 +770,59 @@ def test_categorize_metrics_auto_promotes_standalone_when_description_references
     assert [m.id for m in comparison_metrics] == [auto_compare.id]
     assert [m.id for m in transcript_metrics] == [plain.id]
     assert skipped == {}
+
+
+def test_categorize_metrics_buckets_user_wer_as_computed():
+    from app.workers.tasks.evaluate_call_import_row import _categorize_metrics
+
+    wer = _make_categorize_metric("User WER", scoring_method="user_wer")
+    (
+        transcript_metrics,
+        _audio,
+        comparison_metrics,
+        computed_metrics,
+        skipped,
+    ) = _categorize_metrics(
+        [wer],
+        has_audio=False,
+        has_production_transcript=True,
+        has_diarised_transcript=True,
+    )
+    assert transcript_metrics == []
+    assert comparison_metrics == []
+    assert [m.id for m in computed_metrics] == [wer.id]
+    assert skipped == {}
+
+
+def test_row_needs_audio_phase_accepts_five_field_categorized_metrics(monkeypatch):
+    """Regression for dispatch_fair_eval_rows: do not 4-tuple-unpack categorize results."""
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        CategorizedMetrics,
+        row_needs_audio_phase,
+    )
+
+    wer = SimpleNamespace(id=uuid4(), name="User WER", scoring_method="user_wer")
+
+    monkeypatch.setattr(
+        "app.workers.tasks.evaluate_call_import_row_core.load_enabled_metrics",
+        lambda *_a, **_kw: [wer],
+    )
+    monkeypatch.setattr(
+        "app.workers.tasks.evaluate_call_import_row_core.categorize_row_metrics",
+        lambda *_a, **_kw: CategorizedMetrics([], [], [], [wer], {}),
+    )
+
+    assert (
+        row_needs_audio_phase(
+            db=None,
+            evaluation=SimpleNamespace(),
+            source_row=SimpleNamespace(),
+        )
+        is False
+    )
 
 
 def test_evaluate_call_import_row_scores_comparison_metric_with_both_transcripts(

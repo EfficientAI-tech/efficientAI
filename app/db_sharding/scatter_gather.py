@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple, TypeVar, TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import Integer, case, cast, func, or_
+from sqlalchemy import Integer, and_, case, cast, func, or_
 from sqlalchemy.orm import Session, defer, load_only, with_expression
 
 from app.db_sharding.pool_manager import db_pool_manager
@@ -1823,6 +1823,14 @@ def load_evaluation_row_pairs(
 DEFAULT_EVAL_ROW_PAIR_SAMPLE = 1500
 INSIGHTS_TLDR_ROW_SAMPLE = 1000
 USER_INSIGHTS_ROW_INPUT_CAP = 3000
+EVALUATION_ANALYSIS_BATCH_SIZE = 500
+
+
+class EvaluationRowPageCursor(NamedTuple):
+    """Keyset cursor for completed evaluation rows in ``row_index`` order."""
+
+    row_index: int
+    evaluation_row_id: UUID
 
 
 def count_completed_evaluation_row_pairs(
@@ -2113,4 +2121,69 @@ def load_completed_evaluation_row_pairs_sample(
         catalog_db,
         evaluation_id,
         eval_row_ids,
+    )
+
+
+def _completed_pairs_after_cursor_filter(
+    query,
+    after_cursor: Optional[EvaluationRowPageCursor],
+):
+    if after_cursor is None:
+        return query
+    return query.filter(
+        or_(
+            CallImportRow.row_index > after_cursor.row_index,
+            and_(
+                CallImportRow.row_index == after_cursor.row_index,
+                CallImportEvaluationRow.id > after_cursor.evaluation_row_id,
+            ),
+        )
+    )
+
+
+def load_completed_evaluation_row_pairs_page(
+    catalog_db: Session,
+    evaluation_id: UUID,
+    *,
+    limit: int = EVALUATION_ANALYSIS_BATCH_SIZE,
+    after_cursor: Optional[EvaluationRowPageCursor] = None,
+) -> List[tuple[CallImportEvaluationRow, CallImportRow]]:
+    """Next ``limit`` completed pairs in global ``row_index`` order (shard-aware)."""
+    page_size = max(1, int(limit))
+    per_shard_limit = page_size + 50
+
+    def load_session(db: Session) -> List[tuple[CallImportEvaluationRow, CallImportRow]]:
+        q = _completed_evaluation_row_pairs_query(db, evaluation_id)
+        q = _completed_pairs_after_cursor_filter(q, after_cursor)
+        return (
+            q.order_by(CallImportRow.row_index, CallImportEvaluationRow.id)
+            .limit(per_shard_limit)
+            .all()
+        )
+
+    if not is_sharding_enabled():
+        return load_session(catalog_db)[:page_size]
+
+    merged: List[tuple[CallImportEvaluationRow, CallImportRow]] = []
+    router = db_pool_manager.router
+    assert router is not None
+    for shard_id in router.shard_ids:
+        factory = db_pool_manager.shard_session_factory(shard_id)
+        shard_db = factory()
+        try:
+            merged.extend(load_session(shard_db))
+        finally:
+            shard_db.close()
+    if not merged:
+        merged = load_session(catalog_db)
+    return _sort_evaluation_row_pairs(merged)[:page_size]
+
+
+def evaluation_row_page_cursor_from_pair(
+    pair: tuple[CallImportEvaluationRow, CallImportRow],
+) -> EvaluationRowPageCursor:
+    eval_row, source_row = pair
+    return EvaluationRowPageCursor(
+        row_index=int(source_row.row_index or 0),
+        evaluation_row_id=eval_row.id,
     )

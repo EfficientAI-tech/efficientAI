@@ -130,11 +130,10 @@ export default function MetricVisualization({
 
   return (
     <div
-      className={`group relative rounded-xl border bg-white p-4 transition-shadow ${
-        isActive
+      className={`group relative rounded-xl border bg-white p-4 transition-shadow ${isActive
           ? 'border-primary-300 ring-2 ring-primary-100 shadow-sm'
           : 'border-gray-200 hover:shadow-md hover:border-gray-300'
-      }`}
+        }`}
     >
       <div className="flex items-start justify-between gap-3 mb-3">
         <div className="min-w-0">
@@ -221,54 +220,80 @@ export default function MetricVisualization({
 
       {hasNumeric && (
         <div className="mb-3 grid grid-cols-4 gap-2">
-          {[
-            {
-              label: 'Mean',
-              value: metric.mean,
-              title: 'Average score across all rows',
-              tone: 'neutral' as const,
-            },
-            {
-              label: 'Best',
-              value: metric.max,
-              title: 'Highest single-row score',
-              tone: 'good' as const,
-            },
-            {
-              label: 'Worst',
-              value: metric.min,
-              title: 'Lowest single-row score',
-              tone: 'bad' as const,
-            },
-            {
-              label: 'σ',
-              value: metric.stddev,
-              title:
-                'Standard deviation — lower means more consistent scoring',
-              tone: 'neutral' as const,
-            },
-          ].map((stat) => (
-            <div
-              key={stat.label}
-              title={stat.title}
-              className="rounded-md bg-gradient-to-br from-gray-50 to-gray-100/60 border border-gray-100 px-2 py-1.5 text-center"
-            >
-              <p className="text-[9px] uppercase tracking-wider text-gray-500">
-                {stat.label}
-              </p>
-              <p
-                className={`text-xs font-semibold tabular-nums ${
-                  stat.tone === 'good'
-                    ? 'text-emerald-700'
-                    : stat.tone === 'bad'
-                      ? 'text-rose-700'
-                      : 'text-gray-900'
-                }`}
+          {(() => {
+            const metricKey = (metric.metric_name || '').trim().toLowerCase()
+            const lowerIsBetter = metric.corpus_wer != null || metric.corpus_cer != null
+            const corpusStat =
+              metricKey === 'user cer' && metric.corpus_cer != null
+                ? {
+                  label: 'Corpus CER',
+                  value: metric.corpus_cer,
+                  title:
+                    'Micro-averaged CER: total character errors divided by production user characters',
+                  tone: 'neutral' as const,
+                }
+                : metric.corpus_wer != null
+                  ? {
+                    label: 'Corpus WER',
+                    value: metric.corpus_wer,
+                    title:
+                      'Micro-averaged WER: total word errors divided by production user words',
+                    tone: 'neutral' as const,
+                  }
+                  : null
+            return [
+              {
+                label: 'Mean',
+                value: metric.mean,
+                title: 'Average score across all rows',
+                tone: 'neutral' as const,
+              },
+              ...(corpusStat ? [corpusStat] : []),
+              {
+                label: 'Best',
+                value: lowerIsBetter ? metric.min : metric.max,
+                title: lowerIsBetter
+                  ? 'Lowest single-row score (lower is better)'
+                  : 'Highest single-row score',
+                tone: 'good' as const,
+              },
+              {
+                label: 'Worst',
+                value: lowerIsBetter ? metric.max : metric.min,
+                title: lowerIsBetter
+                  ? 'Highest single-row score (lower is better)'
+                  : 'Lowest single-row score',
+                tone: 'bad' as const,
+              },
+              {
+                label: 'σ',
+                value: metric.stddev,
+                title:
+                  'Standard deviation — lower means more consistent scoring',
+                tone: 'neutral' as const,
+              },
+            ].map((stat) => (
+              <div
+                key={stat.label}
+                title={stat.title}
+                className="rounded-md bg-gradient-to-br from-gray-50 to-gray-100/60 border border-gray-100 px-2 py-1.5 text-center"
               >
-                {stat.value != null ? stat.value.toFixed(2) : '—'}
-              </p>
-            </div>
-          ))}
+                <p className="text-[9px] uppercase tracking-wider text-gray-500">
+                  {stat.label}
+                </p>
+                <p
+                  className={`text-xs font-semibold tabular-nums ${stat.tone === 'good'
+                      ? 'text-emerald-700'
+                      : stat.tone === 'bad'
+                        ? 'text-rose-700'
+                        : 'text-gray-900'
+                    }`}
+                >
+                  {stat.value != null ? stat.value.toFixed(2) : '—'}
+                </p>
+              </div>
+            ))
+          })()}
         </div>
       )}
 

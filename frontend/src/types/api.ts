@@ -1573,14 +1573,19 @@ export interface EvaluationUserInsightItem {
 }
 
 export interface EvaluationUserInsightsState {
-  status: 'idle' | 'running' | 'completed' | 'failed'
+  status: 'idle' | 'running' | 'completed' | 'failed' | 'cancelled'
   insights: EvaluationUserInsightItem[]
   overview?: string | null
   generated_at?: string | null
   generated_at_completed_rows: number
   progress?: {
-    completed_llm_calls: number
-    total_llm_calls: number
+    completed_llm_calls?: number
+    total_llm_calls?: number
+    completed_rows?: number
+    total_rows?: number
+    completed_batches?: number
+    total_batches?: number
+    phase?: string
     completed_selected_calls?: number
     total_selected_calls?: number
     current_metric_name?: string
@@ -1593,6 +1598,7 @@ export interface EvaluationUserInsightsState {
   max_llm_calls?: number | null
   error_message?: string | null
   is_stale: boolean
+  transcript_source?: 'diarised' | 'production' | null
 }
 
 export type MetricClusterGapLabel =
@@ -1766,6 +1772,11 @@ export interface EvaluationMetricClustersState {
   progress?: {
     completed_llm_calls: number
     total_llm_calls: number
+    completed_rows?: number
+    total_rows?: number
+    completed_batches?: number
+    total_batches?: number
+    phase?: string
     completed_selected_calls?: number
     total_selected_calls?: number
     current_metric_name?: string
@@ -1896,7 +1907,7 @@ export interface PromptImprovementSuggestion {
 }
 
 export interface EvaluationPromptImprovementsState {
-  status: 'idle' | 'running' | 'completed' | 'failed'
+  status: 'idle' | 'running' | 'completed' | 'failed' | 'cancelled'
   imported_agent_id?: string | null
   imported_agent_name?: string | null
   suggestions: PromptImprovementSuggestion[]
@@ -2263,6 +2274,10 @@ export interface CallImportMetricAggregate {
   max: number | null
   stddev: number | null
   histogram_buckets: CallImportMetricHistogramBucket[]
+  /** Micro-averaged WER (production user words). Lower is better. */
+  corpus_wer?: number | null
+  /** Micro-averaged CER (production characters). Lower is better. */
+  corpus_cer?: number | null
   value_counts: CallImportMetricValueCount[]
   /**
    * Pairwise label intersections for multi-label parent metrics.

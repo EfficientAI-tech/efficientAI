@@ -1219,6 +1219,12 @@ def start_all(
                 )
             if (settings.MEDIA_WS_BASE_URL or "").strip():
                 click.echo(f"   Browser voice-agent WS: {settings.MEDIA_WS_BASE_URL}")
+        if reload:
+            click.echo(
+                "   Note: API auto-reload does not restart Celery workers; "
+                "after Python worker changes, stop and re-run start-all "
+                "(or restart the imports/evaluations worker process)."
+            )
         click.echo("\n📝 All services are running. Press Ctrl+C to stop.\n")
         
         # Run uvicorn in the main process (allows reload to work)

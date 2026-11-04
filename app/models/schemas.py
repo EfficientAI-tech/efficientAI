@@ -2460,6 +2460,7 @@ class MetricResponse(BaseModel):
     # render a "Compare transcripts" badge in the metric picker and
     # know to skip the run's transcript_source toggle for this metric.
     compare_transcripts: bool = False
+    scoring_method: str = "llm"
     lifecycle: str = "active"
     promoted_from_draft_at: Optional[datetime] = None
     studio_notes: Optional[str] = None
@@ -5442,6 +5443,10 @@ class CallImportMetricAggregate(BaseModel):
     histogram_buckets: List[CallImportMetricHistogramBucket] = Field(
         default_factory=list
     )
+    # Micro-averaged WER / CER across scored rows (User WER / User CER).
+    # Denominator is production user turns. Agent turns are ignored.
+    corpus_wer: Optional[float] = None
+    corpus_cer: Optional[float] = None
     value_counts: List[CallImportMetricValueCount] = Field(default_factory=list)
     # Pairwise label intersections for multi-label parent metrics.
     # Empty for everything else. The frontend reconstructs a square
@@ -5537,9 +5542,13 @@ class EvaluationInsightsRequest(BaseModel):
         ge=20,
         le=500,
         description=(
-            "Max LLM calls for user-insights sampling (extraction + synthesis). "
+            "Legacy LLM budget field (ignored for full-corpus batched insights). "
             "Defaults to 200 when omitted."
         ),
+    )
+    transcript_source: Optional[Literal["diarised", "production"]] = Field(
+        default="diarised",
+        description="Which transcript text to send to the user-insights LLM.",
     )
 
 
@@ -5571,7 +5580,7 @@ class EvaluationUserInsightItem(BaseModel):
 class EvaluationUserInsightsState(BaseModel):
     """Cached map-reduce LLM user insights for an evaluation run."""
 
-    status: Literal["idle", "running", "completed", "failed"] = "idle"
+    status: Literal["idle", "running", "completed", "failed", "cancelled"] = "idle"
     insights: List[EvaluationUserInsightItem] = Field(default_factory=list)
     overview: Optional[str] = None
     generated_at: Optional[datetime] = None
@@ -5590,10 +5599,15 @@ class EvaluationUserInsightsRequest(BaseModel):
 
     regenerate: bool = False
     force: bool = False
+    resume: bool = False
     provider: Optional[str] = None
     model: Optional[str] = Field(default=None, min_length=1)
     credential_id: Optional[UUID] = None
     max_llm_calls: Optional[int] = Field(default=None, ge=20, le=500)
+    transcript_source: Optional[Literal["diarised", "production"]] = Field(
+        default="diarised",
+        description="Which transcript text to send to the insights LLM.",
+    )
 
 
 MetricClusterGapLabel = Literal[
@@ -5838,7 +5852,7 @@ class PromptImprovementSuggestion(BaseModel):
 class EvaluationPromptImprovementsState(BaseModel):
     """Cached prompt improvement suggestions for an evaluation run."""
 
-    status: Literal["idle", "running", "completed", "failed"] = "idle"
+    status: Literal["idle", "running", "completed", "failed", "cancelled"] = "idle"
     imported_agent_id: Optional[str] = None
     imported_agent_name: Optional[str] = None
     suggestions: List[PromptImprovementSuggestion] = Field(default_factory=list)
@@ -5858,6 +5872,7 @@ class EvaluationPromptImprovementsRequest(BaseModel):
     imported_agent_id: Optional[UUID] = None
     regenerate: bool = False
     force: bool = False
+    resume: bool = False
     provider: Optional[str] = None
     model: Optional[str] = None
     credential_id: Optional[UUID] = None
@@ -5915,10 +5930,15 @@ class EvaluationMetricClustersRequest(BaseModel):
 
     regenerate: bool = False
     force: bool = False
+    resume: bool = False
     provider: Optional[str] = None
     model: Optional[str] = Field(default=None, min_length=1)
     credential_id: Optional[UUID] = None
     max_llm_calls: Optional[int] = Field(default=None, ge=20, le=500)
+    transcript_source: Optional[Literal["diarised", "production"]] = Field(
+        default="diarised",
+        description="Which transcript text to send to the clustering LLM.",
+    )
     evaluation_row_ids: Optional[List[UUID]] = Field(
         default=None,
         description=(

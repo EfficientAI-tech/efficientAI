@@ -104,6 +104,7 @@ export default function MetricPromptImprovementsPanel({
   const [confirmText, setConfirmText] = useState('')
   const [pushError, setPushError] = useState<string | null>(null)
   const [diffView, setDiffView] = useState<PromptDiffView>('split')
+  const [cancellingImprovements, setCancellingImprovements] = useState(false)
 
   useEffect(() => {
     if (!pushConfirmOpen) return
@@ -344,6 +345,27 @@ export default function MetricPromptImprovementsPanel({
         <p className="text-xs text-amber-800 mt-2">
           Mapping clusters from this evaluation against the selected imported agent prompt.
         </p>
+        <div className="mt-3">
+          <Button
+            variant="outline"
+            onClick={async () => {
+              setCancellingImprovements(true)
+              try {
+                await apiClient.callImports.cancelCallImportEvaluationPromptImprovements(
+                  callImportId,
+                  evaluationId,
+                )
+                onGenerated()
+              } finally {
+                setCancellingImprovements(false)
+              }
+            }}
+            isLoading={cancellingImprovements}
+            disabled={cancellingImprovements}
+          >
+            Stop
+          </Button>
+        </div>
       </section>
     )
   }
@@ -564,12 +586,12 @@ export default function MetricPromptImprovementsPanel({
             const cardSurfaceClass = isApplied
               ? 'border-sky-300 bg-sky-50/50 ring-1 ring-sky-200/80'
               : isAccepted
-              ? 'border-emerald-300 bg-emerald-50/50 ring-1 ring-emerald-200/80'
-              : isRejected
-                ? 'border-rose-200 bg-rose-50/35 ring-1 ring-rose-100'
-                : isActive
-                  ? 'border-primary-300 bg-primary-50/30'
-                  : 'border-gray-200 bg-gray-50/60'
+                ? 'border-emerald-300 bg-emerald-50/50 ring-1 ring-emerald-200/80'
+                : isRejected
+                  ? 'border-rose-200 bg-rose-50/35 ring-1 ring-rose-100'
+                  : isActive
+                    ? 'border-primary-300 bg-primary-50/30'
+                    : 'border-gray-200 bg-gray-50/60'
 
             return (
               <article
@@ -585,23 +607,20 @@ export default function MetricPromptImprovementsPanel({
                     {index + 1}. {suggestion.metric_name} · {suggestion.cluster_label}
                   </button>
                   <span
-                    className={`text-[10px] uppercase tracking-wide font-semibold rounded border px-1.5 py-0.5 ${
-                      CHANGE_TYPE_STYLES[changeType] || 'bg-gray-100 text-gray-700 border-gray-200'
-                    }`}
+                    className={`text-[10px] uppercase tracking-wide font-semibold rounded border px-1.5 py-0.5 ${CHANGE_TYPE_STYLES[changeType] || 'bg-gray-100 text-gray-700 border-gray-200'
+                      }`}
                   >
                     {changeLabel}
                   </span>
                   <span
-                    className={`text-[10px] uppercase tracking-wide font-semibold rounded border px-1.5 py-0.5 ${
-                      GAP_LABEL_STYLES[suggestion.gap_label] || 'bg-gray-100 text-gray-700 border-gray-200'
-                    }`}
+                    className={`text-[10px] uppercase tracking-wide font-semibold rounded border px-1.5 py-0.5 ${GAP_LABEL_STYLES[suggestion.gap_label] || 'bg-gray-100 text-gray-700 border-gray-200'
+                      }`}
                   >
                     {suggestion.gap_label}
                   </span>
                   <span
-                    className={`text-xs font-medium ${
-                      PRIORITY_STYLES[suggestion.priority] || 'text-gray-600'
-                    }`}
+                    className={`text-xs font-medium ${PRIORITY_STYLES[suggestion.priority] || 'text-gray-600'
+                      }`}
                   >
                     {suggestion.priority} priority
                   </span>
@@ -722,11 +741,10 @@ export default function MetricPromptImprovementsPanel({
                             review_status: 'accepted',
                           })
                         }
-                        className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition ${
-                          isAccepted
+                        className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition ${isAccepted
                             ? 'border border-emerald-500 bg-emerald-600 text-white cursor-default shadow-sm'
                             : 'border border-emerald-300 bg-white text-emerald-800 hover:bg-emerald-50'
-                        }`}
+                          }`}
                       >
                         <Check className="h-3 w-3" />
                         {isAccepted ? 'Accepted' : 'Accept this change'}
@@ -740,11 +758,10 @@ export default function MetricPromptImprovementsPanel({
                             review_status: 'rejected',
                           })
                         }
-                        className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition ${
-                          isRejected
+                        className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition ${isRejected
                             ? 'border border-rose-400 bg-rose-600 text-white cursor-default shadow-sm'
                             : 'border border-rose-300 bg-white text-rose-800 hover:bg-rose-50'
-                        }`}
+                          }`}
                       >
                         <X className="h-3 w-3" />
                         {isRejected ? 'Rejected' : 'Reject this change'}
@@ -797,11 +814,11 @@ export default function MetricPromptImprovementsPanel({
 
       {pushConfirmOpen && pushPreview && typeof document !== 'undefined'
         ? (() => {
-            const providerKey = (pushPreview.provider || '').toLowerCase() as IntegrationPlatform
-            const providerLogo = pushPreview.provider
-              ? getIntegrationPlatformLogo(providerKey)
-              : null
-            return createPortal(
+          const providerKey = (pushPreview.provider || '').toLowerCase() as IntegrationPlatform
+          const providerLogo = pushPreview.provider
+            ? getIntegrationPlatformLogo(providerKey)
+            : null
+          return createPortal(
             <div className="fixed inset-0 z-[9999] overflow-y-auto">
               <div className="flex min-h-full items-center justify-center p-4 sm:p-6">
                 <div
@@ -855,13 +872,12 @@ export default function MetricPromptImprovementsPanel({
                       return (
                         <div key={s.id} className="flex items-center gap-2 flex-1 min-w-0">
                           <span
-                            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${
-                              done
+                            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${done
                                 ? 'bg-primary-600 text-white'
                                 : active
                                   ? 'bg-primary-100 text-primary-700 ring-2 ring-primary-500'
                                   : 'bg-white text-gray-400 border border-gray-200'
-                            }`}
+                              }`}
                           >
                             {done ? <CheckCircle2 className="h-3.5 w-3.5" /> : i + 1}
                           </span>
@@ -885,7 +901,7 @@ export default function MetricPromptImprovementsPanel({
                     <PromptPushMetaPill label="Version">
                       v{pushPreview.partial_current_version ?? 1}
                       {(pushPreview.partial_next_version ?? 1) >
-                      (pushPreview.partial_current_version ?? 1)
+                        (pushPreview.partial_current_version ?? 1)
                         ? ` → v${pushPreview.partial_next_version}`
                         : ''}
                     </PromptPushMetaPill>
@@ -1075,7 +1091,7 @@ export default function MetricPromptImprovementsPanel({
             </div>,
             document.body,
           )
-          })()
+        })()
         : null}
     </section>
   )

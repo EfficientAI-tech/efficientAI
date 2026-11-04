@@ -277,12 +277,12 @@ export default function CallImportEvaluationDetail() {
   // catch-all "any discovered for this parent".
   const [discoveredFilter, setDiscoveredFilter] = useState<
     | {
-        parentId: string
-        parentName: string
-        labelKey?: string
-        labelName?: string
-        anyDiscovered?: boolean
-      }
+      parentId: string
+      parentName: string
+      labelKey?: string
+      labelName?: string
+      anyDiscovered?: boolean
+    }
     | null
   >(null)
   // Row-detail side panel: full CSV row + transcript + per-metric scores
@@ -713,8 +713,8 @@ export default function CallImportEvaluationDetail() {
         err?.response?.status === 409
           ? err?.response?.data?.detail || bulkOperationConflictMessage
           : err?.response?.data?.detail ||
-              err?.message ||
-              'Failed to abort this evaluation run.',
+          err?.message ||
+          'Failed to abort this evaluation run.',
       )
     },
   })
@@ -745,8 +745,8 @@ export default function CallImportEvaluationDetail() {
         err?.response?.status === 409
           ? err?.response?.data?.detail || bulkOperationConflictMessage
           : err?.response?.data?.detail ||
-              err?.message ||
-              'Failed to abort this row.',
+          err?.message ||
+          'Failed to abort this row.',
       )
     },
     onSettled: () => {
@@ -807,7 +807,7 @@ export default function CallImportEvaluationDetail() {
   )
   const diarisationInFlightCount = callImport
     ? (callImport.diarised_pending_rows ?? 0) +
-      (callImport.diarised_running_rows ?? 0)
+    (callImport.diarised_running_rows ?? 0)
     : 0
   const diarisedCompletedRows = callImport?.diarised_completed_rows ?? 0
   const diarisedFailedRows = callImport?.diarised_failed_rows ?? 0
@@ -867,7 +867,7 @@ export default function CallImportEvaluationDetail() {
           name: m.name || `Metric ${m.id.slice(0, 8)}`,
           metricCategory:
             (m as any).metric_category === 'user_insight' ||
-            isUserInsightMetricName(m.name || '')
+              isUserInsightMetricName(m.name || '')
               ? 'user_insight'
               : 'quality',
         })
@@ -899,8 +899,8 @@ export default function CallImportEvaluationDetail() {
           existing.name.length <= 'Metric '.length + 8
         const rationaleStr =
           entry &&
-          typeof entry === 'object' &&
-          typeof (entry as { rationale?: unknown }).rationale === 'string'
+            typeof entry === 'object' &&
+            typeof (entry as { rationale?: unknown }).rationale === 'string'
             ? (entry as { rationale?: string }).rationale
             : undefined
         upsert(metricId, {
@@ -1296,7 +1296,7 @@ export default function CallImportEvaluationDetail() {
               {status === 404
                 ? 'Evaluation not found for this import.'
                 : (evaluationQuery.error as any)?.response?.data?.detail ||
-                  'Failed to load evaluation.'}
+                'Failed to load evaluation.'}
             </p>
           </div>
         </div>
@@ -1310,6 +1310,11 @@ export default function CallImportEvaluationDetail() {
   const bulkOperation = evaluation.bulk_operation ?? null
   const bulkOperationActive = bulkOperation !== null
   const getMetricLlmLabel = (metricId: string): string => {
+    const meta = evaluation.metrics?.find((m) => m.id === metricId)
+    const metricName = (meta?.name || '').trim().toLowerCase()
+    if (metricName === 'user wer' || metricName === 'user cer') {
+      return 'Computed · no LLM'
+    }
     const override = evaluation.metric_llm_overrides?.[metricId]
     const overrideProvider = override?.provider?.trim()
     const overrideModel = override?.model?.trim()
@@ -1743,67 +1748,67 @@ export default function CallImportEvaluationDetail() {
               </div>
             ) : (
               <>
-              <p className="text-xs text-gray-500 inline-flex items-center gap-1.5">
-                <Sparkles className="h-3.5 w-3.5 text-primary-500" />
-                One diagram per category metric. Edge thickness scales
-                with how many calls flowed between each pair of labels;
-                terminal labels are outlined.
-              </p>
-              {parentMetrics.map((pm) => (
-                <FlowDiagramForParent
-                  key={pm.id}
-                  callImportId={id!}
-                  evalId={evalId!}
-                  parent={pm}
-                  onNodeClick={(node) => {
-                    setFlowFilter({
-                      parentId: pm.id,
-                      parentName: pm.name,
-                      nodeId: node.id,
-                      nodeLabel: node.label,
-                      targetNodeId: null,
-                      targetNodeLabel: null,
-                    })
-                    setMetricFilter(null)
-                    setDiscoveredFilter(null)
-                    setResultsTab('table')
-                  }}
-                  onEdgeClick={(edge) => {
-                    setFlowFilter({
-                      parentId: pm.id,
-                      parentName: pm.name,
-                      nodeId: edge.source.id,
-                      nodeLabel: edge.source.label,
-                      targetNodeId: edge.target.id,
-                      targetNodeLabel: edge.target.label,
-                    })
-                    setMetricFilter(null)
-                    setDiscoveredFilter(null)
-                    setResultsTab('table')
-                  }}
-                  onViewDiscoveredCalls={(item) => {
-                    setDiscoveredFilter({
-                      parentId: pm.id,
-                      parentName: pm.name,
-                      labelKey: item.key,
-                      labelName: item.name,
-                    })
-                    setFlowFilter(null)
-                    setMetricFilter(null)
-                    setResultsTab('table')
-                  }}
-                  onViewAnyDiscoveredCalls={() => {
-                    setDiscoveredFilter({
-                      parentId: pm.id,
-                      parentName: pm.name,
-                      anyDiscovered: true,
-                    })
-                    setFlowFilter(null)
-                    setMetricFilter(null)
-                    setResultsTab('table')
-                  }}
-                />
-              ))}
+                <p className="text-xs text-gray-500 inline-flex items-center gap-1.5">
+                  <Sparkles className="h-3.5 w-3.5 text-primary-500" />
+                  One diagram per category metric. Edge thickness scales
+                  with how many calls flowed between each pair of labels;
+                  terminal labels are outlined.
+                </p>
+                {parentMetrics.map((pm) => (
+                  <FlowDiagramForParent
+                    key={pm.id}
+                    callImportId={id!}
+                    evalId={evalId!}
+                    parent={pm}
+                    onNodeClick={(node) => {
+                      setFlowFilter({
+                        parentId: pm.id,
+                        parentName: pm.name,
+                        nodeId: node.id,
+                        nodeLabel: node.label,
+                        targetNodeId: null,
+                        targetNodeLabel: null,
+                      })
+                      setMetricFilter(null)
+                      setDiscoveredFilter(null)
+                      setResultsTab('table')
+                    }}
+                    onEdgeClick={(edge) => {
+                      setFlowFilter({
+                        parentId: pm.id,
+                        parentName: pm.name,
+                        nodeId: edge.source.id,
+                        nodeLabel: edge.source.label,
+                        targetNodeId: edge.target.id,
+                        targetNodeLabel: edge.target.label,
+                      })
+                      setMetricFilter(null)
+                      setDiscoveredFilter(null)
+                      setResultsTab('table')
+                    }}
+                    onViewDiscoveredCalls={(item) => {
+                      setDiscoveredFilter({
+                        parentId: pm.id,
+                        parentName: pm.name,
+                        labelKey: item.key,
+                        labelName: item.name,
+                      })
+                      setFlowFilter(null)
+                      setMetricFilter(null)
+                      setResultsTab('table')
+                    }}
+                    onViewAnyDiscoveredCalls={() => {
+                      setDiscoveredFilter({
+                        parentId: pm.id,
+                        parentName: pm.name,
+                        anyDiscovered: true,
+                      })
+                      setFlowFilter(null)
+                      setMetricFilter(null)
+                      setResultsTab('table')
+                    }}
+                  />
+                ))}
               </>
             )}
           </div>
@@ -1827,7 +1832,7 @@ export default function CallImportEvaluationDetail() {
           ) : (
             <>
               {aggregatePeriodDeltasQuery.isFetching &&
-              vizBaselineEvaluationId ? (
+                vizBaselineEvaluationId ? (
                 <p className="text-xs text-gray-500 mb-2 inline-flex items-center gap-1.5">
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   Comparing to prior run…
@@ -1926,12 +1931,12 @@ export default function CallImportEvaluationDetail() {
                         activeValue={activeValue}
                         businessInsight={
                           evaluationInsightsQuery.data?.metric_insights?.[
-                            m.metric_id
+                          m.metric_id
                           ] || null
                         }
                         periodDelta={
                           aggregatePeriodDeltasQuery.data?.period_deltas?.[
-                            m.metric_id
+                          m.metric_id
                           ] ?? null
                         }
                         failurePoliciesSource={
@@ -1985,11 +1990,10 @@ export default function CallImportEvaluationDetail() {
                         role="tab"
                         aria-selected={visualizationSubtab === 'quality'}
                         onClick={() => setVisualizationSubtab('quality')}
-                        className={`rounded px-2.5 py-1 text-[13px] font-medium transition ${
-                          visualizationSubtab === 'quality'
+                        className={`rounded px-2.5 py-1 text-[13px] font-medium transition ${visualizationSubtab === 'quality'
                             ? 'bg-white text-amber-950 shadow-sm'
                             : 'text-gray-600 hover:text-gray-900'
-                        }`}
+                          }`}
                       >
                         Quality Metrics
                       </button>
@@ -1998,11 +2002,10 @@ export default function CallImportEvaluationDetail() {
                         role="tab"
                         aria-selected={visualizationSubtab === 'aiInsights'}
                         onClick={() => setVisualizationSubtab('aiInsights')}
-                        className={`rounded px-2.5 py-1 text-[13px] font-medium transition ${
-                          visualizationSubtab === 'aiInsights'
+                        className={`rounded px-2.5 py-1 text-[13px] font-medium transition ${visualizationSubtab === 'aiInsights'
                             ? 'bg-white text-amber-950 shadow-sm'
                             : 'text-gray-600 hover:text-gray-900'
-                        }`}
+                          }`}
                       >
                         AI User Insights
                       </button>
@@ -2011,11 +2014,10 @@ export default function CallImportEvaluationDetail() {
                         role="tab"
                         aria-selected={visualizationSubtab === 'clusters'}
                         onClick={() => setVisualizationSubtab('clusters')}
-                        className={`rounded px-2.5 py-1 text-[13px] font-medium transition ${
-                          visualizationSubtab === 'clusters'
+                        className={`rounded px-2.5 py-1 text-[13px] font-medium transition ${visualizationSubtab === 'clusters'
                             ? 'bg-white text-amber-950 shadow-sm'
                             : 'text-gray-600 hover:text-gray-900'
-                        }`}
+                          }`}
                       >
                         Clusters
                       </button>
@@ -2024,11 +2026,10 @@ export default function CallImportEvaluationDetail() {
                         role="tab"
                         aria-selected={visualizationSubtab === 'improvements'}
                         onClick={() => setVisualizationSubtab('improvements')}
-                        className={`rounded px-2.5 py-1 text-[13px] font-medium transition ${
-                          visualizationSubtab === 'improvements'
+                        className={`rounded px-2.5 py-1 text-[13px] font-medium transition ${visualizationSubtab === 'improvements'
                             ? 'bg-white text-amber-950 shadow-sm'
                             : 'text-gray-600 hover:text-gray-900'
-                        }`}
+                          }`}
                       >
                         Prompt / Agent Improvements
                       </button>
@@ -2082,6 +2083,11 @@ export default function CallImportEvaluationDetail() {
                           <UserInsightsStatusBanner
                             state={userInsightsQuery.data ?? null}
                             isLoading={userInsightsQuery.isLoading}
+                            callImportId={id!}
+                            evaluationId={evalId!}
+                            onRefresh={() => {
+                              void userInsightsQuery.refetch()
+                            }}
                           />
                           <header className="flex items-center justify-between gap-2 mb-3 mt-4">
                             <button

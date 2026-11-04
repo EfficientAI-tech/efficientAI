@@ -769,6 +769,142 @@ async def list_call_import_evaluation_rows(
     )
 
 
+class WerAlignmentResponse(BaseModel):
+    reference: List[str] = Field(default_factory=list)
+    hypothesis: List[str] = Field(default_factory=list)
+    chunks: List[Dict[str, Any]] = Field(default_factory=list)
+    substitutions: int = 0
+    deletions: int = 0
+    insertions: int = 0
+    hits: int = 0
+    wer: float = 0.0
+    reference_text: str = ""
+    hypothesis_text: str = ""
+
+
+@router.get(
+    "/{eval_id}/rows/{row_id}/wer-alignment",
+    response_model=WerAlignmentResponse,
+    operation_id="getCallImportEvaluationRowWerAlignment",
+)
+async def get_call_import_evaluation_row_wer_alignment(
+    call_import_id: UUID,
+    eval_id: UUID,
+    row_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> WerAlignmentResponse:
+    """Recompute word alignment for production user turns vs diarised user turns."""
+    del api_key
+    call_import = _require_import(db, call_import_id, organization_id)
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if evaluation is None:
+        raise HTTPException(status_code=404, detail="Call import evaluation not found")
+
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    source_row: CallImportRow | None = None
+    if not is_sharding_enabled():
+        pair = (
+            db.query(CallImportEvaluationRow, CallImportRow)
+            .join(
+                CallImportRow,
+                CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
+            )
+            .filter(
+                CallImportEvaluationRow.id == row_id,
+                CallImportEvaluationRow.evaluation_id == eval_id,
+                CallImportRow.call_import_id == call_import_id,
+            )
+            .first()
+        )
+        if pair is None:
+            raise HTTPException(
+                status_code=404, detail="Call import evaluation row not found"
+            )
+        _eval_row, source_row = pair
+    else:
+        from app.db_sharding.row_ops import (
+            close_row_sessions,
+            locate_call_import_evaluation_row,
+        )
+
+        row_db = catalog_db = None
+        try:
+            row_db, catalog_db, eval_row, source_row, _shard_id = (
+                locate_call_import_evaluation_row(row_id)
+            )
+            if (
+                eval_row.evaluation_id != eval_id
+                or source_row.call_import_id != call_import_id
+            ):
+                raise HTTPException(
+                    status_code=404, detail="Call import evaluation row not found"
+                )
+        except LookupError:
+            raise HTTPException(
+                status_code=404, detail="Call import evaluation row not found"
+            ) from None
+        finally:
+            if row_db is not None:
+                close_row_sessions(row_db, catalog_db)
+
+    from app.services.evaluation.transcript_error_rates import (
+        build_word_alignment,
+        select_comparison_texts,
+    )
+
+    segments = (
+        source_row.diarised_segments
+        if isinstance(source_row.diarised_segments, list)
+        else None
+    )
+    raw_aliases = getattr(call_import, "speaker_aliases", None)
+    selected = select_comparison_texts(
+        production_transcript=(source_row.transcript or "").strip(),
+        diarised_transcript=(source_row.diarised_transcript or "").strip(),
+        diarised_segments=segments,
+        diarised_native_transcript=(
+            getattr(source_row, "diarised_native_transcript", None) or ""
+        ).strip(),
+        diarised_speaker_swap=bool(
+            getattr(source_row, "diarised_speaker_swap", False)
+        ),
+        speaker_aliases=raw_aliases if isinstance(raw_aliases, dict) else None,
+    )
+    if not (selected["reference"] or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Production user transcript is empty",
+        )
+    alignment = build_word_alignment(
+        selected["reference"],
+        selected["hypothesis"],
+        romanised=selected["mode"] == "romanised_fallback",
+    )
+    return WerAlignmentResponse(
+        reference=alignment.get("reference") or [],
+        hypothesis=alignment.get("hypothesis") or [],
+        chunks=alignment.get("chunks") or [],
+        substitutions=int(alignment.get("substitutions") or 0),
+        deletions=int(alignment.get("deletions") or 0),
+        insertions=int(alignment.get("insertions") or 0),
+        hits=int(alignment.get("hits") or 0),
+        wer=float(alignment.get("wer") or 0.0),
+        reference_text=selected["reference"],
+        hypothesis_text=selected["hypothesis"],
+    )
+
+
 @router.get(
     "/{eval_id}/rows/{row_id}",
     response_model=CallImportEvaluationRowResponse,

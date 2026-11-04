@@ -68,6 +68,8 @@ def _now() -> datetime:
 
 def _segments_to_user_agent_turns(
     speaker_segments: Optional[List[Dict[str, Any]]],
+    *,
+    keep_native: bool = False,
 ) -> List[Dict[str, Any]]:
     """Map pyannote-labelled segments to canonical ``agent`` / ``user`` turns.
 
@@ -143,15 +145,18 @@ def _segments_to_user_agent_turns(
             end_val = float(seg.get("end") or 0.0)
         except (TypeError, ValueError):
             end_val = 0.0
-        turns.append(
-            {
-                "speaker": role_map.get(raw, raw.lower().replace(" ", "_")),
-                "text": text,
-                "start": round(start_val, 3),
-                "end": round(end_val, 3),
-                "raw_speaker": raw,
-            }
-        )
+        turn: Dict[str, Any] = {
+            "speaker": role_map.get(raw, raw.lower().replace(" ", "_")),
+            "text": text,
+            "start": round(start_val, 3),
+            "end": round(end_val, 3),
+            "raw_speaker": raw,
+        }
+        if keep_native:
+            native_text = (seg.get("text_native") or "").strip()
+            if native_text:
+                turn["text_native"] = native_text
+        turns.append(turn)
     return turns
 
 
@@ -517,8 +522,9 @@ def _run_diarization_pipeline_inner(
                     llm_model=llm_model_value,
                     organization_id=organization_id,
                     db=llm_db,
-                    custom_prompt=effective_prompt,
+                    custom_prompt=ctx.get("operator_prompt"),
                     credential_id=llm_credential_uuid,
+                    emit_native_text=bool(ctx.get("emit_native_text")),
                 )
             finally:
                 llm_db.close()
@@ -572,9 +578,10 @@ def _run_diarization_pipeline_inner(
                     llm_model=llm_model_value,
                     organization_id=organization_id,
                     db=llm_db,
-                    custom_prompt=effective_prompt,
+                    custom_prompt=ctx.get("operator_prompt"),
                     credential_id=llm_credential_uuid,
                     audio_file_key=recording_key,
+                    emit_native_text=bool(ctx.get("emit_native_text")),
                 )
             finally:
                 llm_db.close()
@@ -654,11 +661,13 @@ def _finalize_diarization_row(
     except LookupError:
         return {"status": "skipped", "reason": "row_not_found"}
     try:
+        emit_native_text = bool(pipeline_ctx.get("emit_native_text"))
         if work_result.get("reason") == "no_speech_detected":
             if _was_cancelled_externally(row_db, row):
                 return {"status": "cancelled", "reason": "cancelled_by_user"}
             row.diarised_transcript = ""
             row.diarised_segments = []
+            row.diarised_native_transcript = None
             row.diarised_speaker_swap = False
             row.transcribe_mode = normalised_mode
             row.diarised_transcript_status = "completed"
@@ -680,7 +689,13 @@ def _finalize_diarization_row(
 
         plain_text = work_result.get("plain_text")
         raw_turns = work_result.get("raw_turns") or []
-        turns = _segments_to_user_agent_turns(raw_turns)
+        native_transcript = None
+        if emit_native_text and normalised_mode == "stt_llm":
+            native_transcript = (plain_text or "").strip() or None
+        turns = _segments_to_user_agent_turns(
+            raw_turns,
+            keep_native=emit_native_text,
+        )
 
         distinct_roles = {turn.get("speaker") for turn in turns}
         has_real_diarisation = len(distinct_roles - {None, ""}) >= 2
@@ -707,6 +722,7 @@ def _finalize_diarization_row(
                 }
             row.diarised_transcript = ""
             row.diarised_segments = turns if has_real_diarisation else None
+            row.diarised_native_transcript = None
             row.diarised_speaker_swap = False
             row.transcribe_mode = normalised_mode
             row.diarised_transcript_status = "completed"
@@ -735,6 +751,7 @@ def _finalize_diarization_row(
 
         row.diarised_transcript = transcript_to_store
         row.diarised_segments = turns if has_real_diarisation else None
+        row.diarised_native_transcript = native_transcript
         row.diarised_speaker_swap = False
         if normalised_mode == "stt_llm" and provider_enum is not None:
             row.diarised_transcript_provider = provider_enum.value
@@ -784,6 +801,7 @@ def transcribe_call_import_row_task(
     mode: str = "stt_llm",
     eval_restricted_metric_ids: Optional[List[str]] = None,
     _eval_slot_task_id: Optional[str] = None,
+    emit_native_text: bool = False,
 ):
     """Diarise a single row's recording.
 
@@ -814,7 +832,7 @@ def transcribe_call_import_row_task(
     from app.models.database import CallImportRow
     from app.models.enums import ModelProvider
     from app.workers.tasks.helpers.llm_diarisation import (
-        DEFAULT_DIARIZATION_PROMPT,
+        resolve_diarisation_system_prompt,
     )
 
     evaluation_id_for_dispatch: Optional[str] = None
@@ -959,8 +977,10 @@ def transcribe_call_import_row_task(
             row.diarised_llm_credential_id = llm_credential_uuid
             row.celery_task_id = self.request.id
 
-            effective_prompt = (diarization_prompt or "").strip() or (
-                DEFAULT_DIARIZATION_PROMPT
+            operator_prompt = (diarization_prompt or "").strip() or None
+            effective_prompt = resolve_diarisation_system_prompt(
+                operator_prompt,
+                emit_native_text=bool(emit_native_text),
             )
             row.diarised_prompt = effective_prompt
 
@@ -989,6 +1009,8 @@ def transcribe_call_import_row_task(
                 "llm_model_value": llm_model_value,
                 "llm_credential_uuid": llm_credential_uuid,
                 "effective_prompt": effective_prompt,
+                "operator_prompt": operator_prompt,
+                "emit_native_text": bool(emit_native_text),
             }
         finally:
             if row_db is not None:

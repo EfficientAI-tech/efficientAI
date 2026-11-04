@@ -390,12 +390,11 @@ def evaluate_call_import_row_audio_task(
                 )
                 return {"status": "failed", "reason": "no_metrics"}
 
-            (
-                _transcript_metrics,
-                audio_metrics,
-                _comparison_metrics,
-                metric_scores,
-            ) = categorize_row_metrics(catalog_db, evaluation, source_row, metrics)
+            categorized = categorize_row_metrics(
+                catalog_db, evaluation, source_row, metrics
+            )
+            audio_metrics = categorized.audio_metrics
+            metric_scores = dict(categorized.skipped_scores)
 
             recording_s3_key = (source_row.recording_s3_key or "").strip() or None
             result_id = f"call-import-eval:{eval_row.id}"

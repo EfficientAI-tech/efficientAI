@@ -127,6 +127,79 @@ DEFAULT_DIARIZATION_PROMPT = (
 )
 
 
+def _build_native_diarization_prompt() -> str:
+    """Default prompt plus a ``text_native`` field. Used only when an eval asks for it."""
+    prompt = DEFAULT_DIARIZATION_PROMPT
+    rule4_tail = (
+        "If the operator's "
+        "instructions explicitly request a different script (e.g. "
+        '"transcribe in Devanagari") or an actual translation into '
+        "another language, those instructions take precedence over "
+        "this rule (per rule 3).\n"
+    )
+    native_rule4 = (
+        rule4_tail
+        + "Additionally, for every turn emit `text_native`: the same words "
+        "in the script they were spoken in (Devanagari for Hindi, and the "
+        "matching script for other languages; English words stay in Latin). "
+        "Verbatim, no translation. If the turn is English-only, `text_native` "
+        "equals `text`.\n"
+    )
+    example = (
+        "Each entry must have exactly the keys `speaker` "
+        '("agent" or "user") and `text` (string). Example:\n'
+        '{"turns": [{"speaker": "agent", "text": "Hello, this '
+        'is Acme support."}, {"speaker": "user", "text": "Hi, '
+        'I have a billing question."}]}'
+    )
+    native_example = (
+        "Each entry must have exactly the keys `speaker` "
+        '("agent" or "user"), `text` (romanised string), and '
+        "`text_native` (original script; equals `text` when the turn is "
+        "English-only). Example:\n"
+        '{"turns": [{"speaker": "agent", "text": "Hello, this '
+        'is Acme support.", "text_native": "Hello, this is Acme support."}, '
+        '{"speaker": "user", "text": "Main aap ki kya sahayata kar sakthi hu", '
+        '"text_native": "मैं आपकी क्या सहायता कर सकती हूं"}]}'
+    )
+    if rule4_tail not in prompt or example not in prompt:
+        raise RuntimeError("Could not build the native diarisation prompt")
+    prompt = prompt.replace(rule4_tail, native_rule4, 1)
+    prompt = prompt.replace(
+        "6. Use exactly the keys `speaker` and `text` in each entry.",
+        "6. Use exactly the keys `speaker`, `text`, and `text_native` in each entry.",
+        1,
+    )
+    return prompt.replace(example, native_example, 1)
+
+
+DEFAULT_DIARIZATION_PROMPT_WITH_NATIVE = _build_native_diarization_prompt()
+
+# Extra output when every turn also carries ``text_native``.
+_NATIVE_OUTPUT_TOKEN_MULTIPLIER = 1.9
+
+
+def resolve_diarisation_system_prompt(
+    custom_prompt: Optional[str],
+    *,
+    emit_native_text: bool = False,
+) -> str:
+    """Operator prompt wins. Native text is opt-in and only for the default prompt."""
+    custom = (custom_prompt or "").strip()
+    if custom:
+        return custom
+    if emit_native_text:
+        return DEFAULT_DIARIZATION_PROMPT_WITH_NATIVE
+    return DEFAULT_DIARIZATION_PROMPT
+
+
+def _native_emission_active(
+    custom_prompt: Optional[str],
+    emit_native_text: bool,
+) -> bool:
+    return bool(emit_native_text) and not (custom_prompt or "").strip()
+
+
 # How much of the prompt + transcript we'll feed to the LLM. We don't
 # enforce a hard token cap (provider-specific) but we do clip the
 # transcript so a 1 MB CSV cell can't blow up the prompt window.
@@ -170,6 +243,7 @@ def _estimate_diarisation_max_tokens(
     text_length: int = 0,
     audio_bytes: int = 0,
     llm_model: str = "",
+    emit_native_text: bool = False,
 ) -> int:
     """Scale the diariser output budget to the input payload size."""
     ceiling = _diarisation_output_token_ceiling(llm_model)
@@ -182,6 +256,8 @@ def _estimate_diarisation_max_tokens(
         estimated = int(estimated_chars * 0.45) + 512
     else:
         estimated = _DIARISATION_MIN_MAX_TOKENS
+    if emit_native_text:
+        estimated = int(estimated * _NATIVE_OUTPUT_TOKEN_MULTIPLIER)
     return min(ceiling, max(_DIARISATION_MIN_MAX_TOKENS, estimated))
 
 
@@ -197,6 +273,8 @@ def _generate_diarisation_response(
     config: Dict[str, Any],
     content_length: int = 0,
     audio_bytes: int = 0,
+    emit_native_text: bool = False,
+    allow_budget_retry: bool = True,
 ) -> Dict[str, Any]:
     """Call the diariser LLM with a scaled ``max_tokens`` and one retry."""
     ceiling = _diarisation_output_token_ceiling(llm_model)
@@ -204,9 +282,12 @@ def _generate_diarisation_response(
         text_length=content_length,
         audio_bytes=audio_bytes,
         llm_model=llm_model,
+        emit_native_text=emit_native_text,
     )
     retry_budget = min(ceiling, base_budget * 2)
-    budgets = [base_budget] if retry_budget <= base_budget else [base_budget, retry_budget]
+    budgets = [base_budget]
+    if allow_budget_retry and retry_budget > base_budget:
+        budgets.append(retry_budget)
 
     response: Dict[str, Any] = {}
     for attempt_idx, max_tokens in enumerate(budgets):
@@ -232,6 +313,63 @@ def _generate_diarisation_response(
                 budgets[attempt_idx + 1],
             )
     return response
+
+
+def _generate_turns(
+    *,
+    build_messages,
+    custom_prompt: Optional[str],
+    emit_native_text: bool,
+    provider_enum: ModelProvider,
+    llm_model: str,
+    organization_id: UUID,
+    db: Session,
+    temperature: float,
+    credential_id: Optional[UUID],
+    config: Dict[str, Any],
+    content_length: int = 0,
+    audio_bytes: int = 0,
+) -> List[Dict[str, Any]]:
+    """Run the diariser. A truncated native-text response retries once without it."""
+    emitting = _native_emission_active(custom_prompt, emit_native_text)
+    system_prompt = resolve_diarisation_system_prompt(
+        custom_prompt,
+        emit_native_text=emit_native_text,
+    )
+
+    def _call(prompt: str, *, native: bool, allow_budget_retry: bool) -> Dict[str, Any]:
+        return _generate_diarisation_response(
+            messages=build_messages(prompt),
+            provider_enum=provider_enum,
+            llm_model=llm_model,
+            organization_id=organization_id,
+            db=db,
+            temperature=temperature,
+            credential_id=credential_id,
+            config=config,
+            content_length=content_length,
+            audio_bytes=audio_bytes,
+            emit_native_text=native,
+            allow_budget_retry=allow_budget_retry,
+        )
+
+    response = _call(
+        system_prompt,
+        native=emitting,
+        allow_budget_retry=not emitting,
+    )
+    if emitting and response.get("truncated"):
+        logger.warning(
+            "Diariser response truncated while emitting text_native "
+            "(model={}); retrying once without native text.",
+            llm_model,
+        )
+        response = _call(
+            DEFAULT_DIARIZATION_PROMPT,
+            native=False,
+            allow_budget_retry=True,
+        )
+    return _parse_turns_from_response(response)
 
 
 # Synonym keys we accept from over-creative LLMs that don't follow the
@@ -265,6 +403,12 @@ _SPEAKER_KEYS: tuple[str, ...] = (
     "spk",
     "participant",
     "label",
+)
+_NATIVE_TEXT_KEYS: tuple[str, ...] = (
+    "text_native",
+    "native",
+    "original_script",
+    "text_original",
 )
 
 
@@ -465,6 +609,7 @@ def diarize_transcript_with_llm(
     custom_prompt: Optional[str] = None,
     credential_id: Optional[UUID] = None,
     temperature: float = 0.0,
+    emit_native_text: bool = False,
 ) -> List[Dict[str, Any]]:
     """Ask an LLM to split ``transcript`` into ``agent`` / ``user`` turns.
 
@@ -517,8 +662,6 @@ def diarize_transcript_with_llm(
         )
         cleaned = cleaned[:_MAX_TRANSCRIPT_CHARS]
 
-    system_prompt = (custom_prompt or "").strip() or DEFAULT_DIARIZATION_PROMPT
-
     try:
         provider_enum = ModelProvider(llm_provider.lower())
     except ValueError as exc:
@@ -542,19 +685,20 @@ def diarize_transcript_with_llm(
     # The downstream parser (``_extract_json_array``) handles both the
     # wrapped object and a bare array via its bracket-scan fallback,
     # so a model that ignores the wrapper still flows through.
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {
-            "role": "user",
-            "content": (
-                "Diarise the following transcript. Return ONLY a JSON "
-                "object with a single key `turns` whose value is the "
-                "array of turn objects described in the system prompt "
-                "— no prose, no markdown fence. Transcript:\n\n"
-                f"{cleaned}"
-            ),
-        },
-    ]
+    def _build_messages(system_prompt: str) -> List[Dict[str, Any]]:
+        return [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": (
+                    "Diarise the following transcript. Return ONLY a JSON "
+                    "object with a single key `turns` whose value is the "
+                    "array of turn objects described in the system prompt "
+                    "— no prose, no markdown fence. Transcript:\n\n"
+                    f"{cleaned}"
+                ),
+            },
+        ]
 
     # ``response_format={"type": "json_object"}`` is forwarded to
     # providers that support it (OpenAI JSON mode, Gemini's
@@ -565,8 +709,10 @@ def diarize_transcript_with_llm(
     # other providers.
     config = {"response_format": {"type": "json_object"}}
 
-    response = _generate_diarisation_response(
-        messages=messages,
+    turns = _generate_turns(
+        build_messages=_build_messages,
+        custom_prompt=custom_prompt,
+        emit_native_text=emit_native_text,
         provider_enum=provider_enum,
         llm_model=llm_model,
         organization_id=organization_id,
@@ -576,8 +722,6 @@ def diarize_transcript_with_llm(
         config=config,
         content_length=len(cleaned),
     )
-
-    turns = _parse_turns_from_response(response)
 
     # Latin-script compliance check (text path).
     #
@@ -670,14 +814,17 @@ def _parse_turns_from_response(response: Dict[str, Any]) -> List[Dict[str, Any]]
         if not text:
             continue
         raw_speaker = _normalise_speaker_label(raw_speaker_value)
-        turns.append(
-            {
-                "speaker": raw_speaker,
-                "text": text,
-                "start": round(cursor, 3),
-                "end": round(cursor + 1.0, 3),
-            }
-        )
+        turn: Dict[str, Any] = {
+            "speaker": raw_speaker,
+            "text": text,
+            "start": round(cursor, 3),
+            "end": round(cursor + 1.0, 3),
+        }
+        if isinstance(entry, dict):
+            native_text = _first_nonempty_str(entry, _NATIVE_TEXT_KEYS)
+            if native_text:
+                turn["text_native"] = native_text
+        turns.append(turn)
         cursor += 1.0
 
     if not turns:
@@ -1084,6 +1231,7 @@ def diarize_audio_with_llm(
     temperature: float = 0.0,
     audio_file_key: Optional[str] = None,
     mime_type: Optional[str] = None,
+    emit_native_text: bool = False,
 ) -> List[Dict[str, Any]]:
     """Ask a multimodal LLM to transcribe + diarise raw audio in one pass.
 
@@ -1157,8 +1305,6 @@ def diarize_audio_with_llm(
     # Lazy import — base64 is cheap but we still keep helper imports
     # at call sites so worker boot time isn't polluted.
     import base64 as _b64
-
-    system_prompt = (custom_prompt or "").strip() or DEFAULT_DIARIZATION_PROMPT
 
     # ---- Gemini Files API fast-path -------------------------------------
     # For non-trivial recordings on Gemini we upload to the Files API
@@ -1243,14 +1389,15 @@ def diarize_audio_with_llm(
     if provider_value in {"openai", "custom"} or gemini_file_id is None:
         audio_b64 = _b64.b64encode(audio_bytes).decode("ascii")
 
-    messages = _build_audio_messages(
-        provider_value=provider_value,
-        audio_b64=audio_b64,
-        mime_type=resolved_mime,
-        openai_format=openai_format,
-        system_prompt=system_prompt,
-        gemini_file_id=gemini_file_id,
-    )
+    def _build_messages(system_prompt: str) -> List[Dict[str, Any]]:
+        return _build_audio_messages(
+            provider_value=provider_value,
+            audio_b64=audio_b64,
+            mime_type=resolved_mime,
+            openai_format=openai_format,
+            system_prompt=system_prompt,
+            gemini_file_id=gemini_file_id,
+        )
 
     # ``response_format`` is forwarded for OpenAI / Gemini and dropped
     # by other providers via ``litellm.drop_params=True`` — same
@@ -1258,8 +1405,10 @@ def diarize_audio_with_llm(
     config = {"response_format": {"type": "json_object"}}
 
     try:
-        response = _generate_diarisation_response(
-            messages=messages,
+        turns = _generate_turns(
+            build_messages=_build_messages,
+            custom_prompt=custom_prompt,
+            emit_native_text=emit_native_text,
             provider_enum=provider_enum,
             llm_model=llm_model,
             organization_id=organization_id,
@@ -1269,6 +1418,8 @@ def diarize_audio_with_llm(
             config=config,
             audio_bytes=len(audio_bytes),
         )
+    except LLMDiarisationError:
+        raise
     except Exception as exc:
         # LiteLLM surfaces "model does not support audio input" as a
         # generic RuntimeError. Translate it to LLMDiarisationError so
@@ -1285,8 +1436,6 @@ def diarize_audio_with_llm(
                 provider=llm_provider, model=llm_model, exc=exc
             )
         ) from exc
-
-    turns = _parse_turns_from_response(response)
 
     # Latin-script compliance check (audio / LLM-only path).
     #

@@ -63,15 +63,25 @@ def _needs_transcribe_for_eval(
     *,
     transcribe_overwrite: bool,
     auto_transcribe: bool = True,
+    catalog_db: Session | None = None,
 ) -> bool:
-    if (
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        evaluation_needs_diarised_reference,
+    )
+
+    transcript_source = (
         (getattr(evaluation, "transcript_source", None) or "")
         .strip()
         .lower()
-        == "production"
-    ):
+    )
+    needs_diarised_for_computed = False
+    if catalog_db is not None:
+        needs_diarised_for_computed = evaluation_needs_diarised_reference(
+            catalog_db, evaluation
+        )
+    if transcript_source == "production" and not needs_diarised_for_computed:
         return False
-    if not auto_transcribe:
+    if not auto_transcribe and not needs_diarised_for_computed:
         return False
     transcribe_mode = (
         getattr(evaluation, "transcribe_mode", None) or "stt_llm"
@@ -105,14 +115,25 @@ def _diarisation_in_flight(source_row: CallImportRow) -> bool:
 def _needs_import_for_eval(
     source_row: CallImportRow,
     evaluation: CallImportEvaluation | None = None,
+    *,
+    catalog_db: Session | None = None,
 ) -> bool:
     """True when the eval pipeline must fetch a recording before later stages."""
+    needs_diarised_for_computed = False
+    if evaluation is not None and catalog_db is not None:
+        from app.workers.tasks.evaluate_call_import_row_core import (
+            evaluation_needs_diarised_reference,
+        )
+
+        needs_diarised_for_computed = evaluation_needs_diarised_reference(
+            catalog_db, evaluation
+        )
     if evaluation is not None and (
         (getattr(evaluation, "transcript_source", None) or "")
         .strip()
         .lower()
         == "production"
-    ):
+    ) and not needs_diarised_for_computed:
         return False
     if source_row.status in (
         CallImportRowStatus.COMPLETED,
@@ -218,6 +239,7 @@ def build_eval_chain_transcribe_apply_async(
     reserved_task_id: str,
     restricted_metric_ids: Optional[List[str]] = None,
     transcribe_overwrite: bool = False,
+    emit_native_text: bool = False,
 ):
     """Build a Celery ``apply_async`` for eval-chain diarisation."""
     from app.workers.tasks.transcribe_call_import_row import (
@@ -230,6 +252,8 @@ def build_eval_chain_transcribe_apply_async(
     kwargs = {"_eval_slot_task_id": reserved_task_id}
     if restricted_metric_ids:
         kwargs["eval_restricted_metric_ids"] = restricted_metric_ids
+    if emit_native_text:
+        kwargs["emit_native_text"] = True
     return transcribe_call_import_row_task.apply_async(
         args=(
             str(source_row.id),
@@ -270,6 +294,7 @@ def enqueue_eval_chain_transcribe_after_import(
         evaluation,
         source_row,
         transcribe_overwrite=transcribe_overwrite,
+        catalog_db=db,
     ):
         return False
 
@@ -291,6 +316,10 @@ def enqueue_eval_chain_transcribe_after_import(
         eval_row.celery_task_id = None
         db.flush()
 
+        from app.workers.tasks.evaluate_call_import_row_core import (
+            evaluation_needs_diarised_reference,
+        )
+
         async_result = build_eval_chain_transcribe_apply_async(
             evaluation=evaluation,
             eval_row=eval_row,
@@ -298,6 +327,7 @@ def enqueue_eval_chain_transcribe_after_import(
             reserved_task_id=slot_task_id,
             restricted_metric_ids=restricted_metric_ids,
             transcribe_overwrite=transcribe_overwrite,
+            emit_native_text=evaluation_needs_diarised_reference(db, evaluation),
         )
         eval_row.celery_task_id = async_result.id
         db.commit()
@@ -480,7 +510,7 @@ def _try_dispatch_single_row(
             if not (source_row.recording_s3_key or "").strip():
                 return EvalDispatchOutcome("skip")
 
-        if _needs_import_for_eval(source_row, evaluation):
+        if _needs_import_for_eval(source_row, evaluation, catalog_db=catalog_db):
             from app.workers.concurrency.import_dispatch import (
                 _peek_authenticated_import_credit,
             )
@@ -523,6 +553,7 @@ def _try_dispatch_single_row(
             source_row,
             transcribe_overwrite=transcribe_overwrite,
             auto_transcribe=auto_transcribe,
+            catalog_db=catalog_db,
         ):
             from app.workers.tasks.evaluate_call_import_row_core import (
                 is_eval_row_user_cancelled,
@@ -557,6 +588,10 @@ def _try_dispatch_single_row(
                     source_row.diarised_transcript = None
                 source_row.celery_task_id = reserved_task_id
                 mutate_db.flush()
+                from app.workers.tasks.evaluate_call_import_row_core import (
+                    evaluation_needs_diarised_reference,
+                )
+
                 return build_eval_chain_transcribe_apply_async(
                     evaluation=evaluation,
                     eval_row=eval_row,
@@ -564,6 +599,9 @@ def _try_dispatch_single_row(
                     reserved_task_id=reserved_task_id,
                     restricted_metric_ids=restricted_metric_ids,
                     transcribe_overwrite=transcribe_overwrite,
+                    emit_native_text=evaluation_needs_diarised_reference(
+                        catalog_db, evaluation
+                    ),
                 )
 
             if _reserve_slot_and_enqueue(

@@ -149,11 +149,10 @@ function MetricFailurePolicyEditor({
                 {preview.metric_name}
               </p>
               <span
-                className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${
-                  isSkipped
+                className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${isSkipped
                     ? 'bg-gray-100 text-gray-600'
                     : 'bg-primary-50 text-primary-800'
-                }`}
+                  }`}
               >
                 {isSkipped
                   ? 'Skipped — no matching calls'
@@ -405,7 +404,7 @@ function MetricClusterGenerationModal({
     } catch (e: any) {
       reportError(
         e?.response?.data?.detail ||
-          'Failed to start metric cluster generation.',
+        'Failed to start metric cluster generation.',
       )
     } finally {
       setGenerating(false)
@@ -970,21 +969,43 @@ function MetricClustersPanel({
         </p>
         <p className="text-sm text-gray-600">
           {state.error_message ||
-            'Cluster generation was cancelled. Partial results were not saved.'}
+            'Cluster generation was cancelled. Checkpointed batch progress was kept.'}
         </p>
         {state.progress ? (
           <p className="text-xs text-gray-500 mt-1">
-            Stopped at {state.progress.completed_llm_calls} /{' '}
-            {state.progress.total_llm_calls} LLM calls
+            Stopped at batch {state.progress.completed_batches ?? 0} /{' '}
+            {state.progress.total_batches ?? 0}
+            {state.progress.completed_rows != null && state.progress.total_rows != null
+              ? ` · ${state.progress.completed_rows} / ${state.progress.total_rows} rows`
+              : null}
           </p>
         ) : null}
-        <div className="mt-3">
+        <div className="mt-3 flex items-center gap-2">
           <Button
             variant="primary"
+            onClick={async () => {
+              setCancelling(true)
+              try {
+                await apiClient.callImports.generateCallImportEvaluationMetricClusters(
+                  callImportId,
+                  evaluationId,
+                  { resume: true },
+                )
+                onGenerated()
+              } finally {
+                setCancelling(false)
+              }
+            }}
+            disabled={cancelling}
+          >
+            Resume
+          </Button>
+          <Button
+            variant="outline"
             onClick={() => setClusterActionModalOpen(true)}
             disabled={cancelling}
           >
-            Generate clusters
+            Start over
           </Button>
         </div>
         {clusterGenerationModal}
@@ -1098,156 +1119,158 @@ function MetricClustersPanel({
             .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
             .slice(0, 5)
           return (
-          <article
-            key={group.metric_id}
-            className="rounded-lg border border-gray-200 bg-white overflow-hidden"
-          >
-            <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/80">
-              <h4 className="text-base font-semibold text-gray-900">
-                {group.metric_name}
-              </h4>
-              <p className="text-xs text-gray-500">
-                {group.flagged_count} flagged calls · {topClusters.length}
-                {group.clusters.length > 5
-                  ? ` of ${group.clusters.length}`
-                  : ''}{' '}
-                cluster(s) shown
-                {state.failure_policies?.[group.metric_id] ? (
-                  <>
-                    {' '}
-                    · failure:{' '}
-                    {[
-                      ...(state.failure_policies[group.metric_id]
-                        .failure_values || []),
-                      ...(state.failure_policies[group.metric_id]
-                        .failure_child_names || []),
-                    ].join(', ') || 'numeric rule'}
-                  </>
-                ) : null}
-              </p>
-              {group.failure_reason ? (
-                <p className="text-xs text-gray-600 mt-1">
-                  <span className="font-semibold text-gray-700">Why flagged:</span>{' '}
-                  {group.failure_reason}
-                </p>
-              ) : null}
-            </div>
-            <div className="p-4 space-y-3">
-              {(() => {
-                const categorizedCalls = topClusters.reduce(
-                  (sum, cluster) => sum + Math.max(0, cluster.count || 0),
-                  0,
-                )
-                const totalFlagged = Math.max(0, group.flagged_count || 0)
-                return (
-                  <div className="rounded-md border border-gray-100 bg-gray-50/60 p-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
-                        Cluster breakdown
-                      </p>
-                      <span className="text-xs font-semibold text-gray-700">
-                        {categorizedCalls} / {totalFlagged}
-                      </span>
-                    </div>
-                  </div>
-                )
-              })()}
-              {topClusters.map((cluster) => {
-                const exampleHref = buildEvaluationCallDeepLink(
-                  callImportId,
-                  evaluationId,
-                  cluster.evidence,
-                )
-                return (
-                <div
-                  key={cluster.id}
-                  className="rounded-md border border-gray-100 p-3"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <p className="text-sm font-semibold text-gray-900">
-                      {cluster.label}
-                    </p>
-                    <span className="text-xs font-bold uppercase text-primary-700">
-                      {cluster.gap_label.replace(/_/g, ' ')}
-                    </span>
-                  </div>
-                  <p className="text-xs text-gray-600 mt-0.5">
-                    {cluster.count} calls · {cluster.share_pct.toFixed(1)}% share
-                  </p>
-                  {cluster.failure_reason ? (
-                    <p className="text-xs text-gray-600 mt-1">
-                      <span className="font-semibold">Why flagged:</span>{' '}
-                      {cluster.failure_reason}
-                    </p>
+            <article
+              key={group.metric_id}
+              className="rounded-lg border border-gray-200 bg-white overflow-hidden"
+            >
+              <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/80">
+                <h4 className="text-base font-semibold text-gray-900">
+                  {group.metric_name}
+                </h4>
+                <p className="text-xs text-gray-500">
+                  {group.flagged_count} flagged calls · {topClusters.length}
+                  {group.clusters.length > 5
+                    ? ` of ${group.clusters.length}`
+                    : ''}{' '}
+                  cluster(s) shown
+                  {state.failure_policies?.[group.metric_id] ? (
+                    <>
+                      {' '}
+                      · failure:{' '}
+                      {[
+                        ...(state.failure_policies[group.metric_id]
+                          .failure_values || []),
+                        ...(state.failure_policies[group.metric_id]
+                          .failure_child_names || []),
+                      ].join(', ') || 'numeric rule'}
+                    </>
                   ) : null}
-                  {group.flagged_count > 0 ? (
-                    <div className="mt-2">
-                      <div className="h-2.5 w-full rounded bg-primary-100 overflow-hidden">
-                        <div
-                          className="h-full rounded bg-primary-500"
-                          style={{
-                            width: `${Math.min(
-                              100,
-                              (cluster.count / group.flagged_count) * 100,
-                            ).toFixed(1)}%`,
-                          }}
-                        />
+                </p>
+                {group.failure_reason ? (
+                  <p className="text-xs text-gray-600 mt-1">
+                    <span className="font-semibold text-gray-700">Why flagged:</span>{' '}
+                    {group.failure_reason}
+                  </p>
+                ) : null}
+              </div>
+              <div className="p-4 space-y-3">
+                {(() => {
+                  const categorizedCalls = topClusters.reduce(
+                    (sum, cluster) => sum + Math.max(0, cluster.count || 0),
+                    0,
+                  )
+                  const totalFlagged = Math.max(0, group.flagged_count || 0)
+                  return (
+                    <div className="rounded-md border border-gray-100 bg-gray-50/60 p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
+                          Cluster breakdown
+                        </p>
+                        <span className="text-xs font-semibold text-gray-700">
+                          {categorizedCalls} / {totalFlagged}
+                        </span>
                       </div>
                     </div>
-                  ) : null}
-                  {cluster.observation ? (
-                    <p className="text-sm text-gray-700 mt-2">
-                      {cluster.observation}
-                    </p>
-                  ) : null}
-                  {cluster.sub_clusters.length ? (
-                    <ul className="mt-2 text-xs text-gray-600 list-disc pl-4">
-                      {cluster.sub_clusters.map((sub) => (
-                        <li key={sub.label}>
-                          {sub.label} — {sub.count} ({sub.share_pct.toFixed(1)}%)
-                        </li>
-                      ))}
-                    </ul>
-                  ) : null}
-                  {(cluster.evidence.quote ||
-                    cluster.evidence.turns?.length ||
-                    cluster.evidence.conversation_id) ? (
-                    <div className="mt-2 rounded-md bg-gray-50 border border-gray-100 p-2 space-y-1">
-                      <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-600">
-                        Example call
+                  )
+                })()}
+                {topClusters.map((cluster) => {
+                  const exampleHref = buildEvaluationCallDeepLink(
+                    callImportId,
+                    evaluationId,
+                    cluster.evidence,
+                  )
+                  return (
+                    <div
+                      key={cluster.id}
+                      className="rounded-md border border-gray-100 p-3"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="text-sm font-semibold text-gray-900">
+                          {cluster.label}
+                        </p>
+                        <span className="text-xs font-bold uppercase text-primary-700">
+                          {cluster.gap_label.replace(/_/g, ' ')}
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-600 mt-0.5">
+                        {cluster.count} calls · {cluster.share_pct.toFixed(1)}% share
                       </p>
-                      {cluster.evidence.turns?.length ? (
-                        cluster.evidence.turns.map((turn, i) => (
-                          <p key={i} className="text-xs text-gray-800">
-                            <span className="font-semibold text-primary-700">
-                              {turn.speaker}:
-                            </span>{' '}
-                            {turn.text}
-                          </p>
-                        ))
-                      ) : cluster.evidence.quote ? (
-                        <p className="text-xs text-gray-800">{cluster.evidence.quote}</p>
-                      ) : null}
-                      {exampleHref && cluster.evidence.conversation_id ? (
-                        <Link
-                          to={exampleHref}
-                          className="inline-flex items-center gap-1 text-xs font-medium text-primary-700 hover:text-primary-800"
-                        >
-                          <ExternalLink className="h-3 w-3" />
-                          {cluster.evidence.conversation_id}
-                        </Link>
-                      ) : cluster.evidence.conversation_id ? (
-                        <p className="text-[10px] text-gray-500 font-mono">
-                          {cluster.evidence.conversation_id}
+                      {cluster.failure_reason ? (
+                        <p className="text-xs text-gray-600 mt-1">
+                          <span className="font-semibold">Why flagged:</span>{' '}
+                          {cluster.failure_reason}
                         </p>
                       ) : null}
+                      {group.flagged_count > 0 ? (
+                        <div className="mt-2">
+                          <div className="h-2.5 w-full rounded bg-primary-100 overflow-hidden">
+                            <div
+                              className="h-full rounded bg-primary-500"
+                              style={{
+                                width: `${Math.min(
+                                  100,
+                                  (cluster.count / group.flagged_count) * 100,
+                                ).toFixed(1)}%`,
+                              }}
+                            />
+                          </div>
+                        </div>
+                      ) : null}
+                      {cluster.observation ? (
+                        <p className="text-sm text-gray-700 mt-2">
+                          {cluster.observation}
+                        </p>
+                      ) : null}
+                      {cluster.sub_clusters.length ? (
+                        <ul className="mt-2 text-xs text-gray-600 list-disc pl-4">
+                          {cluster.sub_clusters.map((sub) => (
+                            <li key={sub.label}>
+                              {sub.label} — {sub.count} ({sub.share_pct.toFixed(1)}%)
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      {(cluster.evidence.quote ||
+                        cluster.evidence.turns?.length ||
+                        cluster.evidence.conversation_id) ? (
+                        <div className="mt-2 rounded-md bg-gray-50 border border-gray-100 p-2 space-y-1">
+                          <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-600">
+                            Example call
+                          </p>
+                          {cluster.evidence.turns?.length ? (
+                            cluster.evidence.turns.map((turn, i) => (
+                              <p key={i} className="text-xs text-gray-800">
+                                <span className="font-semibold text-primary-700">
+                                  {turn.speaker}:
+                                </span>{' '}
+                                {turn.text}
+                              </p>
+                            ))
+                          ) : cluster.evidence.quote ? (
+                            <p className="text-xs text-gray-800">{cluster.evidence.quote}</p>
+                          ) : null}
+                          {exampleHref && cluster.evidence.conversation_id ? (
+                            <Link
+                              to={exampleHref}
+                              className="inline-flex items-center gap-1 text-xs font-medium text-primary-700 hover:text-primary-800"
+                            >
+                              <ExternalLink className="h-3 w-3" />
+                              {cluster.evidence.conversation_id}
+                            </Link>
+                          ) : cluster.evidence.conversation_id ? (
+                            <p className="text-[10px] text-gray-500 font-mono">
+                              {cluster.evidence.conversation_id}
+                            </p>
+                          ) : null}
+                        </div>
+                      ) : null}
                     </div>
-                  ) : null}
-                </div>
-              )})}
-            </div>
-          </article>
-        )})}
+                  )
+                })}
+              </div>
+            </article>
+          )
+        })}
         {state.discovered_problems.length ? (
           <article className="rounded-lg border border-dashed border-primary-200 bg-primary-50/30 p-4">
             <h4 className="text-base font-semibold text-gray-900 mb-2">

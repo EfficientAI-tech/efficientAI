@@ -38,94 +38,10 @@ def _compute_wer_cer(ground_truth: str, predicted: str):
     Normalized scores reduce false penalties on numeric/currency phrasing
     differences (for example "$1,234.56" vs "one thousand two hundred...").
     """
-    try:
-        from jiwer import cer, wer
-    except ImportError:
-        logger.warning("[TTS Eval] jiwer not installed – skipping WER/CER")
-        return {
-            "raw_wer": None,
-            "raw_cer": None,
-            "normalized_wer": None,
-            "normalized_cer": None,
-        }
-
-    number_words = {
-        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
-        "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
-        "seventeen", "eighteen", "nineteen", "twenty", "thirty", "forty", "fifty",
-        "sixty", "seventy", "eighty", "ninety", "hundred", "thousand", "million",
-        "billion", "trillion", "point", "and",
-    }
-    currency_words = {
-        "dollar", "dollars", "usd", "cent", "cents", "rupee", "rupees", "inr",
-        "euro", "euros", "eur", "pound", "pounds", "gbp",
-    }
-
-    def _is_numeric_token(token: str) -> bool:
-        return bool(re.fullmatch(r"\d+(?:\.\d+)?", token))
-
-    def _normalize_base(text: str) -> str:
-        punct_table = str.maketrans("", "", string.punctuation)
-        return text.lower().translate(punct_table).strip()
-
-    def _normalize_entities(text: str) -> str:
-        tokens = _normalize_base(text).split()
-        normalized_tokens = []
-        i = 0
-        while i < len(tokens):
-            token = tokens[i]
-            is_entity_token = (
-                _is_numeric_token(token)
-                or token in number_words
-                or token in currency_words
-            )
-            if not is_entity_token:
-                normalized_tokens.append(token)
-                i += 1
-                continue
-
-            j = i
-            has_currency = token in currency_words
-            while j < len(tokens):
-                t = tokens[j]
-                if _is_numeric_token(t) or t in number_words or t in currency_words:
-                    if t in currency_words:
-                        has_currency = True
-                    j += 1
-                    continue
-                break
-
-            normalized_tokens.append("<amount>" if has_currency else "<num>")
-            i = j
-
-        return " ".join(normalized_tokens)
-
-    ref = _normalize_base(ground_truth)
-    hyp = _normalize_base(predicted)
-
-    if not ref:
-        return {
-            "raw_wer": None,
-            "raw_cer": None,
-            "normalized_wer": None,
-            "normalized_cer": None,
-        }
+    from app.services.evaluation.transcript_error_rates import compute_tts_wer_cer
 
     try:
-        raw_wer = round(wer(ref, hyp), 4)
-        raw_cer = round(cer(ref, hyp), 4)
-
-        norm_ref = _normalize_entities(ground_truth)
-        norm_hyp = _normalize_entities(predicted)
-        normalized_wer = round(wer(norm_ref, norm_hyp), 4) if norm_ref else None
-        normalized_cer = round(cer(norm_ref, norm_hyp), 4) if norm_ref else None
-
-        return {
-            "raw_wer": raw_wer,
-            "raw_cer": raw_cer,
-            "normalized_wer": normalized_wer,
-            "normalized_cer": normalized_cer,
-        }
+        return compute_tts_wer_cer(ground_truth, predicted)
     except Exception as e:
         logger.warning(f"[TTS Eval] WER/CER calculation error: {e}")
         return {

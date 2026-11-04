@@ -27,10 +27,41 @@ export function metricEnabledForCallImportEvalSurface(
   return surfaces.includes(evalSurface)
 }
 
-/**
- * Metrics eligible for Run Evaluation on this import. Does not filter by
- * agent/scenario links — scoped metrics stay selectable on call imports.
- */
+/** Deterministic diarized-vs-production transcript agreement metrics. */
+export const TRANSCRIPT_AGREEMENT_SCORING_METHODS = new Set(['user_wer', 'user_cer'])
+
+export function isTranscriptAgreementMetric(metric: {
+  scoring_method?: string | null
+}): boolean {
+  return TRANSCRIPT_AGREEMENT_SCORING_METHODS.has(
+    (metric.scoring_method || '').trim().toLowerCase(),
+  )
+}
+
+/** Whether this batch maps a production transcript column (best-effort). */
+export function callImportHasProductionTranscriptMapping(data: {
+  parameter_mapping?: Record<string, string> | null
+  column_mapping?: Record<string, string | null> | null
+  content_modality?: string | null
+}): boolean {
+  const pm = data.parameter_mapping || {}
+  if (Object.values(pm).some((v) => typeof v === 'string' && v.trim())) {
+    return true
+  }
+  const legacy = (data.column_mapping?.transcript || '').trim()
+  return legacy.length > 0
+}
+
+export function callImportHasEvalRecordings(data: {
+  content_modality?: string | null
+  source_format?: string | null
+}): boolean {
+  if ((data.content_modality || '').toLowerCase() === 'chat') {
+    return false
+  }
+  return true
+}
+
 export function metricsForCallImportRunEvaluation(
   metrics: CallImportMetricRow[],
   evalSurface: MetricSurface,

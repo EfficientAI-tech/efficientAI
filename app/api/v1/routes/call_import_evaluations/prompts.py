@@ -203,18 +203,22 @@ def _enqueue_prompt_improvements_job(
     model: Optional[str] = None,
     credential_id: Optional[UUID] = None,
     force: bool = False,
+    resume: bool = False,
     db: Optional[Session] = None,
     principal: Optional[Principal] = None,
 ) -> None:
     current = _prompt_improvements_payload(evaluation)
-    if current is not None and current.status == "running" and not force:
+    if current is not None and current.status == "running" and not force and not resume:
         return
+
+    prior = evaluation.prompt_improvements if isinstance(evaluation.prompt_improvements, dict) else {}
+    prior_suggestions = prior.get("suggestions") if isinstance(prior.get("suggestions"), list) else []
 
     evaluation.prompt_improvements = {
         "status": "running",
         "imported_agent_id": str(imported_agent_id),
         "imported_agent_name": imported_agent_name,
-        "suggestions": [],
+        "suggestions": prior_suggestions if prior.get("status") == "completed" else prior.get("suggestions", []),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "generated_at_completed_rows": evaluation.completed_rows,
         "provider": provider,
@@ -238,6 +242,7 @@ def _enqueue_prompt_improvements_job(
             "provider": provider,
             "model": model,
             "credential_id": str(credential_id) if credential_id else None,
+            "resume": resume,
         },
         queue="imports",
     )
@@ -366,7 +371,7 @@ async def generate_call_import_evaluation_prompt_improvements(
             stamp_evaluation_actor(evaluation, principal)
             db.commit()
 
-    if not body.regenerate and not body.force:
+    if not body.regenerate and not body.force and not body.resume:
         cached = _prompt_improvements_payload(evaluation)
         if (
             cached is not None
@@ -387,6 +392,7 @@ async def generate_call_import_evaluation_prompt_improvements(
         model=model_str,
         credential_id=body.credential_id,
         force=body.force or body.regenerate,
+        resume=body.resume,
         db=db,
         principal=principal,
     )
@@ -396,6 +402,86 @@ async def generate_call_import_evaluation_prompt_improvements(
         status="running",
         imported_agent_id=str(imported_agent_id),
         imported_agent_name=imported_agent.name,
+    )
+
+
+def _revoke_prompt_improvements_task(evaluation: CallImportEvaluation) -> None:
+    raw = evaluation.prompt_improvements
+    if not isinstance(raw, dict):
+        return
+    task_id = str(raw.get("celery_task_id") or "").strip()
+    if not task_id:
+        return
+    try:
+        from app.workers.celery_revoke import revoke_celery_tasks
+
+        revoke_celery_tasks([task_id])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Failed to revoke prompt-improvements task for evaluation {}: {}",
+            evaluation.id,
+            exc,
+        )
+
+
+def _apply_prompt_improvements_cancel(evaluation: CallImportEvaluation) -> bool:
+    from app.services.evaluation_analysis_checkpoints import (
+        PROMPT_IMPROVEMENTS_CANCELLED_BY_USER_ERROR,
+    )
+
+    raw = evaluation.prompt_improvements
+    if not isinstance(raw, dict):
+        return False
+    if (raw.get("status") or "").lower() != "running":
+        return False
+    _revoke_prompt_improvements_task(evaluation)
+    evaluation.prompt_improvements = {
+        **raw,
+        "status": "cancelled",
+        "error_message": PROMPT_IMPROVEMENTS_CANCELLED_BY_USER_ERROR,
+        "celery_task_id": None,
+    }
+    return True
+
+
+@router.post(
+    "/{eval_id}/prompt-improvements/cancel",
+    response_model=EvaluationPromptImprovementsState,
+    operation_id="cancelCallImportEvaluationPromptImprovements",
+)
+async def cancel_call_import_evaluation_prompt_improvements(
+    call_import_id: UUID,
+    eval_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> EvaluationPromptImprovementsState:
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    _apply_prompt_improvements_cancel(evaluation)
+    flag_modified(evaluation, "prompt_improvements")
+    stamp_evaluation_actor(evaluation, principal)
+    db.commit()
+    db.refresh(evaluation)
+
+    return _prompt_improvements_payload(evaluation) or EvaluationPromptImprovementsState(
+        status="idle"
     )
 
 

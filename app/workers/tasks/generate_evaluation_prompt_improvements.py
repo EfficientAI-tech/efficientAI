@@ -9,16 +9,18 @@ from loguru import logger
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.database import SessionLocal
-from app.models.database import (
-    CallImportEvaluation,
-    CallImportEvaluationRow,
-    PromptPartial,
-)
+from app.models.database import CallImportEvaluation, PromptPartial
 from app.services.call_import_metric_clusters import metric_clusters_state_from_raw
 from app.services.call_import_prompt_improvements import (
-    generate_prompt_improvements,
     is_imported_agent,
     prompt_improvements_state_to_db,
+)
+from app.services.call_import_prompt_improvements_wave import (
+    process_prompt_improvements_wave_step,
+)
+from app.services.evaluation_analysis_checkpoints import (
+    new_job_run_id,
+    prompt_improvements_raw_is_cancelled,
 )
 from app.workers.config import celery_app
 
@@ -32,6 +34,7 @@ def generate_evaluation_prompt_improvements_task(
     provider: str | None = None,
     model: str | None = None,
     credential_id: str | None = None,
+    resume: bool = False,
 ):
     from app.api.v1.routes.call_import_evaluations import (
         _aggregate_to_dict,
@@ -39,6 +42,7 @@ def generate_evaluation_prompt_improvements_task(
         _period_deltas_from_evaluation,
         _resolve_baseline_evaluation,
     )
+    from app.models.database import CallImportEvaluationRow
 
     db = SessionLocal()
     evaluation: CallImportEvaluation | None = None
@@ -52,8 +56,7 @@ def generate_evaluation_prompt_improvements_task(
             logger.error("Prompt improvements: evaluation {} not found", evaluation_id)
             return
 
-        raw = evaluation.prompt_improvements
-        if isinstance(raw, dict) and raw.get("status") == "cancelled":
+        if prompt_improvements_raw_is_cancelled(evaluation.prompt_improvements):
             logger.info(
                 "Prompt improvements: evaluation {} cancelled, skipping",
                 evaluation_id,
@@ -107,27 +110,80 @@ def generate_evaluation_prompt_improvements_task(
                     eval_rows,
                 )
 
+        raw = (
+            evaluation.prompt_improvements
+            if isinstance(evaluation.prompt_improvements, dict)
+            else {}
+        )
+        if raw.get("job_run_id"):
+            run_id = UUID(str(raw["job_run_id"]))
+        elif resume:
+            run_id = new_job_run_id()
+            evaluation.prompt_improvements = {
+                **raw,
+                "status": "running",
+                "imported_agent_id": str(imported_agent_id),
+                "imported_agent_name": imported_agent.name,
+                "job_run_id": str(run_id),
+                "completed_group_metric_ids": raw.get("completed_group_metric_ids") or [],
+            }
+            flag_modified(evaluation, "prompt_improvements")
+            db.commit()
+        else:
+            run_id = new_job_run_id()
+            prior_suggestions = raw.get("suggestions") if isinstance(raw.get("suggestions"), list) else []
+            evaluation.prompt_improvements = {
+                **raw,
+                "status": "running",
+                "imported_agent_id": str(imported_agent_id),
+                "imported_agent_name": imported_agent.name,
+                "job_run_id": str(run_id),
+                "completed_group_metric_ids": [],
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "generated_at_completed_rows": evaluation.completed_rows,
+                "provider": provider,
+                "model": model,
+                "error_message": None,
+                "suggestions": prior_suggestions if raw.get("status") == "completed" else raw.get("suggestions", []),
+            }
+            flag_modified(evaluation, "prompt_improvements")
+            db.commit()
+
+        def _reload_cancelled() -> bool:
+            db.expire(evaluation, ["prompt_improvements"])
+            db.refresh(evaluation)
+            return prompt_improvements_raw_is_cancelled(evaluation.prompt_improvements)
+
         from app.services.usage.call_import_context import usage_context_for_evaluation
         from app.services.usage.context import llm_usage_context
 
         with llm_usage_context(usage_context_for_evaluation(evaluation)):
-            state = generate_prompt_improvements(
-                evaluation=evaluation,
-                imported_agent=imported_agent,
-                clusters_state=clusters_state,
-                organization_id=evaluation.organization_id,
-                db=db,
+            action, terminal_state = process_prompt_improvements_wave_step(
+                db,
+                evaluation,
+                imported_agent,
+                clusters_state,
+                evaluation.organization_id,
+                job_run_id=run_id,
                 provider=provider,
                 model=model,
                 credential_id=UUID(credential_id) if credential_id else None,
                 period_deltas=period_deltas,
+                is_cancelled=_reload_cancelled,
             )
-            payload = prompt_improvements_state_to_db(state)
+
+        if _reload_cancelled():
+            return
+
+        if terminal_state is not None:
+            payload = prompt_improvements_state_to_db(terminal_state)
             payload["compose_base_prompt"] = imported_agent.content or ""
+            payload["job_run_id"] = str(run_id)
+            payload["celery_task_id"] = None
             evaluation.prompt_improvements = payload
             flag_modified(evaluation, "prompt_improvements")
             db.commit()
-            if state.status == "completed":
+            if terminal_state.status == "completed":
                 from app.services.billing.flexprice_service import (
                     record_call_import_prompt_improvements_generated,
                 )
@@ -142,7 +198,24 @@ def generate_evaluation_prompt_improvements_task(
             logger.info(
                 "Prompt improvements completed for evaluation {} ({} suggestions)",
                 evaluation_id,
-                len(state.suggestions),
+                len(terminal_state.suggestions),
+            )
+            return
+
+        flag_modified(evaluation, "prompt_improvements")
+        db.commit()
+
+        if action == "continue":
+            generate_evaluation_prompt_improvements_task.apply_async(
+                kwargs={
+                    "evaluation_id": evaluation_id,
+                    "imported_agent_id": imported_agent_id,
+                    "provider": provider,
+                    "model": model,
+                    "credential_id": credential_id,
+                    "resume": True,
+                },
+                queue="imports",
             )
     except Exception as exc:
         logger.exception(
@@ -162,6 +235,7 @@ def generate_evaluation_prompt_improvements_task(
                 "imported_agent_id": imported_agent_id,
                 "error_message": str(exc),
                 "generated_at": datetime.now(timezone.utc).isoformat(),
+                "celery_task_id": None,
             }
             flag_modified(evaluation, "prompt_improvements")
             db.commit()

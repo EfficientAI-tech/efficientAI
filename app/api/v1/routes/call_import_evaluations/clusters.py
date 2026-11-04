@@ -332,15 +332,16 @@ def _enqueue_metric_clusters_job(
     evaluation_row_ids: Optional[List[UUID]] = None,
     selected_evaluation_row_ids: Optional[List[str]] = None,
     failure_policies: Optional[Dict[str, MetricFailurePolicy]] = None,
+    transcript_source: Optional[str] = None,
+    resume: bool = False,
     db: Optional[Session] = None,
     principal: Optional[Principal] = None,
 ) -> None:
     current = _metric_clusters_payload(evaluation)
-    if current is not None and current.status == "running" and not force:
+    if current is not None and current.status == "running" and not force and not resume:
         return
 
-    llm_budget = normalize_max_llm_calls(max_llm_calls)
-    total_calls = 1
+    del max_llm_calls
     row_ids_for_task: Optional[List[str]] = None
     if db is not None:
         eval_rows = _load_eval_rows(db, evaluation.id)
@@ -351,37 +352,7 @@ def _enqueue_metric_clusters_job(
                 eval_rows,
                 evaluation_row_ids,
             )
-        completed_pairs = filter_completed_row_pairs(
-            _completed_row_pairs_for_evaluation(db, evaluation.id),
-            [UUID(rid) for rid in selected_evaluation_row_ids],
-        )
-        metrics = _metrics_for_clustering(db, evaluation, eval_rows)
-        policies_for_estimate = failure_policies
-        if policies_for_estimate is None:
-            aggregates = _compute_metric_aggregates(db, evaluation, eval_rows)
-            parent_ids = [
-                m.id
-                for m in metrics
-                if getattr(m, "selection_mode", None)
-                and not getattr(m, "parent_metric_id", None)
-            ]
-            child_names_by_parent = _child_names_by_parent(
-                db, evaluation.organization_id, parent_ids
-            )
-            policies_for_estimate, _ = effective_policies(
-                evaluation,
-                metrics,
-                aggregates,
-                child_names_by_parent=child_names_by_parent,
-            )
-        _, total_calls = estimate_metric_clusters_llm_calls(
-            evaluation,
-            metrics,
-            completed_pairs,
-            policies_for_estimate,
-            max_llm_calls=llm_budget,
-        )
-        row_ids_for_task = list(selected_evaluation_row_ids)
+        row_ids_for_task = list(selected_evaluation_row_ids or [])
 
     prior_raw = (
         evaluation.metric_clusters
@@ -392,26 +363,32 @@ def _enqueue_metric_clusters_job(
     if failure_policies:
         policy_blob = failure_policies_to_db(failure_policies, source="user")
 
-    evaluation.metric_clusters = {
-        "status": "running",
-        "groups": prior_raw.get("groups", []) if isinstance(prior_raw, dict) else [],
-        "discovered_problems": (
-            prior_raw.get("discovered_problems", [])
-            if isinstance(prior_raw, dict)
-            else []
-        ),
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "generated_at_completed_rows": evaluation.completed_rows,
-        "progress": {"completed_llm_calls": 0, "total_llm_calls": total_calls},
-        "provider": provider,
-        "model": model,
-        "max_llm_calls": llm_budget,
-        "llm_calls_used": 0,
-        "error_message": None,
-        "selected_evaluation_row_ids": selected_evaluation_row_ids or [],
+    from app.services.call_import_metric_clusters_wave import start_metric_clusters_job_header
+    from app.services.evaluation_analysis_checkpoints import new_job_run_id, normalize_transcript_source
+
+    source = normalize_transcript_source(
+        transcript_source or prior_raw.get("transcript_source") or evaluation.transcript_source
+    )
+    run_id = (
+        UUID(str(prior_raw["job_run_id"]))
+        if resume and prior_raw.get("job_run_id")
+        else new_job_run_id()
+    )
+    merged_raw = {
+        **prior_raw,
         **policy_blob,
+        "selected_evaluation_row_ids": selected_evaluation_row_ids or [],
     }
     if db is not None:
+        evaluation.metric_clusters = start_metric_clusters_job_header(
+            evaluation,
+            db,
+            job_run_id=run_id,
+            transcript_source=source,
+            provider=provider,
+            model=model,
+            metric_clusters_raw=merged_raw,
+        )
         if principal is not None:
             stamp_evaluation_actor(evaluation, principal)
         flag_modified(evaluation, "metric_clusters")
@@ -427,8 +404,9 @@ def _enqueue_metric_clusters_job(
             "provider": provider,
             "model": model,
             "credential_id": str(credential_id) if credential_id else None,
-            "max_llm_calls": llm_budget,
             "evaluation_row_ids": row_ids_for_task,
+            "transcript_source": source,
+            "resume": resume,
         },
         queue="imports",
     )
@@ -738,7 +716,7 @@ async def generate_call_import_evaluation_metric_clusters(
             status_code=404, detail="Call import evaluation not found"
         )
 
-    if not body.regenerate and not body.force:
+    if not body.regenerate and not body.force and not body.resume:
         cached = _metric_clusters_payload(evaluation)
         if cached is not None and cached.status in {"running", "completed"}:
             return cached
@@ -839,6 +817,8 @@ async def generate_call_import_evaluation_metric_clusters(
         evaluation_row_ids=body.evaluation_row_ids,
         selected_evaluation_row_ids=selected_row_ids,
         failure_policies=merged_policies,
+        transcript_source=body.transcript_source,
+        resume=body.resume,
         db=db,
         principal=principal,
     )

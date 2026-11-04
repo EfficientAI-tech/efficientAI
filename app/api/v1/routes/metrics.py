@@ -16,6 +16,7 @@ from app.dependencies import get_organization_id, get_api_key, get_workspace_id
 from app.core.oss_quotas import enforce_oss_quota
 from app.services.billing.flexprice_service import record_metrics_llm_assist
 from app.models.database import Metric, MetricCategory, MetricType, MetricTrigger, ModelProvider
+from app.models.enums import MetricScoringMethod
 from app.services.metrics.evaluation_scope import (
     agent_ids_for_response,
     replace_metric_agents,
@@ -216,6 +217,9 @@ def _serialize_metric_tree(metric: Metric) -> Dict[str, Any]:
         "allow_discovery": bool(getattr(metric, "allow_discovery", False)),
         "compare_transcripts": bool(
             getattr(metric, "compare_transcripts", False)
+        ),
+        "scoring_method": (
+            getattr(metric, "scoring_method", None) or "llm"
         ),
         "lifecycle": getattr(metric, "lifecycle", None) or "active",
         "promoted_from_draft_at": getattr(metric, "promoted_from_draft_at", None),
@@ -1749,6 +1753,41 @@ def seed_default_metrics(
             "supported_surfaces": ["voice_playground"],
             "enabled_surfaces": ["voice_playground"],
         },
+        # =========================================================================
+        # Transcript agreement (deterministic — no LLM cost)
+        # =========================================================================
+        {
+            "name": "User WER",
+            "description": (
+                "Word error rate of diarised user turns (hypothesis) against "
+                "production user turns (reference). Agent turns are ignored. "
+                "Secondary to User CER. Lower is better."
+            ),
+            "metric_type": MetricType.NUMBER,
+            "trigger": MetricTrigger.ALWAYS,
+            "enabled": True,
+            "metric_origin": "default",
+            "supported_surfaces": ["agent"],
+            "enabled_surfaces": ["agent"],
+            "tags": ["transcript_accuracy"],
+            "scoring_method": MetricScoringMethod.USER_WER.value,
+        },
+        {
+            "name": "User CER",
+            "description": (
+                "Character error rate of diarised user turns (hypothesis) "
+                "against production user turns (reference). Agent turns are "
+                "ignored. Headline transcript-agreement metric. Lower is better."
+            ),
+            "metric_type": MetricType.NUMBER,
+            "trigger": MetricTrigger.ALWAYS,
+            "enabled": True,
+            "metric_origin": "default",
+            "supported_surfaces": ["agent"],
+            "enabled_surfaces": ["agent"],
+            "tags": ["transcript_accuracy"],
+            "scoring_method": MetricScoringMethod.USER_CER.value,
+        },
     ]
 
     # Names of default voice metrics that must always be enabled on the
@@ -1791,6 +1830,10 @@ def seed_default_metrics(
                 metric_origin=metric_data.get("metric_origin", "default"),
                 supported_surfaces=metric_data.get("supported_surfaces", ["agent"]),
                 enabled_surfaces=metric_data.get("enabled_surfaces", ["agent"]),
+                tags=metric_data.get("tags"),
+                scoring_method=metric_data.get(
+                    "scoring_method", MetricScoringMethod.LLM.value
+                ),
             )
             db.add(metric)
             created_metrics.append(metric)
@@ -1798,6 +1841,14 @@ def seed_default_metrics(
             # Keep default acoustic metric toggles aligned with product defaults.
             if existing.enabled != metric_data["enabled"]:
                 existing.enabled = metric_data["enabled"]
+            if metric_data.get("scoring_method"):
+                existing.scoring_method = metric_data["scoring_method"]
+            if metric_data["name"] in {"User WER", "User CER"} and metric_data.get(
+                "description"
+            ):
+                existing.description = metric_data["description"]
+            if metric_data.get("tags") and not existing.tags:
+                existing.tags = metric_data["tags"]
             # Re-assert voice_playground surface enrollment for the four required
             # voice metrics so existing orgs pick up the new default behavior.
             if metric_data["name"] in voice_playground_required_defaults:

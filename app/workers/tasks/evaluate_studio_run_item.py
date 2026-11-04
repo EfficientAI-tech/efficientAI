@@ -116,12 +116,16 @@ def evaluate_studio_run_item_task(self, result_row_id: str) -> dict[str, Any]:
         has_production = bool((sample.transcript or "").strip())
         has_diarised = bool((sample.diarised_transcript or "").strip())
 
-        transcript_metrics, audio_metrics, comparison_metrics, skipped = categorize_metrics(
+        categorized = categorize_metrics(
             metrics,
             has_audio,
             has_production_transcript=has_production,
             has_diarised_transcript=has_diarised,
         )
+        transcript_metrics = categorized.transcript_metrics
+        audio_metrics = categorized.audio_metrics
+        comparison_metrics = categorized.comparison_metrics
+        skipped = categorized.skipped_scores
         llm_metrics = transcript_metrics + comparison_metrics
         metric_scores: dict[str, Any] = dict(skipped)
 

@@ -1304,6 +1304,16 @@ class Metric(Base):
         Boolean, nullable=False, default=False, server_default="false"
     )
 
+    # How call-import evaluation scores this metric. ``llm`` is the default
+    # LLM judge; ``user_wer`` / ``user_cer`` are deterministic transcript
+    # agreement metrics (diarized reference vs production hypothesis).
+    scoring_method = Column(
+        String(32),
+        nullable=False,
+        default="llm",
+        server_default="llm",
+    )
+
     parent = relationship(
         "Metric",
         remote_side=[id],
@@ -2602,6 +2612,9 @@ class CallImport(Base):
     # preserved per row (keyed by the CSV header in ``raw_columns``) and
     # surface in the evaluation export under the uploader-chosen name.
     custom_column_mapping = Column(JSON, nullable=False, default=dict)
+    # Optional per-import overrides for speaker labels in production
+    # transcripts (e.g. ``{"user": ["Member"], "agent": ["IVR"]}``).
+    speaker_aliases = Column(JSON, nullable=True)
 
     total_rows = Column(Integer, nullable=False, default=0)
     completed_rows = Column(Integer, nullable=False, default=0)
@@ -2809,6 +2822,10 @@ class CallImportRow(Base):
     # Evaluations can be configured to score against either column
     # (see ``CallImportEvaluation.transcript_source``).
     diarised_transcript = Column(Text, nullable=True)
+    # Raw STT text in the spoken script. Set only when an evaluation that
+    # selected User WER / User CER ran ``stt_llm`` diarisation. Standalone
+    # diarisation leaves this null.
+    diarised_native_transcript = Column(Text, nullable=True)
     transcript_char_length = query_expression()
     diarised_transcript_char_length = query_expression()
     # Provider/model the diarisation worker used. Surfaced in the UI
@@ -3439,6 +3456,41 @@ class CallImportEvaluationPdfReport(Base):
     created_by = Column(String, nullable=True)
     created_by_user_id = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class EvaluationAnalysisBatch(Base):
+    """Durable checkpoint row for paged evaluation analysis (insights / clusters / prompts)."""
+
+    __tablename__ = "evaluation_analysis_batches"
+    __table_args__ = (
+        UniqueConstraint(
+            "evaluation_id",
+            "job_kind",
+            "job_run_id",
+            "batch_index",
+            name="uq_evaluation_analysis_batch",
+        ),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    evaluation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_import_evaluations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    job_kind = Column(String(32), nullable=False)
+    job_run_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    batch_index = Column(Integer, nullable=False)
+    cursor_row_index = Column(Integer, nullable=True)
+    cursor_evaluation_row_id = Column(UUID(as_uuid=True), nullable=True)
+    transcript_source = Column(String(16), nullable=True)
+    status = Column(String(16), nullable=False, default="completed")
+    payload = Column(JSONB, nullable=False, default=dict, server_default="{}")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class CallImportEvaluationExport(Base):

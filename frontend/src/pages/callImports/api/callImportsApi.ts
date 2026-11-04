@@ -779,6 +779,7 @@ export class CallImportsApi {
       model?: string | null
       credential_id?: string | null
       max_llm_calls?: number | null
+      transcript_source?: 'diarised' | 'production' | null
     },
   ): Promise<import('../../../types/api').EvaluationTldrSummary> {
     const body: Record<string, unknown> = {
@@ -788,6 +789,7 @@ export class CallImportsApi {
     if (options?.model) body.model = options.model
     if (options?.credential_id) body.credential_id = options.credential_id
     if (options?.max_llm_calls != null) body.max_llm_calls = options.max_llm_calls
+    if (options?.transcript_source) body.transcript_source = options.transcript_source
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/insights`,
       body,
@@ -840,6 +842,16 @@ export class CallImportsApi {
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/prompt-improvements`,
       data,
+    )
+    return response.data
+  }
+
+  async cancelCallImportEvaluationPromptImprovements(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<import('../../../types/api').EvaluationPromptImprovementsState> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/prompt-improvements/cancel`,
     )
     return response.data
   }
@@ -939,6 +951,8 @@ export class CallImportsApi {
         string,
         import('../../../types/api').MetricFailurePolicy
       > | null
+      transcript_source?: 'diarised' | 'production' | null
+      resume?: boolean
     },
   ): Promise<import('../../../types/api').EvaluationMetricClustersState> {
     const body: Record<string, unknown> = {
@@ -956,6 +970,8 @@ export class CallImportsApi {
     if (options?.failure_policies) {
       body.failure_policies = options.failure_policies
     }
+    if (options?.transcript_source) body.transcript_source = options.transcript_source
+    if (options?.resume) body.resume = true
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/metric-clusters`,
       body,
@@ -983,6 +999,8 @@ export class CallImportsApi {
       model?: string | null
       credential_id?: string | null
       max_llm_calls?: number | null
+      transcript_source?: 'diarised' | 'production' | null
+      resume?: boolean
     },
   ): Promise<import('../../../types/api').EvaluationUserInsightsState> {
     const body: Record<string, unknown> = {
@@ -993,9 +1011,21 @@ export class CallImportsApi {
     if (options?.model) body.model = options.model
     if (options?.credential_id) body.credential_id = options.credential_id
     if (options?.max_llm_calls != null) body.max_llm_calls = options.max_llm_calls
+    if (options?.transcript_source) body.transcript_source = options.transcript_source
+    if (options?.resume) body.resume = true
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/user-insights`,
       body,
+    )
+    return response.data
+  }
+
+  async cancelCallImportEvaluationUserInsights(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<import('../../../types/api').EvaluationUserInsightsState> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/user-insights/cancel`,
     )
     return response.data
   }
@@ -1614,6 +1644,28 @@ export class CallImportsApi {
   ): Promise<CallImportEvaluationRow> {
     const response = await this.client.get(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/rows/${rowId}`,
+    )
+    return response.data
+  }
+
+  async getCallImportEvaluationRowWerAlignment(
+    callImportId: string,
+    evaluationId: string,
+    rowId: string,
+  ): Promise<{
+    reference: string[]
+    hypothesis: string[]
+    chunks: Array<Record<string, unknown>>
+    substitutions: number
+    deletions: number
+    insertions: number
+    hits: number
+    wer: number
+    reference_text: string
+    hypothesis_text: string
+  }> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/rows/${rowId}/wer-alignment`,
     )
     return response.data
   }

@@ -21,6 +21,8 @@ export interface MetricRow {
   scenario_ids?: string[]
   agent_ids?: string[]
   children?: MetricRow[]
+  scoring_method?: string | null
+  compare_transcripts?: boolean
 }
 
 export function isCategorizationParent(metric: MetricRow): boolean {

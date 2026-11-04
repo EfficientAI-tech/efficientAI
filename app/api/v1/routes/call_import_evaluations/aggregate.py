@@ -1360,6 +1360,10 @@ def _compute_metric_aggregates(
         errored = 0
         observed_metric_type: Optional[str] = None
         observed_name: Optional[str] = None
+        corpus_error_words = 0
+        corpus_ref_words = 0
+        corpus_char_distance = 0
+        corpus_ref_chars = 0
 
         # ``meta`` is a real ``Metric`` row in production, but tests
         # frequently pass a lightweight stub. Pull the two attributes
@@ -1451,6 +1455,38 @@ def _compute_metric_aggregates(
             numeric = _coerce_numeric(value)
             if numeric is not None:
                 numeric_values.append(numeric)
+                details = entry.get("details")
+                if isinstance(details, dict):
+                    ref_words = details.get("ref_words")
+                    if ref_words is None:
+                        ref_words = details.get("ref_word_count")
+                    if ref_words:
+                        try:
+                            rw = int(ref_words)
+                        except (TypeError, ValueError):
+                            rw = 0
+                        if rw > 0:
+                            word_distance = details.get("word_distance")
+                            if word_distance is None:
+                                word_distance = (
+                                    int(details.get("substitutions") or 0)
+                                    + int(details.get("deletions") or 0)
+                                    + int(details.get("insertions") or 0)
+                                )
+                            corpus_error_words += int(word_distance)
+                            corpus_ref_words += rw
+                    ref_chars = details.get("ref_chars")
+                    char_distance = details.get("char_distance")
+                    if ref_chars and char_distance is not None:
+                        try:
+                            rc = int(ref_chars)
+                            cd = int(char_distance)
+                        except (TypeError, ValueError):
+                            rc = 0
+                            cd = 0
+                        if rc > 0:
+                            corpus_char_distance += cd
+                            corpus_ref_chars += rc
                 continue
             category = _coerce_category(value)
             if category is not None:
@@ -1507,6 +1543,23 @@ def _compute_metric_aggregates(
             agg.p75 = _percentile(numeric_values, 75)
             agg.p95 = _percentile(numeric_values, 95)
             agg.histogram_buckets = _build_histogram(numeric_values)
+        from app.services.metrics.computed_metrics import (
+            COMPUTED_TRANSCRIPT_SCORING_METHODS,
+            metric_scoring_method_key,
+        )
+
+        if (
+            meta
+            and metric_scoring_method_key(meta) in COMPUTED_TRANSCRIPT_SCORING_METHODS
+            and corpus_ref_words > 0
+        ):
+            agg.corpus_wer = float(corpus_error_words) / float(corpus_ref_words)
+        if (
+            meta
+            and metric_scoring_method_key(meta) in COMPUTED_TRANSCRIPT_SCORING_METHODS
+            and corpus_ref_chars > 0
+        ):
+            agg.corpus_cer = float(corpus_char_distance) / float(corpus_ref_chars)
         if (
             is_classification_metric_agg
             and (
