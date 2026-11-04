@@ -835,7 +835,6 @@ export function ImportRunEvaluationModal(props: ImportRunEvaluationModalProps) {
                                     onChange={setEvalDiariserLLM}
                                     defaultLabel="Pick an LLM for diarisation"
                                     allowCredentialPick
-                                    audioCapableOnly={evalTranscribeMode === 'llm_only'}
                                   />
                                   <div className="flex items-center justify-between pt-1">
                                     <label className="text-[11px] font-medium text-gray-700">

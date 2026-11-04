@@ -35,8 +35,6 @@ import { resolveActiveAIProvider } from '../../lib/gatewayRouting'
 import {
   buildLLMProviderKeys,
   formatGatewayCredentialLabel,
-  isAudioCapableModel,
-  isGatewayAudioCapableCredential,
   resolveLLMModelsForCredential,
   shouldAlwaysShowCredentialPicker,
 } from '../../lib/llmModelOptions'
@@ -98,22 +96,6 @@ export interface ProviderModelPickerProps {
   /** When true, show a "credential" row that lets the user pin a specific AIProvider row. */
   allowCredentialPick?: boolean
   disabled?: boolean
-  /**
-   * When true, restrict the LLM picker to providers + models that accept
-   * audio input via Chat Completions. Set this from "LLM-only" diarisation
-   * modals so the operator can't pick e.g. ``gpt-4.1`` / ``gpt-5`` (which
-   * have no ``input_audio`` content part on Chat Completions) and hit a
-   * cryptic provider 400 at runtime.
-   *
-   * Implementation: providers are clamped to OpenAI + Google (the only
-   * two that have audio-capable chat models in our LiteLLM wiring today),
-   * and the model dropdown is filtered to substring matches in
-   * :data:`AUDIO_CAPABLE_MODEL_MATCHERS`. Both rules are intentionally
-   * lenient (substrings, not exact strings) so newer dated snapshots
-   * (e.g. ``gpt-4o-audio-preview-2025-06-03``) flow through automatically
-   * without a code change.
-   */
-  audioCapableOnly?: boolean
   /** Restrict selectable LLM models (e.g. System 1-only for classification metrics). */
   modelFilter?: (model: string) => boolean
   /** Shown when ``modelFilter`` leaves the selected provider/credential with nothing to pick. */
@@ -136,7 +118,6 @@ export default function ProviderModelPicker({
   className,
   allowCredentialPick = false,
   disabled = false,
-  audioCapableOnly = false,
   showAdvancedOptions = true,
   modelFilter,
   incompatibleHint = 'No compatible models for this provider.',
@@ -202,7 +183,6 @@ export default function ProviderModelPicker({
     kind === 'llm'
       ? buildLLMProviderKeys(aiProviders, integrationLlmKeys, {
           providerAllowList,
-          audioCapableOnly,
         })
       : []
 
@@ -249,11 +229,7 @@ export default function ProviderModelPicker({
   const unfilteredModels =
     catalogModels.mode === 'gateway_direct'
       ? []
-      : audioCapableOnly && kind === 'llm' && value.provider
-        ? catalogModels.models.filter((m) =>
-            isAudioCapableModel(value.provider as string, m),
-          )
-        : catalogModels.models
+      : catalogModels.models
   const models =
     modelFilter && kind === 'llm' ? unfilteredModels.filter(modelFilter) : unfilteredModels
   const hasIncompatibleSelection = Boolean(
@@ -279,30 +255,6 @@ export default function ProviderModelPicker({
     onChange({ ...value, model: models[0] })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value.provider, models, resolvedGatewayDirectModel])
-
-  // When the audio-capable toggle flips ON after the user has already
-  // picked a non-audio provider/model (e.g. Anthropic + Claude), clear
-  // the stale selection so the parent form doesn't submit something we
-  // just hid from the dropdown.
-  useEffect(() => {
-    if (!audioCapableOnly) return
-    if (!value.provider) return
-    const providerAllowed = llmProviderKeys.includes(value.provider)
-    const credentialAllowed =
-      activeCredential && isGatewayAudioCapableCredential(activeCredential)
-    if (!providerAllowed && !credentialAllowed) {
-      onChange({ provider: null, model: null, credential_id: null })
-      return
-    }
-    if (
-      value.model &&
-      !isAudioCapableModel(value.provider, value.model) &&
-      !credentialAllowed
-    ) {
-      onChange({ ...value, model: null })
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [audioCapableOnly, value.provider, value.model, llmProviderKeys])
 
   const selectedProviderKey = value.provider?.toLowerCase() ?? ''
 
@@ -394,13 +346,6 @@ export default function ProviderModelPicker({
               <p className="mt-1 text-xs text-gray-500">
                 Model is fixed on the integration — Bifrost gateway routing applies.
               </p>
-              {audioCapableOnly &&
-                activeCredential &&
-                activeCredential.provider?.toLowerCase() === 'custom' && (
-                  <p className="mt-1 text-xs text-amber-600">
-                    Audio support depends on the underlying Bifrost model.
-                  </p>
-                )}
             </>
           ) : (
             <>
@@ -418,11 +363,7 @@ export default function ProviderModelPicker({
                 {!value.provider ? (
                   <option value="">Pick a provider first</option>
                 ) : models.length === 0 ? (
-                  <option value="">
-                    {audioCapableOnly && kind === 'llm' && rawModels.length > 0
-                      ? 'No audio-capable models for this provider'
-                      : 'Loading models...'}
-                  </option>
+                  <option value="">Loading models...</option>
                 ) : (
                   models.map((m) => (
                     <option key={m} value={m}>
@@ -431,18 +372,6 @@ export default function ProviderModelPicker({
                   ))
                 )}
               </select>
-              {audioCapableOnly &&
-                kind === 'llm' &&
-                value.provider &&
-                rawModels.length > 0 &&
-                models.length === 0 && (
-                  <p className="mt-1 text-xs text-amber-600">
-                    This provider has no audio-capable Chat Completions
-                    models. Use OpenAI's gpt-4o-audio-preview /
-                    gpt-4o-mini-audio-preview, a Google Gemini 2.5+ model,
-                    or a Custom gateway credential that accepts audio.
-                  </p>
-                )}
             </>
           )}
         </div>
