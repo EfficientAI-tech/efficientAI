@@ -45,6 +45,19 @@ const EVAL_LARGE_ROW_THRESHOLD = 5000
 
 export { EVAL_PROGRESS_POLL_MS }
 
+/**
+ * Poll GET endpoints for eval-scoped background jobs (metric clusters,
+ * user insights, prompt improvements) while their own status is
+ * ``running``. Unlike {@link evaluationRunPollMs}, this stays active after
+ * the parent evaluation run has finished scoring.
+ */
+export function evaluationBackgroundJobPollMs(
+  status: string | null | undefined,
+): number | false {
+  if (status === 'running') return EVAL_PROGRESS_POLL_MS
+  return false
+}
+
 export function evaluationTerminalStatus(status?: string): boolean {
   return (
     status === 'completed' ||

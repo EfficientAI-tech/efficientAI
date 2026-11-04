@@ -33,8 +33,8 @@ def generate_evaluation_metric_clusters_task(
     max_llm_calls: int | None = None,
     evaluation_row_ids: list[str] | None = None,
 ):
-    from app.api.v1.routes.call_import_evaluations import (
-        _child_names_by_parent,
+    from app.api.v1.routes.call_import_evaluations import _child_names_by_parent
+    from app.api.v1.routes.call_import_evaluations.clusters import (
         _metrics_for_clustering,
     )
     from app.services.metric_failure_policy import effective_policies

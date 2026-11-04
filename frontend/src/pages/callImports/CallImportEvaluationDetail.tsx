@@ -54,6 +54,7 @@ import {
   evaluationBulkOperationDescription,
   evaluationBulkOperationLabel,
   evaluationRunPollMs,
+  evaluationBackgroundJobPollMs,
   type BulkEvaluationOperation,
 } from './evaluationBulkOperation'
 import { importHeaderPollMs } from './importPolling'
@@ -541,8 +542,14 @@ export default function CallImportEvaluationDetail() {
       apiClient.callImports.getCallImportEvaluationUserInsights(id!, evalId!),
     enabled: !!id && !!evalId && (pdfReportOpen || vizAiInsightsSubtab),
     refetchOnWindowFocus: false,
-    refetchInterval: () =>
-      pdfReportOpen || vizAiInsightsSubtab ? evalDetailPollInterval() : false,
+    refetchInterval: (query) => {
+      if (!pdfReportOpen && !vizAiInsightsSubtab) return false
+      return (
+        evaluationBackgroundJobPollMs(query.state.data?.status) ||
+        evalDetailPollInterval() ||
+        false
+      )
+    },
   })
 
   const metricClustersQuery = useQuery<EvaluationMetricClustersState | null>({
@@ -551,8 +558,14 @@ export default function CallImportEvaluationDetail() {
       apiClient.callImports.getCallImportEvaluationMetricClusters(id!, evalId!),
     enabled: !!id && !!evalId && (pdfReportOpen || vizClustersSubtab),
     refetchOnWindowFocus: false,
-    refetchInterval: () =>
-      pdfReportOpen || vizClustersSubtab ? evalDetailPollInterval() : false,
+    refetchInterval: (query) => {
+      if (!pdfReportOpen && !vizClustersSubtab) return false
+      return (
+        evaluationBackgroundJobPollMs(query.state.data?.status) ||
+        evalDetailPollInterval() ||
+        false
+      )
+    },
   })
 
   const promptImprovementsQuery = useQuery<EvaluationPromptImprovementsState | null>({
@@ -561,8 +574,14 @@ export default function CallImportEvaluationDetail() {
       apiClient.callImports.getCallImportEvaluationPromptImprovements(id!, evalId!),
     enabled: !!id && !!evalId && (pdfReportOpen || vizImprovementsSubtab),
     refetchOnWindowFocus: false,
-    refetchInterval: () =>
-      pdfReportOpen || vizImprovementsSubtab ? evalDetailPollInterval() : false,
+    refetchInterval: (query) => {
+      if (!pdfReportOpen && !vizImprovementsSubtab) return false
+      return (
+        evaluationBackgroundJobPollMs(query.state.data?.status) ||
+        evalDetailPollInterval() ||
+        false
+      )
+    },
   })
 
   const retry = useEvalRetryMutations({

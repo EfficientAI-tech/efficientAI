@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   bulkCancelResponseKeepsBulkOperation,
+  evaluationBackgroundJobPollMs,
   evaluationRunPollMs,
   evaluationShouldPollRun,
 } from './evaluationBulkOperation'
@@ -52,6 +53,18 @@ describe('evaluationRunPollMs', () => {
     }
     expect(evaluationShouldPollRun(evaluation)).toBe(true)
     expect(evaluationRunPollMs(evaluation)).toBe(3000)
+  })
+})
+
+describe('evaluationBackgroundJobPollMs', () => {
+  it('polls while metric clusters (or similar jobs) are running', () => {
+    expect(evaluationBackgroundJobPollMs('running')).toBe(3000)
+  })
+
+  it('does not poll when the job is idle or finished', () => {
+    expect(evaluationBackgroundJobPollMs('completed')).toBe(false)
+    expect(evaluationBackgroundJobPollMs('idle')).toBe(false)
+    expect(evaluationBackgroundJobPollMs(undefined)).toBe(false)
   })
 })
 

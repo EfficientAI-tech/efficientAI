@@ -711,6 +711,8 @@ def _parse_turns_from_response(response: Dict[str, Any]) -> List[Dict[str, Any]]
 # Provider support is intentionally narrow — only providers whose chat
 # completions API accepts inline audio content parts:
 #   * OpenAI ``gpt-4o-audio-preview`` family → ``{"type": "input_audio"}``
+#   * OpenRouter (OpenAI-compatible chat completions, including routed
+#     Gemini models) → same ``input_audio`` shape
 #   * Google Gemini 1.5 / 2.0+ → ``{"type": "image_url",
 #     "image_url": "data:audio/<fmt>;base64,..."}`` (LiteLLM normalises this
 #     into Gemini's native ``inline_data`` shape).
@@ -742,7 +744,13 @@ _MAX_AUDIO_BYTES = 25 * 1024 * 1024  # 25 MiB raw → ~33 MB base64
 # how to shape its content parts; until then we surface a clean error.
 # ``custom`` is allowed separately when the org credential routes via
 # the LLM gateway with a pinned ``gateway_model`` (OpenAI-compatible).
-_AUDIO_SUPPORTED_PROVIDERS: frozenset[str] = frozenset({"openai", "google"})
+_AUDIO_SUPPORTED_PROVIDERS: frozenset[str] = frozenset(
+    {"openai", "google", "openrouter"}
+)
+# Chat providers that attach audio via OpenAI-style ``input_audio`` parts.
+_INPUT_AUDIO_CONTENT_PROVIDERS: frozenset[str] = frozenset(
+    {"openai", "openrouter", "custom"}
+)
 
 
 def _custom_gateway_audio_allowed(
@@ -977,9 +985,14 @@ def _build_audio_messages(
 
     LiteLLM's content-part vocabulary differs slightly per provider:
 
-    * **OpenAI** accepts a first-class ``{"type": "input_audio",
+    * **OpenAI / OpenRouter / Custom gateway** accept
+      ``{"type": "input_audio",
       "input_audio": {"data": <b64>, "format": "wav|mp3|..."}}`` content
-      part on ``gpt-4o-audio-*`` models.
+      parts (OpenRouter documents the same shape for routed multimodal
+      models such as ``google/gemini-2.5-flash``).
+    * **OpenAI-only note:** ``gpt-4o-audio-*`` models on the OpenAI
+      provider use this part shape; other OpenAI chat models may reject
+      audio.
     * **Gemini (Files API path, preferred)** accepts a
       ``{"type": "file", "file": {"file_id": "<files-api-uri>",
       "format": "<mime>"}}`` part whose ``file_id`` is the URI
@@ -1027,7 +1040,7 @@ def _build_audio_messages(
         "expected answer for empty / non-speech audio."
     )
 
-    if provider_value == "openai" or provider_value == "custom":
+    if provider_value in _INPUT_AUDIO_CONTENT_PROVIDERS:
         audio_part: Dict[str, Any] = {
             "type": "input_audio",
             "input_audio": {"data": audio_b64, "format": openai_format},
@@ -1087,9 +1100,10 @@ def diarize_audio_with_llm(
         ``s3_service.download_file_by_key``). Empty input short-
         circuits to ``[]`` so callers don't have to special-case it.
     llm_provider:
-        Must be one of :data:`_AUDIO_SUPPORTED_PROVIDERS` (``openai``
-        or ``google`` at the moment). Other providers raise a typed
-        error instead of attempting an unsupported call.
+        Must be one of :data:`_AUDIO_SUPPORTED_PROVIDERS` (``openai``,
+        ``google``, or ``openrouter``), or ``custom`` when
+        :func:`_custom_gateway_audio_allowed` passes. Other providers
+        raise a typed error instead of attempting an unsupported call.
     llm_model:
         Concrete model name. The caller is responsible for picking a
         model that actually accepts audio input (e.g.
@@ -1123,8 +1137,10 @@ def diarize_audio_with_llm(
             raise LLMDiarisationError(
                 f"Provider '{llm_provider}' is not supported in LLM-only "
                 "mode yet. Pick an OpenAI gpt-4o-audio model, a Google "
-                "Gemini model that accepts audio input, or a Custom "
-                "gateway credential with a gateway model configured."
+                "Gemini model that accepts audio input, an OpenRouter "
+                "model with audio input (e.g. google/gemini-2.5-flash), "
+                "or a Custom gateway credential with a gateway model "
+                "configured."
             )
 
     try:

@@ -5102,8 +5102,9 @@ class CallImportTranscribeRequest(BaseModel):
       ``diarization_prompt``. The model both transcribes and diarises in
       a single pass. The STT fields are ignored (and must be omitted /
       null). Only providers whose chat API accepts audio input (OpenAI
-      ``gpt-4o-audio-*``, Google Gemini ``1.5/2.0``) are usable; other
-      providers will surface a typed error on the row.
+      ``gpt-4o-audio-*``, Google Gemini ``1.5/2.0``, OpenRouter models
+      with audio input) are usable; other providers will surface a typed
+      error on the row.
     """
 
     mode: Literal["stt_llm", "llm_only"] = Field(
