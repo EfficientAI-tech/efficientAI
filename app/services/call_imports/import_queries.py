@@ -221,15 +221,6 @@ def get_call_import_detail(
 ) -> CallImportDetailResponse:
     call_import = get_call_import_for_org_or_404(db, call_import_id, organization_id)
 
-    if call_import.status == CallImportStatus.PROCESSING:
-        from app.services.call_imports.bulk_ops import rollup_call_import_batch_status
-
-        prior_status = call_import.status
-        rollup_call_import_batch_status(db, call_import)
-        if call_import.status != prior_status:
-            db.commit()
-            db.refresh(call_import)
-
     if (
         (call_import.source_format or "") == "platform"
         and _imported_agent_partial_id(call_import) is None

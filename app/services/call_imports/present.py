@@ -155,36 +155,17 @@ def _serialize_call_import(
     *,
     user_emails: Optional[Dict[UUID, str]] = None,
 ) -> CallImportResponse:
-    """Catalog parent fields; counters come from SQL rollup (not Redis merge)."""
+    """Catalog parent fields; counters include unflushed Redis deltas for display."""
     from app.services.call_imports.bulk_ops import (
         _any_evaluation_needs_ui_poll,
         _latest_evaluation_progress_for_ui,
-        rollup_call_import_batch_status,
     )
-    from app.services.call_imports.progress_counters import (
-        clear_import_progress_redis,
-        read_import_progress,
-    )
+    from app.services.call_imports.progress_counters import merge_import_counters_for_ui
 
-    redis_completed, redis_failed = read_import_progress(call_import.id)
-    if (
-        redis_completed
-        or redis_failed
-        or int(call_import.completed_rows or 0) > int(call_import.total_rows or 0)
-        or int(call_import.failed_rows or 0) > int(call_import.total_rows or 0)
-    ):
-        rollup_call_import_batch_status(db, call_import)
-        db.flush()
-
-    clear_import_progress_redis(call_import.id)
-    db.refresh(call_import)
+    ui_completed, ui_failed = merge_import_counters_for_ui(call_import)
     total = int(call_import.total_rows or 0)
-    completed = min(int(call_import.completed_rows or 0), total) if total else int(
-        call_import.completed_rows or 0
-    )
-    failed = min(int(call_import.failed_rows or 0), total) if total else int(
-        call_import.failed_rows or 0
-    )
+    completed = min(ui_completed, total) if total else ui_completed
+    failed = min(ui_failed, total) if total else ui_failed
     # Shard rows are the live count. The catalog counter lags during download.
     source = (getattr(call_import, "source_format", None) or "").lower()
     batch_status = (

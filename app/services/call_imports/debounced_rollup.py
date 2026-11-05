@@ -106,16 +106,13 @@ def schedule_debounced_import_rollup(
     *,
     force: bool = False,
 ) -> None:
-    """Flush Redis deltas and optionally run full status aggregate."""
+    """Run debounced full status aggregate (Redis deltas flush on recount only)."""
     from app.models.database import CallImport
     from app.services.call_imports.bulk_ops import rollup_call_import_batch_status
-    from app.services.call_imports.progress_counters import flush_import_progress_to_catalog
 
     cid = call_import.id if hasattr(call_import, "id") else call_import
     if not isinstance(cid, UUID):
         cid = UUID(str(cid))
-
-    flush_import_progress_to_catalog(db, cid)
 
     parent = db.query(CallImport).filter(CallImport.id == cid).first()
     if parent is None:

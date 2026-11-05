@@ -345,12 +345,12 @@ function MetricClusterGenerationModal({
   ])
 
   useEffect(() => {
+    if (llmPickerTouched) return
     if (state?.provider) {
       setPickerProvider(state.provider)
       if (state.model) setPickerModel(state.model)
       return
     }
-    if (llmPickerTouched) return
     if (defaultProvider) setPickerProvider(defaultProvider)
     if (defaultModel) setPickerModel(defaultModel)
   }, [
@@ -812,12 +812,12 @@ function MetricClustersPanel({
   const [clusterActionModalOpen, setClusterActionModalOpen] = useState(false)
 
   useEffect(() => {
+    if (llmPickerTouched) return
     if (state?.provider) {
       setPickerProvider(state.provider)
       if (state.model) setPickerModel(state.model)
       return
     }
-    if (llmPickerTouched) return
     if (defaultProvider) setPickerProvider(defaultProvider)
     if (defaultModel) setPickerModel(defaultModel)
   }, [

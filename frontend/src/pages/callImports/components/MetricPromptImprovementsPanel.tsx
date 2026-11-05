@@ -172,12 +172,12 @@ export default function MetricPromptImprovementsPanel({
   ])
 
   useEffect(() => {
+    if (llmPickerTouched) return
     if (improvementsState?.provider) {
       setPickerProvider(improvementsState.provider)
       if (improvementsState.model) setPickerModel(improvementsState.model)
       return
     }
-    if (llmPickerTouched) return
     if (defaultProvider) setPickerProvider(defaultProvider)
     if (defaultModel) setPickerModel(defaultModel)
   }, [

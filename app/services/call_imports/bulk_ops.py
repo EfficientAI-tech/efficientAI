@@ -1378,6 +1378,10 @@ def rollup_call_import_batch_status(db: Session, call_import: CallImport) -> Non
     call_import.completed_rows = completed
     call_import.failed_rows = failed
 
+    from app.services.call_imports.progress_counters import clear_import_progress_redis
+
+    clear_import_progress_redis(call_import.id)
+
     if call_import.status == CallImportStatus.DELETING:
         return
 
@@ -1441,10 +1445,6 @@ def rollup_call_import_batch_status(db: Session, call_import: CallImport) -> Non
         call_import.status = CallImportStatus.FAILED
     else:
         call_import.status = CallImportStatus.PARTIAL
-
-    from app.services.call_imports.progress_counters import clear_import_progress_redis
-
-    clear_import_progress_redis(call_import.id)
 
 
 def count_evaluation_cancel_targets(
