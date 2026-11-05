@@ -772,6 +772,20 @@ function MetricClustersRcaSummaryPanel({
   )
 }
 
+function resumeClusterOptions(state: {
+  provider?: string | null
+  model?: string | null
+  selected_evaluation_row_ids?: string[] | null
+}) {
+  const ids = (state.selected_evaluation_row_ids ?? []).filter(Boolean)
+  return {
+    resume: true as const,
+    provider: state.provider ?? undefined,
+    model: state.model ?? undefined,
+    ...(ids.length > 0 ? { evaluation_row_ids: ids } : {}),
+  }
+}
+
 function MetricClustersPanel({
   callImportId,
   evaluationId,
@@ -906,11 +920,7 @@ function MetricClustersPanel({
         await apiClient.callImports.generateCallImportEvaluationMetricClusters(
           callImportId,
           evaluationId,
-          {
-            resume: true,
-            provider: state.provider ?? undefined,
-            model: state.model ?? undefined,
-          },
+          resumeClusterOptions(state),
         )
         onGenerated()
       } catch (e: any) {
@@ -982,11 +992,7 @@ function MetricClustersPanel({
                 await apiClient.callImports.generateCallImportEvaluationMetricClusters(
                   callImportId,
                   evaluationId,
-                  {
-                    resume: true,
-                    provider: state.provider ?? undefined,
-                    model: state.model ?? undefined,
-                  },
+                  resumeClusterOptions(state),
                 )
                 onGenerated()
               } catch (e: any) {
@@ -1042,11 +1048,7 @@ function MetricClustersPanel({
                 await apiClient.callImports.generateCallImportEvaluationMetricClusters(
                   callImportId,
                   evaluationId,
-                  {
-                    resume: true,
-                    provider: state.provider ?? undefined,
-                    model: state.model ?? undefined,
-                  },
+                  resumeClusterOptions(state),
                 )
                 onGenerated()
               } catch (e: any) {

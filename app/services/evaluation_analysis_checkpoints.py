@@ -6,7 +6,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional, Tuple
 from uuid import UUID, uuid4
 
+from loguru import logger
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.db_sharding.scatter_gather import (
     EVALUATION_ANALYSIS_BATCH_SIZE,
@@ -48,6 +50,68 @@ def analysis_header_matches_run(raw: Any, job_run_id: Any) -> bool:
     if not current:
         return False
     return str(current) == str(job_run_id)
+
+
+def classify_task_run(raw: Any, job_run_id: Any) -> tuple[str, Optional[UUID]]:
+    """How this task relates to the saved analysis header.
+
+    ``owned`` — the task's claim still matches the header.
+    ``fresh`` — neither side has a run yet; the caller should mint one.
+    ``stale`` — the task names a run that no longer owns the header.
+    ``unclaimed`` — the task has no run id, and the header already belongs
+    to one. That task must not attach to the replacement run.
+    """
+    claimed = str(job_run_id).strip() if job_run_id is not None else ""
+    header = ""
+    if isinstance(raw, dict) and raw.get("job_run_id"):
+        header = str(raw.get("job_run_id")).strip()
+    if claimed:
+        if header != claimed:
+            return "stale", None
+        try:
+            return "owned", UUID(claimed)
+        except ValueError:
+            return "stale", None
+    if header:
+        return "unclaimed", None
+    return "fresh", None
+
+
+def claim_still_owns_header(raw: Any, job_run_id: Any) -> bool:
+    """False when a write would land on a header this run does not own."""
+    if job_run_id is None or str(job_run_id).strip() == "":
+        return False
+    return analysis_header_matches_run(raw, job_run_id)
+
+
+def keep_owned_header_write(
+    db: Session,
+    evaluation: Any,
+    attr: str,
+    job_run_id: Any,
+) -> bool:
+    """Refresh *attr* and keep a pending write only while this run owns it.
+
+    Call after assigning the next header and before commit. A newer run
+    is left in place. When the claim still matches, the pending payload is
+    restored with that run id so a merge cannot adopt the replacement.
+    """
+    pending = getattr(evaluation, attr, None)
+    db.expire(evaluation, [attr])
+    db.refresh(evaluation)
+    current = getattr(evaluation, attr, None)
+    if not claim_still_owns_header(current, job_run_id):
+        logger.info(
+            "Analysis write skipped for {}; run {} no longer owns the header ({})",
+            attr,
+            job_run_id,
+            current.get("job_run_id") if isinstance(current, dict) else None,
+        )
+        return False
+    if isinstance(pending, dict):
+        setattr(evaluation, attr, {**pending, "job_run_id": str(job_run_id)})
+        flag_modified(evaluation, attr)
+    return True
 
 
 def new_job_run_id() -> UUID:

@@ -32,6 +32,7 @@ from app.services.evaluation_analysis_checkpoints import (
     USER_INSIGHTS_CANCELLED_BY_USER_ERROR,
     batch_count_for_rows,
     completed_rows_from_batches,
+    claim_still_owns_header,
     cursor_from_header,
     cursor_to_dict,
     init_job_header,
@@ -593,6 +594,13 @@ def process_user_insights_wave_step(
         return "idle", _cancelled_state(
             evaluation, live, llm_calls_used=llm_calls_used
         )
+    if not claim_still_owns_header(live, job_run_id):
+        logger.info(
+            "User insights page write skipped; run {} no longer owns the header ({})",
+            job_run_id,
+            live.get("job_run_id"),
+        )
+        return "idle", None
 
     evaluation.user_insights = stamp_job_heartbeat({
         **live,
@@ -601,7 +609,7 @@ def process_user_insights_wave_step(
         "cursor": cursor_to_dict(page_cursor),
         "llm_calls_used": llm_calls_used,
         "theme_counts": raw.get("theme_counts", live.get("theme_counts")),
-        "job_run_id": live.get("job_run_id") or raw.get("job_run_id"),
+        "job_run_id": str(job_run_id),
         "transcript_source": live.get("transcript_source") or raw.get("transcript_source"),
         "provider": live.get("provider") or raw.get("provider"),
         "model": live.get("model") or raw.get("model"),

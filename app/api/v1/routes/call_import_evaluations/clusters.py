@@ -822,12 +822,18 @@ async def generate_call_import_evaluation_metric_clusters(
             ),
         )
 
+    selection_row_ids = body.evaluation_row_ids
+    selection_row_limit = body.row_limit
+    if body.resume and selection_row_ids is None and selection_row_limit is None:
+        saved_selection = prior_clusters_raw.get("selected_evaluation_row_ids")
+        if isinstance(saved_selection, list) and saved_selection:
+            selection_row_ids = [UUID(str(item)) for item in saved_selection]
     filtered_pairs, selected_row_ids = _resolve_metric_cluster_row_selection(
         db,
         evaluation,
         eval_rows,
-        body.evaluation_row_ids,
-        row_limit=body.row_limit,
+        selection_row_ids,
+        row_limit=selection_row_limit,
         policies=merged_policies,
     )
     if not selected_row_ids:

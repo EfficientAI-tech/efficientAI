@@ -41,6 +41,10 @@ class ResolvedCallSample:
     call_data: Optional[dict]
     agent_id: Optional[UUID]
     metadata: Dict[str, Any] = field(default_factory=dict)
+    diarised_segments: Optional[list] = None
+    diarised_speaker_swap: bool = False
+    diarised_native_transcript: str = ""
+    speaker_aliases: Optional[Dict[str, Any]] = None
 
 
 def _resolve_call_import_row(
@@ -107,6 +111,20 @@ def _resolve_call_import_row(
             audio_s3_key=(row.recording_s3_key or "").strip() or None,
             call_data=None,
             agent_id=None,
+            diarised_segments=(
+                row.diarised_segments
+                if isinstance(row.diarised_segments, list)
+                else None
+            ),
+            diarised_speaker_swap=bool(getattr(row, "diarised_speaker_swap", False)),
+            diarised_native_transcript=(
+                getattr(row, "diarised_native_transcript", None) or ""
+            ).strip(),
+            speaker_aliases=(
+                call_import.speaker_aliases
+                if isinstance(getattr(call_import, "speaker_aliases", None), dict)
+                else None
+            ),
             metadata={
                 "call_import_id": str(row.call_import_id),
                 "call_import_name": getattr(call_import, "name", None),

@@ -44,8 +44,10 @@ from app.services.call_import_user_insights_wave import pick_transcript_for_sour
 from app.services.evaluation_analysis_checkpoints import (
     JOB_KIND_METRIC_CLUSTERS,
     batch_count_for_rows,
+    claim_still_owns_header,
     cursor_from_header,
     cursor_to_dict,
+    keep_owned_header_write,
     init_job_header,
     list_analysis_batches,
     merge_cluster_extractions_from_batches,
@@ -286,6 +288,10 @@ def process_metric_clusters_wave_step(
                 }
             )
             flag_modified(evaluation, "metric_clusters")
+            if not keep_owned_header_write(
+                db, evaluation, "metric_clusters", job_run_id
+            ):
+                return "idle", None
             db.commit()
             return "continue", None
 
@@ -420,6 +426,10 @@ def process_metric_clusters_wave_step(
                     }
                 )
                 flag_modified(evaluation, "metric_clusters")
+                if not keep_owned_header_write(
+                    db, evaluation, "metric_clusters", job_run_id
+                ):
+                    return "idle", None
                 db.commit()
 
         page_cursor = evaluation_row_page_cursor_from_pair(pairs[-1])
@@ -467,8 +477,20 @@ def process_metric_clusters_wave_step(
                 error_message=METRIC_CLUSTERS_CANCELLED_BY_USER_ERROR,
                 generated_at=datetime.now(timezone.utc),
             )
+        if not claim_still_owns_header(live, job_run_id):
+            logger.info(
+                "Metric clusters page write skipped; run {} no longer owns the header ({})",
+                job_run_id,
+                live.get("job_run_id"),
+            )
+            return "idle", None
         evaluation.metric_clusters = stamp_job_heartbeat(
-            {**live, **raw, "progress": new_progress}
+            {
+                **live,
+                **raw,
+                "job_run_id": str(job_run_id),
+                "progress": new_progress,
+            }
         )
         flag_modified(evaluation, "metric_clusters")
         db.commit()
@@ -601,6 +623,10 @@ def process_metric_clusters_wave_step(
         }
         evaluation.metric_clusters = stamp_job_heartbeat(raw)
         flag_modified(evaluation, "metric_clusters")
+        if not keep_owned_header_write(
+            db, evaluation, "metric_clusters", job_run_id
+        ):
+            return "idle", None
         db.commit()
         if on_progress:
             on_progress(raw["progress"])
@@ -673,6 +699,10 @@ def process_metric_clusters_wave_step(
         raw["llm_calls_used"] = llm_calls_used
         evaluation.metric_clusters = stamp_job_heartbeat(raw)
         flag_modified(evaluation, "metric_clusters")
+        if not keep_owned_header_write(
+            db, evaluation, "metric_clusters", job_run_id
+        ):
+            return "idle", None
         db.commit()
         if on_progress:
             on_progress(

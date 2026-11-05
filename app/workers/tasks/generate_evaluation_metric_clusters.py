@@ -28,6 +28,7 @@ from app.services.call_import_metric_clusters_wave import (
 )
 from app.services.evaluation_analysis_checkpoints import (
     analysis_header_matches_run,
+    classify_task_run,
     new_job_run_id,
     normalize_transcript_source,
     stamp_job_heartbeat,
@@ -94,9 +95,11 @@ def generate_evaluation_metric_clusters_task(
             if isinstance(evaluation.metric_clusters, dict)
             else {}
         )
-        if job_run_id and not analysis_header_matches_run(raw_for_llm, job_run_id):
+        claim_state, _claimed_run = classify_task_run(raw_for_llm, job_run_id)
+        if claim_state in ("stale", "unclaimed"):
             logger.info(
-                "Metric clusters: stale task for run {} ignored; header is {}",
+                "Metric clusters: {} task ignored; task run is {} and header is {}",
+                claim_state,
                 job_run_id,
                 raw_for_llm.get("job_run_id"),
             )
@@ -151,8 +154,17 @@ def generate_evaluation_metric_clusters_task(
             transcript_source or raw.get("transcript_source") or evaluation.transcript_source
         )
 
-        if raw.get("job_run_id"):
-            run_id = UUID(str(raw["job_run_id"]))
+        claim_state, claimed_run = classify_task_run(raw, job_run_id)
+        if claim_state in ("stale", "unclaimed"):
+            logger.info(
+                "Metric clusters: {} task ignored; task run is {} and header is {}",
+                claim_state,
+                job_run_id,
+                raw.get("job_run_id"),
+            )
+            return
+        if claim_state == "owned" and claimed_run is not None:
+            run_id = claimed_run
             if resume or raw.get("status") != "running":
                 evaluation.metric_clusters = resume_metric_clusters_job_header(
                     db,

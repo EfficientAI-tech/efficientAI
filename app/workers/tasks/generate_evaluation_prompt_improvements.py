@@ -20,6 +20,7 @@ from app.services.call_import_prompt_improvements_wave import (
 )
 from app.services.evaluation_analysis_checkpoints import (
     analysis_header_matches_run,
+    classify_task_run,
     new_job_run_id,
     prompt_improvements_raw_is_cancelled,
 )
@@ -126,9 +127,11 @@ def generate_evaluation_prompt_improvements_task(
             if isinstance(evaluation.prompt_improvements, dict)
             else {}
         )
-        if job_run_id and not analysis_header_matches_run(raw, job_run_id):
+        claim_state, claimed_run = classify_task_run(raw, job_run_id)
+        if claim_state in ("stale", "unclaimed"):
             logger.info(
-                "Prompt improvements: stale task for run {} ignored; header is {}",
+                "Prompt improvements: {} task ignored; task run is {} and header is {}",
+                claim_state,
                 job_run_id,
                 raw.get("job_run_id"),
             )
@@ -141,8 +144,8 @@ def generate_evaluation_prompt_improvements_task(
             raw.get("model") if isinstance(raw.get("model"), str) else None
         )
 
-        if raw.get("job_run_id"):
-            run_id = UUID(str(raw["job_run_id"]))
+        if claim_state == "owned" and claimed_run is not None:
+            run_id = claimed_run
             evaluation.prompt_improvements = {
                 **raw,
                 "status": "running",

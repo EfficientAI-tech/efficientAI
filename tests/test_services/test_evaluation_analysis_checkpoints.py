@@ -10,6 +10,8 @@ from app.services.call_import_user_insights_wave import (
 )
 from app.services.evaluation_analysis_checkpoints import (
     USER_INSIGHTS_CANCELLED_BY_USER_ERROR,
+    classify_task_run,
+    claim_still_owns_header,
     completed_rows_from_batches,
     merge_extractions_from_batches,
     merge_theme_counts_from_batches,
@@ -213,3 +215,28 @@ def test_resume_header_keeps_checkpoints_and_swaps_model():
     assert resumed["progress"]["completed_rows"] == 500
     assert resumed["progress"]["total_batches"] == 3
     assert resumed["progress"]["total_llm_calls"] == 25
+
+
+def test_unclaimed_task_does_not_adopt_a_replacement_run():
+    header_run = str(uuid4())
+    state, run_id = classify_task_run({"job_run_id": header_run}, None)
+    assert state == "unclaimed"
+    assert run_id is None
+    assert claim_still_owns_header({"job_run_id": header_run}, None) is False
+
+
+def test_stale_claim_does_not_own_a_replacement_header():
+    old_run = str(uuid4())
+    new_run = str(uuid4())
+    state, run_id = classify_task_run({"job_run_id": new_run}, old_run)
+    assert state == "stale"
+    assert run_id is None
+    assert claim_still_owns_header({"job_run_id": new_run}, old_run) is False
+
+
+def test_matching_claim_owns_the_header():
+    run = str(uuid4())
+    state, run_id = classify_task_run({"job_run_id": run}, run)
+    assert state == "owned"
+    assert str(run_id) == run
+    assert claim_still_owns_header({"job_run_id": run}, run) is True

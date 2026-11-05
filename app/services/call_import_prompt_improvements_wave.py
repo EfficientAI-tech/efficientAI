@@ -28,6 +28,7 @@ from app.services.call_import_prompt_improvements import (
 from app.services.evaluation_analysis_checkpoints import (
     JOB_KIND_PROMPT_IMPROVEMENTS,
     PROMPT_IMPROVEMENTS_CANCELLED_BY_USER_ERROR,
+    keep_owned_header_write,
     list_analysis_batches,
     progress_header,
     prompt_improvements_raw_is_cancelled,
@@ -186,6 +187,10 @@ def process_prompt_improvements_wave_step(
         )
         evaluation.prompt_improvements = stamp_job_heartbeat(raw)
         flag_modified(evaluation, "prompt_improvements")
+        if not keep_owned_header_write(
+            db, evaluation, "prompt_improvements", job_run_id
+        ):
+            return "idle", None
         db.commit()
         if on_progress:
             on_progress(raw["progress"])
@@ -265,6 +270,10 @@ def process_prompt_improvements_wave_step(
     )
     evaluation.prompt_improvements = stamp_job_heartbeat(raw)
     flag_modified(evaluation, "prompt_improvements")
+    if not keep_owned_header_write(
+        db, evaluation, "prompt_improvements", job_run_id
+    ):
+        return "idle", None
     db.commit()
     if on_progress:
         on_progress(raw["progress"])
