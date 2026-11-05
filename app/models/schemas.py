@@ -5592,6 +5592,7 @@ class EvaluationUserInsightsState(BaseModel):
     max_llm_calls: Optional[int] = None
     error_message: Optional[str] = None
     is_stale: bool = False
+    transcript_source: Optional[Literal["diarised", "production"]] = None
 
 
 class EvaluationUserInsightsRequest(BaseModel):
@@ -5864,6 +5865,7 @@ class EvaluationPromptImprovementsState(BaseModel):
     error_message: Optional[str] = None
     is_stale: bool = False
     require_review: bool = True
+    progress: Optional[Dict[str, Any]] = None
 
 
 class EvaluationPromptImprovementsRequest(BaseModel):

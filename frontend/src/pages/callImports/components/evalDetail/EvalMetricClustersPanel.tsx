@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { ExternalLink, Loader2, X } from 'lucide-react'
+import { ExternalLink, X } from 'lucide-react'
 import { apiClient } from '../../../../lib/api'
 import type {
   EvaluationMetricClustersState,
@@ -14,7 +14,9 @@ import type {
 import AIProviderModelPicker from '../../../../components/AIProviderModelPicker'
 import Button from '../../../../components/Button'
 import { getActiveWorkspaceId } from '../../../../store/workspaceStore'
-import { clampProseToSentences, PROVIDER_DISPLAY } from './evalDisplayUtils'
+import { clampProseToSentences } from './evalDisplayUtils'
+import { EvaluationBackgroundJobCard } from './EvaluationBackgroundJobCard'
+import { getMetricClustersJobProgress } from './evaluationJobProgress'
 import {
   metricClusterSelectedCount,
   MetricClusterRowPicker,
@@ -150,8 +152,8 @@ function MetricFailurePolicyEditor({
               </p>
               <span
                 className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${isSkipped
-                    ? 'bg-gray-100 text-gray-600'
-                    : 'bg-primary-50 text-primary-800'
+                  ? 'bg-gray-100 text-gray-600'
+                  : 'bg-primary-50 text-primary-800'
                   }`}
               >
                 {isSkipped
@@ -892,70 +894,22 @@ function MetricClustersPanel({
   }
 
   if (state?.status === 'running') {
-    const progress = state.progress
-    const completed = progress?.completed_llm_calls ?? 0
-    const total = progress?.total_llm_calls ?? 0
-    const pct = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0
-    const providerLabel = state.provider
-      ? PROVIDER_DISPLAY[state.provider] || state.provider
+    const progressView = getMetricClustersJobProgress(state)
+    const callsHint = selectedCountLabel
+      ? `${selectedCountLabel} selected call${selectedCountLabel === 1 ? '' : 's'} in scope`
       : null
-    const callsLabel = selectedCountLabel
-      ? `${selectedCountLabel} selected call${selectedCountLabel === 1 ? '' : 's'}`
-      : 'flagged calls'
     return (
       <>
-        <section className="rounded-lg border border-amber-200 bg-amber-50/60 px-4 py-3">
-          <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
-            <p className="text-xs font-semibold text-gray-900 inline-flex items-center gap-1.5">
-              <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-600" />
-              Failure diagnostics — generating clusters
-            </p>
-            {total > 0 ? (
-              <p className="text-[10px] text-gray-600 tabular-nums">
-                {completed} / {total} LLM calls ({pct}%)
-              </p>
-            ) : null}
-          </div>
-          <p className="text-xs text-amber-800 mb-2">
-            Clustering {callsLabel} for each enabled quality metric.
-          </p>
-          {total > 0 ? (
-            <div className="mb-2">
-              <div className="h-2.5 rounded-full bg-amber-100 overflow-hidden">
-                <div
-                  className="h-full bg-amber-600 transition-all duration-300"
-                  style={{ width: `${pct}%` }}
-                  role="progressbar"
-                  aria-valuenow={completed}
-                  aria-valuemin={0}
-                  aria-valuemax={total}
-                  aria-label="Cluster generation progress"
-                />
-              </div>
-            </div>
-          ) : (
-            <div className="mb-2 h-2.5 rounded-full bg-amber-100 overflow-hidden">
-              <div className="h-full w-1/3 bg-amber-400 animate-pulse rounded-full" />
-            </div>
-          )}
-          {providerLabel || state.model ? (
-            <p className="text-[10px] text-gray-500">
-              Using {providerLabel || 'LLM'}
-              {state.model ? ` · ${state.model}` : ''}
-            </p>
-          ) : null}
-          <div className="mt-3 flex items-center gap-2">
-            <Button
-              variant="outline"
-              onClick={handleCancel}
-              isLoading={cancelling}
-              disabled={cancelling}
-            >
-              Stop
-            </Button>
-          </div>
-          {error ? <p className="text-xs text-red-600 mt-2">{error}</p> : null}
-        </section>
+        <EvaluationBackgroundJobCard
+          title="Failure diagnostics"
+          progress={{
+            ...progressView,
+            metaLine: progressView.metaLine || callsHint,
+          }}
+          onStop={handleCancel}
+          stopLoading={cancelling}
+        />
+        {error ? <p className="text-xs text-red-600 mt-2">{error}</p> : null}
         {clusterGenerationModal}
       </>
     )
@@ -985,13 +939,22 @@ function MetricClustersPanel({
             variant="primary"
             onClick={async () => {
               setCancelling(true)
+              setError(null)
               try {
                 await apiClient.callImports.generateCallImportEvaluationMetricClusters(
                   callImportId,
                   evaluationId,
-                  { resume: true },
+                  {
+                    resume: true,
+                    provider: state.provider ?? undefined,
+                    model: state.model ?? undefined,
+                  },
                 )
                 onGenerated()
+              } catch (e: any) {
+                setError(
+                  e?.response?.data?.detail || 'Failed to resume cluster generation.',
+                )
               } finally {
                 setCancelling(false)
               }
@@ -1022,14 +985,53 @@ function MetricClustersPanel({
         <p className="text-sm text-red-700">
           {state.error_message || 'Cluster generation failed.'}
         </p>
-        <div className="mt-3">
+        {state.progress?.total_batches ? (
+          <p className="text-xs text-gray-500 mt-1">
+            Stopped at batch {state.progress.completed_batches ?? 0} /{' '}
+            {state.progress.total_batches}
+            {state.progress.completed_rows != null && state.progress.total_rows != null
+              ? ` · ${state.progress.completed_rows} / ${state.progress.total_rows} rows`
+              : null}
+          </p>
+        ) : null}
+        <div className="mt-3 flex items-center gap-2">
+          <Button
+            variant="primary"
+            onClick={async () => {
+              setCancelling(true)
+              setError(null)
+              try {
+                await apiClient.callImports.generateCallImportEvaluationMetricClusters(
+                  callImportId,
+                  evaluationId,
+                  {
+                    resume: true,
+                    provider: state.provider ?? undefined,
+                    model: state.model ?? undefined,
+                  },
+                )
+                onGenerated()
+              } catch (e: any) {
+                setError(
+                  e?.response?.data?.detail || 'Failed to resume cluster generation.',
+                )
+              } finally {
+                setCancelling(false)
+              }
+            }}
+            disabled={cancelling}
+          >
+            Resume
+          </Button>
           <Button
             variant="outline"
             onClick={() => setClusterActionModalOpen(true)}
+            disabled={cancelling}
           >
-            Retry
+            Start over
           </Button>
         </div>
+        {error ? <p className="text-xs text-red-600 mt-2">{error}</p> : null}
         {clusterGenerationModal}
       </section>
     )

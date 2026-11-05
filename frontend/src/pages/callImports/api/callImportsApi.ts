@@ -837,6 +837,7 @@ export class CallImportsApi {
       provider?: string
       model?: string
       credential_id?: string
+      resume?: boolean
     },
   ): Promise<import('../../../types/api').EvaluationPromptImprovementsState> {
     const response = await this.client.post(

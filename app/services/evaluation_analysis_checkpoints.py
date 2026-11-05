@@ -52,6 +52,10 @@ def progress_header(
     total_llm_calls: int = 0,
     phase: Optional[str] = None,
 ) -> Dict[str, Any]:
+    if total_rows > 0:
+        completed_rows = min(int(completed_rows), int(total_rows))
+    if total_batches > 0:
+        completed_batches = min(int(completed_batches), int(total_batches))
     payload: Dict[str, Any] = {
         "completed_rows": completed_rows,
         "total_rows": total_rows,
@@ -63,6 +67,18 @@ def progress_header(
     if phase:
         payload["phase"] = phase
     return payload
+
+
+def rows_completed_for_batches(
+    completed_batches: int,
+    total_rows: int,
+    *,
+    batch_size: int = EVALUATION_ANALYSIS_BATCH_SIZE,
+) -> int:
+    """Rows finished after ``completed_batches`` full pages (never exceeds total)."""
+    if total_rows <= 0 or completed_batches <= 0:
+        return 0
+    return min(int(total_rows), int(completed_batches) * int(batch_size))
 
 
 def cursor_from_header(raw: Any) -> Optional[EvaluationRowPageCursor]:
@@ -170,6 +186,8 @@ def list_analysis_batches(
 def merge_theme_counts_from_batches(batches: List[EvaluationAnalysisBatch]) -> Dict[str, int]:
     counts: Dict[str, int] = {}
     for batch in batches:
+        if (getattr(batch, "status", None) or "completed") != "completed":
+            continue
         payload = batch.payload if isinstance(batch.payload, dict) else {}
         partial = payload.get("theme_counts")
         if isinstance(partial, dict):
@@ -191,6 +209,8 @@ def merge_extractions_from_batches(
 ) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for batch in batches:
+        if (getattr(batch, "status", None) or "completed") != "completed":
+            continue
         payload = batch.payload if isinstance(batch.payload, dict) else {}
         samples = payload.get("extractions")
         if not isinstance(samples, list):
@@ -209,6 +229,8 @@ def merge_signature_counts_from_cluster_batches(
     """metric_id -> signature label -> count."""
     by_metric: Dict[str, Dict[str, int]] = {}
     for batch in batches:
+        if (getattr(batch, "status", None) or "completed") != "completed":
+            continue
         payload = batch.payload if isinstance(batch.payload, dict) else {}
         metrics_raw = payload.get("metrics")
         if not isinstance(metrics_raw, dict):
@@ -236,6 +258,8 @@ def merge_cluster_extractions_from_batches(
 ) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for batch in batches:
+        if (getattr(batch, "status", None) or "completed") != "completed":
+            continue
         payload = batch.payload if isinstance(batch.payload, dict) else {}
         metrics_raw = payload.get("metric_extractions")
         if not isinstance(metrics_raw, dict):
@@ -285,7 +309,13 @@ def init_job_header(
 
 def completed_rows_from_batches(batches: List[EvaluationAnalysisBatch]) -> int:
     total = 0
+    seen: set[int] = set()
     for batch in batches:
+        if (getattr(batch, "status", None) or "completed") != "completed":
+            continue
+        if batch.batch_index in seen:
+            continue
+        seen.add(batch.batch_index)
         payload = batch.payload if isinstance(batch.payload, dict) else {}
         try:
             total += int(payload.get("rows_processed") or 0)

@@ -1991,8 +1991,8 @@ export default function CallImportEvaluationDetail() {
                         aria-selected={visualizationSubtab === 'quality'}
                         onClick={() => setVisualizationSubtab('quality')}
                         className={`rounded px-2.5 py-1 text-[13px] font-medium transition ${visualizationSubtab === 'quality'
-                            ? 'bg-white text-amber-950 shadow-sm'
-                            : 'text-gray-600 hover:text-gray-900'
+                          ? 'bg-white text-amber-950 shadow-sm'
+                          : 'text-gray-600 hover:text-gray-900'
                           }`}
                       >
                         Quality Metrics
@@ -2003,8 +2003,8 @@ export default function CallImportEvaluationDetail() {
                         aria-selected={visualizationSubtab === 'aiInsights'}
                         onClick={() => setVisualizationSubtab('aiInsights')}
                         className={`rounded px-2.5 py-1 text-[13px] font-medium transition ${visualizationSubtab === 'aiInsights'
-                            ? 'bg-white text-amber-950 shadow-sm'
-                            : 'text-gray-600 hover:text-gray-900'
+                          ? 'bg-white text-amber-950 shadow-sm'
+                          : 'text-gray-600 hover:text-gray-900'
                           }`}
                       >
                         AI User Insights
@@ -2015,8 +2015,8 @@ export default function CallImportEvaluationDetail() {
                         aria-selected={visualizationSubtab === 'clusters'}
                         onClick={() => setVisualizationSubtab('clusters')}
                         className={`rounded px-2.5 py-1 text-[13px] font-medium transition ${visualizationSubtab === 'clusters'
-                            ? 'bg-white text-amber-950 shadow-sm'
-                            : 'text-gray-600 hover:text-gray-900'
+                          ? 'bg-white text-amber-950 shadow-sm'
+                          : 'text-gray-600 hover:text-gray-900'
                           }`}
                       >
                         Clusters
@@ -2027,8 +2027,8 @@ export default function CallImportEvaluationDetail() {
                         aria-selected={visualizationSubtab === 'improvements'}
                         onClick={() => setVisualizationSubtab('improvements')}
                         className={`rounded px-2.5 py-1 text-[13px] font-medium transition ${visualizationSubtab === 'improvements'
-                            ? 'bg-white text-amber-950 shadow-sm'
-                            : 'text-gray-600 hover:text-gray-900'
+                          ? 'bg-white text-amber-950 shadow-sm'
+                          : 'text-gray-600 hover:text-gray-900'
                           }`}
                       >
                         Prompt / Agent Improvements
@@ -2085,6 +2085,17 @@ export default function CallImportEvaluationDetail() {
                             isLoading={userInsightsQuery.isLoading}
                             callImportId={id!}
                             evaluationId={evalId!}
+                            onStateChange={(next) => {
+                              queryClient.setQueryData(
+                                [
+                                  'call-import-evaluation-user-insights',
+                                  activeWorkspaceId,
+                                  id,
+                                  evalId,
+                                ],
+                                next,
+                              )
+                            }}
                             onRefresh={() => {
                               void userInsightsQuery.refetch()
                             }}

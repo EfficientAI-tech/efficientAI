@@ -23,6 +23,12 @@ from app.services.evaluation_analysis_checkpoints import (
 from app.workers.config import celery_app
 
 
+def _refresh_user_insights_cancelled(db, evaluation: CallImportEvaluation) -> bool:
+    db.expire(evaluation, ["user_insights"])
+    db.refresh(evaluation)
+    return user_insights_raw_is_cancelled(evaluation.user_insights)
+
+
 @celery_app.task(name="generate_evaluation_user_insights", bind=True, max_retries=0)
 def generate_evaluation_user_insights_task(
     self,
@@ -31,10 +37,9 @@ def generate_evaluation_user_insights_task(
     provider: str | None = None,
     model: str | None = None,
     max_llm_calls: int | None = None,
-    transcript_source: str | None = None,
-    resume: bool = False,
+    **_ignored_kwargs: object,
 ):
-    del max_llm_calls  # full corpus; budget follows row batches
+    del max_llm_calls, _ignored_kwargs
     from app.api.v1.routes.call_import_evaluations import (
         _metrics_for_ids,
         _serialize_selected_metric_ids,
@@ -52,18 +57,30 @@ def generate_evaluation_user_insights_task(
             logger.error("User insights: evaluation {} not found", evaluation_id)
             return
 
-        if user_insights_raw_is_cancelled(evaluation.user_insights):
+        if _refresh_user_insights_cancelled(db, evaluation):
             logger.info(
                 "User insights: evaluation {} cancelled, skipping",
                 evaluation_id,
             )
             return
 
+        raw_for_llm = (
+            evaluation.user_insights if isinstance(evaluation.user_insights, dict) else {}
+        )
+        llm_provider = (provider or "").strip() or (
+            raw_for_llm.get("provider")
+            if isinstance(raw_for_llm.get("provider"), str)
+            else None
+        )
+        llm_model = (model or "").strip() or (
+            raw_for_llm.get("model") if isinstance(raw_for_llm.get("model"), str) else None
+        )
+
         provider_enum, model_str = get_llm_provider_and_model_for_request(
             evaluation.organization_id,
             db,
-            provider,
-            model,
+            llm_provider,
+            llm_model,
         )
 
         from app.services.call_imports.metric_aggregate_cache import (
@@ -76,24 +93,11 @@ def generate_evaluation_user_insights_task(
 
         raw = evaluation.user_insights if isinstance(evaluation.user_insights, dict) else {}
         source = normalize_transcript_source(
-            transcript_source or raw.get("transcript_source")
+            raw.get("transcript_source") or evaluation.transcript_source
         )
 
         if raw.get("job_run_id"):
             run_id = UUID(str(raw["job_run_id"]))
-        elif resume:
-            run_id = new_job_run_id()
-            evaluation.user_insights = start_user_insights_job_header(
-                evaluation,
-                db,
-                job_run_id=run_id,
-                transcript_source=source,
-                provider=provider_enum.value,
-                model=model_str,
-                prior_insights=[],
-            )
-            flag_modified(evaluation, "user_insights")
-            db.commit()
         else:
             run_id = new_job_run_id()
             prior_insights = raw.get("insights") if isinstance(raw.get("insights"), list) else []
@@ -110,18 +114,25 @@ def generate_evaluation_user_insights_task(
             db.commit()
 
         def _reload_cancelled() -> bool:
-            db.expire(evaluation, ["user_insights"])
-            db.refresh(evaluation)
-            return user_insights_raw_is_cancelled(evaluation.user_insights)
+            return _refresh_user_insights_cancelled(db, evaluation)
 
         def on_progress(update: dict) -> None:
             if _reload_cancelled():
                 return
+            current = (
+                evaluation.user_insights
+                if isinstance(evaluation.user_insights, dict)
+                else {}
+            )
+            if user_insights_raw_is_cancelled(current):
+                return
             merged = {
-                **(evaluation.user_insights or {}),
+                **current,
                 "status": "running",
                 "progress": update,
             }
+            if isinstance(update.get("completed_llm_calls"), (int, float)):
+                merged["llm_calls_used"] = int(update["completed_llm_calls"])
             evaluation.user_insights = merged
             flag_modified(evaluation, "user_insights")
             db.commit()
@@ -148,6 +159,8 @@ def generate_evaluation_user_insights_task(
             return
 
         if terminal_state is not None:
+            if terminal_state.status == "cancelled":
+                return
             payload = user_insights_state_to_db(terminal_state)
             payload["job_run_id"] = str(run_id)
             payload["transcript_source"] = source
@@ -172,20 +185,45 @@ def generate_evaluation_user_insights_task(
                 )
             return
 
+        if _reload_cancelled():
+            return
+
         flag_modified(evaluation, "user_insights")
         db.commit()
 
         if action == "continue":
-            generate_evaluation_user_insights_task.apply_async(
+            if _reload_cancelled():
+                return
+            async_result = generate_evaluation_user_insights_task.apply_async(
                 kwargs={
                     "evaluation_id": evaluation_id,
-                    "provider": provider,
-                    "model": model,
-                    "transcript_source": source,
-                    "resume": True,
+                    "provider": llm_provider,
+                    "model": llm_model,
                 },
                 queue="imports",
             )
+            if _reload_cancelled():
+                from app.workers.celery_revoke import revoke_celery_tasks
+
+                revoke_celery_tasks([async_result.id])
+                return
+            header = (
+                evaluation.user_insights
+                if isinstance(evaluation.user_insights, dict)
+                else {}
+            )
+            if user_insights_raw_is_cancelled(header):
+                from app.workers.celery_revoke import revoke_celery_tasks
+
+                revoke_celery_tasks([async_result.id])
+                return
+            evaluation.user_insights = {
+                **header,
+                "status": "running",
+                "celery_task_id": async_result.id,
+            }
+            flag_modified(evaluation, "user_insights")
+            db.commit()
     except Exception as exc:  # noqa: BLE001
         logger.exception(
             "User insights generation failed for evaluation {}: {}",

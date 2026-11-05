@@ -35,7 +35,6 @@ from app.services.call_import_metric_clusters import (
     _run_extraction,
     _selected_evaluation_row_ids_from_raw,
     _synthesize_metric_clusters,
-    build_metric_cluster_progress,
     metric_clusters_raw_is_cancelled,
     policies_from_evaluation_raw,
     policy_has_failure_criteria,
@@ -52,6 +51,7 @@ from app.services.evaluation_analysis_checkpoints import (
     merge_signature_counts_from_cluster_batches,
     normalize_transcript_source,
     progress_header,
+    rows_completed_for_batches,
     upsert_analysis_batch,
 )
 from app.services.metric_cluster_rows import call_import_pair_to_cluster_row
@@ -62,6 +62,7 @@ ProgressCallback = Callable[[Dict[str, Any]], None]
 
 EXTRACTION_SUB_BATCH_ROWS = 25
 SYNTHESIS_BATCH_INDEX_OFFSET = 100_000
+DISCOVERY_BATCH_INDEX_OFFSET = 200_000
 
 
 def _cluster_row_for_pair(
@@ -102,6 +103,22 @@ def _count_row_scope(
     return total, None
 
 
+def _metrics_eligible_for_synthesis(
+    quality_metrics: Sequence[Metric],
+    failure_policies: Dict[str, MetricFailurePolicy],
+    sig_by_metric: Dict[str, Dict[str, int]],
+) -> List[Metric]:
+    eligible: List[Metric] = []
+    for metric in quality_metrics:
+        policy = failure_policies.get(str(metric.id))
+        if policy is None or not policy_has_failure_criteria(policy, metric):
+            continue
+        if not sig_by_metric.get(str(metric.id)):
+            continue
+        eligible.append(metric)
+    return eligible
+
+
 def start_metric_clusters_job_header(
     evaluation: CallImportEvaluation,
     db: Session,
@@ -135,6 +152,48 @@ def start_metric_clusters_job_header(
         },
     )
     header["progress"]["phase"] = "rows"
+    return header
+
+
+def resume_metric_clusters_job_header(
+    db: Session,
+    evaluation: CallImportEvaluation,
+    prior: Dict[str, Any],
+    *,
+    transcript_source: str,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Re-open a checkpointed clustering job without losing finished pages."""
+    header = dict(prior)
+    header["status"] = "running"
+    header["error_message"] = None
+    header["celery_task_id"] = None
+    header["transcript_source"] = normalize_transcript_source(transcript_source)
+    if provider:
+        header["provider"] = provider
+    if model:
+        header["model"] = model
+
+    total_rows, _ = _count_row_scope(db, evaluation, header)
+    total_batches = batch_count_for_rows(total_rows)
+    progress = header.get("progress") if isinstance(header.get("progress"), dict) else {}
+    stored_batches = int(progress.get("completed_batches") or 0)
+    completed_batches = min(stored_batches, total_batches) if total_batches else stored_batches
+    phase = progress.get("phase") if isinstance(progress.get("phase"), str) else None
+    if phase not in {"rows", "synthesis", "discovery"}:
+        phase = "synthesis" if completed_batches >= total_batches else "rows"
+    header["progress"] = progress_header(
+        completed_rows=rows_completed_for_batches(completed_batches, total_rows)
+        if total_rows
+        else int(progress.get("completed_rows") or 0),
+        total_rows=total_rows,
+        completed_batches=completed_batches,
+        total_batches=total_batches,
+        completed_llm_calls=int(header.get("llm_calls_used") or 0),
+        total_llm_calls=int(progress.get("total_llm_calls") or 0),
+        phase=phase,
+    )
     return header
 
 
@@ -184,9 +243,11 @@ def process_metric_clusters_wave_step(
 
     progress = raw.get("progress") if isinstance(raw.get("progress"), dict) else {}
     phase = str(progress.get("phase") or "rows")
+    total_rows = int(progress.get("total_rows") or 0)
     total_batches = int(progress.get("total_batches") or 0)
     completed_batches = int(progress.get("completed_batches") or 0)
     llm_calls_used = int(raw.get("llm_calls_used") or 0)
+    total_llm_calls = int(progress.get("total_llm_calls") or 0)
     transcript_source = normalize_transcript_source(raw.get("transcript_source"))
     selected_ids_raw = raw.get("selected_evaluation_row_ids") or []
     selected_ids = (
@@ -207,10 +268,15 @@ def process_metric_clusters_wave_step(
             batch_index=completed_batches,
         )
         if not pairs:
-            raw["progress"] = {**progress, "phase": "synthesis", "completed_batches": completed_batches}
+            raw["progress"] = {
+                **progress,
+                "phase": "synthesis",
+                "completed_batches": completed_batches,
+            }
             evaluation.metric_clusters = raw
             return "continue", None
 
+        rows_before_this_batch = rows_completed_for_batches(completed_batches, total_rows)
         metrics_sig: Dict[str, Dict[str, int]] = {}
         metric_extractions: Dict[str, List[Dict[str, Any]]] = {}
         flagged_samples: List[Dict[str, Any]] = []
@@ -234,7 +300,8 @@ def process_metric_clusters_wave_step(
                     flagged_samples.append(payload)
 
             extractions: List[Dict[str, Any]] = []
-            for sub_batch in _sub_batch_payloads(flagged_payloads):
+            sub_batches = _sub_batch_payloads(flagged_payloads)
+            for sub_batch in sub_batches:
                 if is_cancelled and is_cancelled():
                     return "idle", EvaluationMetricClustersState(
                         status="cancelled",
@@ -289,23 +356,36 @@ def process_metric_clusters_wave_step(
 
         completed_batches += 1
         new_progress = progress_header(
-            completed_rows=int(progress.get("completed_rows") or 0) + len(pairs),
-            total_rows=int(progress.get("total_rows") or 0),
+            completed_rows=rows_completed_for_batches(completed_batches, total_rows)
+            if total_rows
+            else rows_before_this_batch + len(pairs),
+            total_rows=total_rows,
             completed_batches=completed_batches,
             total_batches=total_batches,
             completed_llm_calls=llm_calls_used,
+            total_llm_calls=total_llm_calls,
             phase="rows" if completed_batches < total_batches else "synthesis",
         )
         raw["progress"] = new_progress
         raw["llm_calls_used"] = llm_calls_used
         if not selected_ids:
             raw["cursor"] = cursor_to_dict(page_cursor)
-        evaluation.metric_clusters = raw
+
+        db.expire(evaluation, ["metric_clusters"])
+        db.refresh(evaluation)
+        live = evaluation.metric_clusters if isinstance(evaluation.metric_clusters, dict) else {}
+        if metric_clusters_raw_is_cancelled(live):
+            return "idle", EvaluationMetricClustersState(
+                status="cancelled",
+                error_message=METRIC_CLUSTERS_CANCELLED_BY_USER_ERROR,
+                generated_at=datetime.now(timezone.utc),
+            )
+        evaluation.metric_clusters = {**live, **raw, "progress": new_progress}
         if on_progress:
             on_progress(new_progress)
         return "continue", None
 
-    # Synthesis phase
+    # Synthesis phase — one metric per wave step so each finish is checkpointed.
     row_batches = list_analysis_batches(
         db,
         evaluation_id=evaluation.id,
@@ -329,18 +409,13 @@ def process_metric_clusters_wave_step(
                     continue
 
     metrics_by_id = {str(m.id): m for m in metrics}
-    synthesis_index = 0
-    for metric in quality_metrics:
+    metrics_to_synth = _metrics_eligible_for_synthesis(
+        quality_metrics, failure_policies, sig_by_metric
+    )
+
+    for metric_pos, metric in enumerate(metrics_to_synth):
         mid = str(metric.id)
         if mid in synthesis_done:
-            continue
-        policy = failure_policies.get(mid)
-        if policy is None or not policy_has_failure_criteria(policy, metric):
-            synthesis_done.add(mid)
-            continue
-        signature_counts = sig_by_metric.get(mid) or {}
-        if not signature_counts:
-            synthesis_done.add(mid)
             continue
         if is_cancelled and is_cancelled():
             return "idle", EvaluationMetricClustersState(
@@ -349,6 +424,7 @@ def process_metric_clusters_wave_step(
                 generated_at=datetime.now(timezone.utc),
             )
 
+        signature_counts = sig_by_metric.get(mid) or {}
         sample_rows = merge_cluster_extractions_from_batches(row_batches, mid)
         flagged_count = sum(signature_counts.values())
         try:
@@ -375,35 +451,52 @@ def process_metric_clusters_wave_step(
         llm_calls_used += 1
 
         if clusters:
-            groups.append(
-                MetricClusterGroup(
-                    metric_id=mid,
-                    metric_name=metric.name,
-                    flagged_count=flagged_count,
-                    clusters=clusters,
-                )
+            group = MetricClusterGroup(
+                metric_id=mid,
+                metric_name=metric.name,
+                flagged_count=flagged_count,
+                clusters=clusters,
             )
+            groups = [g for g in groups if g.metric_id != mid] + [group]
+
         synthesis_done.add(mid)
+        batch_index = SYNTHESIS_BATCH_INDEX_OFFSET + metric_pos
         upsert_analysis_batch(
             db,
             evaluation_id=evaluation.id,
             job_kind=JOB_KIND_METRIC_CLUSTERS,
             job_run_id=job_run_id,
-            batch_index=SYNTHESIS_BATCH_INDEX_OFFSET + synthesis_index,
+            batch_index=batch_index,
             payload={
                 "metric_id": mid,
                 "groups": [groups[-1].model_dump(mode="json")] if clusters else [],
             },
         )
-        synthesis_index += 1
+
+        synth_index = len([m for m in metrics_to_synth if str(m.id) in synthesis_done])
         raw["synthesis_completed_metric_ids"] = sorted(synthesis_done)
         raw["groups"] = [g.model_dump(mode="json") for g in groups]
         raw["llm_calls_used"] = llm_calls_used
+        raw["progress"] = {
+            **progress,
+            "phase": "synthesis",
+            "completed_rows": progress.get("completed_rows"),
+            "total_rows": progress.get("total_rows"),
+            "completed_batches": completed_batches,
+            "total_batches": total_batches,
+            "completed_llm_calls": llm_calls_used,
+            "total_llm_calls": total_llm_calls,
+            "current_metric_name": metric.name,
+            "current_metric_index": synth_index,
+            "total_metrics": len(metrics_to_synth),
+        }
         evaluation.metric_clusters = raw
+        if on_progress:
+            on_progress(raw["progress"])
         db.commit()
         return "continue", None
 
-    # Discovery
+    # Discovery + final assembly
     all_samples: List[Dict[str, Any]] = []
     total_flagged = 0
     for batch in row_batches:
@@ -415,21 +508,57 @@ def process_metric_clusters_wave_step(
             if isinstance(sig_map, dict):
                 total_flagged += sum(int(v) for v in sig_map.values())
 
+    discovered_raw = raw.get("discovered_problems")
     discovered: List[DiscoveredProblemCluster] = []
-    try:
-        discovered = _run_discovery(
+    if isinstance(discovered_raw, list) and raw.get("discovery_completed"):
+        for item in discovered_raw:
+            if isinstance(item, dict):
+                try:
+                    discovered.append(DiscoveredProblemCluster.model_validate(item))
+                except Exception:  # noqa: BLE001
+                    continue
+    else:
+        try:
+            discovered = _run_discovery(
+                db,
+                organization_id,
+                provider,
+                model,
+                all_samples,
+                total_flagged=max(total_flagged, 1),
+            )
+        except ClusterOutputTruncated:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Proactive discovery failed for evaluation {}: {}", evaluation.id, exc
+            )
+        llm_calls_used += 1
+        upsert_analysis_batch(
             db,
-            organization_id,
-            provider,
-            model,
-            all_samples,
-            total_flagged=max(total_flagged, 1),
+            evaluation_id=evaluation.id,
+            job_kind=JOB_KIND_METRIC_CLUSTERS,
+            job_run_id=job_run_id,
+            batch_index=DISCOVERY_BATCH_INDEX_OFFSET,
+            payload={
+                "discovered_problems": [d.model_dump(mode="json") for d in discovered]
+            },
         )
-    except ClusterOutputTruncated:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Proactive discovery failed for evaluation {}: {}", evaluation.id, exc)
-    llm_calls_used += 1
+        raw["discovered_problems"] = [d.model_dump(mode="json") for d in discovered]
+        raw["discovery_completed"] = True
+        raw["llm_calls_used"] = llm_calls_used
+        evaluation.metric_clusters = raw
+        if on_progress:
+            on_progress(
+                {
+                    **progress,
+                    "phase": "discovery",
+                    "completed_llm_calls": llm_calls_used,
+                    "total_llm_calls": total_llm_calls,
+                }
+            )
+        db.commit()
+        return "continue", None
 
     payloads_by_metric: Dict[str, List[Dict[str, Any]]] = {}
     extractions_by_metric: Dict[str, List[Dict[str, Any]]] = {}
@@ -453,12 +582,22 @@ def process_metric_clusters_wave_step(
         analysed_calls=max(int(progress.get("total_rows") or 1), 1),
     )
 
+    final_progress = {
+        **progress,
+        "phase": "completed",
+        "completed_rows": int(progress.get("total_rows") or 0),
+        "completed_batches": total_batches,
+        "completed_llm_calls": llm_calls_used,
+        "total_llm_calls": total_llm_calls,
+    }
+
     if not groups and not discovered:
         return "done", EvaluationMetricClustersState(
             status="failed",
             error_message="No flagged quality metrics or clusters produced.",
             generated_at=datetime.now(timezone.utc),
             llm_calls_used=llm_calls_used,
+            progress=final_progress,
             selected_evaluation_row_ids=selected_ids_raw,
         )
 
@@ -486,7 +625,7 @@ def process_metric_clusters_wave_step(
         overview="; ".join(overview_parts) if overview_parts else None,
         generated_at=datetime.now(timezone.utc),
         generated_at_completed_rows=evaluation.completed_rows,
-        progress=progress,
+        progress=final_progress,
         provider=provider.value if hasattr(provider, "value") else str(provider),
         model=model,
         llm_calls_used=llm_calls_used,

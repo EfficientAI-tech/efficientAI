@@ -25,6 +25,12 @@ from app.services.evaluation_analysis_checkpoints import (
 from app.workers.config import celery_app
 
 
+def _reload_prompt_cancelled(db, evaluation: CallImportEvaluation) -> bool:
+    db.expire(evaluation, ["prompt_improvements"])
+    db.refresh(evaluation)
+    return prompt_improvements_raw_is_cancelled(evaluation.prompt_improvements)
+
+
 @celery_app.task(name="generate_evaluation_prompt_improvements", bind=True, max_retries=0)
 def generate_evaluation_prompt_improvements_task(
     self,
@@ -35,7 +41,9 @@ def generate_evaluation_prompt_improvements_task(
     model: str | None = None,
     credential_id: str | None = None,
     resume: bool = False,
+    **_ignored_kwargs: object,
 ):
+    del _ignored_kwargs
     from app.api.v1.routes.call_import_evaluations import (
         _aggregate_to_dict,
         _compute_metric_aggregates,
@@ -56,7 +64,7 @@ def generate_evaluation_prompt_improvements_task(
             logger.error("Prompt improvements: evaluation {} not found", evaluation_id)
             return
 
-        if prompt_improvements_raw_is_cancelled(evaluation.prompt_improvements):
+        if _reload_prompt_cancelled(db, evaluation):
             logger.info(
                 "Prompt improvements: evaluation {} cancelled, skipping",
                 evaluation_id,
@@ -115,23 +123,45 @@ def generate_evaluation_prompt_improvements_task(
             if isinstance(evaluation.prompt_improvements, dict)
             else {}
         )
+        total_groups = len(clusters_state.groups or [])
+        provider_value = (provider or "").strip() or (
+            raw.get("provider") if isinstance(raw.get("provider"), str) else None
+        )
+        model_value = (model or "").strip() or (
+            raw.get("model") if isinstance(raw.get("model"), str) else None
+        )
+
         if raw.get("job_run_id"):
             run_id = UUID(str(raw["job_run_id"]))
-        elif resume:
-            run_id = new_job_run_id()
             evaluation.prompt_improvements = {
                 **raw,
                 "status": "running",
                 "imported_agent_id": str(imported_agent_id),
                 "imported_agent_name": imported_agent.name,
-                "job_run_id": str(run_id),
+                "provider": provider_value,
+                "model": model_value,
+                "error_message": None,
+                "celery_task_id": None,
                 "completed_group_metric_ids": raw.get("completed_group_metric_ids") or [],
+                "total_groups": total_groups,
+                "progress": raw.get("progress")
+                or {
+                    "completed_groups": 0,
+                    "total_groups": total_groups,
+                    "completed_rows": 0,
+                    "total_rows": total_groups,
+                    "completed_batches": 0,
+                    "total_batches": total_groups,
+                    "completed_llm_calls": 0,
+                    "total_llm_calls": total_groups,
+                    "phase": "rows",
+                },
             }
-            flag_modified(evaluation, "prompt_improvements")
-            db.commit()
         else:
             run_id = new_job_run_id()
-            prior_suggestions = raw.get("suggestions") if isinstance(raw.get("suggestions"), list) else []
+            prior_suggestions = (
+                raw.get("suggestions") if isinstance(raw.get("suggestions"), list) else []
+            )
             evaluation.prompt_improvements = {
                 **raw,
                 "status": "running",
@@ -139,20 +169,50 @@ def generate_evaluation_prompt_improvements_task(
                 "imported_agent_name": imported_agent.name,
                 "job_run_id": str(run_id),
                 "completed_group_metric_ids": [],
+                "completed_group_count": 0,
+                "total_groups": total_groups,
                 "generated_at": datetime.now(timezone.utc).isoformat(),
                 "generated_at_completed_rows": evaluation.completed_rows,
-                "provider": provider,
-                "model": model,
+                "provider": provider_value,
+                "model": model_value,
                 "error_message": None,
-                "suggestions": prior_suggestions if raw.get("status") == "completed" else raw.get("suggestions", []),
+                "celery_task_id": None,
+                "suggestions": prior_suggestions if raw.get("status") == "completed" else [],
+                "progress": {
+                    "completed_groups": 0,
+                    "total_groups": total_groups,
+                    "completed_rows": 0,
+                    "total_rows": total_groups,
+                    "completed_batches": 0,
+                    "total_batches": total_groups,
+                    "completed_llm_calls": 0,
+                    "total_llm_calls": total_groups,
+                    "phase": "rows",
+                },
+            }
+        flag_modified(evaluation, "prompt_improvements")
+        db.commit()
+
+        def _reload_cancelled() -> bool:
+            return _reload_prompt_cancelled(db, evaluation)
+
+        def on_progress(update: dict) -> None:
+            if _reload_cancelled():
+                return
+            current = (
+                evaluation.prompt_improvements
+                if isinstance(evaluation.prompt_improvements, dict)
+                else {}
+            )
+            if prompt_improvements_raw_is_cancelled(current):
+                return
+            evaluation.prompt_improvements = {
+                **current,
+                "status": "running",
+                "progress": update,
             }
             flag_modified(evaluation, "prompt_improvements")
             db.commit()
-
-        def _reload_cancelled() -> bool:
-            db.expire(evaluation, ["prompt_improvements"])
-            db.refresh(evaluation)
-            return prompt_improvements_raw_is_cancelled(evaluation.prompt_improvements)
 
         from app.services.usage.call_import_context import usage_context_for_evaluation
         from app.services.usage.context import llm_usage_context
@@ -165,10 +225,11 @@ def generate_evaluation_prompt_improvements_task(
                 clusters_state,
                 evaluation.organization_id,
                 job_run_id=run_id,
-                provider=provider,
-                model=model,
+                provider=provider_value,
+                model=model_value,
                 credential_id=UUID(credential_id) if credential_id else None,
                 period_deltas=period_deltas,
+                on_progress=on_progress,
                 is_cancelled=_reload_cancelled,
             )
 
@@ -176,10 +237,24 @@ def generate_evaluation_prompt_improvements_task(
             return
 
         if terminal_state is not None:
+            if terminal_state.status == "cancelled":
+                return
             payload = prompt_improvements_state_to_db(terminal_state)
             payload["compose_base_prompt"] = imported_agent.content or ""
             payload["job_run_id"] = str(run_id)
             payload["celery_task_id"] = None
+            payload["completed_group_metric_ids"] = sorted(
+                {
+                    str(x)
+                    for x in ((evaluation.prompt_improvements or {}).get(
+                        "completed_group_metric_ids"
+                    ) or [])
+                    if x
+                }
+            )
+            payload["completed_group_count"] = int(
+                (evaluation.prompt_improvements or {}).get("completed_group_count") or 0
+            )
             evaluation.prompt_improvements = payload
             flag_modified(evaluation, "prompt_improvements")
             db.commit()
@@ -202,21 +277,36 @@ def generate_evaluation_prompt_improvements_task(
             )
             return
 
+        if _reload_cancelled():
+            return
+
         flag_modified(evaluation, "prompt_improvements")
         db.commit()
 
         if action == "continue":
-            generate_evaluation_prompt_improvements_task.apply_async(
+            async_result = generate_evaluation_prompt_improvements_task.apply_async(
                 kwargs={
                     "evaluation_id": evaluation_id,
                     "imported_agent_id": imported_agent_id,
-                    "provider": provider,
-                    "model": model,
+                    "provider": provider_value,
+                    "model": model_value,
                     "credential_id": credential_id,
                     "resume": True,
                 },
                 queue="imports",
             )
+            db.expire(evaluation, ["prompt_improvements"])
+            db.refresh(evaluation)
+            if prompt_improvements_raw_is_cancelled(evaluation.prompt_improvements):
+                from app.workers.celery_revoke import revoke_celery_tasks
+
+                revoke_celery_tasks([async_result.id])
+                return
+            if isinstance(evaluation.prompt_improvements, dict):
+                evaluation.prompt_improvements["celery_task_id"] = async_result.id
+                evaluation.prompt_improvements["status"] = "running"
+                flag_modified(evaluation, "prompt_improvements")
+                db.commit()
     except Exception as exc:
         logger.exception(
             "Prompt improvements failed for evaluation {}: {}",
@@ -224,20 +314,28 @@ def generate_evaluation_prompt_improvements_task(
             exc,
         )
         if evaluation is not None:
-            prior = (
+            try:
+                db.expire(evaluation, ["prompt_improvements"])
+                db.refresh(evaluation)
+            except Exception:  # noqa: BLE001
+                db.rollback()
+            if not prompt_improvements_raw_is_cancelled(
                 evaluation.prompt_improvements
-                if isinstance(evaluation.prompt_improvements, dict)
-                else {}
-            )
-            evaluation.prompt_improvements = {
-                **prior,
-                "status": "failed",
-                "imported_agent_id": imported_agent_id,
-                "error_message": str(exc),
-                "generated_at": datetime.now(timezone.utc).isoformat(),
-                "celery_task_id": None,
-            }
-            flag_modified(evaluation, "prompt_improvements")
-            db.commit()
+            ):
+                prior = (
+                    evaluation.prompt_improvements
+                    if isinstance(evaluation.prompt_improvements, dict)
+                    else {}
+                )
+                evaluation.prompt_improvements = {
+                    **prior,
+                    "status": "failed",
+                    "imported_agent_id": imported_agent_id,
+                    "error_message": str(exc),
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "celery_task_id": None,
+                }
+                flag_modified(evaluation, "prompt_improvements")
+                db.commit()
     finally:
         db.close()

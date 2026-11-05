@@ -23,7 +23,6 @@ from app.services.call_import_user_insights import (
     build_row_payload,
     run_extraction_batch,
     run_synthesis,
-    user_insights_state_to_db,
     _format_aggregate_summary,
     _aggregate_themes,
 )
@@ -40,6 +39,7 @@ from app.services.evaluation_analysis_checkpoints import (
     merge_theme_counts_from_batches,
     normalize_transcript_source,
     progress_header,
+    rows_completed_for_batches,
     upsert_analysis_batch,
     user_insights_raw_is_cancelled,
     new_job_run_id,
@@ -48,7 +48,83 @@ from app.services.evaluation_analysis_checkpoints import (
 CancelCheck = Callable[[], bool]
 ProgressCallback = Callable[[Dict[str, Any]], None]
 
-EXTRACTION_SUB_BATCH_ROWS = 25
+EXTRACTION_SUB_BATCH_ROWS = 50
+# Rows small enough to fit in a single extraction pass (with headroom for
+# per-row transcript + metric rationale tokens).
+EXTRACTION_SINGLE_PASS_MAX_ROWS = 40
+# Checkpoint index used for the final synthesis payload (kept above any row
+# page index so row batching can never collide with it).
+SYNTHESIS_BATCH_INDEX_OFFSET = 100_000
+
+
+def extraction_sub_batch_size(row_count: int) -> int:
+    """Size each extraction LLM call; fewer round-trips for small evals."""
+    if row_count <= 0:
+        return EXTRACTION_SUB_BATCH_ROWS
+    if row_count <= EXTRACTION_SINGLE_PASS_MAX_ROWS:
+        return row_count
+    return EXTRACTION_SUB_BATCH_ROWS
+
+
+def extraction_pass_count(row_count: int) -> int:
+    if row_count <= 0:
+        return 0
+    return (row_count + extraction_sub_batch_size(row_count) - 1) // extraction_sub_batch_size(
+        row_count
+    )
+
+
+def estimate_user_insights_total_llm_calls(total_rows: int) -> int:
+    """Extraction sub-passes across all row pages plus synthesis."""
+    if total_rows <= 0:
+        return 0
+    total_batches = batch_count_for_rows(total_rows)
+    extraction = 0
+    remaining = total_rows
+    for _ in range(total_batches):
+        page_rows = min(EVALUATION_ANALYSIS_BATCH_SIZE, remaining)
+        if page_rows <= 0:
+            break
+        extraction += extraction_pass_count(page_rows)
+        remaining -= page_rows
+    return extraction + SYNTHESIS_CALLS
+
+
+def reconcile_user_insights_job_header(
+    db: Session,
+    evaluation: CallImportEvaluation,
+    header: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Align row/batch totals with the DB and repair legacy progress."""
+    total_rows = count_completed_evaluation_row_pairs(db, evaluation.id)
+    total_batches = batch_count_for_rows(total_rows)
+    progress = header.get("progress") if isinstance(header.get("progress"), dict) else {}
+    stored_batches = int(progress.get("completed_batches") or 0)
+    completed_batches = min(stored_batches, total_batches) if total_batches else stored_batches
+    completed_rows = rows_completed_for_batches(
+        completed_batches, total_rows
+    ) if total_rows else int(progress.get("completed_rows") or 0)
+    llm_used = max(
+        int(header.get("llm_calls_used") or 0),
+        int(progress.get("completed_llm_calls") or 0),
+    )
+    phase = progress.get("phase") if isinstance(progress.get("phase"), str) else None
+    if phase not in {"rows", "synthesis"}:
+        phase = "synthesis" if total_batches > 0 and completed_batches >= total_batches else "rows"
+    new_progress = progress_header(
+        completed_rows=completed_rows,
+        total_rows=total_rows,
+        completed_batches=completed_batches,
+        total_batches=total_batches,
+        completed_llm_calls=llm_used,
+        total_llm_calls=estimate_user_insights_total_llm_calls(total_rows),
+        phase=phase,
+    )
+    return {
+        **header,
+        "progress": new_progress,
+        "llm_calls_used": llm_used,
+    }
 
 
 def pick_transcript_for_source(
@@ -84,9 +160,9 @@ def build_row_payload_for_source(
 def _sub_batch_payloads(
     rows: Sequence[Dict[str, Any]],
     *,
-    size: int = EXTRACTION_SUB_BATCH_ROWS,
+    size: int | None = None,
 ) -> List[List[Dict[str, Any]]]:
-    chunk = max(1, size)
+    chunk = max(1, size if size is not None else extraction_sub_batch_size(len(rows)))
     return [list(rows[i : i + chunk]) for i in range(0, len(rows), chunk)]
 
 
@@ -138,6 +214,7 @@ def _finalize_synthesis(
     on_progress: Optional[ProgressCallback] = None,
     is_cancelled: Optional[CancelCheck] = None,
 ) -> EvaluationUserInsightsState:
+    """Run synthesis once over every durable batch checkpoint."""
     if is_cancelled and is_cancelled():
         return _cancelled_state(
             evaluation,
@@ -145,12 +222,49 @@ def _finalize_synthesis(
             llm_calls_used=int(raw_header.get("llm_calls_used") or 0),
         )
 
-    batches = list_analysis_batches(
+    progress = raw_header.get("progress") if isinstance(raw_header.get("progress"), dict) else {}
+    provider_label = provider.value if hasattr(provider, "value") else str(provider)
+
+    # Synthesis is idempotent for a job run: if it already produced batches of
+    # insight blocks we reuse them instead of paying for another LLM call.
+    existing_batches = list_analysis_batches(
         db,
         evaluation_id=evaluation.id,
         job_kind=JOB_KIND_USER_INSIGHTS,
         job_run_id=job_run_id,
     )
+    for batch in existing_batches:
+        if (batch.status or "") != "synthesis_completed":
+            continue
+        payload = batch.payload if isinstance(batch.payload, dict) else {}
+        if payload.get("insights") is not None:
+            from app.models.schemas import EvaluationUserInsightItem
+
+            insights = [
+                EvaluationUserInsightItem.model_validate(item)
+                for item in payload.get("insights") or []
+                if isinstance(item, dict)
+            ]
+            if insights:
+                return EvaluationUserInsightsState(
+                    status="completed",
+                    insights=insights,
+                    overview=payload.get("overview"),
+                    generated_at=datetime.now(timezone.utc),
+                    generated_at_completed_rows=evaluation.completed_rows,
+                    progress={**progress, "phase": "completed"},
+                    provider=provider_label,
+                    model=model,
+                    llm_calls_used=int(raw_header.get("llm_calls_used") or 0),
+                    is_stale=False,
+                )
+
+    batches = [
+        b
+        for b in existing_batches
+        if (b.status or "") == "completed"
+        and b.batch_index < SYNTHESIS_BATCH_INDEX_OFFSET
+    ]
     theme_counts = merge_theme_counts_from_batches(batches)
     if not theme_counts and isinstance(raw_header.get("theme_counts"), dict):
         theme_counts = {
@@ -162,8 +276,6 @@ def _finalize_synthesis(
     sample_quotes = merge_extractions_from_batches(batches)
     aggregate_summary = _format_aggregate_summary(aggregate)
     total_sampled = completed_rows_from_batches(batches)
-
-    progress = raw_header.get("progress") if isinstance(raw_header.get("progress"), dict) else {}
     completed_calls = int(raw_header.get("llm_calls_used") or 0)
 
     try:
@@ -189,19 +301,33 @@ def _finalize_synthesis(
             generated_at=datetime.now(timezone.utc),
             llm_calls_used=completed_calls,
             progress=progress,
-            provider=provider.value if hasattr(provider, "value") else str(provider),
+            provider=provider_label,
             model=model,
         )
 
     completed_calls += SYNTHESIS_CALLS
+    upsert_analysis_batch(
+        db,
+        evaluation_id=evaluation.id,
+        job_kind=JOB_KIND_USER_INSIGHTS,
+        job_run_id=job_run_id,
+        batch_index=SYNTHESIS_BATCH_INDEX_OFFSET,
+        payload={
+            "insights": [item.model_dump(mode="json") for item in insights],
+            "overview": overview,
+        },
+        status="synthesis_completed",
+    )
+
+    final_progress = {
+        **progress,
+        "phase": "completed",
+        "completed_llm_calls": completed_calls,
+        "completed_rows": int(progress.get("total_rows") or total_sampled or 0),
+        "completed_batches": int(progress.get("total_batches") or 0),
+    }
     if on_progress:
-        on_progress(
-            {
-                **progress,
-                "phase": "completed",
-                "completed_llm_calls": completed_calls,
-            }
-        )
+        on_progress(final_progress)
 
     if not insights:
         return EvaluationUserInsightsState(
@@ -209,8 +335,8 @@ def _finalize_synthesis(
             error_message="LLM returned no insight blocks.",
             generated_at=datetime.now(timezone.utc),
             llm_calls_used=completed_calls,
-            progress=progress,
-            provider=provider.value if hasattr(provider, "value") else str(provider),
+            progress=final_progress,
+            provider=provider_label,
             model=model,
         )
 
@@ -220,12 +346,8 @@ def _finalize_synthesis(
         overview=overview,
         generated_at=datetime.now(timezone.utc),
         generated_at_completed_rows=evaluation.completed_rows,
-        progress={
-            **progress,
-            "phase": "completed",
-            "completed_llm_calls": completed_calls,
-        },
-        provider=provider.value if hasattr(provider, "value") else str(provider),
+        progress=final_progress,
+        provider=provider_label,
         model=model,
         llm_calls_used=completed_calls,
         is_stale=False,
@@ -256,17 +378,22 @@ def process_user_insights_wave_step(
     if user_insights_raw_is_cancelled(raw):
         return "idle", _cancelled_state(evaluation, raw)
 
+    raw = reconcile_user_insights_job_header(db, evaluation, raw)
+    evaluation.user_insights = raw
     progress = raw.get("progress") if isinstance(raw.get("progress"), dict) else {}
     phase = str(progress.get("phase") or "rows")
     total_rows = int(progress.get("total_rows") or 0)
     total_batches = int(progress.get("total_batches") or 0)
     completed_batches = int(progress.get("completed_batches") or 0)
     llm_calls_used = int(raw.get("llm_calls_used") or 0)
+    total_llm_calls = int(progress.get("total_llm_calls") or 0) or (
+        estimate_user_insights_total_llm_calls(total_rows)
+    )
 
     if phase == "synthesis" or (
         total_batches > 0 and completed_batches >= total_batches
     ):
-        state = _finalize_synthesis(
+        return "done", _finalize_synthesis(
             db,
             evaluation,
             organization_id,
@@ -278,7 +405,6 @@ def process_user_insights_wave_step(
             on_progress=on_progress,
             is_cancelled=is_cancelled,
         )
-        return "done", state
 
     cursor = cursor_from_header(raw)
     pairs = load_completed_evaluation_row_pairs_page(
@@ -293,10 +419,11 @@ def process_user_insights_wave_step(
                 status="failed",
                 error_message="No completed rows with metric scores to analyze.",
                 generated_at=datetime.now(timezone.utc),
+                progress=progress,
             )
         raw["progress"] = {**progress, "phase": "synthesis"}
         evaluation.user_insights = raw
-        state = _finalize_synthesis(
+        return "done", _finalize_synthesis(
             db,
             evaluation,
             organization_id,
@@ -308,7 +435,6 @@ def process_user_insights_wave_step(
             on_progress=on_progress,
             is_cancelled=is_cancelled,
         )
-        return "done", state
 
     metric_names = _metric_name_map(metrics)
     row_payloads: List[Dict[str, Any]] = []
@@ -329,10 +455,37 @@ def process_user_insights_wave_step(
         row_payloads.append(payload)
 
     batch_index = completed_batches
-    batch_extractions: List[Dict[str, Any]] = []
-    batch_theme: Dict[str, int] = {}
+    rows_before_this_batch = rows_completed_for_batches(completed_batches, total_rows)
+    sub_batches = _sub_batch_payloads(row_payloads)
+    chunk_size = extraction_sub_batch_size(len(row_payloads)) if row_payloads else 0
 
-    for sub_batch in _sub_batch_payloads(row_payloads):
+    # Resume inside a page: a worker killed by a time limit or redeploy mid-page
+    # must not re-pay for sub-batches that already checkpointed.
+    done_sub_batches: set[int] = set()
+    batch_extractions: List[Dict[str, Any]] = []
+    for batch in list_analysis_batches(
+        db,
+        evaluation_id=evaluation.id,
+        job_kind=JOB_KIND_USER_INSIGHTS,
+        job_run_id=job_run_id,
+    ):
+        if batch.batch_index != batch_index or (batch.status or "") != "in_progress":
+            continue
+        payload = batch.payload if isinstance(batch.payload, dict) else {}
+        raw_done = payload.get("sub_batches_done")
+        if isinstance(raw_done, list):
+            done_sub_batches = {
+                int(idx) for idx in raw_done if isinstance(idx, (int, float))
+            }
+        restored = payload.get("extractions")
+        if isinstance(restored, list):
+            batch_extractions = [item for item in restored if isinstance(item, dict)]
+        break
+    batch_theme: Dict[str, int] = _aggregate_themes(batch_extractions)
+
+    for sub_idx, sub_batch in enumerate(sub_batches):
+        if sub_idx in done_sub_batches:
+            continue
         if is_cancelled and is_cancelled():
             return "idle", _cancelled_state(
                 evaluation, raw, llm_calls_used=llm_calls_used
@@ -352,8 +505,9 @@ def process_user_insights_wave_step(
                 payload={
                     "extractions": batch_extractions,
                     "theme_counts": batch_theme,
-                    "rows_processed": len(row_payloads),
+                    "rows_processed": len(pairs),
                     "rows_skipped_empty_transcript": skipped,
+                    "sub_batches_done": sorted(done_sub_batches | {sub_idx}),
                 },
                 transcript_source=transcript_source,
                 status="in_progress",
@@ -366,11 +520,26 @@ def process_user_insights_wave_step(
                 exc,
             )
         llm_calls_used += 1
+        if on_progress:
+            processed_in_batch = min((sub_idx + 1) * chunk_size, len(row_payloads))
+            on_progress(
+                progress_header(
+                    completed_rows=rows_before_this_batch + processed_in_batch,
+                    total_rows=total_rows,
+                    completed_batches=completed_batches,
+                    total_batches=total_batches,
+                    completed_llm_calls=llm_calls_used,
+                    total_llm_calls=total_llm_calls,
+                    phase="rows",
+                )
+            )
 
-    last_pair = pairs[-1]
-    page_cursor = evaluation_row_page_cursor_from_pair(last_pair)
-    merge_theme_counts_into_header(raw, _aggregate_themes(batch_extractions))
+    if is_cancelled and is_cancelled():
+        return "idle", _cancelled_state(
+            evaluation, raw, llm_calls_used=llm_calls_used
+        )
 
+    page_cursor = evaluation_row_page_cursor_from_pair(pairs[-1])
     upsert_analysis_batch(
         db,
         evaluation_id=evaluation.id,
@@ -380,8 +549,9 @@ def process_user_insights_wave_step(
         payload={
             "extractions": batch_extractions,
             "theme_counts": batch_theme,
-            "rows_processed": len(row_payloads),
+            "rows_processed": len(pairs),
             "rows_skipped_empty_transcript": skipped,
+            "sub_batches_done": list(range(len(sub_batches))),
         },
         cursor=page_cursor,
         transcript_source=transcript_source,
@@ -389,26 +559,41 @@ def process_user_insights_wave_step(
     )
 
     completed_batches += 1
-    completed_rows = int(progress.get("completed_rows") or 0) + len(pairs)
     new_progress = progress_header(
-        completed_rows=completed_rows,
+        completed_rows=rows_completed_for_batches(completed_batches, total_rows),
         total_rows=total_rows,
         completed_batches=completed_batches,
         total_batches=total_batches,
         completed_llm_calls=llm_calls_used,
-        total_llm_calls=int(progress.get("total_llm_calls") or 0),
+        total_llm_calls=total_llm_calls,
         phase="rows" if completed_batches < total_batches else "synthesis",
     )
-    raw["progress"] = new_progress
-    raw["cursor"] = cursor_to_dict(page_cursor)
-    raw["llm_calls_used"] = llm_calls_used
-    evaluation.user_insights = raw
+    merge_theme_counts_into_header(raw, batch_theme)
+
+    db.expire(evaluation, ["user_insights"])
+    db.refresh(evaluation)
+    live = evaluation.user_insights if isinstance(evaluation.user_insights, dict) else {}
+    if user_insights_raw_is_cancelled(live):
+        return "idle", _cancelled_state(
+            evaluation, live, llm_calls_used=llm_calls_used
+        )
+
+    evaluation.user_insights = {
+        **live,
+        "status": "running",
+        "progress": new_progress,
+        "cursor": cursor_to_dict(page_cursor),
+        "llm_calls_used": llm_calls_used,
+        "theme_counts": raw.get("theme_counts", live.get("theme_counts")),
+        "job_run_id": live.get("job_run_id") or raw.get("job_run_id"),
+        "transcript_source": live.get("transcript_source") or raw.get("transcript_source"),
+        "provider": live.get("provider") or raw.get("provider"),
+        "model": live.get("model") or raw.get("model"),
+    }
 
     if on_progress:
         on_progress(new_progress)
 
-    if completed_batches >= total_batches:
-        return "continue", None
     return "continue", None
 
 
@@ -439,5 +624,29 @@ def start_user_insights_job_header(
             "cursor": None,
         },
     )
-    header["progress"]["total_llm_calls"] = 0
+    header["progress"]["total_llm_calls"] = estimate_user_insights_total_llm_calls(
+        total_rows
+    )
     return header
+
+
+def resume_user_insights_job_header(
+    db: Session,
+    evaluation: CallImportEvaluation,
+    prior: Dict[str, Any],
+    *,
+    transcript_source: str,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Re-open a checkpointed job without resetting batch row progress."""
+    header = dict(prior)
+    header["status"] = "running"
+    header["error_message"] = None
+    header["celery_task_id"] = None
+    header["transcript_source"] = normalize_transcript_source(transcript_source)
+    if provider:
+        header["provider"] = provider
+    if model:
+        header["model"] = model
+    return reconcile_user_insights_job_header(db, evaluation, header)

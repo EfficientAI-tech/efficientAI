@@ -1919,6 +1919,14 @@ export interface EvaluationPromptImprovementsState {
   error_message?: string | null
   is_stale: boolean
   require_review?: boolean
+  progress?: {
+    completed_groups?: number
+    total_groups?: number
+    current_metric_name?: string
+    current_metric_index?: number
+    total_metrics?: number
+    phase?: string
+  } | null
 }
 
 export interface PromptPushRecord {

@@ -24,6 +24,8 @@ import { apiClient } from '../../../lib/api'
 import { getApiErrorMessage } from '../../../lib/apiErrors'
 import AgentFlowChart from '../../promptPartials/components/AgentFlowChart'
 import PromptLineDiff, { PromptDiffViewToggle, type PromptDiffView } from './PromptLineDiff'
+import { EvaluationBackgroundJobCard } from './evalDetail/EvaluationBackgroundJobCard'
+import { getPromptImprovementsJobProgress } from './evalDetail/evaluationJobProgress'
 import type {
   AgentFlowGraph,
   EvaluationMetricClustersState,
@@ -335,38 +337,102 @@ export default function MetricPromptImprovementsPanel({
     )
   }
 
-  if (improvementsState?.status === 'running') {
+  const handleStopImprovements = async () => {
+    setCancellingImprovements(true)
+    try {
+      await apiClient.callImports.cancelCallImportEvaluationPromptImprovements(
+        callImportId,
+        evaluationId,
+      )
+      onGenerated()
+    } finally {
+      setCancellingImprovements(false)
+    }
+  }
+
+  const handleResumeImprovements = async () => {
+    setCancellingImprovements(true)
+    try {
+      await apiClient.callImports.generateCallImportEvaluationPromptImprovements(
+        callImportId,
+        evaluationId,
+        {
+          resume: true,
+          provider: improvementsState?.provider ?? undefined,
+          model: improvementsState?.model ?? undefined,
+        },
+      )
+      onGenerated()
+    } finally {
+      setCancellingImprovements(false)
+    }
+  }
+
+  if (
+    improvementsState?.status === 'cancelled' ||
+    improvementsState?.status === 'failed'
+  ) {
+    const isCancelled = improvementsState.status === 'cancelled'
+    const progress = improvementsState.progress
     return (
-      <section className="rounded-lg border border-amber-200 bg-amber-50/60 px-4 py-3">
-        <p className="text-sm font-semibold text-gray-900 inline-flex items-center gap-2">
-          <Loader2 className="h-4 w-4 animate-spin text-amber-600" />
-          Generating prompt improvement suggestions…
+      <section
+        className={`rounded-lg border px-3 py-2.5 ${
+          isCancelled
+            ? 'border-gray-200 bg-gray-50/80'
+            : 'border-red-200 bg-red-50/50'
+        }`}
+      >
+        <p className="text-xs font-semibold text-gray-900">
+          {isCancelled
+            ? 'Prompt / agent improvements stopped'
+            : 'Prompt / agent improvements failed'}
         </p>
-        <p className="text-xs text-amber-800 mt-2">
-          Mapping clusters from this evaluation against the selected imported agent prompt.
+        <p
+          className={`text-[11px] mt-1 ${
+            isCancelled ? 'text-gray-600' : 'text-red-700'
+          }`}
+        >
+          {improvementsState.error_message ||
+            (isCancelled
+              ? 'Progress was saved; you can resume from the completed metric groups.'
+              : 'Generation failed.')}
         </p>
-        <div className="mt-3">
+        {progress?.total_groups ? (
+          <p className="text-[10px] text-gray-500 mt-1">
+            Saved progress: {progress.completed_groups ?? 0} / {progress.total_groups}{' '}
+            metric groups
+          </p>
+        ) : null}
+        <div className="mt-2 flex justify-end gap-2">
           <Button
-            variant="outline"
-            onClick={async () => {
-              setCancellingImprovements(true)
-              try {
-                await apiClient.callImports.cancelCallImportEvaluationPromptImprovements(
-                  callImportId,
-                  evaluationId,
-                )
-                onGenerated()
-              } finally {
-                setCancellingImprovements(false)
-              }
-            }}
+            size="sm"
+            variant="primary"
+            onClick={handleResumeImprovements}
             isLoading={cancellingImprovements}
-            disabled={cancellingImprovements}
+            disabled={cancellingImprovements || !clustersReady}
           >
-            Stop
+            Resume
           </Button>
         </div>
       </section>
+    )
+  }
+
+  if (improvementsState?.status === 'running') {
+    const groupCount = clustersState?.groups?.length ?? 0
+    const progressView = getPromptImprovementsJobProgress(
+      improvementsState,
+      groupCount,
+    )
+    return (
+      <EvaluationBackgroundJobCard
+        title="Prompt / agent improvements"
+        progress={progressView}
+        onStop={() => {
+          void handleStopImprovements()
+        }}
+        stopLoading={cancellingImprovements}
+      />
     )
   }
 
@@ -522,13 +588,6 @@ export default function MetricPromptImprovementsPanel({
       ) : null}
 
       {error ? <p className="text-xs text-red-600">{error}</p> : null}
-
-      {improvementsState?.status === 'failed' ? (
-        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 inline-flex items-start gap-2">
-          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
-          <span>{improvementsState.error_message || 'Generation failed.'}</span>
-        </div>
-      ) : null}
 
       {improvementsState?.overview ? (
         <div className="rounded-md border border-gray-100 bg-gray-50 px-3 py-2 text-sm text-gray-700">
@@ -742,8 +801,8 @@ export default function MetricPromptImprovementsPanel({
                           })
                         }
                         className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition ${isAccepted
-                            ? 'border border-emerald-500 bg-emerald-600 text-white cursor-default shadow-sm'
-                            : 'border border-emerald-300 bg-white text-emerald-800 hover:bg-emerald-50'
+                          ? 'border border-emerald-500 bg-emerald-600 text-white cursor-default shadow-sm'
+                          : 'border border-emerald-300 bg-white text-emerald-800 hover:bg-emerald-50'
                           }`}
                       >
                         <Check className="h-3 w-3" />
@@ -759,8 +818,8 @@ export default function MetricPromptImprovementsPanel({
                           })
                         }
                         className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition ${isRejected
-                            ? 'border border-rose-400 bg-rose-600 text-white cursor-default shadow-sm'
-                            : 'border border-rose-300 bg-white text-rose-800 hover:bg-rose-50'
+                          ? 'border border-rose-400 bg-rose-600 text-white cursor-default shadow-sm'
+                          : 'border border-rose-300 bg-white text-rose-800 hover:bg-rose-50'
                           }`}
                       >
                         <X className="h-3 w-3" />
@@ -873,10 +932,10 @@ export default function MetricPromptImprovementsPanel({
                         <div key={s.id} className="flex items-center gap-2 flex-1 min-w-0">
                           <span
                             className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${done
-                                ? 'bg-primary-600 text-white'
-                                : active
-                                  ? 'bg-primary-100 text-primary-700 ring-2 ring-primary-500'
-                                  : 'bg-white text-gray-400 border border-gray-200'
+                              ? 'bg-primary-600 text-white'
+                              : active
+                                ? 'bg-primary-100 text-primary-700 ring-2 ring-primary-500'
+                                : 'bg-white text-gray-400 border border-gray-200'
                               }`}
                           >
                             {done ? <CheckCircle2 className="h-3.5 w-3.5" /> : i + 1}

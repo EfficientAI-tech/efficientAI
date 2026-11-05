@@ -342,7 +342,6 @@ def _enqueue_metric_clusters_job(
         return
 
     del max_llm_calls
-    row_ids_for_task: Optional[List[str]] = None
     if db is not None:
         eval_rows = _load_eval_rows(db, evaluation.id)
         if selected_evaluation_row_ids is None:
@@ -352,18 +351,20 @@ def _enqueue_metric_clusters_job(
                 eval_rows,
                 evaluation_row_ids,
             )
-        row_ids_for_task = list(selected_evaluation_row_ids or [])
 
     prior_raw = (
         evaluation.metric_clusters
         if isinstance(evaluation.metric_clusters, dict)
-        else {}
+    else {}
     )
     policy_blob: Dict[str, Any] = {}
     if failure_policies:
         policy_blob = failure_policies_to_db(failure_policies, source="user")
 
-    from app.services.call_import_metric_clusters_wave import start_metric_clusters_job_header
+    from app.services.call_import_metric_clusters_wave import (
+        resume_metric_clusters_job_header,
+        start_metric_clusters_job_header,
+    )
     from app.services.evaluation_analysis_checkpoints import new_job_run_id, normalize_transcript_source
 
     source = normalize_transcript_source(
@@ -380,15 +381,25 @@ def _enqueue_metric_clusters_job(
         "selected_evaluation_row_ids": selected_evaluation_row_ids or [],
     }
     if db is not None:
-        evaluation.metric_clusters = start_metric_clusters_job_header(
-            evaluation,
-            db,
-            job_run_id=run_id,
-            transcript_source=source,
-            provider=provider,
-            model=model,
-            metric_clusters_raw=merged_raw,
-        )
+        if resume and prior_raw.get("job_run_id"):
+            evaluation.metric_clusters = resume_metric_clusters_job_header(
+                db,
+                evaluation,
+                merged_raw,
+                transcript_source=source,
+                provider=provider,
+                model=model,
+            )
+        else:
+            evaluation.metric_clusters = start_metric_clusters_job_header(
+                evaluation,
+                db,
+                job_run_id=run_id,
+                transcript_source=source,
+                provider=provider,
+                model=model,
+                metric_clusters_raw=merged_raw,
+            )
         if principal is not None:
             stamp_evaluation_actor(evaluation, principal)
         flag_modified(evaluation, "metric_clusters")
@@ -404,7 +415,9 @@ def _enqueue_metric_clusters_job(
             "provider": provider,
             "model": model,
             "credential_id": str(credential_id) if credential_id else None,
-            "evaluation_row_ids": row_ids_for_task,
+            # Kept for observability; the worker reads the authoritative
+            # selection from the job header (selected_evaluation_row_ids).
+            "evaluation_row_ids": list(selected_evaluation_row_ids or []),
             "transcript_source": source,
             "resume": resume,
         },
@@ -463,6 +476,7 @@ def _apply_metric_clusters_cancel(evaluation: CallImportEvaluation) -> bool:
         "error_message": METRIC_CLUSTERS_CANCELLED_BY_USER_ERROR,
         "progress": progress,
         "celery_task_id": None,
+        "cancelled_at": datetime.now(timezone.utc).isoformat(),
     }
     return True
 
@@ -754,8 +768,30 @@ async def generate_call_import_evaluation_metric_clusters(
 
     from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
 
+    prior_clusters_raw = (
+        evaluation.metric_clusters
+        if isinstance(evaluation.metric_clusters, dict)
+        else {}
+    )
+    prior_provider = (
+        prior_clusters_raw.get("provider")
+        if isinstance(prior_clusters_raw.get("provider"), str)
+        else None
+    )
+    prior_model = (
+        prior_clusters_raw.get("model")
+        if isinstance(prior_clusters_raw.get("model"), str)
+        else None
+    )
+    resolve_provider = (body.provider or "").strip() or (
+        prior_provider if body.resume else None
+    )
+    resolve_model = (body.model or "").strip() or (
+        prior_model if body.resume else None
+    )
+
     provider_enum, model_str = get_llm_provider_and_model_for_request(
-        organization_id, db, body.provider, body.model, body.credential_id
+        organization_id, db, resolve_provider, resolve_model, body.credential_id
     )
 
     metrics, aggregates, _inferred, _source, child_names_by_parent = _clustering_context(

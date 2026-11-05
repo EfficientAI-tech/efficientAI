@@ -1,8 +1,104 @@
-import { Loader2 } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { EvaluationUserInsightsState } from '../../../../types/api'
+import AIProviderModelPicker from '../../../../components/AIProviderModelPicker'
 import Button from '../../../../components/Button'
 import { apiClient } from '../../../../lib/api'
+import { EvaluationBackgroundJobCard } from './EvaluationBackgroundJobCard'
+import { getUserInsightsJobProgress } from './evaluationJobProgress'
+import { UserInsightsTranscriptSourceSelect } from './UserInsightsTranscriptSourceSelect'
+
+function UserInsightsResumePanel({
+  state,
+  tone,
+  title,
+  message,
+  resuming,
+  onResume,
+}: {
+  state: EvaluationUserInsightsState
+  tone: 'neutral' | 'error'
+  title: string
+  message: string
+  resuming: boolean
+  onResume: (options: {
+    provider: string
+    model: string
+    transcript_source: 'diarised' | 'production'
+  }) => void
+}) {
+  const [pickerProvider, setPickerProvider] = useState(state.provider ?? '')
+  const [pickerModel, setPickerModel] = useState(state.model ?? '')
+  const [transcriptSource, setTranscriptSource] = useState<'diarised' | 'production'>(
+    state.transcript_source === 'production' ? 'production' : 'diarised',
+  )
+
+  useEffect(() => {
+    if (state.provider) setPickerProvider(state.provider)
+    if (state.model) setPickerModel(state.model)
+    if (state.transcript_source === 'production' || state.transcript_source === 'diarised') {
+      setTranscriptSource(state.transcript_source)
+    }
+  }, [state.provider, state.model, state.transcript_source])
+
+  const canResume = Boolean(pickerProvider.trim() && pickerModel.trim())
+
+  const borderClass =
+    tone === 'error' ? 'border-red-200 bg-red-50/50' : 'border-gray-200 bg-gray-50/80'
+  const messageClass = tone === 'error' ? 'text-red-700' : 'text-gray-600'
+
+  return (
+    <section className={`rounded-lg border px-3 py-2.5 ${borderClass}`}>
+      <p className="text-xs font-semibold text-gray-900">{title}</p>
+      <p className={`text-[11px] mt-1 ${messageClass}`}>{message}</p>
+      {state.progress ? (
+        <p className="text-[10px] text-gray-500 mt-1">
+          Saved progress: batch {state.progress.completed_batches ?? 0} /{' '}
+          {state.progress.total_batches ?? 0}
+          {state.progress.completed_rows != null && state.progress.total_rows != null
+            ? ` · ${state.progress.completed_rows.toLocaleString()} / ${state.progress.total_rows.toLocaleString()} calls`
+            : null}
+        </p>
+      ) : null}
+      <div className="mt-3 space-y-2 rounded-md border border-gray-100 bg-white/90 p-2.5">
+        <p className="text-[10px] font-medium text-gray-800">Model for resume</p>
+        <p className="text-[10px] text-gray-500 leading-snug">
+          Checkpoints are kept. Pick the provider and model for the remaining extraction
+          passes (defaults to the last run).
+        </p>
+        <AIProviderModelPicker
+          provider={pickerProvider}
+          model={pickerModel}
+          onProviderChange={setPickerProvider}
+          onModelChange={setPickerModel}
+          disabled={resuming}
+          size="sm"
+        />
+        <UserInsightsTranscriptSourceSelect
+          value={transcriptSource}
+          onChange={setTranscriptSource}
+          disabled={resuming}
+        />
+      </div>
+      <div className="mt-2 flex justify-end">
+        <Button
+          size="sm"
+          variant="primary"
+          onClick={() =>
+            onResume({
+              provider: pickerProvider.trim(),
+              model: pickerModel.trim(),
+              transcript_source: transcriptSource,
+            })
+          }
+          isLoading={resuming}
+          disabled={resuming || !canResume}
+        >
+          Resume
+        </Button>
+      </div>
+    </section>
+  )
+}
 
 function UserInsightsStatusBanner({
   state,
@@ -10,23 +106,22 @@ function UserInsightsStatusBanner({
   callImportId,
   evaluationId,
   onRefresh,
+  onStateChange,
 }: {
   state: EvaluationUserInsightsState | null
   isLoading: boolean
   callImportId: string
   evaluationId: string
   onRefresh?: () => void
+  onStateChange?: (state: EvaluationUserInsightsState) => void
 }) {
   const [cancelling, setCancelling] = useState(false)
   const [resuming, setResuming] = useState(false)
 
   if (isLoading) {
     return (
-      <section className="mt-4 rounded-lg border border-gray-200 bg-white px-4 py-3">
-        <p className="text-xs text-gray-500 inline-flex items-center gap-1.5">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          Loading user insights…
-        </p>
+      <section className="rounded-lg border border-gray-200 bg-white px-3 py-2.5">
+        <p className="text-xs text-gray-500">Loading user insights…</p>
       </section>
     )
   }
@@ -38,23 +133,33 @@ function UserInsightsStatusBanner({
   const handleCancel = async () => {
     setCancelling(true)
     try {
-      await apiClient.callImports.cancelCallImportEvaluationUserInsights(
+      const updated = await apiClient.callImports.cancelCallImportEvaluationUserInsights(
         callImportId,
         evaluationId,
       )
+      onStateChange?.(updated)
       onRefresh?.()
     } finally {
       setCancelling(false)
     }
   }
 
-  const handleResume = async () => {
+  const handleResume = async (options: {
+    provider: string
+    model: string
+    transcript_source: 'diarised' | 'production'
+  }) => {
     setResuming(true)
     try {
       await apiClient.callImports.generateCallImportEvaluationUserInsights(
         callImportId,
         evaluationId,
-        { resume: true },
+        {
+          resume: true,
+          provider: options.provider,
+          model: options.model,
+          transcript_source: options.transcript_source,
+        },
       )
       onRefresh?.()
     } finally {
@@ -63,86 +168,49 @@ function UserInsightsStatusBanner({
   }
 
   if (state.status === 'running') {
-    const progress = state.progress
-    const completedBatches = progress?.completed_batches ?? 0
-    const totalBatches = progress?.total_batches ?? 0
-    const completedRows = progress?.completed_rows ?? 0
-    const totalRows = progress?.total_rows ?? 0
-    const batchPct =
-      totalBatches > 0 ? Math.round((completedBatches / totalBatches) * 100) : 0
-    const rowPct = totalRows > 0 ? Math.round((completedRows / totalRows) * 100) : 0
-    const pct = totalBatches > 0 ? batchPct : rowPct
+    const progressView = getUserInsightsJobProgress(state)
+    const modelMeta =
+      state.provider || state.model
+        ? `Model: ${[state.provider, state.model].filter(Boolean).join(' · ')}`
+        : null
     return (
-      <section className="mt-4 rounded-lg border border-primary-200 bg-primary-50/40 px-4 py-3">
-        <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
-          <p className="text-xs font-semibold text-gray-900 inline-flex items-center gap-1.5">
-            <Loader2 className="h-3.5 w-3.5 animate-spin text-primary-600" />
-            AI User Insights — processing all completed calls in batches…
-          </p>
-          {totalBatches > 0 ? (
-            <p className="text-[10px] text-gray-500 tabular-nums">
-              Batch {completedBatches} / {totalBatches} ({pct}%)
-            </p>
-          ) : null}
-        </div>
-        {totalRows > 0 ? (
-          <p className="text-[10px] text-gray-500 mb-2 tabular-nums">
-            {completedRows.toLocaleString()} / {totalRows.toLocaleString()} rows
-          </p>
-        ) : null}
-        {pct > 0 || totalBatches > 0 ? (
-          <div className="mb-2">
-            <div className="h-2 rounded-full bg-primary-100 overflow-hidden">
-              <div
-                className="h-full bg-primary-600 transition-all duration-300"
-                style={{ width: `${pct}%` }}
-              />
-            </div>
-          </div>
-        ) : null}
-        <Button
-          variant="outline"
-          onClick={handleCancel}
-          isLoading={cancelling}
-          disabled={cancelling}
-          className="text-xs"
-        >
-          Stop
-        </Button>
-      </section>
+      <EvaluationBackgroundJobCard
+        title="AI user insights"
+        progress={{
+          ...progressView,
+          metaLine: progressView.metaLine || modelMeta,
+        }}
+        onStop={handleCancel}
+        stopLoading={cancelling}
+      />
     )
   }
 
   if (state.status === 'cancelled') {
     return (
-      <section className="mt-4 rounded-lg border border-gray-200 bg-gray-50/80 px-4 py-3">
-        <p className="text-xs font-semibold text-gray-900 mb-1">User insights stopped</p>
-        <p className="text-xs text-gray-600">
-          {state.error_message || 'Generation was cancelled. Checkpointed batches were kept.'}
-        </p>
-        <div className="mt-2 flex gap-2">
-          <Button variant="primary" onClick={handleResume} isLoading={resuming} disabled={resuming}>
-            Resume
-          </Button>
-        </div>
-      </section>
+      <UserInsightsResumePanel
+        state={state}
+        tone="neutral"
+        title="User insights stopped"
+        message={
+          state.error_message ||
+          'Generation was cancelled. Progress was saved; choose a model and resume.'
+        }
+        resuming={resuming}
+        onResume={handleResume}
+      />
     )
   }
 
   return (
-    <section className="mt-4 rounded-lg border border-red-200 bg-red-50/50 px-4 py-3">
-      <p className="text-xs font-semibold text-gray-900 mb-1">
-        AI User Insights generation failed
-      </p>
-      <p className="text-xs text-red-700">
-        {state.error_message || 'User insights generation failed.'}
-      </p>
-      <div className="mt-2 flex gap-2">
-        <Button variant="primary" onClick={handleResume} isLoading={resuming} disabled={resuming}>
-          Resume
-        </Button>
-      </div>
-    </section>
+    <UserInsightsResumePanel
+      state={state}
+      tone="error"
+      title="User insights failed"
+      message={state.error_message || 'User insights generation failed.'}
+      resuming={resuming}
+      onResume={handleResume}
+    />
   )
 }
 

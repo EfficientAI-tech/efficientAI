@@ -1338,16 +1338,12 @@ def metric_clusters_state_from_raw(
     if isinstance(progress_raw, dict):
         progress = {}
         for key, value in progress_raw.items():
-            if key == "current_metric_name" and isinstance(value, str):
-                progress[key] = value
-            elif isinstance(value, (int, float)):
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
                 progress[key] = int(value)
-            elif isinstance(value, str) and key not in progress:
+            elif isinstance(value, str):
                 progress[key] = value
-        if "completed_llm_calls" not in progress:
-            progress["completed_llm_calls"] = 0
-        if "total_llm_calls" not in progress:
-            progress["total_llm_calls"] = 0
+        progress.setdefault("completed_llm_calls", 0)
+        progress.setdefault("total_llm_calls", 0)
 
     rca_summary = None
     rca_raw = raw.get("rca_summary")

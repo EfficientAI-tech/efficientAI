@@ -213,17 +213,38 @@ def _enqueue_prompt_improvements_job(
 
     prior = evaluation.prompt_improvements if isinstance(evaluation.prompt_improvements, dict) else {}
     prior_suggestions = prior.get("suggestions") if isinstance(prior.get("suggestions"), list) else []
+    prior_provider = (
+        prior.get("provider") if isinstance(prior.get("provider"), str) else None
+    )
+    prior_model = prior.get("model") if isinstance(prior.get("model"), str) else None
+    resolved_provider = (provider or "").strip() or (prior_provider if resume else None)
+    resolved_model = (model or "").strip() or (prior_model if resume else None)
+
+    # Resume must keep the original job_run_id so checkpoint batches stay
+    # readable; a regenerate/new run gets a fresh id.
+    resumed_run_id = prior.get("job_run_id") if resume else None
+    if resume and not resumed_run_id:
+        resume = False
 
     evaluation.prompt_improvements = {
+        **prior,
         "status": "running",
         "imported_agent_id": str(imported_agent_id),
         "imported_agent_name": imported_agent_name,
-        "suggestions": prior_suggestions if prior.get("status") == "completed" else prior.get("suggestions", []),
+        "suggestions": prior_suggestions if prior.get("status") == "completed" else [],
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "generated_at_completed_rows": evaluation.completed_rows,
-        "provider": provider,
-        "model": model,
+        "provider": resolved_provider,
+        "model": resolved_model,
         "error_message": None,
+        "celery_task_id": None,
+        "completed_group_metric_ids": (prior.get("completed_group_metric_ids") or [])
+        if resume
+        else [],
+        "completed_group_count": int(prior.get("completed_group_count") or 0)
+        if resume
+        else 0,
+        "job_run_id": str(resumed_run_id) if resumed_run_id else None,
     }
     if db is not None:
         if principal is not None:
@@ -239,8 +260,8 @@ def _enqueue_prompt_improvements_job(
         kwargs={
             "evaluation_id": str(evaluation.id),
             "imported_agent_id": str(imported_agent_id),
-            "provider": provider,
-            "model": model,
+            "provider": resolved_provider,
+            "model": resolved_model,
             "credential_id": str(credential_id) if credential_id else None,
             "resume": resume,
         },
@@ -380,8 +401,30 @@ async def generate_call_import_evaluation_prompt_improvements(
         ):
             return cached
 
+    prior_prompt_raw = (
+        evaluation.prompt_improvements
+        if isinstance(evaluation.prompt_improvements, dict)
+        else {}
+    )
+    prior_prompt_provider = (
+        prior_prompt_raw.get("provider")
+        if isinstance(prior_prompt_raw.get("provider"), str)
+        else None
+    )
+    prior_prompt_model = (
+        prior_prompt_raw.get("model")
+        if isinstance(prior_prompt_raw.get("model"), str)
+        else None
+    )
+    resolve_provider = (body.provider or "").strip() or (
+        prior_prompt_provider if body.resume else None
+    )
+    resolve_model = (body.model or "").strip() or (
+        prior_prompt_model if body.resume else None
+    )
+
     provider_enum, model_str = get_llm_provider_and_model_for_request(
-        organization_id, db, body.provider, body.model, body.credential_id
+        organization_id, db, resolve_provider, resolve_model, body.credential_id
     )
 
     _enqueue_prompt_improvements_job(
@@ -440,6 +483,7 @@ def _apply_prompt_improvements_cancel(evaluation: CallImportEvaluation) -> bool:
         "status": "cancelled",
         "error_message": PROMPT_IMPROVEMENTS_CANCELLED_BY_USER_ERROR,
         "celery_task_id": None,
+        "cancelled_at": datetime.now(timezone.utc).isoformat(),
     }
     return True
 

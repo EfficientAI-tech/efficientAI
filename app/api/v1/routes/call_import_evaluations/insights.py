@@ -788,6 +788,52 @@ def _selected_generated_user_insights(
     return [item.model_dump(mode="json") for item in items]
 
 
+def _stored_user_insights_llm(
+    evaluation: CallImportEvaluation,
+    *,
+    provider: Optional[str],
+    model: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    """Prefer explicit request fields; otherwise keep the model from the last job."""
+    prov = (provider or "").strip() or None
+    mod = (model or "").strip() or None
+    if prov and mod:
+        return prov, mod
+    prior = evaluation.user_insights if isinstance(evaluation.user_insights, dict) else {}
+    if not prov and isinstance(prior.get("provider"), str) and prior["provider"].strip():
+        prov = prior["provider"].strip()
+    if not mod and isinstance(prior.get("model"), str) and prior["model"].strip():
+        mod = prior["model"].strip()
+    return prov, mod
+
+
+def _resolve_user_insights_llm(
+    organization_id: UUID,
+    db: Session,
+    evaluation: CallImportEvaluation,
+    body: EvaluationUserInsightsRequest,
+) -> tuple[ModelProvider, str]:
+    from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
+
+    provider, model = _stored_user_insights_llm(
+        evaluation,
+        provider=body.provider,
+        model=body.model,
+    )
+    if body.resume and not (body.provider or "").strip() and not (body.model or "").strip():
+        if not provider or not model:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Cannot resume user insights without a saved provider and model. "
+                    "Start a new run from the summary tab and pick a model."
+                ),
+            )
+    return get_llm_provider_and_model_for_request(
+        organization_id, db, provider, model, body.credential_id
+    )
+
+
 def _enqueue_user_insights_job(
     evaluation: CallImportEvaluation,
     *,
@@ -806,7 +852,10 @@ def _enqueue_user_insights_job(
     if current is not None and current.status == "running" and not force and not resume:
         return
 
-    from app.services.call_import_user_insights_wave import start_user_insights_job_header
+    from app.services.call_import_user_insights_wave import (
+        resume_user_insights_job_header,
+        start_user_insights_job_header,
+    )
     from app.services.evaluation_analysis_checkpoints import new_job_run_id, normalize_transcript_source
 
     prior = evaluation.user_insights if isinstance(evaluation.user_insights, dict) else {}
@@ -820,19 +869,35 @@ def _enqueue_user_insights_job(
         else new_job_run_id()
     )
     if db is not None:
-        evaluation.user_insights = start_user_insights_job_header(
-            evaluation,
-            db,
-            job_run_id=run_id,
-            transcript_source=source,
-            provider=provider,
-            model=model,
-            prior_insights=prior_insights if prior.get("status") == "completed" else [],
-        )
+        if resume and prior.get("job_run_id"):
+            evaluation.user_insights = resume_user_insights_job_header(
+                db,
+                evaluation,
+                prior,
+                transcript_source=source,
+                provider=provider,
+                model=model,
+            )
+        else:
+            evaluation.user_insights = start_user_insights_job_header(
+                evaluation,
+                db,
+                job_run_id=run_id,
+                transcript_source=source,
+                provider=provider,
+                model=model,
+                prior_insights=prior_insights if prior.get("status") == "completed" else [],
+            )
         if principal is not None:
             stamp_evaluation_actor(evaluation, principal)
         flag_modified(evaluation, "user_insights")
         db.commit()
+
+    task_header = (
+        evaluation.user_insights if isinstance(evaluation.user_insights, dict) else {}
+    )
+    task_provider = task_header.get("provider") if isinstance(task_header.get("provider"), str) else provider
+    task_model = task_header.get("model") if isinstance(task_header.get("model"), str) else model
 
     from app.workers.tasks.generate_evaluation_user_insights import (
         generate_evaluation_user_insights_task,
@@ -841,10 +906,8 @@ def _enqueue_user_insights_job(
     async_result = generate_evaluation_user_insights_task.apply_async(
         kwargs={
             "evaluation_id": str(evaluation.id),
-            "provider": provider,
-            "model": model,
-            "transcript_source": source,
-            "resume": resume,
+            "provider": task_provider,
+            "model": task_model,
         },
         queue="imports",
     )
@@ -935,8 +998,8 @@ async def generate_call_import_evaluation_user_insights(
 
     from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
 
-    provider_enum, model_str = get_llm_provider_and_model_for_request(
-        organization_id, db, body.provider, body.model, body.credential_id
+    provider_enum, model_str = _resolve_user_insights_llm(
+        organization_id, db, evaluation, body
     )
 
     _enqueue_user_insights_job(
@@ -992,6 +1055,7 @@ def _apply_user_insights_cancel(evaluation: CallImportEvaluation) -> bool:
         "error_message": USER_INSIGHTS_CANCELLED_BY_USER_ERROR,
         "progress": progress,
         "celery_task_id": None,
+        "cancelled_at": datetime.now(timezone.utc).isoformat(),
     }
     return True
 
