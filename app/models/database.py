@@ -3485,7 +3485,7 @@ class EvaluationAnalysisBatch(Base):
     cursor_row_index = Column(Integer, nullable=True)
     cursor_evaluation_row_id = Column(UUID(as_uuid=True), nullable=True)
     transcript_source = Column(String(16), nullable=True)
-    status = Column(String(16), nullable=False, default="completed")
+    status = Column(String(32), nullable=False, default="completed")
     payload = Column(JSONB, nullable=False, default=dict, server_default="{}")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(

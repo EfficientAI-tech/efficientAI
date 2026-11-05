@@ -38,7 +38,7 @@ def upgrade(db: Session):
                 cursor_row_index INTEGER NULL,
                 cursor_evaluation_row_id UUID NULL,
                 transcript_source VARCHAR(16) NULL,
-                status VARCHAR(16) NOT NULL DEFAULT 'completed',
+                status VARCHAR(32) NOT NULL DEFAULT 'completed',
                 payload JSONB NOT NULL DEFAULT '{}',
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
