@@ -27,6 +27,23 @@ PROMPT_IMPROVEMENTS_CANCELLED_BY_USER_ERROR = "Cancelled by user"
 EVIDENCE_RESERVOIR_CAP = 80
 
 
+def analysis_header_matches_run(raw: Any, job_run_id: Any) -> bool:
+    """True when *job_run_id* still owns the saved analysis header.
+
+    A missing claim matches any header (the first enqueue, before a run
+    id exists). A claim against a different header means this task is
+    stale and must not write.
+    """
+    if job_run_id is None or str(job_run_id).strip() == "":
+        return True
+    if not isinstance(raw, dict):
+        return False
+    current = raw.get("job_run_id")
+    if not current:
+        return False
+    return str(current) == str(job_run_id)
+
+
 def new_job_run_id() -> UUID:
     return uuid4()
 

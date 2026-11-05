@@ -8,6 +8,7 @@ from uuid import UUID
 
 from loguru import logger
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.db_sharding.scatter_gather import (
     EVALUATION_ANALYSIS_BATCH_SIZE,
@@ -496,6 +497,7 @@ def process_user_insights_wave_step(
             )
             batch_extractions.extend(extracted)
             batch_theme = _aggregate_themes(batch_extractions)
+            done_sub_batches.add(sub_idx)
             upsert_analysis_batch(
                 db,
                 evaluation_id=evaluation.id,
@@ -507,7 +509,7 @@ def process_user_insights_wave_step(
                     "theme_counts": batch_theme,
                     "rows_processed": len(pairs),
                     "rows_skipped_empty_transcript": skipped,
-                    "sub_batches_done": sorted(done_sub_batches | {sub_idx}),
+                    "sub_batches_done": sorted(done_sub_batches),
                 },
                 transcript_source=transcript_source,
                 status="in_progress",
@@ -590,6 +592,8 @@ def process_user_insights_wave_step(
         "provider": live.get("provider") or raw.get("provider"),
         "model": live.get("model") or raw.get("model"),
     }
+    flag_modified(evaluation, "user_insights")
+    db.commit()
 
     if on_progress:
         on_progress(new_progress)

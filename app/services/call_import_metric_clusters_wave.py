@@ -9,6 +9,7 @@ from uuid import UUID
 
 from loguru import logger
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.db_sharding.scatter_gather import (
     EVALUATION_ANALYSIS_BATCH_SIZE,
@@ -381,6 +382,8 @@ def process_metric_clusters_wave_step(
                 generated_at=datetime.now(timezone.utc),
             )
         evaluation.metric_clusters = {**live, **raw, "progress": new_progress}
+        flag_modified(evaluation, "metric_clusters")
+        db.commit()
         if on_progress:
             on_progress(new_progress)
         return "continue", None
@@ -491,9 +494,10 @@ def process_metric_clusters_wave_step(
             "total_metrics": len(metrics_to_synth),
         }
         evaluation.metric_clusters = raw
+        flag_modified(evaluation, "metric_clusters")
+        db.commit()
         if on_progress:
             on_progress(raw["progress"])
-        db.commit()
         return "continue", None
 
     # Discovery + final assembly
@@ -548,6 +552,8 @@ def process_metric_clusters_wave_step(
         raw["discovery_completed"] = True
         raw["llm_calls_used"] = llm_calls_used
         evaluation.metric_clusters = raw
+        flag_modified(evaluation, "metric_clusters")
+        db.commit()
         if on_progress:
             on_progress(
                 {
@@ -557,7 +563,6 @@ def process_metric_clusters_wave_step(
                     "total_llm_calls": total_llm_calls,
                 }
             )
-        db.commit()
         return "continue", None
 
     payloads_by_metric: Dict[str, List[Dict[str, Any]]] = {}

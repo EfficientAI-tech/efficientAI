@@ -625,6 +625,7 @@ export function ImportTranscribeModals(props: ImportTranscribeModalsProps) {
                         onChange={setTranscribeDiariserLLM}
                         defaultLabel="Pick an LLM for diarisation"
                         allowCredentialPick
+                        audioCapableOnly={transcribeMode === 'llm_only'}
                       />
                       <div className="flex items-center justify-between pt-1">
                         <label className="text-xs font-medium text-gray-700">

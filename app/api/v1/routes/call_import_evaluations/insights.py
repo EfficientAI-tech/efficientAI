@@ -908,6 +908,7 @@ def _enqueue_user_insights_job(
             "evaluation_id": str(evaluation.id),
             "provider": task_provider,
             "model": task_model,
+            "job_run_id": str(run_id),
         },
         queue="imports",
     )

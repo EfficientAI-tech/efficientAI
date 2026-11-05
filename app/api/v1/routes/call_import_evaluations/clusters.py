@@ -420,6 +420,7 @@ def _enqueue_metric_clusters_job(
             "evaluation_row_ids": list(selected_evaluation_row_ids or []),
             "transcript_source": source,
             "resume": resume,
+            "job_run_id": str(run_id),
         },
         queue="imports",
     )

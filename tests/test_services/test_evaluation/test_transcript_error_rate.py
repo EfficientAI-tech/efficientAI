@@ -192,3 +192,34 @@ def test_long_inputs_finish_quickly():
     elapsed = time.perf_counter() - started
     assert out["cer"] == 0.0
     assert elapsed < 1.0
+
+
+def test_numbered_speaker_aliases_keep_user_turns():
+    selected = select_comparison_texts(
+        production_transcript="speaker 1: agent line\nspeaker 2: hello there",
+        diarised_transcript="speaker1: agent line\nspeaker2: hello there",
+    )
+    assert selected["reference"] == "hello there"
+    assert selected["hypothesis"] == "hello there"
+    assert "agent line" not in selected["reference"]
+    assert "agent line" not in selected["hypothesis"]
+
+
+def test_matching_indic_text_stays_native_without_text_native():
+    sentence = "मैं आपकी क्या सहायता कर सकती हूं"
+    selected = select_comparison_texts(
+        production_transcript=f"User: {sentence}",
+        diarised_transcript=f"User: {sentence}",
+    )
+    assert selected["mode"] == "native"
+    assert selected["reference"] == sentence
+    assert selected["hypothesis"] == sentence
+    assert selected["script_mismatch"] is False
+    out = compute_transcript_error_rates(
+        selected["reference"],
+        selected["hypothesis"],
+        mode=selected["mode"],
+        script_mismatch=selected["script_mismatch"],
+    )
+    assert out["cer"] == 0.0
+    assert out["wer"] == 0.0

@@ -9,6 +9,7 @@ from uuid import UUID
 
 from loguru import logger
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.models.database import CallImportEvaluation, PromptPartial
 from app.models.schemas import (
@@ -183,9 +184,10 @@ def process_prompt_improvements_wave_step(
             groups, completed_groups, total_metrics=total_metrics
         )
         evaluation.prompt_improvements = raw
+        flag_modified(evaluation, "prompt_improvements")
+        db.commit()
         if on_progress:
             on_progress(raw["progress"])
-        db.commit()
         return "continue", None
 
     provider_enum, model_str = get_llm_provider_and_model_for_request(
@@ -261,7 +263,8 @@ def process_prompt_improvements_wave_step(
         groups, completed_groups, total_metrics=total_metrics
     )
     evaluation.prompt_improvements = raw
+    flag_modified(evaluation, "prompt_improvements")
+    db.commit()
     if on_progress:
         on_progress(raw["progress"])
-    db.commit()
     return "continue", None

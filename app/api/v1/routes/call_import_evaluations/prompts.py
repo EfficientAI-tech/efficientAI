@@ -225,6 +225,7 @@ def _enqueue_prompt_improvements_job(
     resumed_run_id = prior.get("job_run_id") if resume else None
     if resume and not resumed_run_id:
         resume = False
+    assigned_run_id = str(resumed_run_id) if resumed_run_id else str(uuid4())
 
     evaluation.prompt_improvements = {
         **prior,
@@ -244,7 +245,7 @@ def _enqueue_prompt_improvements_job(
         "completed_group_count": int(prior.get("completed_group_count") or 0)
         if resume
         else 0,
-        "job_run_id": str(resumed_run_id) if resumed_run_id else None,
+        "job_run_id": assigned_run_id,
     }
     if db is not None:
         if principal is not None:
@@ -264,6 +265,7 @@ def _enqueue_prompt_improvements_job(
             "model": resolved_model,
             "credential_id": str(credential_id) if credential_id else None,
             "resume": resume,
+            "job_run_id": assigned_run_id,
         },
         queue="imports",
     )

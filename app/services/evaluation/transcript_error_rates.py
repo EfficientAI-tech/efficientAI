@@ -100,7 +100,7 @@ DEFAULT_SPEAKER_ALIASES: Dict[str, Tuple[str, ...]] = {
 }
 
 _SPEAKER_LINE_RE = re.compile(
-    r"^\s*(?:\[?[\d:.\s\-]+\]?\s*)?(?P<spk>[A-Za-z][A-Za-z _]*)\s*[:\-–]\s*(?P<text>.*)$",
+    r"^\s*(?:\[?[\d:.\s\-]+\]?\s*)?(?P<spk>[A-Za-z][A-Za-z0-9 _]*)\s*[:\-–]\s*(?P<text>.*)$",
 )
 
 _CONTRACTIONS = {
@@ -777,7 +777,15 @@ def select_comparison_texts(
     )
     reference = reference_raw
     mode = "native"
-    if not has_native_hypothesis and contains_indic_script(reference_raw):
+    # Romanise only when the hypothesis is not already in the reference
+    # script. A diariser can return the same Indic sentence in ``text``
+    # with no ``text_native``; converting only the reference would score
+    # matching speech as a large error.
+    if (
+        not has_native_hypothesis
+        and contains_indic_script(reference_raw)
+        and not contains_indic_script(hypothesis)
+    ):
         reference = transliterate_devanagari_to_latin(reference_raw)
         mode = "romanised_fallback"
     return {

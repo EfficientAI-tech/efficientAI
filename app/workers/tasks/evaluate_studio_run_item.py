@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
@@ -24,6 +25,7 @@ from app.workers.tasks.evaluate_call_import_row_core import (
     bucket_needs_comparison_pair,
     build_llm_config_buckets,
     categorize_metrics,
+    run_computed_metrics_for_row,
 )
 from app.workers.tasks.helpers.audio_evaluation import (
     evaluate_audio_metrics,
@@ -126,8 +128,20 @@ def evaluate_studio_run_item_task(self, result_row_id: str) -> dict[str, Any]:
         audio_metrics = categorized.audio_metrics
         comparison_metrics = categorized.comparison_metrics
         skipped = categorized.skipped_scores
+        computed_metrics = categorized.computed_metrics
         llm_metrics = transcript_metrics + comparison_metrics
         metric_scores: dict[str, Any] = dict(skipped)
+        run_computed_metrics_for_row(
+            source_row=SimpleNamespace(
+                transcript=(sample.transcript or "").strip(),
+                diarised_transcript=(sample.diarised_transcript or "").strip(),
+                diarised_segments=None,
+                diarised_speaker_swap=False,
+                diarised_native_transcript="",
+            ),
+            computed_metrics=computed_metrics,
+            metric_scores=metric_scores,
+        )
 
         if not transcript and not has_audio:
             result_row.status = "failed"

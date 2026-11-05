@@ -299,6 +299,7 @@ export function EvaluationRetryRerunModals({
                         onChange={setRetryDiariserLLM}
                         allowCredentialPick
                         defaultLabel="Pick a diariser LLM"
+                        audioCapableOnly={retryTranscribeMode === 'llm_only'}
                       />
                       <textarea
                         value={retryDiarisationPrompt}

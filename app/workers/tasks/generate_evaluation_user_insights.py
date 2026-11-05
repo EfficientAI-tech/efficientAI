@@ -16,6 +16,7 @@ from app.services.call_import_user_insights_wave import (
     start_user_insights_job_header,
 )
 from app.services.evaluation_analysis_checkpoints import (
+    analysis_header_matches_run,
     new_job_run_id,
     normalize_transcript_source,
     user_insights_raw_is_cancelled,
@@ -37,6 +38,7 @@ def generate_evaluation_user_insights_task(
     provider: str | None = None,
     model: str | None = None,
     max_llm_calls: int | None = None,
+    job_run_id: str | None = None,
     **_ignored_kwargs: object,
 ):
     del max_llm_calls, _ignored_kwargs
@@ -47,6 +49,7 @@ def generate_evaluation_user_insights_task(
     from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
 
     db = SessionLocal()
+    run_id = None
     try:
         evaluation = (
             db.query(CallImportEvaluation)
@@ -67,6 +70,13 @@ def generate_evaluation_user_insights_task(
         raw_for_llm = (
             evaluation.user_insights if isinstance(evaluation.user_insights, dict) else {}
         )
+        if job_run_id and not analysis_header_matches_run(raw_for_llm, job_run_id):
+            logger.info(
+                "User insights: stale task for run {} ignored; header is {}",
+                job_run_id,
+                raw_for_llm.get("job_run_id"),
+            )
+            return
         llm_provider = (provider or "").strip() or (
             raw_for_llm.get("provider")
             if isinstance(raw_for_llm.get("provider"), str)
@@ -114,7 +124,23 @@ def generate_evaluation_user_insights_task(
             db.commit()
 
         def _reload_cancelled() -> bool:
-            return _refresh_user_insights_cancelled(db, evaluation)
+            db.expire(evaluation, ["user_insights"])
+            db.refresh(evaluation)
+            current = (
+                evaluation.user_insights
+                if isinstance(evaluation.user_insights, dict)
+                else {}
+            )
+            if user_insights_raw_is_cancelled(current):
+                return True
+            if not analysis_header_matches_run(current, run_id):
+                logger.info(
+                    "User insights: task for run {} stopped; header is {}",
+                    run_id,
+                    current.get("job_run_id"),
+                )
+                return True
+            return False
 
         def on_progress(update: dict) -> None:
             if _reload_cancelled():
@@ -199,6 +225,7 @@ def generate_evaluation_user_insights_task(
                     "evaluation_id": evaluation_id,
                     "provider": llm_provider,
                     "model": llm_model,
+                    "job_run_id": str(run_id),
                 },
                 queue="imports",
             )
@@ -212,7 +239,9 @@ def generate_evaluation_user_insights_task(
                 if isinstance(evaluation.user_insights, dict)
                 else {}
             )
-            if user_insights_raw_is_cancelled(header):
+            if user_insights_raw_is_cancelled(header) or not analysis_header_matches_run(
+                header, run_id
+            ):
                 from app.workers.celery_revoke import revoke_celery_tasks
 
                 revoke_celery_tasks([async_result.id])
@@ -244,6 +273,10 @@ def generate_evaluation_user_insights_task(
                     if isinstance(evaluation.user_insights, dict)
                     else {}
                 )
+                if run_id is not None and not analysis_header_matches_run(
+                    prior, run_id
+                ):
+                    return
                 evaluation.user_insights = {
                     **prior,
                     "status": "failed",

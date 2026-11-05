@@ -21,6 +21,7 @@ from app.services.call_import_metric_clusters_wave import (
     start_metric_clusters_job_header,
 )
 from app.services.evaluation_analysis_checkpoints import (
+    analysis_header_matches_run,
     new_job_run_id,
     normalize_transcript_source,
 )
@@ -45,6 +46,7 @@ def generate_evaluation_metric_clusters_task(
     evaluation_row_ids: list[str] | None = None,
     transcript_source: str | None = None,
     resume: bool = False,
+    job_run_id: str | None = None,
     **_ignored_kwargs: object,
 ):
     del max_llm_calls, evaluation_row_ids, _ignored_kwargs
@@ -57,6 +59,7 @@ def generate_evaluation_metric_clusters_task(
 
     db = SessionLocal()
     evaluation: CallImportEvaluation | None = None
+    run_id: UUID | None = None
     try:
         evaluation = (
             db.query(CallImportEvaluation)
@@ -79,6 +82,13 @@ def generate_evaluation_metric_clusters_task(
             if isinstance(evaluation.metric_clusters, dict)
             else {}
         )
+        if job_run_id and not analysis_header_matches_run(raw_for_llm, job_run_id):
+            logger.info(
+                "Metric clusters: stale task for run {} ignored; header is {}",
+                job_run_id,
+                raw_for_llm.get("job_run_id"),
+            )
+            return
         llm_provider = (provider or "").strip() or (
             raw_for_llm.get("provider")
             if isinstance(raw_for_llm.get("provider"), str)
@@ -155,7 +165,23 @@ def generate_evaluation_metric_clusters_task(
             db.commit()
 
         def _reload_cancelled() -> bool:
-            return _reload_clusters_cancelled(db, evaluation)
+            db.expire(evaluation, ["metric_clusters"])
+            db.refresh(evaluation)
+            current = (
+                evaluation.metric_clusters
+                if isinstance(evaluation.metric_clusters, dict)
+                else {}
+            )
+            if metric_clusters_raw_is_cancelled(current):
+                return True
+            if not analysis_header_matches_run(current, run_id):
+                logger.info(
+                    "Metric clusters: task for run {} stopped; header is {}",
+                    run_id,
+                    current.get("job_run_id"),
+                )
+                return True
+            return False
 
         def on_progress(update: dict) -> None:
             if _reload_cancelled():
@@ -234,6 +260,7 @@ def generate_evaluation_metric_clusters_task(
                     "credential_id": credential_id,
                     "transcript_source": source,
                     "resume": True,
+                    "job_run_id": str(run_id),
                 },
                 queue="imports",
             )
@@ -241,7 +268,10 @@ def generate_evaluation_metric_clusters_task(
             # follow-up task instead of letting it resurrect the job.
             db.expire(evaluation, ["metric_clusters"])
             db.refresh(evaluation)
-            if metric_clusters_raw_is_cancelled(evaluation.metric_clusters):
+            if metric_clusters_raw_is_cancelled(evaluation.metric_clusters) or (
+                isinstance(evaluation.metric_clusters, dict)
+                and not analysis_header_matches_run(evaluation.metric_clusters, run_id)
+            ):
                 from app.workers.celery_revoke import revoke_celery_tasks
 
                 revoke_celery_tasks([async_result.id])
@@ -251,7 +281,39 @@ def generate_evaluation_metric_clusters_task(
                 evaluation.metric_clusters["celery_task_id"] = async_result.id
                 flag_modified(evaluation, "metric_clusters")
                 db.commit()
-    except ClusterOutputTruncated:
+    except ClusterOutputTruncated as exc:
+        logger.exception(
+            "Metric clusters output truncated for evaluation {}: {}",
+            evaluation_id,
+            exc,
+        )
+        try:
+            db.rollback()
+            evaluation = (
+                db.query(CallImportEvaluation)
+                .filter(CallImportEvaluation.id == UUID(evaluation_id))
+                .first()
+            )
+            if evaluation is not None and not metric_clusters_raw_is_cancelled(
+                evaluation.metric_clusters
+            ):
+                prior = (
+                    evaluation.metric_clusters
+                    if isinstance(evaluation.metric_clusters, dict)
+                    else {}
+                )
+                if run_id is None or analysis_header_matches_run(prior, run_id):
+                    evaluation.metric_clusters = {
+                        **prior,
+                        "status": "failed",
+                        "error_message": str(exc) or "Cluster output was truncated.",
+                        "generated_at": datetime.now(timezone.utc).isoformat(),
+                        "celery_task_id": None,
+                    }
+                    flag_modified(evaluation, "metric_clusters")
+                    db.commit()
+        except Exception:  # noqa: BLE001
+            db.rollback()
         raise
     except Exception as exc:  # noqa: BLE001
         logger.exception(
@@ -273,6 +335,10 @@ def generate_evaluation_metric_clusters_task(
                     if isinstance(evaluation.metric_clusters, dict)
                     else {}
                 )
+                if run_id is not None and not analysis_header_matches_run(
+                    prior, run_id
+                ):
+                    return
                 evaluation.metric_clusters = {
                     **prior,
                     "status": "failed",

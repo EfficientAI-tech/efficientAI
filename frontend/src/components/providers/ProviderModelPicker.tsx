@@ -98,15 +98,30 @@ export interface ProviderModelPickerProps {
   disabled?: boolean
   /** Restrict selectable LLM models (e.g. System 1-only for classification metrics). */
   modelFilter?: (model: string) => boolean
+  /** LLM-only diarisation: keep providers and models that can accept audio. */
+  audioCapableOnly?: boolean
   /** Shown when ``modelFilter`` leaves the selected provider/credential with nothing to pick. */
   incompatibleHint?: string
   /** When false, hide the LLM advanced options panel (LLM kind only). */
   showAdvancedOptions?: boolean
 }
 
-// Voice-platform integrations that also expose LLM models. Credentials
-// for these providers live in the Integration table (Configurations →
-// Integrations → Voice Platform), not AIProvider.
+const AUDIO_LLM_PROVIDERS = new Set(['openai', 'google', 'openrouter', 'custom'])
+
+/** Models the LLM-only diariser can send audio to. */
+export function isAudioCapableModel(provider: string, model: string): boolean {
+  const providerKey = provider.trim().toLowerCase()
+  const modelKey = model.trim().toLowerCase()
+  if (!modelKey) return false
+  if (providerKey === 'custom') return true
+  if (providerKey === 'openai') return modelKey.includes('audio')
+  if (providerKey === 'google') return modelKey.includes('gemini')
+  if (providerKey === 'openrouter') {
+    return modelKey.includes('gemini') || modelKey.includes('audio')
+  }
+  return false
+}
+
 import { INTEGRATION_LLM_PLATFORMS } from '../../lib/integrationLlmPlatforms'
 
 export default function ProviderModelPicker({
@@ -120,6 +135,7 @@ export default function ProviderModelPicker({
   disabled = false,
   showAdvancedOptions = true,
   modelFilter,
+  audioCapableOnly = false,
   incompatibleHint = 'No compatible models for this provider.',
 }: ProviderModelPickerProps) {
   const { data: aiProviders = [] } = useQuery<AIProvider[]>({
@@ -198,6 +214,11 @@ export default function ProviderModelPicker({
   // provider; credential pinning happens in the secondary select.
   const providerKeys = Array.from(
     new Set(eligibleProviders.map((p) => p.provider)),
+  ).filter(
+    (key) =>
+      !audioCapableOnly ||
+      kind !== 'llm' ||
+      AUDIO_LLM_PROVIDERS.has(key),
   )
 
   const activeCredential = useMemo(() => {
@@ -229,7 +250,11 @@ export default function ProviderModelPicker({
   const unfilteredModels =
     catalogModels.mode === 'gateway_direct'
       ? []
-      : catalogModels.models
+      : catalogModels.models.filter((model) =>
+          audioCapableOnly && kind === 'llm' && value.provider
+            ? isAudioCapableModel(value.provider, model)
+            : true,
+        )
   const models =
     modelFilter && kind === 'llm' ? unfilteredModels.filter(modelFilter) : unfilteredModels
   const hasIncompatibleSelection = Boolean(
@@ -240,6 +265,18 @@ export default function ProviderModelPicker({
         ? !modelFilter(resolvedGatewayDirectModel)
         : unfilteredModels.length > 0 && models.length === 0),
   )
+
+  useEffect(() => {
+    if (!audioCapableOnly || kind !== 'llm' || !value.provider) return
+    if (AUDIO_LLM_PROVIDERS.has(value.provider.toLowerCase())) return
+    onChange({
+      provider: null,
+      model: null,
+      credential_id: null,
+      llm_config: null,
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audioCapableOnly, kind, value.provider])
 
   // Auto-pick the first model when the provider changes and the
   // currently-selected model isn't valid for it. Avoids a confusing

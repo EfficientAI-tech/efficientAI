@@ -19,6 +19,7 @@ from app.services.call_import_prompt_improvements_wave import (
     process_prompt_improvements_wave_step,
 )
 from app.services.evaluation_analysis_checkpoints import (
+    analysis_header_matches_run,
     new_job_run_id,
     prompt_improvements_raw_is_cancelled,
 )
@@ -41,6 +42,7 @@ def generate_evaluation_prompt_improvements_task(
     model: str | None = None,
     credential_id: str | None = None,
     resume: bool = False,
+    job_run_id: str | None = None,
     **_ignored_kwargs: object,
 ):
     del _ignored_kwargs
@@ -54,6 +56,7 @@ def generate_evaluation_prompt_improvements_task(
 
     db = SessionLocal()
     evaluation: CallImportEvaluation | None = None
+    run_id: UUID | None = None
     try:
         evaluation = (
             db.query(CallImportEvaluation)
@@ -123,6 +126,13 @@ def generate_evaluation_prompt_improvements_task(
             if isinstance(evaluation.prompt_improvements, dict)
             else {}
         )
+        if job_run_id and not analysis_header_matches_run(raw, job_run_id):
+            logger.info(
+                "Prompt improvements: stale task for run {} ignored; header is {}",
+                job_run_id,
+                raw.get("job_run_id"),
+            )
+            return
         total_groups = len(clusters_state.groups or [])
         provider_value = (provider or "").strip() or (
             raw.get("provider") if isinstance(raw.get("provider"), str) else None
@@ -194,7 +204,23 @@ def generate_evaluation_prompt_improvements_task(
         db.commit()
 
         def _reload_cancelled() -> bool:
-            return _reload_prompt_cancelled(db, evaluation)
+            db.expire(evaluation, ["prompt_improvements"])
+            db.refresh(evaluation)
+            current = (
+                evaluation.prompt_improvements
+                if isinstance(evaluation.prompt_improvements, dict)
+                else {}
+            )
+            if prompt_improvements_raw_is_cancelled(current):
+                return True
+            if not analysis_header_matches_run(current, run_id):
+                logger.info(
+                    "Prompt improvements: task for run {} stopped; header is {}",
+                    run_id,
+                    current.get("job_run_id"),
+                )
+                return True
+            return False
 
         def on_progress(update: dict) -> None:
             if _reload_cancelled():
@@ -292,6 +318,7 @@ def generate_evaluation_prompt_improvements_task(
                     "model": model_value,
                     "credential_id": credential_id,
                     "resume": True,
+                    "job_run_id": str(run_id),
                 },
                 queue="imports",
             )
@@ -303,6 +330,13 @@ def generate_evaluation_prompt_improvements_task(
                 revoke_celery_tasks([async_result.id])
                 return
             if isinstance(evaluation.prompt_improvements, dict):
+                if not analysis_header_matches_run(
+                    evaluation.prompt_improvements, run_id
+                ):
+                    from app.workers.celery_revoke import revoke_celery_tasks
+
+                    revoke_celery_tasks([async_result.id])
+                    return
                 evaluation.prompt_improvements["celery_task_id"] = async_result.id
                 evaluation.prompt_improvements["status"] = "running"
                 flag_modified(evaluation, "prompt_improvements")
@@ -327,6 +361,10 @@ def generate_evaluation_prompt_improvements_task(
                     if isinstance(evaluation.prompt_improvements, dict)
                     else {}
                 )
+                if run_id is not None and not analysis_header_matches_run(
+                    prior, run_id
+                ):
+                    return
                 evaluation.prompt_improvements = {
                     **prior,
                     "status": "failed",

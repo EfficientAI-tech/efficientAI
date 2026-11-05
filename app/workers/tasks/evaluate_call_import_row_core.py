@@ -381,6 +381,11 @@ def build_parent_groups(
             .filter(Metric.id.in_(list(children_by_parent.keys())))
             .all()
         )
+        # Scoring reads name/description after this session commits and closes.
+        # Leave the parents detached with their columns already loaded; otherwise
+        # the commit expires them and the later read raises DetachedInstanceError.
+        for row in rows:
+            db.expunge(row)
         parents_by_id = {row.id: row for row in rows}
         orphaned: list[UUID] = []
         for pid in list(children_by_parent.keys()):
