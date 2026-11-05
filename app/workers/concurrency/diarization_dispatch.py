@@ -208,35 +208,45 @@ def _try_dispatch_single_diarization_row(
     ):
         return "at_capacity"
 
+    slot_released = False
     try:
-        async_result = transcribe_call_import_row_task.apply_async(
-            args=(
-                str(row.id),
-                params.get("stt_provider"),
-                params.get("stt_model"),
-                params.get("credential_id"),
-                params.get("language"),
-                bool(params.get("overwrite_existing", False)),
-                None,
-                params.get("diarization_llm_provider"),
-                params.get("diarization_llm_model"),
-                params.get("diarization_llm_credential_id"),
-                params.get("diarization_prompt"),
-                params.get("mode") or "stt_llm",
-            ),
-            kwargs={"_eval_slot_task_id": reserved_task_id},
-            queue=DIARIZATION_QUEUE,
-            task_id=reserved_task_id,
-        )
-    except Exception:
-        release_eval_slot_for_celery_task(reserved_task_id)
-        raise
-
-    try:
-        row.celery_task_id = async_result.id
+        row.celery_task_id = reserved_task_id
+        row.diarised_transcript_error = None
         db.commit()
+
+        try:
+            async_result = transcribe_call_import_row_task.apply_async(
+                args=(
+                    str(row.id),
+                    params.get("stt_provider"),
+                    params.get("stt_model"),
+                    params.get("credential_id"),
+                    params.get("language"),
+                    bool(params.get("overwrite_existing", False)),
+                    None,
+                    params.get("diarization_llm_provider"),
+                    params.get("diarization_llm_model"),
+                    params.get("diarization_llm_credential_id"),
+                    params.get("diarization_prompt"),
+                    params.get("mode") or "stt_llm",
+                ),
+                kwargs={"_eval_slot_task_id": reserved_task_id},
+                queue=DIARIZATION_QUEUE,
+                task_id=reserved_task_id,
+            )
+        except Exception:
+            row.celery_task_id = None
+            db.commit()
+            release_eval_slot_for_celery_task(reserved_task_id)
+            slot_released = True
+            raise
+
+        if async_result.id != reserved_task_id:
+            row.celery_task_id = async_result.id
+            db.commit()
     except Exception:
-        release_eval_slot_for_celery_task(reserved_task_id)
+        if not slot_released:
+            release_eval_slot_for_celery_task(reserved_task_id)
         raise
 
     return "dispatched"

@@ -154,6 +154,7 @@ def _serialize_call_import(
     call_import: CallImport,
     *,
     user_emails: Optional[Dict[UUID, str]] = None,
+    refresh_import_progress_from_rows: bool = False,
 ) -> CallImportResponse:
     """Catalog parent fields; counters include unflushed Redis deltas for display."""
     from app.services.call_imports.bulk_ops import (
@@ -171,10 +172,8 @@ def _serialize_call_import(
         if isinstance(call_import.status, CallImportStatus)
         else str(call_import.status or "")
     )
-    # Active imports: row aggregates are the display source of truth (catalog +
-    # Redis merge can briefly double-count when rollup clears Redis between row
-    # commit and a late delta). Platform discovery may still have agg_total=0.
-    if batch_status in {"pending", "processing"}:
+    # Active imports: optional row recount (detail/poll only — list uses catalog+Redis).
+    if refresh_import_progress_from_rows and batch_status in {"pending", "processing"}:
         from app.services.call_imports.bulk_ops import (
             _aggregate_import_row_status_counts,
         )

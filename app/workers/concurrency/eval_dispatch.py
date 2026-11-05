@@ -100,6 +100,14 @@ def _needs_transcribe_for_eval(
     existing_dia = row_text_present(
         source_row, "diarised_transcript", "diarised_transcript_char_length"
     )
+    dia_status = (
+        getattr(source_row, "diarised_transcript_status", None) or ""
+    ).strip().lower()
+    # Overwrite runs re-diarise once per row. After a successful completion the
+    # eval pipeline should move on to scoring — leaving overwrite true would
+    # otherwise reset completed rows back to pending on every dispatch tick.
+    if transcribe_overwrite and existing_dia and dia_status == "completed":
+        return False
     needs_diarisation = not existing_dia or transcribe_overwrite
     return bool(can_auto_transcribe and has_audio and needs_diarisation)
 
@@ -326,6 +334,11 @@ def _reset_source_row_for_eval_transcribe(
     reserved_task_id: str,
     transcribe_overwrite: bool,
 ) -> None:
+    previous_task = (source_row.celery_task_id or "").strip()
+    if previous_task and previous_task != reserved_task_id:
+        from app.workers.celery_revoke import revoke_celery_tasks
+
+        revoke_celery_tasks([previous_task])
     source_row.diarised_transcript_status = "pending"
     source_row.diarised_transcript_error = None
     if transcribe_overwrite:

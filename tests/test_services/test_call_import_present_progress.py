@@ -70,7 +70,11 @@ def test_serialize_processing_import_uses_row_aggregate_over_stale_redis(
         lambda: False,
     )
 
-    response = _serialize_call_import(db_session, call_import)
+    response = _serialize_call_import(
+        db_session,
+        call_import,
+        refresh_import_progress_from_rows=True,
+    )
 
     assert response.completed_rows == 1
     assert response.failed_rows == 0

@@ -310,3 +310,36 @@ def test_standalone_diarization_uses_diarization_queue(
     call_kwargs = stub_worker_task_modules.apply_async.call_args.kwargs
     assert call_kwargs["queue"] == DIARIZATION_QUEUE
     assert call_kwargs["args"][6] is None
+
+
+def test_needs_transcribe_skips_overwrite_when_diarisation_already_completed(
+    monkeypatch,
+):
+    from app.workers.concurrency.eval_dispatch import _needs_transcribe_for_eval
+
+    monkeypatch.setattr(
+        "app.db_sharding.scatter_gather.row_text_present",
+        lambda *_a, **_kw: True,
+    )
+    evaluation = SimpleNamespace(
+        transcript_source="diarised",
+        transcribe_mode="stt_llm",
+        stt_provider="openai",
+        stt_model="whisper-1",
+        diarisation_llm_provider="openai",
+        diarisation_llm_model="gpt-4o",
+    )
+    source_row = SimpleNamespace(
+        recording_s3_key="audio/test.wav",
+        diarised_transcript="agent: hi",
+        diarised_transcript_status="completed",
+    )
+
+    assert (
+        _needs_transcribe_for_eval(
+            evaluation,
+            source_row,
+            transcribe_overwrite=True,
+        )
+        is False
+    )

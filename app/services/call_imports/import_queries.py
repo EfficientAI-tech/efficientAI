@@ -331,7 +331,11 @@ def get_call_import_detail(
     if (call_import.source_format or "").lower() == "platform":
         _remember_platform_agent_names(db, call_import)
     detail = CallImportDetailResponse.model_validate(
-        _serialize_call_import(db, call_import).model_dump()
+        _serialize_call_import(
+            db,
+            call_import,
+            refresh_import_progress_from_rows=True,
+        ).model_dump()
     )
     detail.rows = [_call_import_row_list_response(r) for r in rows]
     detail.filtered_total_rows = filtered_total_rows
