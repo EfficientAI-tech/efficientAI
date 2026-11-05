@@ -376,11 +376,10 @@ export default function MetricPromptImprovementsPanel({
     const progress = improvementsState.progress
     return (
       <section
-        className={`rounded-lg border px-3 py-2.5 ${
-          isCancelled
+        className={`rounded-lg border px-3 py-2.5 ${isCancelled
             ? 'border-gray-200 bg-gray-50/80'
             : 'border-red-200 bg-red-50/50'
-        }`}
+          }`}
       >
         <p className="text-xs font-semibold text-gray-900">
           {isCancelled
@@ -388,9 +387,8 @@ export default function MetricPromptImprovementsPanel({
             : 'Prompt / agent improvements failed'}
         </p>
         <p
-          className={`text-[11px] mt-1 ${
-            isCancelled ? 'text-gray-600' : 'text-red-700'
-          }`}
+          className={`text-[11px] mt-1 ${isCancelled ? 'text-gray-600' : 'text-red-700'
+            }`}
         >
           {improvementsState.error_message ||
             (isCancelled
@@ -427,11 +425,25 @@ export default function MetricPromptImprovementsPanel({
     return (
       <EvaluationBackgroundJobCard
         title="Prompt / agent improvements"
-        progress={progressView}
+        progress={
+          improvementsState.heartbeat_stale
+            ? {
+              ...progressView,
+              phaseLabel:
+                'No worker has updated this job for a while. Resume picks up from the saved groups.',
+            }
+            : progressView
+        }
         onStop={() => {
           void handleStopImprovements()
         }}
         stopLoading={cancellingImprovements}
+        onResume={
+          improvementsState.heartbeat_stale
+            ? handleResumeImprovements
+            : undefined
+        }
+        resumeLoading={cancellingImprovements}
       />
     )
   }

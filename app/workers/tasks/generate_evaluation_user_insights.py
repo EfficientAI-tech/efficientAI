@@ -19,6 +19,7 @@ from app.services.evaluation_analysis_checkpoints import (
     analysis_header_matches_run,
     new_job_run_id,
     normalize_transcript_source,
+    stamp_job_heartbeat,
     user_insights_raw_is_cancelled,
 )
 from app.workers.config import celery_app
@@ -152,11 +153,11 @@ def generate_evaluation_user_insights_task(
             )
             if user_insights_raw_is_cancelled(current):
                 return
-            merged = {
+            merged = stamp_job_heartbeat({
                 **current,
                 "status": "running",
                 "progress": update,
-            }
+            })
             if isinstance(update.get("completed_llm_calls"), (int, float)):
                 merged["llm_calls_used"] = int(update["completed_llm_calls"])
             evaluation.user_insights = merged

@@ -5592,6 +5592,13 @@ class EvaluationUserInsightsState(BaseModel):
     max_llm_calls: Optional[int] = None
     error_message: Optional[str] = None
     is_stale: bool = False
+    heartbeat_stale: bool = Field(
+        default=False,
+        description=(
+            "True when a ``running`` job has not been updated by a worker for "
+            "long enough that it is almost certainly abandoned."
+        ),
+    )
     transcript_source: Optional[Literal["diarised", "production"]] = None
 
 
@@ -5802,6 +5809,14 @@ class EvaluationMetricClustersState(BaseModel):
     max_llm_calls: Optional[int] = None
     error_message: Optional[str] = None
     is_stale: bool = False
+    heartbeat_stale: bool = Field(
+        default=False,
+        description=(
+            "True when a ``running`` job has not been updated by a worker for "
+            "long enough that it is almost certainly abandoned. The UI offers "
+            "Resume instead of waiting on Stop."
+        ),
+    )
     selected_evaluation_row_ids: List[str] = Field(
         default_factory=list,
         description="Evaluation row IDs included in the last clustering run.",
@@ -5864,6 +5879,13 @@ class EvaluationPromptImprovementsState(BaseModel):
     model: Optional[str] = None
     error_message: Optional[str] = None
     is_stale: bool = False
+    heartbeat_stale: bool = Field(
+        default=False,
+        description=(
+            "True when a ``running`` job has not been updated by a worker for "
+            "long enough that it is almost certainly abandoned."
+        ),
+    )
     require_review: bool = True
     progress: Optional[Dict[str, Any]] = None
 

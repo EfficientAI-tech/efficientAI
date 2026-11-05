@@ -23,6 +23,7 @@ from app.models.schemas import (
 from app.services.agent_flowchart import _extract_json_object
 from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
 from app.services.ai.llm_service import llm_service
+from app.services.evaluation_analysis_checkpoints import job_heartbeat_is_stale
 from app.services.imported_agent_constants import IMPORTED_AGENT_TAG
 
 
@@ -139,6 +140,7 @@ def prompt_improvements_state_from_raw(
         model=raw.get("model"),
         error_message=raw.get("error_message"),
         is_stale=is_stale,
+        heartbeat_stale=job_heartbeat_is_stale(raw),
         require_review=True,
         progress=progress,
     )

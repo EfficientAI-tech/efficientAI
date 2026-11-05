@@ -51,6 +51,7 @@ def stub_worker_task_modules():
 
     fake_core.is_eval_row_user_cancelled = _is_eval_row_user_cancelled
     fake_core.evaluation_needs_diarised_reference = lambda *_a, **_kw: False
+    fake_core.commit_terminal_row_and_rollup = MagicMock()
 
     fake_process_import = types.ModuleType("app.workers.tasks.process_call_import_row")
     fake_process_import.process_call_import_row_task = MagicMock()
@@ -189,6 +190,76 @@ def test_eval_dispatch_skips_failed_diarization_without_overwrite(
 
     assert result == EvalDispatchOutcome("skip")
     stub_worker_task_modules.apply_async.assert_not_called()
+    assert eval_row.status == "failed"
+    assert (
+        eval_row.error_message
+        == "Diariser returned no storable transcript text."
+    )
+
+
+@patch(
+    "app.workers.concurrency.eval_dispatch.acquire_eval_slot",
+    return_value=True,
+)
+def test_production_run_scores_after_failed_diarisation(
+    _mock_acquire,
+    stub_worker_task_modules,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "app.db_sharding.sessions.is_sharding_enabled",
+        lambda: False,
+    )
+    core = sys.modules["app.workers.tasks.evaluate_call_import_row_core"]
+    core.evaluation_needs_diarised_reference = lambda *_a, **_kw: True
+    eval_task = sys.modules[
+        "app.workers.tasks.evaluate_call_import_row"
+    ].evaluate_call_import_row_task
+    eval_task.apply_async.side_effect = (
+        lambda **kwargs: _fake_async_result(kwargs["task_id"])
+    )
+
+    evaluation = SimpleNamespace(
+        id=uuid4(),
+        call_import_id=uuid4(),
+        workspace_id=uuid4(),
+        organization_id=uuid4(),
+        status="pending",
+        transcript_source="production",
+        transcribe_mode="stt_llm",
+        stt_provider="openai",
+        stt_model="whisper-1",
+        stt_credential_id=uuid4(),
+        diarisation_llm_provider="openai",
+        diarisation_llm_model="gpt-4o",
+        diarisation_llm_credential_id=uuid4(),
+        diarisation_prompt=None,
+    )
+    eval_row = SimpleNamespace(id=uuid4(), celery_task_id=None, status="pending")
+    source_row = SimpleNamespace(
+        id=uuid4(),
+        call_import_id=evaluation.call_import_id,
+        row_index=0,
+        status=CallImportRowStatus.COMPLETED,
+        recording_s3_key="audio/test.wav",
+        diarised_transcript="",
+        diarised_transcript_status="failed",
+        diarised_transcript_error="Diariser returned no storable transcript text.",
+        celery_task_id=None,
+    )
+
+    result = _try_dispatch_single_row(
+        db=MagicMock(),
+        evaluation=evaluation,
+        eval_row=eval_row,
+        source_row=source_row,
+        transcribe_overwrite=False,
+    )
+
+    assert result == EvalDispatchOutcome("dispatched")
+    stub_worker_task_modules.apply_async.assert_not_called()
+    eval_task.apply_async.assert_called_once()
+    assert eval_row.status == "pending"
 
 
 @patch(

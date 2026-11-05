@@ -41,6 +41,7 @@ from app.services.evaluation_analysis_checkpoints import (
     normalize_transcript_source,
     progress_header,
     rows_completed_for_batches,
+    stamp_job_heartbeat,
     upsert_analysis_batch,
     user_insights_raw_is_cancelled,
     new_job_run_id,
@@ -278,6 +279,19 @@ def _finalize_synthesis(
     aggregate_summary = _format_aggregate_summary(aggregate)
     total_sampled = completed_rows_from_batches(batches)
     completed_calls = int(raw_header.get("llm_calls_used") or 0)
+
+    # Announce the step before the LLM call. Synthesis is a single long
+    # round-trip after rows/batches are final; without this the card sits on
+    # the last extraction batch and looks wedged when a worker dies mid-call.
+    if on_progress:
+        on_progress(
+            {
+                **progress,
+                "phase": "synthesis",
+                "completed_llm_calls": completed_calls,
+                "total_llm_calls": int(progress.get("total_llm_calls") or 0),
+            }
+        )
 
     try:
         insights, overview = run_synthesis(
@@ -580,7 +594,7 @@ def process_user_insights_wave_step(
             evaluation, live, llm_calls_used=llm_calls_used
         )
 
-    evaluation.user_insights = {
+    evaluation.user_insights = stamp_job_heartbeat({
         **live,
         "status": "running",
         "progress": new_progress,
@@ -591,7 +605,7 @@ def process_user_insights_wave_step(
         "transcript_source": live.get("transcript_source") or raw.get("transcript_source"),
         "provider": live.get("provider") or raw.get("provider"),
         "model": live.get("model") or raw.get("model"),
-    }
+    })
     flag_modified(evaluation, "user_insights")
     db.commit()
 
@@ -653,4 +667,5 @@ def resume_user_insights_job_header(
         header["provider"] = provider
     if model:
         header["model"] = model
+    stamp_job_heartbeat(header)
     return reconcile_user_insights_job_header(db, evaluation, header)

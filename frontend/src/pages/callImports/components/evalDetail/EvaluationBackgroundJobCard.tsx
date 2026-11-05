@@ -9,6 +9,8 @@ function EvaluationBackgroundJobCard({
   onStop,
   stopLoading,
   stopDisabled,
+  onResume,
+  resumeLoading,
   footer,
 }: {
   title: string
@@ -16,6 +18,8 @@ function EvaluationBackgroundJobCard({
   onStop?: () => void
   stopLoading?: boolean
   stopDisabled?: boolean
+  onResume?: () => void
+  resumeLoading?: boolean
   footer?: ReactNode
 }) {
   const { phaseLabel, statsLine, metaLine, pct, indeterminate } = progress
@@ -64,18 +68,35 @@ function EvaluationBackgroundJobCard({
           </div>
           {footer}
         </div>
-        {onStop ? (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={onStop}
-            isLoading={stopLoading}
-            disabled={stopDisabled || stopLoading}
-            className="shrink-0 h-8 min-h-8 px-2.5 text-[11px] font-medium text-amber-900 border-amber-200/90 bg-white/80 hover:bg-amber-50"
-          >
-            Stop
-          </Button>
+        {onStop || onResume ? (
+          <div className="flex shrink-0 items-center gap-1.5">
+            {onResume ? (
+              <Button
+                type="button"
+                variant="primary"
+                size="sm"
+                onClick={onResume}
+                isLoading={resumeLoading}
+                disabled={resumeLoading || stopLoading}
+                className="h-8 min-h-8 px-2.5 text-[11px] font-medium"
+              >
+                Resume
+              </Button>
+            ) : null}
+            {onStop ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onStop}
+                isLoading={stopLoading}
+                disabled={stopDisabled || stopLoading || resumeLoading}
+                className="shrink-0 h-8 min-h-8 px-2.5 text-[11px] font-medium text-amber-900 border-amber-200/90 bg-white/80 hover:bg-amber-50"
+              >
+                Stop
+              </Button>
+            ) : null}
+          </div>
         ) : null}
       </div>
     </section>

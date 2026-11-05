@@ -26,6 +26,12 @@ PROMPT_IMPROVEMENTS_CANCELLED_BY_USER_ERROR = "Cancelled by user"
 
 EVIDENCE_RESERVOIR_CAP = 80
 
+# A running analysis header is stamped after every LLM call. Three cluster
+# calls (180 s timeout + one larger-budget retry each) is the longest gap a
+# live worker can legitimately produce, so allow generous headroom before
+# treating the job as abandoned.
+JOB_HEARTBEAT_STALE_SECONDS = 15 * 60
+
 
 def analysis_header_matches_run(raw: Any, job_run_id: Any) -> bool:
     """True when *job_run_id* still owns the saved analysis header.
@@ -292,6 +298,42 @@ def merge_cluster_extractions_from_batches(
     return out
 
 
+def job_heartbeat_is_stale(
+    raw: Any,
+    *,
+    threshold_seconds: int = JOB_HEARTBEAT_STALE_SECONDS,
+    now: Optional[datetime] = None,
+) -> bool:
+    """True when a ``running`` analysis header has stopped updating.
+
+    Long LLM steps rewrite the header after every call, so a heartbeat older
+    than the threshold means no worker is driving this job any more (crash,
+    restart, revoke without terminate). Without this the card stays on
+    "Synthesizing…" forever and the only escape is Stop.
+    """
+    if not isinstance(raw, dict):
+        return False
+    if (raw.get("status") or "").strip().lower() != "running":
+        return False
+    beat_raw = raw.get("heartbeat_at") or raw.get("generated_at")
+    if not isinstance(beat_raw, str) or not beat_raw:
+        return True
+    try:
+        beat = datetime.fromisoformat(beat_raw)
+    except ValueError:
+        return True
+    if beat.tzinfo is None:
+        beat = beat.replace(tzinfo=timezone.utc)
+    moment = now or datetime.now(timezone.utc)
+    return (moment - beat).total_seconds() >= max(1, threshold_seconds)
+
+
+def stamp_job_heartbeat(header: Dict[str, Any]) -> Dict[str, Any]:
+    """Record that a worker is still driving ``header``. Mutates and returns it."""
+    header["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+    return header
+
+
 def init_job_header(
     *,
     job_run_id: UUID,
@@ -307,6 +349,7 @@ def init_job_header(
         "job_run_id": str(job_run_id),
         "transcript_source": transcript_source,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "heartbeat_at": datetime.now(timezone.utc).isoformat(),
         "progress": progress_header(
             completed_rows=0,
             total_rows=total_rows,

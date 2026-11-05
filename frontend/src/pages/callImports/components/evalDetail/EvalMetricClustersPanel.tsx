@@ -790,6 +790,7 @@ function MetricClustersPanel({
   onGenerated: () => void
 }) {
   const [cancelling, setCancelling] = useState(false)
+  const [resuming, setResuming] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [pickerProvider, setPickerProvider] = useState('')
   const [pickerModel, setPickerModel] = useState('')
@@ -898,6 +899,28 @@ function MetricClustersPanel({
     const callsHint = selectedCountLabel
       ? `${selectedCountLabel} selected call${selectedCountLabel === 1 ? '' : 's'} in scope`
       : null
+    const resumeStalled = async () => {
+      setResuming(true)
+      setError(null)
+      try {
+        await apiClient.callImports.generateCallImportEvaluationMetricClusters(
+          callImportId,
+          evaluationId,
+          {
+            resume: true,
+            provider: state.provider ?? undefined,
+            model: state.model ?? undefined,
+          },
+        )
+        onGenerated()
+      } catch (e: any) {
+        setError(
+          e?.response?.data?.detail || 'Failed to resume cluster generation.',
+        )
+      } finally {
+        setResuming(false)
+      }
+    }
     return (
       <>
         <EvaluationBackgroundJobCard
@@ -905,9 +928,14 @@ function MetricClustersPanel({
           progress={{
             ...progressView,
             metaLine: progressView.metaLine || callsHint,
+            phaseLabel: state.heartbeat_stale
+              ? 'No worker has updated this job for a while. Resume picks up from the saved checkpoints.'
+              : progressView.phaseLabel,
           }}
           onStop={handleCancel}
           stopLoading={cancelling}
+          onResume={state.heartbeat_stale ? resumeStalled : undefined}
+          resumeLoading={resuming}
         />
         {error ? <p className="text-xs text-red-600 mt-2">{error}</p> : null}
         {clusterGenerationModal}
@@ -927,9 +955,19 @@ function MetricClustersPanel({
         </p>
         {state.progress ? (
           <p className="text-xs text-gray-500 mt-1">
-            Stopped at batch {state.progress.completed_batches ?? 0} /{' '}
-            {state.progress.total_batches ?? 0}
-            {state.progress.completed_rows != null && state.progress.total_rows != null
+            Stopped{' '}
+            {state.progress.phase === 'synthesis' &&
+              state.progress.current_metric_name
+              ? `while synthesizing clusters for ${state.progress.current_metric_name}${state.progress.total_metrics
+                ? ` (${Math.max(state.progress.current_metric_index ?? 1, 1)} of ${state.progress.total_metrics} metrics)`
+                : ''
+              }`
+              : state.progress.phase === 'discovery'
+                ? 'while discovering cross-metric themes'
+                : `at batch ${state.progress.completed_batches ?? 0} / ${state.progress.total_batches ?? 0
+                }`}
+            {state.progress.completed_rows != null &&
+              state.progress.total_rows != null
               ? ` · ${state.progress.completed_rows} / ${state.progress.total_rows} rows`
               : null}
           </p>

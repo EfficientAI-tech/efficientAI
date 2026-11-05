@@ -1598,6 +1598,7 @@ export interface EvaluationUserInsightsState {
   max_llm_calls?: number | null
   error_message?: string | null
   is_stale: boolean
+  heartbeat_stale?: boolean
   transcript_source?: 'diarised' | 'production' | null
 }
 
@@ -1789,6 +1790,7 @@ export interface EvaluationMetricClustersState {
   max_llm_calls?: number | null
   error_message?: string | null
   is_stale: boolean
+  heartbeat_stale?: boolean
   selected_evaluation_row_ids?: string[]
   failure_policies?: Record<string, MetricFailurePolicy>
   failure_policies_source?: 'inferred' | 'user'
@@ -1918,6 +1920,7 @@ export interface EvaluationPromptImprovementsState {
   model?: string | null
   error_message?: string | null
   is_stale: boolean
+  heartbeat_stale?: boolean
   require_review?: boolean
   progress?: {
     completed_groups?: number

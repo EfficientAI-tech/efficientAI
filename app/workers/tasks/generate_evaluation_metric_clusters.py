@@ -8,6 +8,12 @@ from uuid import UUID
 from loguru import logger
 from sqlalchemy.orm.attributes import flag_modified
 
+try:  # Celery raises this inside the task body on the soft limit
+    from celery.exceptions import SoftTimeLimitExceeded
+except Exception:  # pragma: no cover - celery is always installed at runtime
+    class SoftTimeLimitExceeded(Exception):  # type: ignore[no-redef]
+        pass
+
 from app.database import SessionLocal
 from app.models.database import CallImportEvaluation
 from app.services.call_import_metric_clusters import (
@@ -24,6 +30,7 @@ from app.services.evaluation_analysis_checkpoints import (
     analysis_header_matches_run,
     new_job_run_id,
     normalize_transcript_source,
+    stamp_job_heartbeat,
 )
 from app.workers.config import celery_app
 
@@ -60,6 +67,11 @@ def generate_evaluation_metric_clusters_task(
     db = SessionLocal()
     evaluation: CallImportEvaluation | None = None
     run_id: UUID | None = None
+    # Needed by the soft-time-limit re-enqueue path, which can fire before the
+    # in-try assignments have run.
+    llm_provider: str | None = provider
+    llm_model: str | None = model
+    source: str | None = transcript_source
     try:
         evaluation = (
             db.query(CallImportEvaluation)
@@ -105,6 +117,9 @@ def generate_evaluation_metric_clusters_task(
             llm_model,
             UUID(credential_id) if credential_id else None,
         )
+        # The re-enqueue path must carry a concrete provider/model pair.
+        llm_provider = provider_enum.value if hasattr(provider_enum, "value") else str(provider_enum)
+        llm_model = model_str
 
         from app.db_sharding.scatter_gather import load_evaluation_score_rows_for_aggregate
         from app.services.call_imports.metric_aggregate_cache import (
@@ -193,11 +208,11 @@ def generate_evaluation_metric_clusters_task(
             )
             if metric_clusters_raw_is_cancelled(current):
                 return
-            evaluation.metric_clusters = {
+            evaluation.metric_clusters = stamp_job_heartbeat({
                 **current,
                 "status": "running",
                 "progress": update,
-            }
+            })
             if isinstance(update.get("completed_llm_calls"), (int, float)):
                 evaluation.metric_clusters["llm_calls_used"] = int(
                     update["completed_llm_calls"]
@@ -279,8 +294,76 @@ def generate_evaluation_metric_clusters_task(
             if isinstance(evaluation.metric_clusters, dict):
                 evaluation.metric_clusters["status"] = "running"
                 evaluation.metric_clusters["celery_task_id"] = async_result.id
+                stamp_job_heartbeat(evaluation.metric_clusters)
                 flag_modified(evaluation, "metric_clusters")
                 db.commit()
+    except SoftTimeLimitExceeded:
+        # A single 500-row page can outlast the 25 minute soft limit. The
+        # extraction sub-batches are already checkpointed, so hand the next
+        # step to a fresh task instead of failing the whole job.
+        logger.warning(
+            "Metric clusters hit the soft time limit for evaluation {}; "
+            "re-enqueuing from the last checkpoint",
+            evaluation_id,
+        )
+        try:
+            db.rollback()
+            evaluation = (
+                db.query(CallImportEvaluation)
+                .filter(CallImportEvaluation.id == UUID(evaluation_id))
+                .first()
+            )
+            if evaluation is None or metric_clusters_raw_is_cancelled(
+                evaluation.metric_clusters
+            ):
+                return
+            prior = (
+                evaluation.metric_clusters
+                if isinstance(evaluation.metric_clusters, dict)
+                else {}
+            )
+            if run_id is not None and not analysis_header_matches_run(prior, run_id):
+                return
+            header_run_id = prior.get("job_run_id")
+            if not header_run_id:
+                logger.warning(
+                    "Metric clusters soft time limit for evaluation {} with no "
+                    "job_run_id; leaving it resumable instead of re-enqueuing",
+                    evaluation_id,
+                )
+                return
+            evaluation.metric_clusters = stamp_job_heartbeat(
+                {**prior, "status": "running", "celery_task_id": None}
+            )
+            flag_modified(evaluation, "metric_clusters")
+            db.commit()
+        except Exception:  # noqa: BLE001
+            db.rollback()
+            return
+        try:
+            async_result = generate_evaluation_metric_clusters_task.apply_async(
+                kwargs={
+                    "evaluation_id": evaluation_id,
+                    "provider": llm_provider,
+                    "model": llm_model,
+                    "credential_id": credential_id,
+                    "transcript_source": source,
+                    "resume": True,
+                    "job_run_id": str(header_run_id),
+                },
+                queue="imports",
+            )
+            if isinstance(evaluation.metric_clusters, dict):
+                evaluation.metric_clusters["status"] = "running"
+                evaluation.metric_clusters["celery_task_id"] = async_result.id
+                flag_modified(evaluation, "metric_clusters")
+                db.commit()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Failed to re-enqueue metric clusters after soft time limit "
+                "for evaluation {}",
+                evaluation_id,
+            )
     except ClusterOutputTruncated as exc:
         logger.exception(
             "Metric clusters output truncated for evaluation {}: {}",

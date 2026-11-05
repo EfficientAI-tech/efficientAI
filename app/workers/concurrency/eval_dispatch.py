@@ -166,10 +166,51 @@ def _fail_eval_row_for_import(
         commit_terminal_row_and_rollup,
     )
 
-    previous_status = eval_row.status or "pending"
+    previous_status = getattr(eval_row, "status", None) or "pending"
     eval_row.status = "failed"
     eval_row.error_message = (
         source_row.error_message or "Recording fetch failed"
+    )
+    eval_row.finished_at = datetime.now(timezone.utc)
+    eval_row.celery_task_id = None
+    if evaluation is not None:
+        commit_terminal_row_and_rollup(
+            db,
+            evaluation,
+            eval_row,
+            previous_row_status=previous_status,
+            catalog_db=(
+                catalog_db if catalog_db is not None and catalog_db is not db else None
+            ),
+        )
+    else:
+        commit_shard_row_session(db)
+
+
+def _fail_eval_row_for_diarisation(
+    db: Session,
+    eval_row: CallImportEvaluationRow,
+    source_row: CallImportRow,
+    *,
+    catalog_db: Session | None = None,
+    evaluation: CallImportEvaluation | None = None,
+) -> None:
+    """Terminalize an eval row whose diarisation failed and will not be retried.
+
+    Leaving it pending makes the dispatcher reload the same row forever and
+    never reach later rows that are ready to score.
+    """
+    from datetime import datetime, timezone
+
+    from app.db_sharding.row_ops import commit_shard_row_session
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        commit_terminal_row_and_rollup,
+    )
+
+    previous_status = getattr(eval_row, "status", None) or "pending"
+    eval_row.status = "failed"
+    eval_row.error_message = (
+        source_row.diarised_transcript_error or "Diarisation failed"
     )
     eval_row.finished_at = datetime.now(timezone.utc)
     eval_row.celery_task_id = None
@@ -570,7 +611,7 @@ def _try_dispatch_single_row(
             ).strip().lower()
             from app.db_sharding.scatter_gather import row_text_present
 
-            if (
+            diarisation_failed = (
                 dia_status == "failed"
                 and not transcribe_overwrite
                 and not row_text_present(
@@ -578,40 +619,58 @@ def _try_dispatch_single_row(
                     "diarised_transcript",
                     "diarised_transcript_char_length",
                 )
-            ):
-                return EvalDispatchOutcome("skip")
-
-            def _enqueue_transcribe(reserved_task_id: str):
-                source_row.diarised_transcript_status = "pending"
-                source_row.diarised_transcript_error = None
-                if transcribe_overwrite:
-                    source_row.diarised_transcript = None
-                source_row.celery_task_id = reserved_task_id
-                mutate_db.flush()
-                from app.workers.tasks.evaluate_call_import_row_core import (
-                    evaluation_needs_diarised_reference,
+            )
+            transcript_source = (
+                (getattr(evaluation, "transcript_source", None) or "diarised")
+                .strip()
+                .lower()
+            )
+            # A failed diarisation with no stored transcript cannot be
+            # retried here. Diarised runs have nothing left to score, so
+            # close the row. Production runs can still score the LLM
+            # metrics; User WER/CER record a skip inside the worker.
+            if diarisation_failed and transcript_source != "production":
+                _fail_eval_row_for_diarisation(
+                    mutate_db,
+                    eval_row,
+                    source_row,
+                    catalog_db=catalog_db,
+                    evaluation=evaluation,
                 )
+                return EvalDispatchOutcome("skip")
+            if not diarisation_failed:
 
-                return build_eval_chain_transcribe_apply_async(
+                def _enqueue_transcribe(reserved_task_id: str):
+                    source_row.diarised_transcript_status = "pending"
+                    source_row.diarised_transcript_error = None
+                    if transcribe_overwrite:
+                        source_row.diarised_transcript = None
+                    source_row.celery_task_id = reserved_task_id
+                    mutate_db.flush()
+                    from app.workers.tasks.evaluate_call_import_row_core import (
+                        evaluation_needs_diarised_reference,
+                    )
+
+                    return build_eval_chain_transcribe_apply_async(
+                        evaluation=evaluation,
+                        eval_row=eval_row,
+                        source_row=source_row,
+                        reserved_task_id=reserved_task_id,
+                        restricted_metric_ids=restricted_metric_ids,
+                        transcribe_overwrite=transcribe_overwrite,
+                        emit_native_text=evaluation_needs_diarised_reference(
+                            catalog_db, evaluation
+                        ),
+                    )
+
+                if _reserve_slot_and_enqueue(
                     evaluation=evaluation,
                     eval_row=eval_row,
-                    source_row=source_row,
-                    reserved_task_id=reserved_task_id,
-                    restricted_metric_ids=restricted_metric_ids,
-                    transcribe_overwrite=transcribe_overwrite,
-                    emit_native_text=evaluation_needs_diarised_reference(
-                        catalog_db, evaluation
-                    ),
-                )
-
-            if _reserve_slot_and_enqueue(
-                evaluation=evaluation,
-                eval_row=eval_row,
-                db=mutate_db,
-                enqueue_fn=_enqueue_transcribe,
-            ):
-                return EvalDispatchOutcome("dispatched")
-            return EvalDispatchOutcome("at_capacity")
+                    db=mutate_db,
+                    enqueue_fn=_enqueue_transcribe,
+                ):
+                    return EvalDispatchOutcome("dispatched")
+                return EvalDispatchOutcome("at_capacity")
 
         if row_needs_audio_phase(
             catalog_db,

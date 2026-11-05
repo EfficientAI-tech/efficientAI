@@ -31,6 +31,7 @@ from app.services.evaluation_analysis_checkpoints import (
     list_analysis_batches,
     progress_header,
     prompt_improvements_raw_is_cancelled,
+    stamp_job_heartbeat,
     upsert_analysis_batch,
 )
 from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
@@ -183,7 +184,7 @@ def process_prompt_improvements_wave_step(
         raw["progress"] = _progress_for_groups(
             groups, completed_groups, total_metrics=total_metrics
         )
-        evaluation.prompt_improvements = raw
+        evaluation.prompt_improvements = stamp_job_heartbeat(raw)
         flag_modified(evaluation, "prompt_improvements")
         db.commit()
         if on_progress:
@@ -262,7 +263,7 @@ def process_prompt_improvements_wave_step(
     raw["progress"] = _progress_for_groups(
         groups, completed_groups, total_metrics=total_metrics
     )
-    evaluation.prompt_improvements = raw
+    evaluation.prompt_improvements = stamp_job_heartbeat(raw)
     flag_modified(evaluation, "prompt_improvements")
     db.commit()
     if on_progress:

@@ -37,6 +37,7 @@ from app.services.metric_clusters_rca_summary import (
     compute_rca_summary,
     enrich_metric_cluster_groups,
 )
+from app.services.evaluation_analysis_checkpoints import job_heartbeat_is_stale
 from app.services.metric_cluster_rows import (
     MetricClusterSourceRow,
     call_import_pair_to_cluster_row,
@@ -1386,6 +1387,7 @@ def metric_clusters_state_from_raw(
             raw.get("error_message") if isinstance(raw.get("error_message"), str) else None
         ),
         is_stale=completed_rows > snapshot_int and status == "completed",
+        heartbeat_stale=job_heartbeat_is_stale(raw),
         selected_evaluation_row_ids=[
             str(rid)
             for rid in (raw.get("selected_evaluation_row_ids") or [])

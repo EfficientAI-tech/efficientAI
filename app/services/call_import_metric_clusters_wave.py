@@ -53,6 +53,7 @@ from app.services.evaluation_analysis_checkpoints import (
     normalize_transcript_source,
     progress_header,
     rows_completed_for_batches,
+    stamp_job_heartbeat,
     upsert_analysis_batch,
 )
 from app.services.metric_cluster_rows import call_import_pair_to_cluster_row
@@ -175,6 +176,7 @@ def resume_metric_clusters_job_header(
         header["provider"] = provider
     if model:
         header["model"] = model
+    stamp_job_heartbeat(header)
 
     total_rows, _ = _count_row_scope(db, evaluation, header)
     total_batches = batch_count_for_rows(total_rows)
@@ -269,12 +271,22 @@ def process_metric_clusters_wave_step(
             batch_index=completed_batches,
         )
         if not pairs:
-            raw["progress"] = {
-                **progress,
-                "phase": "synthesis",
-                "completed_batches": completed_batches,
-            }
-            evaluation.metric_clusters = raw
+            # Commit, not just assign: the worker expires and refreshes this
+            # column right after the wave step, which would discard the phase
+            # change and re-enter the row phase forever.
+            evaluation.metric_clusters = stamp_job_heartbeat(
+                {
+                    **raw,
+                    "status": "running",
+                    "progress": {
+                        **progress,
+                        "phase": "synthesis",
+                        "completed_batches": completed_batches,
+                    },
+                }
+            )
+            flag_modified(evaluation, "metric_clusters")
+            db.commit()
             return "continue", None
 
         rows_before_this_batch = rows_completed_for_batches(completed_batches, total_rows)
@@ -282,10 +294,47 @@ def process_metric_clusters_wave_step(
         metric_extractions: Dict[str, List[Dict[str, Any]]] = {}
         flagged_samples: List[Dict[str, Any]] = []
 
+        # Resume inside a page. A 500-row page can need dozens of extraction
+        # calls; a task that hits the 25 minute soft limit must not re-pay for
+        # sub-batches that already checkpointed, otherwise a large page can
+        # never finish.
+        done_sub: set[str] = set()
+        for batch in list_analysis_batches(
+            db,
+            evaluation_id=evaluation.id,
+            job_kind=JOB_KIND_METRIC_CLUSTERS,
+            job_run_id=job_run_id,
+        ):
+            if batch.batch_index != completed_batches or (batch.status or "") != "in_progress":
+                continue
+            payload = batch.payload if isinstance(batch.payload, dict) else {}
+            raw_done = payload.get("sub_batches_done")
+            if isinstance(raw_done, list):
+                done_sub = {str(item) for item in raw_done if item}
+            restored_metrics = payload.get("metrics")
+            if isinstance(restored_metrics, dict):
+                for mid, sig_map in restored_metrics.items():
+                    if isinstance(sig_map, dict):
+                        _merge_sig_maps(metrics_sig, str(mid), sig_map)
+            restored_extractions = payload.get("metric_extractions")
+            if isinstance(restored_extractions, dict):
+                for mid, samples in restored_extractions.items():
+                    if isinstance(samples, list):
+                        metric_extractions[str(mid)] = [
+                            item for item in samples if isinstance(item, dict)
+                        ]
+            restored_samples = payload.get("flagged_samples")
+            if isinstance(restored_samples, list):
+                flagged_samples = [
+                    item for item in restored_samples if isinstance(item, dict)
+                ]
+            break
+
         for metric in quality_metrics:
             policy = failure_policies.get(str(metric.id))
             if policy is None or not policy_has_failure_criteria(policy, metric):
                 continue
+            mid = str(metric.id)
             flagged_payloads: List[Dict[str, Any]] = []
             for eval_row, source_row in pairs:
                 if eval_row.status != "completed":
@@ -298,11 +347,14 @@ def process_metric_clusters_wave_step(
                 )
                 if payload:
                     flagged_payloads.append(payload)
-                    flagged_samples.append(payload)
+                    if len(flagged_samples) < 80:
+                        flagged_samples.append(payload)
 
-            extractions: List[Dict[str, Any]] = []
             sub_batches = _sub_batch_payloads(flagged_payloads)
-            for sub_batch in sub_batches:
+            for sub_idx, sub_batch in enumerate(sub_batches):
+                sub_key = f"{mid}:{sub_idx}"
+                if sub_key in done_sub:
+                    continue
                 if is_cancelled and is_cancelled():
                     return "idle", EvaluationMetricClustersState(
                         status="cancelled",
@@ -318,7 +370,6 @@ def process_metric_clusters_wave_step(
                         metric.name,
                         sub_batch,
                     )
-                    extractions.extend(extracted)
                 except ClusterOutputTruncated:
                     raise
                 except Exception as exc:  # noqa: BLE001
@@ -328,15 +379,48 @@ def process_metric_clusters_wave_step(
                         metric.id,
                         exc,
                     )
+                    extracted = []
                 llm_calls_used += 1
-
-            mid = str(metric.id)
-            sig_counts = _aggregate_signatures(extractions)
-            _merge_sig_maps(metrics_sig, mid, sig_counts)
-            if extractions:
-                reservoir = metric_extractions.setdefault(mid, [])
-                reservoir.extend(extractions)
-                metric_extractions[mid] = reservoir[:40]
+                if extracted:
+                    _merge_sig_maps(
+                        metrics_sig, mid, _aggregate_signatures(extracted)
+                    )
+                    reservoir = metric_extractions.setdefault(mid, [])
+                    reservoir.extend(extracted)
+                    metric_extractions[mid] = reservoir[:40]
+                done_sub.add(sub_key)
+                upsert_analysis_batch(
+                    db,
+                    evaluation_id=evaluation.id,
+                    job_kind=JOB_KIND_METRIC_CLUSTERS,
+                    job_run_id=job_run_id,
+                    batch_index=completed_batches,
+                    payload={
+                        "metrics": metrics_sig,
+                        "metric_extractions": metric_extractions,
+                        "flagged_samples": flagged_samples,
+                        "rows_processed": len(pairs),
+                        "sub_batches_done": sorted(done_sub),
+                    },
+                    transcript_source=transcript_source,
+                    status="in_progress",
+                )
+                # Keep the header heartbeat fresh so a long page is never
+                # mistaken for an abandoned job.
+                evaluation.metric_clusters = stamp_job_heartbeat(
+                    {
+                        **(
+                            evaluation.metric_clusters
+                            if isinstance(evaluation.metric_clusters, dict)
+                            else {}
+                        ),
+                        "status": "running",
+                        "progress": {**progress, "phase": "rows"},
+                        "llm_calls_used": llm_calls_used,
+                    }
+                )
+                flag_modified(evaluation, "metric_clusters")
+                db.commit()
 
         page_cursor = evaluation_row_page_cursor_from_pair(pairs[-1])
         upsert_analysis_batch(
@@ -348,11 +432,13 @@ def process_metric_clusters_wave_step(
             payload={
                 "metrics": metrics_sig,
                 "metric_extractions": metric_extractions,
-                "flagged_samples": flagged_samples[:80],
+                "flagged_samples": flagged_samples,
                 "rows_processed": len(pairs),
+                "sub_batches_done": sorted(done_sub),
             },
             cursor=page_cursor if not selected_ids else None,
             transcript_source=transcript_source,
+            status="completed",
         )
 
         completed_batches += 1
@@ -381,7 +467,9 @@ def process_metric_clusters_wave_step(
                 error_message=METRIC_CLUSTERS_CANCELLED_BY_USER_ERROR,
                 generated_at=datetime.now(timezone.utc),
             )
-        evaluation.metric_clusters = {**live, **raw, "progress": new_progress}
+        evaluation.metric_clusters = stamp_job_heartbeat(
+            {**live, **raw, "progress": new_progress}
+        )
         flag_modified(evaluation, "metric_clusters")
         db.commit()
         if on_progress:
@@ -430,6 +518,24 @@ def process_metric_clusters_wave_step(
         signature_counts = sig_by_metric.get(mid) or {}
         sample_rows = merge_cluster_extractions_from_batches(row_batches, mid)
         flagged_count = sum(signature_counts.values())
+        # Publish the in-flight metric BEFORE the model call. Synthesis is one
+        # call per metric (up to the provider timeout, plus a larger-budget
+        # retry) and neither the row nor the batch counter moves, so without
+        # this the card looks frozen on the last batch until the call returns.
+        if on_progress:
+            on_progress(
+                {
+                    **progress,
+                    "phase": "synthesis",
+                    "completed_batches": completed_batches,
+                    "total_batches": total_batches,
+                    "completed_llm_calls": llm_calls_used,
+                    "total_llm_calls": total_llm_calls,
+                    "current_metric_name": metric.name,
+                    "current_metric_index": len(synthesis_done) + 1,
+                    "total_metrics": len(metrics_to_synth),
+                }
+            )
         try:
             clusters = _synthesize_metric_clusters(
                 db,
@@ -493,7 +599,7 @@ def process_metric_clusters_wave_step(
             "current_metric_index": synth_index,
             "total_metrics": len(metrics_to_synth),
         }
-        evaluation.metric_clusters = raw
+        evaluation.metric_clusters = stamp_job_heartbeat(raw)
         flag_modified(evaluation, "metric_clusters")
         db.commit()
         if on_progress:
@@ -522,6 +628,20 @@ def process_metric_clusters_wave_step(
                 except Exception:  # noqa: BLE001
                     continue
     else:
+        # Announce discovery before the call for the same reason as synthesis:
+        # rows and batches are already final, so the card would otherwise sit
+        # on the last synthesis step for the whole LLM round-trip.
+        if on_progress:
+            on_progress(
+                {
+                    **progress,
+                    "phase": "discovery",
+                    "completed_batches": completed_batches,
+                    "total_batches": total_batches,
+                    "completed_llm_calls": llm_calls_used,
+                    "total_llm_calls": total_llm_calls,
+                }
+            )
         try:
             discovered = _run_discovery(
                 db,
@@ -551,7 +671,7 @@ def process_metric_clusters_wave_step(
         raw["discovered_problems"] = [d.model_dump(mode="json") for d in discovered]
         raw["discovery_completed"] = True
         raw["llm_calls_used"] = llm_calls_used
-        evaluation.metric_clusters = raw
+        evaluation.metric_clusters = stamp_job_heartbeat(raw)
         flag_modified(evaluation, "metric_clusters")
         db.commit()
         if on_progress:
@@ -605,6 +725,12 @@ def process_metric_clusters_wave_step(
             progress=final_progress,
             selected_evaluation_row_ids=selected_ids_raw,
         )
+
+    # The card is polling this header, so publish the terminal step before the
+    # task persists the final state. Without it the last visible phase is
+    # "discovery" and the job looks unfinished for the final round-trip.
+    if on_progress:
+        on_progress(final_progress)
 
     overview_parts = [
         f"{g.metric_name}: {len(g.clusters)} cluster(s) across {g.flagged_count} flagged calls"

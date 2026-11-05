@@ -31,6 +31,7 @@ from app.models.schemas import (
     UserInsightEvidenceTurn,
 )
 from app.services.ai.llm_service import llm_service
+from app.services.evaluation_analysis_checkpoints import job_heartbeat_is_stale
 
 MAX_LLM_CALLS_DEFAULT = 200
 MAX_LLM_CALLS_MIN = 20
@@ -678,6 +679,7 @@ def user_insights_state_from_raw(
             raw.get("error_message") if isinstance(raw.get("error_message"), str) else None
         ),
         is_stale=completed_rows > snapshot_int and status == "completed",
+        heartbeat_stale=job_heartbeat_is_stale(raw),
         transcript_source=transcript_source,
     )
 

@@ -179,9 +179,23 @@ function UserInsightsStatusBanner({
         progress={{
           ...progressView,
           metaLine: progressView.metaLine || modelMeta,
+          phaseLabel: state.heartbeat_stale
+            ? 'No worker has updated this job for a while. Resume picks up from the saved checkpoints.'
+            : progressView.phaseLabel,
         }}
         onStop={handleCancel}
         stopLoading={cancelling}
+        onResume={
+          state.heartbeat_stale
+            ? () =>
+              handleResume({
+                provider: state.provider ?? '',
+                model: state.model ?? '',
+                transcript_source: state.transcript_source ?? 'diarised',
+              })
+            : undefined
+        }
+        resumeLoading={resuming}
       />
     )
   }
