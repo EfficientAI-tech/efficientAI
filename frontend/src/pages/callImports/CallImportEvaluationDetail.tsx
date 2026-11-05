@@ -2174,6 +2174,8 @@ export default function CallImportEvaluationDetail() {
                         clustersState={metricClustersQuery.data ?? null}
                         improvementsState={promptImprovementsQuery.data ?? null}
                         isLoading={promptImprovementsQuery.isLoading}
+                        defaultProvider={evaluation?.llm_provider ?? ''}
+                        defaultModel={evaluation?.llm_model ?? ''}
                         linkedImportedAgentPartialId={
                           callImport?.imported_agent_partial_id ?? null
                         }
