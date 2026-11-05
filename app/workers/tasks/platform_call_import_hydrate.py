@@ -132,7 +132,6 @@ def hydrate_platform_call_import_row(
     slot_task_id: str,
     filters: Dict[str, Any],
 ) -> Dict[str, Any]:
-    from app.services.call_imports.debounced_rollup import maybe_record_import_row_transition
     from app.services.storage.s3_service import s3_service
     from app.workers.tasks.process_call_import_row import (
         _extension_for_content_type as ext_fn,
@@ -277,13 +276,17 @@ def hydrate_platform_call_import_row(
         row.recording_s3_key = None
         row.status = CallImportRowStatus.COMPLETED
         row.error_message = None
-        if not _safe_commit(db, row_id=row_id, context="platform_chat_completed"):
-            return {"status": "skipped", "reason": "row_deleted"}
-        maybe_record_import_row_transition(
+        from app.services.call_imports.debounced_rollup import (
+            record_import_progress_before_row_commit,
+        )
+
+        record_import_progress_before_row_commit(
             call_import.id,
             previous_status=previous_status,
             new_status=row.status,
         )
+        if not _safe_commit(db, row_id=row_id, context="platform_chat_completed"):
+            return {"status": "skipped", "reason": "row_deleted"}
         call_import.last_progress_at = datetime.now(timezone.utc)
         _rollup_parent_on_catalog(catalog_db, row_db, call_import)
         _safe_commit(db, row_id=row_id, context="platform_chat_rollup")
@@ -440,14 +443,18 @@ def hydrate_platform_call_import_row(
     row.recording_duration_seconds = duration_seconds if duration_seconds > 0 else None
     row.status = CallImportRowStatus.COMPLETED
     row.error_message = None
-    if not _safe_commit(db, row_id=row_id, context="platform_completed"):
-        return {"status": "skipped", "reason": "row_deleted"}
+    from app.services.call_imports.debounced_rollup import (
+        record_import_progress_before_row_commit,
+    )
 
-    maybe_record_import_row_transition(
+    record_import_progress_before_row_commit(
         call_import.id,
         previous_status=previous_status,
         new_status=row.status,
     )
+    if not _safe_commit(db, row_id=row_id, context="platform_completed"):
+        return {"status": "skipped", "reason": "row_deleted"}
+
     call_import.last_progress_at = datetime.now(timezone.utc)
     _rollup_parent_on_catalog(catalog_db, row_db, call_import)
     _safe_commit(db, row_id=row_id, context="platform_rollup")

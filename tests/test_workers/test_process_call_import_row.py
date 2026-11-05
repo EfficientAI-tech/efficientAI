@@ -1363,3 +1363,36 @@ def test_second_import_task_does_not_claim_the_recording(db_session):
     assert claim_import_row_for_task(db_session, row, "task-b") is False
     db_session.refresh(row)
     assert row.celery_task_id == "task-a"
+
+
+def test_mark_row_failed_records_progress_before_row_commit(monkeypatch):
+    from app.workers.tasks import process_call_import_row as mod
+
+    order: list[str] = []
+
+    monkeypatch.setattr(
+        mod,
+        "_record_import_progress_before_row_commit",
+        lambda *args, **kwargs: order.append("record"),
+    )
+    monkeypatch.setattr(
+        mod,
+        "_safe_commit",
+        lambda *args, **kwargs: order.append("commit") or True,
+    )
+    monkeypatch.setattr(mod, "_rollup_parent_on_catalog", lambda *args, **kwargs: None)
+
+    row = types.SimpleNamespace(status=CallImportRowStatus.PENDING)
+    result = mod._mark_row_failed_for_fetch(
+        row=row,
+        db=object(),
+        row_id=str(uuid4()),
+        catalog_db=object(),
+        row_db=object(),
+        call_import=types.SimpleNamespace(id=uuid4()),
+        message="boom",
+        context="test",
+    )
+
+    assert result == {"status": "failed", "reason": "non_retryable_provider_error"}
+    assert order == ["record", "commit", "commit"]

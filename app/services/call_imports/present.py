@@ -166,14 +166,15 @@ def _serialize_call_import(
     total = int(call_import.total_rows or 0)
     completed = min(ui_completed, total) if total else ui_completed
     failed = min(ui_failed, total) if total else ui_failed
-    # Shard rows are the live count. The catalog counter lags during download.
-    source = (getattr(call_import, "source_format", None) or "").lower()
     batch_status = (
         call_import.status.value
         if isinstance(call_import.status, CallImportStatus)
         else str(call_import.status or "")
     )
-    if source == "platform" and batch_status in {"pending", "processing"}:
+    # Active imports: row aggregates are the display source of truth (catalog +
+    # Redis merge can briefly double-count when rollup clears Redis between row
+    # commit and a late delta). Platform discovery may still have agg_total=0.
+    if batch_status in {"pending", "processing"}:
         from app.services.call_imports.bulk_ops import (
             _aggregate_import_row_status_counts,
         )

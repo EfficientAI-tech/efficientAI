@@ -106,14 +106,19 @@ def _mark_row_failed_for_fetch(
     previous_status = row.status
     row.status = CallImportRowStatus.FAILED
     row.error_message = message
+    _record_import_progress_before_row_commit(
+        catalog_db,
+        row_db,
+        call_import,
+        previous_row_status=previous_status,
+        new_status=row.status,
+    )
     if not _safe_commit(db, row_id=row_id, context=context):
         return {"status": "skipped", "reason": "row_deleted"}
     _rollup_parent_on_catalog(
         catalog_db,
         row_db,
         call_import,
-        terminal_row=row,
-        previous_row_status=previous_status,
     )
     if not _safe_commit(db, row_id=row_id, context=f"rollup_{context}"):
         return {"status": "skipped", "reason": "row_deleted"}
@@ -330,28 +335,38 @@ def _rollup_parent_status(db, call_import, *, force: bool = False) -> None:
     schedule_debounced_import_rollup(db, call_import, force=force)
 
 
+def _record_import_progress_before_row_commit(
+    catalog_db,
+    row_db,
+    call_import,
+    *,
+    previous_row_status,
+    new_status,
+) -> None:
+    from app.db_sharding.sessions import is_sharding_enabled
+    from app.services.call_imports.debounced_rollup import (
+        record_import_progress_before_row_commit,
+    )
+
+    target = catalog_db if is_sharding_enabled() and catalog_db is not row_db else row_db
+    record_import_progress_before_row_commit(
+        call_import.id,
+        previous_status=previous_row_status,
+        new_status=new_status,
+        db=target,
+    )
+
+
 def _rollup_parent_on_catalog(
     catalog_db,
     row_db,
     call_import,
     *,
     force: bool = False,
-    terminal_row=None,
-    previous_row_status=None,
 ) -> None:
     from app.db_sharding.sessions import is_sharding_enabled
-    from app.services.call_imports.debounced_rollup import (
-        maybe_record_import_row_transition,
-    )
 
     target = catalog_db if is_sharding_enabled() and catalog_db is not row_db else row_db
-    if terminal_row is not None and previous_row_status is not None:
-        maybe_record_import_row_transition(
-            call_import.id,
-            previous_status=previous_row_status,
-            new_status=terminal_row.status,
-            db=target,
-        )
     _rollup_parent_status(target, call_import, force=force)
     if target is not row_db:
         _persist_session_changes(target)
@@ -526,14 +541,19 @@ def process_call_import_row_task(
                 previous_status = row.status
                 row.status = CallImportRowStatus.FAILED
                 row.error_message = f"Provider client error: {exc}"
+                _record_import_progress_before_row_commit(
+                    catalog_db,
+                    row_db,
+                    call_import,
+                    previous_row_status=previous_status,
+                    new_status=row.status,
+                )
                 if not _safe_commit(db, row_id=row_id, context="provider_client_error"):
                     return {"status": "skipped", "reason": "row_deleted"}
                 _rollup_parent_on_catalog(
                     catalog_db,
                     row_db,
                     call_import,
-                    terminal_row=row,
-                    previous_row_status=previous_status,
                 )
                 if not _safe_commit(db, row_id=row_id, context="rollup_provider_client_error"):
                     return {"status": "skipped", "reason": "row_deleted"}
@@ -558,14 +578,19 @@ def process_call_import_row_task(
                 previous_status = row.status
                 row.status = CallImportRowStatus.FAILED
                 row.error_message = msg
+                _record_import_progress_before_row_commit(
+                    catalog_db,
+                    row_db,
+                    call_import,
+                    previous_row_status=previous_status,
+                    new_status=row.status,
+                )
                 if not _safe_commit(db, row_id=row_id, context="no_recording_source"):
                     return {"status": "skipped", "reason": "row_deleted"}
                 _rollup_parent_on_catalog(
                     catalog_db,
                     row_db,
                     call_import,
-                    terminal_row=row,
-                    previous_row_status=previous_status,
                 )
                 if not _safe_commit(
                     db, row_id=row_id, context="rollup_no_recording_source"
@@ -576,14 +601,19 @@ def process_call_import_row_task(
             previous_status = row.status
             row.status = CallImportRowStatus.COMPLETED
             row.error_message = None
+            _record_import_progress_before_row_commit(
+                catalog_db,
+                row_db,
+                call_import,
+                previous_row_status=previous_status,
+                new_status=row.status,
+            )
             if not _safe_commit(db, row_id=row_id, context="mark_completed_no_recording"):
                 return {"status": "skipped", "reason": "row_deleted"}
             _rollup_parent_on_catalog(
                 catalog_db,
                 row_db,
                 call_import,
-                terminal_row=row,
-                previous_row_status=previous_status,
             )
             if not _safe_commit(
                 db, row_id=row_id, context="rollup_completed_no_recording"
@@ -674,14 +704,19 @@ def process_call_import_row_task(
                     if direct_failure is not None
                     else "Recording fetch failed"
                 )
+                _record_import_progress_before_row_commit(
+                    catalog_db,
+                    row_db,
+                    call_import,
+                    previous_row_status=previous_status,
+                    new_status=row.status,
+                )
                 if not _safe_commit(db, row_id=row_id, context="direct_url_failed"):
                     return {"status": "skipped", "reason": "row_deleted"}
                 _rollup_parent_on_catalog(
                     catalog_db,
                     row_db,
                     call_import,
-                    terminal_row=row,
-                    previous_row_status=previous_status,
                 )
                 if not _safe_commit(db, row_id=row_id, context="rollup_direct_url_failed"):
                     return {"status": "skipped", "reason": "row_deleted"}
@@ -765,14 +800,19 @@ def process_call_import_row_task(
                     if download_failure is not None
                     else "Recording fetch failed"
                 )
+                _record_import_progress_before_row_commit(
+                    catalog_db,
+                    row_db,
+                    call_import,
+                    previous_row_status=previous_status,
+                    new_status=row.status,
+                )
                 if not _safe_commit(db, row_id=row_id, context="non_retryable_provider_error"):
                     return {"status": "skipped", "reason": "row_deleted"}
                 _rollup_parent_on_catalog(
                     catalog_db,
                     row_db,
                     call_import,
-                    terminal_row=row,
-                    previous_row_status=previous_status,
                 )
                 if not _safe_commit(db, row_id=row_id, context="rollup_non_retryable_provider_error"):
                     return {"status": "skipped", "reason": "row_deleted"}
@@ -787,14 +827,19 @@ def process_call_import_row_task(
             previous_status = row.status
             row.status = CallImportRowStatus.FAILED
             row.error_message = f"Cloud blob storage unavailable: {err}"
+            _record_import_progress_before_row_commit(
+                catalog_db,
+                row_db,
+                call_import,
+                previous_row_status=previous_status,
+                new_status=row.status,
+            )
             if not _safe_commit(db, row_id=row_id, context="s3_unavailable"):
                 return {"status": "skipped", "reason": "row_deleted"}
             _rollup_parent_on_catalog(
                 catalog_db,
                 row_db,
                 call_import,
-                terminal_row=row,
-                previous_row_status=previous_status,
             )
             if not _safe_commit(db, row_id=row_id, context="rollup_s3_unavailable"):
                 return {"status": "skipped", "reason": "row_deleted"}
@@ -870,6 +915,13 @@ def process_call_import_row_task(
         previous_import_status = row.status
         row.status = CallImportRowStatus.COMPLETED
         row.error_message = None
+        _record_import_progress_before_row_commit(
+            catalog_db,
+            row_db,
+            call_import,
+            previous_row_status=previous_import_status,
+            new_status=row.status,
+        )
         if not _safe_commit(db, row_id=row_id, context="mark_completed"):
             return {"status": "skipped", "reason": "row_deleted"}
 
@@ -877,8 +929,6 @@ def process_call_import_row_task(
             catalog_db,
             row_db,
             call_import,
-            terminal_row=row,
-            previous_row_status=previous_import_status,
         )
         if not _safe_commit(db, row_id=row_id, context="rollup_completed"):
             return {"status": "skipped", "reason": "row_deleted"}

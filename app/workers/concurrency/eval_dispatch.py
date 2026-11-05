@@ -320,6 +320,92 @@ def build_eval_chain_transcribe_apply_async(
     )
 
 
+def _reset_source_row_for_eval_transcribe(
+    source_row: CallImportRow,
+    *,
+    reserved_task_id: str,
+    transcribe_overwrite: bool,
+) -> None:
+    source_row.diarised_transcript_status = "pending"
+    source_row.diarised_transcript_error = None
+    if transcribe_overwrite:
+        source_row.diarised_transcript = None
+    source_row.celery_task_id = reserved_task_id
+
+
+def _clear_transcribe_dispatch_task_ids(
+    db: Session,
+    source_row: CallImportRow,
+    eval_row: CallImportEvaluationRow,
+) -> None:
+    source_row.celery_task_id = None
+    eval_row.celery_task_id = None
+    db.commit()
+
+
+def _reserve_slot_enqueue_eval_transcribe(
+    *,
+    evaluation: CallImportEvaluation,
+    eval_row: CallImportEvaluationRow,
+    source_row: CallImportRow,
+    db: Session,
+    catalog_db: Session,
+    restricted_metric_ids: Optional[List[str]] = None,
+    transcribe_overwrite: bool = False,
+) -> bool:
+    """Commit pending diarisation state before queueing the worker task."""
+    from app.db_sharding.row_ops import shard_row_write_context
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        evaluation_needs_diarised_reference,
+    )
+
+    reserved_task_id = celery_uuid()
+    if not acquire_eval_slot(
+        workspace_id=evaluation.workspace_id,
+        organization_id=evaluation.organization_id,
+        celery_task_id=reserved_task_id,
+        evaluation_id=evaluation.id,
+    ):
+        return False
+
+    slot_released = False
+    try:
+        with shard_row_write_context(db):
+            _reset_source_row_for_eval_transcribe(
+                source_row,
+                reserved_task_id=reserved_task_id,
+                transcribe_overwrite=transcribe_overwrite,
+            )
+            eval_row.celery_task_id = None
+            db.commit()
+
+            try:
+                async_result = build_eval_chain_transcribe_apply_async(
+                    evaluation=evaluation,
+                    eval_row=eval_row,
+                    source_row=source_row,
+                    reserved_task_id=reserved_task_id,
+                    restricted_metric_ids=restricted_metric_ids,
+                    transcribe_overwrite=transcribe_overwrite,
+                    emit_native_text=evaluation_needs_diarised_reference(
+                        catalog_db, evaluation
+                    ),
+                )
+            except Exception:
+                _clear_transcribe_dispatch_task_ids(db, source_row, eval_row)
+                release_eval_slot_for_celery_task(reserved_task_id)
+                slot_released = True
+                raise
+
+            eval_row.celery_task_id = async_result.id
+            db.commit()
+    except Exception:
+        if not slot_released:
+            release_eval_slot_for_celery_task(reserved_task_id)
+        raise
+    return True
+
+
 def enqueue_eval_chain_transcribe_after_import(
     db: Session,
     *,
@@ -351,25 +437,32 @@ def enqueue_eval_chain_transcribe_after_import(
         return False
 
     with shard_row_write_context(db):
-        source_row.diarised_transcript_status = "pending"
-        source_row.diarised_transcript_error = None
-        source_row.celery_task_id = slot_task_id
+        _reset_source_row_for_eval_transcribe(
+            source_row,
+            reserved_task_id=slot_task_id,
+            transcribe_overwrite=transcribe_overwrite,
+        )
         eval_row.celery_task_id = None
-        db.flush()
+        db.commit()
 
         from app.workers.tasks.evaluate_call_import_row_core import (
             evaluation_needs_diarised_reference,
         )
 
-        async_result = build_eval_chain_transcribe_apply_async(
-            evaluation=evaluation,
-            eval_row=eval_row,
-            source_row=source_row,
-            reserved_task_id=slot_task_id,
-            restricted_metric_ids=restricted_metric_ids,
-            transcribe_overwrite=transcribe_overwrite,
-            emit_native_text=evaluation_needs_diarised_reference(db, evaluation),
-        )
+        try:
+            async_result = build_eval_chain_transcribe_apply_async(
+                evaluation=evaluation,
+                eval_row=eval_row,
+                source_row=source_row,
+                reserved_task_id=slot_task_id,
+                restricted_metric_ids=restricted_metric_ids,
+                transcribe_overwrite=transcribe_overwrite,
+                emit_native_text=evaluation_needs_diarised_reference(db, evaluation),
+            )
+        except Exception:
+            _clear_transcribe_dispatch_task_ids(db, source_row, eval_row)
+            raise
+
         eval_row.celery_task_id = async_result.id
         db.commit()
     return True
@@ -639,35 +732,14 @@ def _try_dispatch_single_row(
                 )
                 return EvalDispatchOutcome("skip")
             if not diarisation_failed:
-
-                def _enqueue_transcribe(reserved_task_id: str):
-                    source_row.diarised_transcript_status = "pending"
-                    source_row.diarised_transcript_error = None
-                    if transcribe_overwrite:
-                        source_row.diarised_transcript = None
-                    source_row.celery_task_id = reserved_task_id
-                    mutate_db.flush()
-                    from app.workers.tasks.evaluate_call_import_row_core import (
-                        evaluation_needs_diarised_reference,
-                    )
-
-                    return build_eval_chain_transcribe_apply_async(
-                        evaluation=evaluation,
-                        eval_row=eval_row,
-                        source_row=source_row,
-                        reserved_task_id=reserved_task_id,
-                        restricted_metric_ids=restricted_metric_ids,
-                        transcribe_overwrite=transcribe_overwrite,
-                        emit_native_text=evaluation_needs_diarised_reference(
-                            catalog_db, evaluation
-                        ),
-                    )
-
-                if _reserve_slot_and_enqueue(
+                if _reserve_slot_enqueue_eval_transcribe(
                     evaluation=evaluation,
                     eval_row=eval_row,
+                    source_row=source_row,
                     db=mutate_db,
-                    enqueue_fn=_enqueue_transcribe,
+                    catalog_db=catalog_db,
+                    restricted_metric_ids=restricted_metric_ids,
+                    transcribe_overwrite=transcribe_overwrite,
                 ):
                     return EvalDispatchOutcome("dispatched")
                 return EvalDispatchOutcome("at_capacity")

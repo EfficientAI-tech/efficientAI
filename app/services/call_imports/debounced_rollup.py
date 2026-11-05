@@ -100,6 +100,27 @@ def maybe_record_import_row_transition(
     )
 
 
+def record_import_progress_before_row_commit(
+    call_import_id: UUID,
+    *,
+    previous_status,
+    new_status,
+    db: Session | None = None,
+) -> None:
+    """Record Redis progress delta before the row terminal status is committed.
+
+    Debounced rollup recounts only see committed rows. Recording after commit
+    lets another worker rollup (SQL includes the row, then clear Redis) race
+    ahead of this worker's +1 and inflate ``merge_import_counters_for_ui``.
+    """
+    maybe_record_import_row_transition(
+        call_import_id,
+        previous_status=previous_status,
+        new_status=new_status,
+        db=db,
+    )
+
+
 def schedule_debounced_import_rollup(
     db: Session,
     call_import,
