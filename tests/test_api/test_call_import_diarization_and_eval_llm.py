@@ -59,8 +59,15 @@ def _make_fake_row():
 
 
 def _bound_celery_self():
+    """Stand-in Celery task instance for a direct ``.run()`` call.
+
+    ``id`` is ``None`` on purpose: no real Celery request exists here, so the
+    worker must take its "no owning task id" path instead of writing through an
+    ownership-filtered UPDATE (the fake session has no ``execute``).
+    """
+
     class _Request:
-        id = "test-celery-id"
+        id = None
 
     class _Self:
         request = _Request()
@@ -72,22 +79,20 @@ def _bound_celery_self():
 def _ensure_bound_task_run(task):
     """Celery's bound ``run`` already supplies ``self``.
 
-    A second explicit self shifts every argument, so the row id is read as
-    the STT provider. Inject a fake self only when a stub replaced ``run``
-    with the raw function and the call is missing that argument.
+    Conftest installs a fake Celery app whose decorator does ``fn.run = fn``,
+    which loses the implicit ``self`` binding. Wrap the raw function so it is
+    called the way the real bound task would be.
     """
     if getattr(task.run, "_bound_for_tests", False):
         return task
 
     underlying = task.run
+    if getattr(underlying, "__self__", None) is not None:
+        # Real Celery bound method — nothing to fix.
+        return task
 
     def _run(*args, **kwargs):
-        try:
-            return underlying(*args, **kwargs)
-        except TypeError as exc:
-            if "positional argument" not in str(exc):
-                raise
-            return underlying(_bound_celery_self(), *args, **kwargs)
+        return underlying(_bound_celery_self(), *args, **kwargs)
 
     _run._bound_for_tests = True
     task.run = _run

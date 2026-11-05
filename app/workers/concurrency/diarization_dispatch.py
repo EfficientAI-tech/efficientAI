@@ -242,8 +242,17 @@ def _try_dispatch_single_diarization_row(
             raise
 
         if async_result.id != reserved_task_id:
-            row.celery_task_id = async_result.id
-            db.commit()
+            # The worker owns the row under ``_eval_slot_task_id``, so the row
+            # must keep the reserved id. Re-pointing it at the broker id would
+            # make every ownership check miss and report ``superseded``.
+            logger.warning(
+                "Diarisation task for row {} ignored the requested task id "
+                "(reserved={} broker={}); keeping the reserved id for "
+                "ownership checks.",
+                row.id,
+                reserved_task_id,
+                async_result.id,
+            )
     except Exception:
         if not slot_released:
             release_eval_slot_for_celery_task(reserved_task_id)

@@ -388,6 +388,28 @@ def test_failed_diarisation_without_text_is_one_shared_update():
     }
 
 
+def test_overwrite_retry_marks_source_pending_and_clears_transcript():
+    from app.api.v1.routes.call_import_evaluations import source_retry_assignments
+
+    source_row = SimpleNamespace(
+        status="completed",
+        celery_task_id="old-task",
+        recording_s3_key="audio/already-there.wav",
+        error_message=None,
+        attempts=0,
+        diarised_transcript="agent: hi",
+        diarised_transcript_status="completed",
+        diarised_transcript_error=None,
+    )
+    assert source_retry_assignments(source_row, transcribe_overwrite=True) == {
+        "celery_task_id": None,
+        "diarised_transcript": None,
+        "diarised_transcript_status": "pending",
+        "diarised_transcript_error": None,
+        "diarised_at": None,
+    }
+
+
 def test_explicit_retry_ids_are_loaded_in_pages():
     from app.db_sharding import eval_rows
     from app.services.call_imports.bulk_ops import execute_evaluation_retry
@@ -474,3 +496,38 @@ def test_metric_page_is_not_reset_when_marker_write_fails():
 
     db.execute.assert_not_called()
     schedule.assert_not_called()
+
+
+def test_retry_overwrite_does_not_bulk_reset_whole_import():
+    """Retry re-diarise is scoped to retried rows, not materialize-style bulk reset."""
+    from app.services.call_imports.bulk_ops import execute_evaluation_retry
+
+    evaluation_id = uuid4()
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = SimpleNamespace(
+        id=evaluation_id,
+        call_import_id=uuid4(),
+    )
+
+    with patch(
+        "app.services.call_imports.bulk_ops.is_sharding_enabled",
+        return_value=False,
+    ), patch(
+        "app.db_sharding.eval_rows.iter_evaluation_row_sessions",
+        return_value=[(db, None)],
+    ), patch(
+        "app.db_sharding.eval_rows.load_retry_target_page",
+        return_value=[],
+    ), patch(
+        "app.services.call_imports.bulk_ops.bulk_reset_diarisation_for_overwrite",
+    ) as bulk_reset, patch(
+        "app.workers.concurrency.fair_dispatch.schedule_fair_dispatch",
+    ):
+        result = execute_evaluation_retry(
+            db,
+            evaluation_id,
+            transcribe_overwrite=True,
+        )
+
+    assert result["requeued"] == 0
+    bulk_reset.assert_not_called()

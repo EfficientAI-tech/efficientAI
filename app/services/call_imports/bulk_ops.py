@@ -457,6 +457,9 @@ def materialize_and_enqueue_evaluation(
         if shard_sessions is not None:
             shard_sessions.close_all()
 
+    if transcribe_overwrite:
+        bulk_reset_diarisation_for_overwrite(db, evaluation.call_import_id)
+
     try:
         _enqueue_eval_rows_with_optional_transcribe(
             db,
@@ -1582,6 +1585,87 @@ def _batch_revoke_celery_task_ids(
     )
 
 
+_OVERWRITE_DIA_RESET_VALUES = {
+    "diarised_transcript": None,
+    "diarised_segments": None,
+    "diarised_native_transcript": None,
+    "diarised_transcript_status": "pending",
+    "diarised_transcript_error": None,
+    # Clear the stamp so the new pass writes its own. Dispatch compares it with
+    # the run's ``started_at`` to tell fresh text from text from an older run.
+    "diarised_at": None,
+    "celery_task_id": None,
+}
+
+
+def bulk_reset_diarisation_for_overwrite(
+    db: Session,
+    call_import_id: UUID,
+) -> int:
+    """Clear diarised transcripts and mark rows pending before overwrite rediarise.
+
+    Run Evaluation with ``transcribe_overwrite`` must reset every row up front.
+    Per-row dispatch alone leaves most rows ``completed`` until visited, so eval
+    dispatch skips rediarise and scores stale transcripts while the UI flips
+    between completed and running.
+    """
+    from app.db_sharding.row_ops import shard_row_write_context
+    from app.db_sharding.scatter_gather import scatter_gather_on_shards, shard_ids_for_import
+
+    task_ids: List[str] = []
+    seen_tasks: set[str] = set()
+    total = 0
+
+    def _reset_on_session(session: Session, _shard_id: str) -> int:
+        rows = (
+            session.query(CallImportRow.id, CallImportRow.celery_task_id)
+            .filter(
+                CallImportRow.call_import_id == call_import_id,
+                CallImportRow.recording_s3_key.isnot(None),
+                CallImportRow.recording_s3_key != "",
+            )
+            .all()
+        )
+        for _row_id, raw_task in rows:
+            cleaned = (raw_task or "").strip()
+            if cleaned and cleaned not in seen_tasks:
+                seen_tasks.add(cleaned)
+                task_ids.append(cleaned)
+        if not rows:
+            return 0
+        row_ids = [row[0] for row in rows]
+        with shard_row_write_context(session):
+            result = session.execute(
+                update(CallImportRow)
+                .where(CallImportRow.id.in_(row_ids))
+                .values(**_OVERWRITE_DIA_RESET_VALUES),
+                execution_options={"synchronize_session": False},
+            )
+            session.commit()
+        count = int(result.rowcount or 0)
+        return count if count >= 0 else len(row_ids)
+
+    if not is_sharding_enabled():
+        total = _reset_on_session(db, "legacy")
+    else:
+        for count in scatter_gather_on_shards(
+            shard_ids_for_import(db, call_import_id),
+            _reset_on_session,
+        ):
+            total += count
+
+    if task_ids:
+        _batch_revoke_celery_task_ids(task_ids, terminate=False)
+    if total:
+        logger.info(
+            "bulk_reset_diarisation_for_overwrite call_import={} rows={} revoked_tasks={}",
+            call_import_id,
+            total,
+            len(task_ids),
+        )
+    return total
+
+
 def execute_evaluation_cancel(
     db: Session,
     evaluation_id: UUID,
@@ -2263,6 +2347,10 @@ def execute_evaluation_retry(
             evaluation_id,
         )
         return {"evaluation_id": str(evaluation_id), "requeued": 0}
+
+    # Retry overwrite is per retried row only (``_apply_source_retry_updates``).
+    # Do not call ``bulk_reset_diarisation_for_overwrite`` here — that resets
+    # every row on the import and belongs on a full Run Evaluation only.
 
     include = include_completed or bool(metric_ids)
     statuses = ["failed", "completed"] if include else ["failed"]

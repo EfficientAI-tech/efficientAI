@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timezone
 from typing import Callable, List, Literal, NamedTuple, Optional
 from uuid import UUID
 
@@ -103,13 +104,41 @@ def _needs_transcribe_for_eval(
     dia_status = (
         getattr(source_row, "diarised_transcript_status", None) or ""
     ).strip().lower()
-    # Overwrite runs re-diarise once per row. After a successful completion the
-    # eval pipeline should move on to scoring — leaving overwrite true would
-    # otherwise reset completed rows back to pending on every dispatch tick.
-    if transcribe_overwrite and existing_dia and dia_status == "completed":
-        return False
-    needs_diarisation = not existing_dia or transcribe_overwrite
-    return bool(can_auto_transcribe and has_audio and needs_diarisation)
+    can_diarise = bool(can_auto_transcribe and has_audio)
+    # Overwrite runs re-diarise once per row. A ``completed`` transcript on its
+    # own is not proof the text belongs to *this* pass — it may predate the run
+    # (and the newly picked diariser model / prompt). Only the pass marker the
+    # worker writes when it finishes proves that, so stale transcripts are
+    # re-diarised instead of being scored as fresh.
+    if transcribe_overwrite:
+        if not existing_dia or dia_status != "completed":
+            return can_diarise
+        evaluation_id = getattr(evaluation, "id", None)
+        if evaluation_id is not None:
+            from app.workers.concurrency.fair_dispatch import row_diarised_in_pass
+
+            in_pass = row_diarised_in_pass(
+                evaluation_id, getattr(source_row, "id", None) or ""
+            )
+            if in_pass:
+                return False
+        # ``diarised_at`` is cleared whenever a pass resets the row, so any
+        # value left here came from a diarisation — fresh when it postdates the
+        # run start, stale (and therefore re-diarised) when it predates it.
+        # This keeps the answer independent of Redis availability, so a marker
+        # outage cannot either loop the dispatcher or score old text.
+        diarised_at = getattr(source_row, "diarised_at", None)
+        started_at = getattr(evaluation, "started_at", None)
+        if diarised_at is None:
+            return can_diarise
+        if started_at is None:
+            return False
+        if diarised_at.tzinfo is None:
+            diarised_at = diarised_at.replace(tzinfo=timezone.utc)
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=timezone.utc)
+        return bool(diarised_at < started_at and can_diarise)
+    return bool(can_diarise and not existing_dia)
 
 
 def _diarisation_in_flight(source_row: CallImportRow) -> bool:
@@ -343,6 +372,9 @@ def _reset_source_row_for_eval_transcribe(
     source_row.diarised_transcript_error = None
     if transcribe_overwrite:
         source_row.diarised_transcript = None
+        # Drop the old stamp so dispatch can tell this pass's result from an
+        # earlier run's transcript.
+        source_row.diarised_at = None
     source_row.celery_task_id = reserved_task_id
 
 

@@ -206,9 +206,11 @@ export function EvaluationRetryRerunModals({
                         Auto-diarise missing or overwritten transcripts
                       </p>
                       <p className="text-[11px] text-gray-500 mt-0.5">
-                        Rows that already have a diarised transcript are
-                        re-scored only unless you opt to overwrite below.
-                        Pick the same pipeline you would use for a new run.
+                        Only rows you are retrying are touched. Good diarised
+                        transcripts are reused and only re-scored unless you
+                        opt in below. Rows missing a transcript or with a
+                        failed diarisation step are diarised again. Pick the
+                        same pipeline you would use for a new run.
                       </p>
                     </div>
                     <div
@@ -221,11 +223,10 @@ export function EvaluationRetryRerunModals({
                         role="tab"
                         aria-pressed={retryTranscribeMode === 'llm_only'}
                         onClick={() => setRetryTranscribeMode('llm_only')}
-                        className={`px-3 py-1 text-[11px] font-medium rounded-md transition ${
-                          retryTranscribeMode === 'llm_only'
+                        className={`px-3 py-1 text-[11px] font-medium rounded-md transition ${retryTranscribeMode === 'llm_only'
                             ? 'bg-primary-50 text-primary-700 ring-1 ring-inset ring-primary-200'
                             : 'text-gray-600 hover:text-gray-900'
-                        }`}
+                          }`}
                       >
                         LLM only (audio in)
                       </button>
@@ -234,11 +235,10 @@ export function EvaluationRetryRerunModals({
                         role="tab"
                         aria-pressed={retryTranscribeMode === 'stt_llm'}
                         onClick={() => setRetryTranscribeMode('stt_llm')}
-                        className={`px-3 py-1 text-[11px] font-medium rounded-md transition inline-flex items-center gap-1.5 ${
-                          retryTranscribeMode === 'stt_llm'
+                        className={`px-3 py-1 text-[11px] font-medium rounded-md transition inline-flex items-center gap-1.5 ${retryTranscribeMode === 'stt_llm'
                             ? 'bg-primary-50 text-primary-700 ring-1 ring-inset ring-primary-200'
                             : 'text-gray-600 hover:text-gray-900'
-                        }`}
+                          }`}
                       >
                         STT + LLM diariser
                         <span className="rounded-full bg-gray-200 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-gray-600">
@@ -275,10 +275,10 @@ export function EvaluationRetryRerunModals({
                           Re-diarise existing transcripts
                         </span>{' '}
                         <span className="text-gray-500">
-                          — wipe the diarised transcript on every retried
-                          row so the pipeline runs from scratch. Leave
-                          unchecked to keep existing transcripts and only
-                          re-score with the new LLM.
+                          — wipe the diarised transcript on each retried row
+                          only (not the whole import) so those rows run through
+                          diarisation again. Leave unchecked to keep existing
+                          transcripts and only re-score with the new LLM.
                         </span>
                       </span>
                     </label>

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import types
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
@@ -312,9 +313,10 @@ def test_standalone_diarization_uses_diarization_queue(
     assert call_kwargs["args"][6] is None
 
 
-def test_needs_transcribe_skips_overwrite_when_diarisation_already_completed(
+def test_needs_transcribe_overwrite_rediarises_transcripts_from_earlier_runs(
     monkeypatch,
 ):
+    """A completed transcript predating the run must not be treated as fresh."""
     from app.workers.concurrency.eval_dispatch import _needs_transcribe_for_eval
 
     monkeypatch.setattr(
@@ -322,6 +324,7 @@ def test_needs_transcribe_skips_overwrite_when_diarisation_already_completed(
         lambda *_a, **_kw: True,
     )
     evaluation = SimpleNamespace(
+        id=uuid4(),
         transcript_source="diarised",
         transcribe_mode="stt_llm",
         stt_provider="openai",
@@ -330,6 +333,50 @@ def test_needs_transcribe_skips_overwrite_when_diarisation_already_completed(
         diarisation_llm_model="gpt-4o",
     )
     source_row = SimpleNamespace(
+        id=uuid4(),
+        recording_s3_key="audio/test.wav",
+        diarised_transcript="agent: hi",
+        diarised_transcript_status="completed",
+        diarised_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    evaluation.started_at = datetime(2026, 2, 1, tzinfo=timezone.utc)
+
+    # Nothing marked for this pass yet → the stale transcript is re-diarised.
+    assert (
+        _needs_transcribe_for_eval(
+            evaluation,
+            source_row,
+            transcribe_overwrite=True,
+        )
+        is True
+    )
+
+
+def test_needs_transcribe_skips_overwrite_when_row_diarised_this_pass(
+    monkeypatch,
+):
+    """Once the worker records the row for this pass, dispatch moves on to scoring."""
+    from app.workers.concurrency.eval_dispatch import _needs_transcribe_for_eval
+
+    monkeypatch.setattr(
+        "app.db_sharding.scatter_gather.row_text_present",
+        lambda *_a, **_kw: True,
+    )
+    monkeypatch.setattr(
+        "app.workers.concurrency.fair_dispatch.row_diarised_in_pass",
+        lambda *_a, **_kw: True,
+    )
+    evaluation = SimpleNamespace(
+        id=uuid4(),
+        transcript_source="diarised",
+        transcribe_mode="stt_llm",
+        stt_provider="openai",
+        stt_model="whisper-1",
+        diarisation_llm_provider="openai",
+        diarisation_llm_model="gpt-4o",
+    )
+    source_row = SimpleNamespace(
+        id=uuid4(),
         recording_s3_key="audio/test.wav",
         diarised_transcript="agent: hi",
         diarised_transcript_status="completed",

@@ -176,7 +176,6 @@ def source_retry_assignments(
     changes: dict = {}
     if (getattr(source_row, "celery_task_id", None) or "").strip():
         changes["celery_task_id"] = None
-
     no_audio = not (getattr(source_row, "recording_s3_key", None) or "").strip()
     status = getattr(source_row, "status", None)
     requeue = no_audio and status in (
@@ -196,9 +195,15 @@ def source_retry_assignments(
     has_dia = row_text_present(
         source_row, "diarised_transcript", "diarised_transcript_char_length"
     )
-    if transcribe_overwrite and has_dia:
+    if transcribe_overwrite:
+        # Retry overwrite re-diarises *this* row only; the eval run's own
+        # overwrite marker is stored separately so `_needs_transcribe_for_eval`
+        # knows the fresh transcript belongs to the current pass.
         changes["diarised_transcript"] = None
-        has_dia = False
+        changes["diarised_transcript_status"] = "pending"
+        changes["diarised_transcript_error"] = None
+        changes["diarised_at"] = None
+        return changes
 
     dia_status = (
         getattr(source_row, "diarised_transcript_status", None) or ""

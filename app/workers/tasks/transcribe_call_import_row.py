@@ -305,15 +305,31 @@ def _diarisation_update_if_owned(
     values: dict,
     *,
     require_pending: bool = False,
+    row=None,
 ) -> bool:
-    """Apply row updates only when this Celery task still owns the row."""
+    """Apply row updates only when this Celery task still owns the row.
+
+    Ownership needs a task id to compare against. Direct ``.run()`` calls
+    (tests, repair scripts) carry none, so they fall back to writing the
+    loaded ``row`` object directly — the pre-ownership behaviour — instead of
+    reporting ``superseded`` for work nobody else could own.
+    """
     from sqlalchemy import update
 
     from app.models.database import CallImportRow
 
     cleaned = _owner_task_id(task_id)
     if not cleaned:
-        return False
+        if row is None:
+            return False
+        # No Celery id means nobody can own the row: this is a direct
+        # ``.run()`` call (test, repair script) where the caller already holds
+        # the session and row, so write through instead of reporting
+        # ``superseded``.
+        for column, value in values.items():
+            setattr(row, column, value)
+        row_db.commit()
+        return True
     rid = row_id if isinstance(row_id, UUID) else UUID(str(row_id))
     filters = [
         CallImportRow.id == rid,
@@ -331,6 +347,8 @@ def _claim_diarisation_running(
     row_id: str | UUID,
     task_id: str | None,
     values: dict,
+    *,
+    row=None,
 ) -> bool:
     return _diarisation_update_if_owned(
         row_db,
@@ -342,6 +360,7 @@ def _claim_diarisation_running(
             **values,
         },
         require_pending=True,
+        row=row,
     )
 
 
@@ -440,7 +459,9 @@ def _persist_diarization_failure(
             "diarised_transcript_error": error_message,
         }
         if task_id is not None:
-            if not _diarisation_update_if_owned(row_db, row_id, task_id, values):
+            if not _diarisation_update_if_owned(
+                row_db, row_id, task_id, values, row=row
+            ):
                 return {"status": "skipped", "reason": "superseded"}
             return {"status": "failed", "reason": reason}
         row.diarised_transcript_status = "failed"
@@ -700,6 +721,23 @@ def _run_diarization_pipeline_inner(
     }
 
 
+def _mark_diarisation_pass(pipeline_ctx: dict[str, Any], row_id: str | UUID) -> None:
+    """Record that this row finished diarisation for the current eval pass."""
+    evaluation_id = pipeline_ctx.get("evaluation_id")
+    if not evaluation_id:
+        return
+    try:
+        from app.workers.concurrency.fair_dispatch import mark_row_diarised_in_pass
+
+        mark_row_diarised_in_pass(evaluation_id, row_id)
+    except Exception:  # noqa: BLE001 — marker is advisory, never fail the row
+        logger.exception(
+            "Failed to mark row {} diarised in pass for evaluation {}",
+            row_id,
+            evaluation_id,
+        )
+
+
 def _finalize_diarization_row(
     row_id: str | UUID,
     *,
@@ -728,9 +766,10 @@ def _finalize_diarization_row(
 
     def _complete_owned(values: dict[str, Any]) -> dict[str, Any] | None:
         if not _diarisation_update_if_owned(
-            row_db, row_id, owner_task_id, values
+            row_db, row_id, owner_task_id, values, row=row
         ):
             return {"status": "skipped", "reason": "superseded"}
+        _mark_diarisation_pass(pipeline_ctx, row_id)
         return None
 
     try:
@@ -922,7 +961,11 @@ def transcribe_call_import_row_task(
     )
 
     evaluation_id_for_dispatch: Optional[str] = None
-    slot_task_id = _eval_slot_task_id or self.request.id
+    # ``self.request.id`` is only present under a real Celery request. Direct
+    # ``.run()`` calls (tests, repair scripts) pass the row id as ``self``, so
+    # resolve the owning task id defensively.
+    request = getattr(self, "request", None)
+    slot_task_id: Optional[str] = _eval_slot_task_id or getattr(request, "id", None)
     pipeline_ctx: dict[str, Any] | None = None
     try:
         from app.db_sharding.row_ops import (
@@ -984,6 +1027,7 @@ def transcribe_call_import_row_task(
                     row_uuid,
                     slot_task_id,
                     {"diarised_transcript_status": "completed"},
+                    row=row,
                 ):
                     return {
                         "status": "skipped",
@@ -1004,6 +1048,7 @@ def transcribe_call_import_row_task(
                             "No recording available for this row; cannot diarise."
                         ),
                     },
+                    row=row,
                 ):
                     return {"status": "skipped", "reason": "superseded"}
                 return {"status": "skipped", "reason": "no_recording"}
@@ -1021,6 +1066,7 @@ def transcribe_call_import_row_task(
                             "'stt_llm' or 'llm_only'."
                         ),
                     },
+                    row=row,
                 ):
                     return {"status": "skipped", "reason": "superseded"}
                 return {"status": "failed", "reason": "unknown_mode"}
@@ -1039,6 +1085,7 @@ def transcribe_call_import_row_task(
                                 "model in the Diarise modal."
                             ),
                         },
+                        row=row,
                     ):
                         return {"status": "skipped", "reason": "superseded"}
                     return {"status": "failed", "reason": "missing_stt"}
@@ -1055,6 +1102,7 @@ def transcribe_call_import_row_task(
                                 f"Unknown STT provider '{stt_provider}'."
                             ),
                         },
+                        row=row,
                     ):
                         return {"status": "skipped", "reason": "superseded"}
                     return {"status": "failed", "reason": "unknown_provider"}
@@ -1073,6 +1121,7 @@ def transcribe_call_import_row_task(
                             "a chat model in the Diarise modal."
                         ),
                     },
+                    row=row,
                 ):
                     return {"status": "skipped", "reason": "superseded"}
                 return {"status": "failed", "reason": "missing_llm_diariser"}
@@ -1110,7 +1159,7 @@ def transcribe_call_import_row_task(
                 claim_values["diarised_transcript_model"] = llm_model_value
 
             if not _claim_diarisation_running(
-                row_db, row_uuid, slot_task_id, claim_values
+                row_db, row_uuid, slot_task_id, claim_values, row=row
             ):
                 return {"status": "skipped", "reason": "superseded"}
 
@@ -1178,6 +1227,7 @@ def transcribe_call_import_row_task(
                     "diarised_transcript_status": "failed",
                     "diarised_transcript_error": _summarize_exc(exc),
                 },
+                row=row,
             ):
                 return {"status": "skipped", "reason": "superseded"}
         except Exception:
