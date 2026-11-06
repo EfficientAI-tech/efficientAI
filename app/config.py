@@ -367,6 +367,10 @@ class Settings(BaseSettings):
     LLM_GATEWAY_MASTER_KEY: Optional[str] = None
     LLM_GATEWAY_PASSTHROUGH_PROVIDER_KEYS: bool = True
     LLM_GATEWAY_INTERFACE: str = "litellm_shim"  # litellm_shim | native_openai
+    # Private CIDRs an org admin may use as an LLM gateway base_url. Empty by
+    # default: the operator must opt in, so org admin rights never grant
+    # access to the host's private network. Separate from OPERATIONAL_TRUSTED_IPS.
+    LLM_GATEWAY_ALLOWED_NETWORKS: List[str] = []
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -1125,6 +1129,10 @@ def load_config_from_file(config_path: str) -> None:
             interface = str(gateway_cfg["gateway_interface"]).strip().lower()
             if interface in ("litellm_shim", "native_openai"):
                 settings.LLM_GATEWAY_INTERFACE = interface
+        if "allowed_networks" in gateway_cfg:
+            settings.LLM_GATEWAY_ALLOWED_NETWORKS = [
+                str(entry) for entry in (gateway_cfg["allowed_networks"] or [])
+            ]
 
     if "llm_gateway" in config_data:
         llm_cfg = config_data["llm_gateway"]

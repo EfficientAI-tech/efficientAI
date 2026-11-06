@@ -298,6 +298,14 @@ judge_alignment:
 #   master_key: null           # LiteLLM Proxy only (LITELLM_MASTER_KEY)
 #   passthrough_provider_keys: true   # false = keys in gateway; AI integrations can omit api_key
 #   gateway_interface: litellm_shim   # litellm_shim | native_openai (Bifrost only)
+#   # Private CIDRs org admins may use as a gateway base_url (Configurations →
+#   # Integrations → LLM Gateway). Empty by default, so private addresses are
+#   # rejected. List only the gateway's own range; every org admin can target any
+#   # address inside it. Link-local / cloud metadata (169.254.0.0/16, fe80::/10)
+#   # and loopback (outside debug) stay blocked even if listed here.
+#   # Independent of operational.trusted_ips, which only gates /metrics.
+#   allowed_networks: []
+#   #  - "10.20.0.0/24"
 
 # Enterprise License (JWT signed with RS256). Unlocks gated features like
 # oidc_sso, mfa_enforce, audit_export, voice_playground, gepa_optimization,

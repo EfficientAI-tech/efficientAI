@@ -11,6 +11,7 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.core.logging import log_exception_safely, redact_log_secrets
 from app.core.encryption import decrypt_api_key
 from app.models.database import TelephonyIntegration
 from app.services.credentials import resolve_telephony_integration
@@ -75,8 +76,8 @@ class VobizClient:
                 raise ValueError(f"Vobiz API returned HTTP {response.status_code}")
             return True
         except Exception as e:
-            logger.exception("Vobiz connection test failed")
-            raise ValueError(f"Failed to connect to Vobiz: {str(e)}") from e
+            log_exception_safely("Vobiz connection test failed")
+            raise ValueError(f"Failed to connect to Vobiz: {redact_log_secrets(e)}") from e
 
     def list_account_numbers(self, *, limit: int = 100) -> List[Dict[str, Any]]:
         """List phone numbers owned by this Vobiz account (paginated)."""
@@ -89,8 +90,8 @@ class VobizClient:
             try:
                 response = self._request("GET", url, timeout=30.0)
             except Exception as e:
-                logger.exception("Failed to list Vobiz account numbers")
-                raise ValueError(f"Failed to list account numbers: {str(e)}") from e
+                log_exception_safely("Failed to list Vobiz account numbers")
+                raise ValueError(f"Failed to list account numbers: {redact_log_secrets(e)}") from e
 
             if response.status_code >= 400:
                 raise ValueError(
@@ -141,8 +142,8 @@ class VobizClient:
         except ValueError:
             raise
         except Exception as e:
-            logger.exception("Failed to create Vobiz application")
-            raise ValueError(f"Failed to create application: {str(e)}") from e
+            log_exception_safely("Failed to create Vobiz application")
+            raise ValueError(f"Failed to create application: {redact_log_secrets(e)}") from e
 
     def update_application(
         self,
@@ -173,8 +174,8 @@ class VobizClient:
         except ValueError:
             raise
         except Exception as e:
-            logger.exception("Failed to update Vobiz application")
-            raise ValueError(f"Failed to update application: {str(e)}") from e
+            log_exception_safely("Failed to update Vobiz application")
+            raise ValueError(f"Failed to update application: {redact_log_secrets(e)}") from e
 
     def attach_number_to_application(self, number: str, application_id: str) -> Dict[str, Any]:
         """Attach a phone number to a Vobiz application."""
@@ -195,8 +196,8 @@ class VobizClient:
         except ValueError:
             raise
         except Exception as e:
-            logger.exception("Failed to attach Vobiz number to application")
-            raise ValueError(f"Failed to attach number to application: {str(e)}") from e
+            log_exception_safely("Failed to attach Vobiz number to application")
+            raise ValueError(f"Failed to attach number to application: {redact_log_secrets(e)}") from e
 
     def set_number_answer_url(
         self,
@@ -283,8 +284,8 @@ class VobizClient:
         except ValueError:
             raise
         except Exception as e:
-            logger.exception("Failed to create Vobiz outbound call")
-            raise ValueError(f"Failed to create outbound call: {str(e)}") from e
+            log_exception_safely("Failed to create Vobiz outbound call")
+            raise ValueError(f"Failed to create outbound call: {redact_log_secrets(e)}") from e
 
     def hangup_call(self, call_id: str) -> bool:
         """Terminate an active call."""
@@ -301,8 +302,8 @@ class VobizClient:
         except ValueError:
             raise
         except Exception as e:
-            logger.exception("Failed to hang up Vobiz call")
-            raise ValueError(f"Failed to hang up call: {str(e)}") from e
+            log_exception_safely("Failed to hang up Vobiz call")
+            raise ValueError(f"Failed to hang up call: {redact_log_secrets(e)}") from e
 
 
 def build_vobiz_client_from_settings() -> VobizClient:

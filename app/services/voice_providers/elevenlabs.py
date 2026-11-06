@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional, List
 import requests
 from loguru import logger
 
+from app.core.logging import redact_log_secrets
 from app.services.voice_providers.base import BaseVoiceProvider
 from app.services.voice_providers.elevenlabs_api_url import elevenlabs_api_v1_base
 
@@ -79,8 +80,8 @@ class ElevenLabsVoiceProvider(BaseVoiceProvider):
                 raise ValueError(f"ElevenLabs API error ({response.status_code}): {error_msg}")
 
         except requests.exceptions.RequestException as e:
-            logger.error(f"[ElevenLabsProvider] Request error: {e}")
-            raise ValueError(f"Failed to create ElevenLabs web call: {str(e)}")
+            logger.error(f"[ElevenLabsProvider] Request error: {redact_log_secrets(e)}")
+            raise ValueError(f"Failed to create ElevenLabs web call: {redact_log_secrets(e)}")
 
     def create_agent(self, response_engine: Dict[str, Any], voice_id: str, **kwargs) -> Dict[str, Any]:
         """Not implemented - agents are created via the ElevenLabs dashboard."""

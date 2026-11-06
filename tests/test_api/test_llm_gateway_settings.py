@@ -1,5 +1,7 @@
 """API tests for organization LLM gateway settings."""
 
+from unittest.mock import patch
+
 import pytest
 
 from app.config import settings
@@ -120,3 +122,59 @@ def test_update_llm_gateway_settings_rejects_invalid_url(authenticated_client):
         },
     )
     assert response.status_code == 400
+
+
+# socket.getaddrinfo returns (family, type, proto, canonname, sockaddr) tuples.
+_GAI_10_0_0_5 = [(2, 1, 6, "", ("10.0.0.5", 0))]
+
+
+def test_update_llm_gateway_settings_allows_internal_base_when_in_gateway_allowlist(
+    authenticated_client, monkeypatch
+):
+    """Org gateway save may use private IPs the operator listed in LLM_GATEWAY_ALLOWED_NETWORKS."""
+    monkeypatch.setattr(settings, "DEBUG", False)
+    _set_platform_gateway(enabled=False)
+    monkeypatch.setattr(settings, "LLM_GATEWAY_ALLOWED_NETWORKS", ["10.0.0.0/24"])
+    with patch("socket.getaddrinfo", return_value=_GAI_10_0_0_5):
+        response = authenticated_client.put(
+            "/api/v1/organizations/llm-gateway",
+            json={
+                "mode": "enabled",
+                "gateway_type": "bifrost",
+                "base_url": "http://bifrost.internal.example/litellm",
+                "virtual_key": "vk",
+            },
+        )
+    assert response.status_code == 200
+    assert response.json()["base_url"] == "http://bifrost.internal.example/litellm"
+
+
+@pytest.mark.parametrize(
+    "gateway_allowlist",
+    [[], ["192.168.0.0/16"]],
+    ids=["empty-default", "other-cidr"],
+)
+def test_update_llm_gateway_settings_blocks_private_when_not_in_gateway_allowlist(
+    authenticated_client, monkeypatch, gateway_allowlist
+):
+    """OPERATIONAL_TRUSTED_IPS (the /metrics list) must not open outbound access."""
+    monkeypatch.setattr(settings, "DEBUG", False)
+    _set_platform_gateway(enabled=False)
+    monkeypatch.setattr(settings, "LLM_GATEWAY_ALLOWED_NETWORKS", gateway_allowlist)
+    monkeypatch.setattr(
+        settings,
+        "OPERATIONAL_TRUSTED_IPS",
+        ["10.0.0.0/8", "172.16.0.0/12", "127.0.0.0/8"],
+    )
+    with patch("socket.getaddrinfo", return_value=_GAI_10_0_0_5):
+        response = authenticated_client.put(
+            "/api/v1/organizations/llm-gateway",
+            json={
+                "mode": "enabled",
+                "gateway_type": "bifrost",
+                "base_url": "http://bifrost.internal.example/litellm",
+                "virtual_key": "vk",
+            },
+        )
+    assert response.status_code == 400
+    assert "blocked network address" in response.json()["detail"]

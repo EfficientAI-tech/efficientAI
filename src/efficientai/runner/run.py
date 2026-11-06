@@ -86,6 +86,7 @@ from efficientai.runner.types import (
     SmallWebRTCRunnerArguments,
     WebSocketRunnerArguments,
 )
+from efficientai.utils.log_redaction import redacting_sink
 
 try:
     import uvicorn
@@ -834,7 +835,13 @@ def main():
 
     # Log level
     logger.remove()
-    logger.add(sys.stderr, level="TRACE" if args.verbose else "DEBUG")
+    logger.add(
+        redacting_sink(sys.stderr),
+        level="TRACE" if args.verbose else "DEBUG",
+        diagnose=False,
+        backtrace=False,
+        colorize=sys.stderr.isatty(),
+    )
 
     # Handle direct Daily connection (no FastAPI server)
     if args.direct:
