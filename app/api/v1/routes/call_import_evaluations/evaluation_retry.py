@@ -200,7 +200,7 @@ def source_retry_assignments(
         # overwrite marker is stored separately so `_needs_transcribe_for_eval`
         # knows the fresh transcript belongs to the current pass.
         changes["diarised_transcript"] = None
-        changes["diarised_transcript_status"] = "pending"
+        changes["diarised_transcript_status"] = "idle"
         changes["diarised_transcript_error"] = None
         changes["diarised_at"] = None
         return changes

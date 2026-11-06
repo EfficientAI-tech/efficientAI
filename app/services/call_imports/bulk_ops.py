@@ -457,7 +457,9 @@ def materialize_and_enqueue_evaluation(
         if shard_sessions is not None:
             shard_sessions.close_all()
 
-    if transcribe_overwrite:
+    if evaluation_run_will_bulk_reset_diarisation(
+        db, evaluation, transcribe_overwrite=transcribe_overwrite
+    ):
         bulk_reset_diarisation_for_overwrite(db, evaluation.call_import_id)
 
     try:
@@ -1589,7 +1591,10 @@ _OVERWRITE_DIA_RESET_VALUES = {
     "diarised_transcript": None,
     "diarised_segments": None,
     "diarised_native_transcript": None,
-    "diarised_transcript_status": "pending",
+    # ``idle`` — not ``pending``. Standalone fair diarisation only claims
+    # ``pending`` rows with stored modal params; eval dispatch flips to
+    # ``pending`` when it reserves a slot and enqueues the eval-chain worker.
+    "diarised_transcript_status": "idle",
     "diarised_transcript_error": None,
     # Clear the stamp so the new pass writes its own. Dispatch compares it with
     # the run's ``started_at`` to tell fresh text from text from an older run.
@@ -1598,16 +1603,39 @@ _OVERWRITE_DIA_RESET_VALUES = {
 }
 
 
+def evaluation_run_will_bulk_reset_diarisation(
+    db: Session,
+    evaluation: CallImportEvaluation,
+    *,
+    transcribe_overwrite: bool,
+) -> bool:
+    """True when an overwrite run should clear stored diarised transcripts up front."""
+    if not transcribe_overwrite:
+        return False
+    transcript_source = (
+        (getattr(evaluation, "transcript_source", None) or "diarised")
+        .strip()
+        .lower()
+    )
+    if transcript_source == "production":
+        from app.workers.tasks.evaluate_call_import_row_core import (
+            evaluation_needs_diarised_reference,
+        )
+
+        return evaluation_needs_diarised_reference(db, evaluation)
+    return True
+
+
 def bulk_reset_diarisation_for_overwrite(
     db: Session,
     call_import_id: UUID,
 ) -> int:
-    """Clear diarised transcripts and mark rows pending before overwrite rediarise.
+    """Clear diarised transcripts and mark rows idle before overwrite rediarise.
 
-    Run Evaluation with ``transcribe_overwrite`` must reset every row up front.
-    Per-row dispatch alone leaves most rows ``completed`` until visited, so eval
-    dispatch skips rediarise and scores stale transcripts while the UI flips
-    between completed and running.
+    Run Evaluation with ``transcribe_overwrite`` must reset every row that will
+    be re-diarised up front. Rows are left ``idle`` (not ``pending``) so
+    standalone fair diarisation — which only claims ``pending`` rows with modal
+    params in Redis — cannot steal eval-owned work.
     """
     from app.db_sharding.row_ops import shard_row_write_context
     from app.db_sharding.scatter_gather import scatter_gather_on_shards, shard_ids_for_import

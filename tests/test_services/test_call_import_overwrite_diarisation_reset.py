@@ -2,24 +2,20 @@
 
 from uuid import uuid4
 
-from app.models.database import CallImport, CallImportRow, Organization, Workspace
+from app.models.database import CallImport, CallImportRow
 from app.models.enums import CallImportRowStatus, CallImportStatus
 
 
-def _seed_import_with_diarised_rows(db_session, *, row_count: int = 3):
-    org = Organization(id=uuid4(), name="Overwrite Org")
-    db_session.add(org)
-    workspace = Workspace(
-        id=uuid4(),
-        organization_id=org.id,
-        name="Default",
-        slug="default",
-        is_default=True,
-    )
-    db_session.add(workspace)
+def _seed_import_with_diarised_rows(
+    db_session,
+    *,
+    organization_id,
+    workspace_id,
+    row_count: int = 3,
+):
     call_import = CallImport(
-        organization_id=org.id,
-        workspace_id=workspace.id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
         original_filename="batch.csv",
         total_rows=row_count,
         completed_rows=row_count,
@@ -32,8 +28,8 @@ def _seed_import_with_diarised_rows(db_session, *, row_count: int = 3):
         db_session.add(
             CallImportRow(
                 call_import_id=call_import.id,
-                organization_id=org.id,
-                workspace_id=workspace.id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
                 row_index=idx,
                 conversation_id=f"c-{idx}",
                 recording_s3_key=f"audio/{idx}.wav",
@@ -48,7 +44,7 @@ def _seed_import_with_diarised_rows(db_session, *, row_count: int = 3):
 
 
 def test_bulk_reset_diarisation_for_overwrite_clears_all_rows(
-    db_session, monkeypatch
+    db_session, seed_org, default_workspace, monkeypatch
 ):
     from app.services.call_imports.bulk_ops import bulk_reset_diarisation_for_overwrite
 
@@ -61,7 +57,12 @@ def test_bulk_reset_diarisation_for_overwrite_clears_all_rows(
         lambda task_ids, **kwargs: len(task_ids),
     )
 
-    call_import = _seed_import_with_diarised_rows(db_session, row_count=3)
+    call_import = _seed_import_with_diarised_rows(
+        db_session,
+        organization_id=seed_org.id,
+        workspace_id=default_workspace.id,
+        row_count=3,
+    )
     reset = bulk_reset_diarisation_for_overwrite(db_session, call_import.id)
 
     assert reset == 3
@@ -73,6 +74,35 @@ def test_bulk_reset_diarisation_for_overwrite_clears_all_rows(
     )
     for row in rows:
         assert row.diarised_transcript is None
-        assert row.diarised_transcript_status == "pending"
+        assert row.diarised_at is None
+        # idle keeps eval-owned rows out of standalone ``pending`` dispatch.
+        assert row.diarised_transcript_status == "idle"
         assert row.diarised_transcript_error is None
         assert row.celery_task_id is None
+
+
+def test_production_overwrite_skips_bulk_reset_without_diarised_reference(
+    db_session, seed_org, default_workspace, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from app.services.call_imports.bulk_ops import (
+        evaluation_run_will_bulk_reset_diarisation,
+    )
+
+    monkeypatch.setattr(
+        "app.workers.tasks.evaluate_call_import_row_core.evaluation_needs_diarised_reference",
+        lambda *_a, **_kw: False,
+    )
+    evaluation = SimpleNamespace(
+        transcript_source="production",
+    )
+
+    assert (
+        evaluation_run_will_bulk_reset_diarisation(
+            db_session,
+            evaluation,
+            transcribe_overwrite=True,
+        )
+        is False
+    )

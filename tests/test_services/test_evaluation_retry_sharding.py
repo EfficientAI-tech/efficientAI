@@ -404,7 +404,7 @@ def test_overwrite_retry_marks_source_pending_and_clears_transcript():
     assert source_retry_assignments(source_row, transcribe_overwrite=True) == {
         "celery_task_id": None,
         "diarised_transcript": None,
-        "diarised_transcript_status": "pending",
+        "diarised_transcript_status": "idle",
         "diarised_transcript_error": None,
         "diarised_at": None,
     }
