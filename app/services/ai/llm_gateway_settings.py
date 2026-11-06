@@ -253,7 +253,7 @@ def set_org_settings(
                 assert_outbound_http_url_safe(
                     trimmed,
                     allow_loopback=bool(settings.DEBUG),
-                    allowed_networks=settings.OPERATIONAL_TRUSTED_IPS,
+                    allowed_networks=settings.LLM_GATEWAY_ALLOWED_NETWORKS,
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc

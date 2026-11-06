@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from contextlib import contextmanager
 from io import StringIO
-from typing import List
+from typing import Iterator, List
 
 import pytest
 from loguru import logger
@@ -42,15 +43,38 @@ class _FakeStderr(StringIO):
         return False
 
 
-@pytest.fixture
-def configured_stderr(monkeypatch: pytest.MonkeyPatch) -> _FakeStderr:
-    """Run configure_logging() against a captured stderr."""
+@contextmanager
+def _captured_stderr_logging(monkeypatch: pytest.MonkeyPatch) -> Iterator[_FakeStderr]:
+    """Run configure_logging() against a captured stderr, then restore the real sink."""
     logging_mod.reset_logging_configuration_for_tests()
     fake = _FakeStderr()
     monkeypatch.setattr(sys, "stderr", fake)
     logging_mod.configure_logging()
-    yield fake
-    logging_mod.reset_logging_configuration_for_tests()
+    try:
+        yield fake
+    finally:
+        # Undo the stderr patch first, then rebuild the sink so later tests log
+        # to the real stderr instead of this StringIO.
+        monkeypatch.undo()
+        logging_mod.reset_logging_configuration_for_tests()
+        logging_mod.configure_logging()
+
+
+@pytest.fixture
+def configured_stderr(monkeypatch: pytest.MonkeyPatch) -> Iterator[_FakeStderr]:
+    with _captured_stderr_logging(monkeypatch) as fake:
+        yield fake
+
+
+def test_captured_stderr_teardown_reconnects_real_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_stderr = sys.stderr
+    with _captured_stderr_logging(monkeypatch) as fake:
+        logger.info("inside capture")
+    logger.info("after capture marker")
+
+    assert sys.stderr is real_stderr
+    assert "inside capture" in fake.getvalue()
+    assert "after capture marker" not in fake.getvalue()
 
 
 @pytest.fixture
@@ -100,6 +124,7 @@ def test_redact_log_secrets_google_and_header() -> None:
         ("aws AKIAABCDEFGHIJKLMNOP", "AKIAABCDEFGHIJKLMNOP"),
         ("{'xi-api-key': 'el_secret_999'}", "el_secret_999"),
         ('{"x-api-key": "anthropic-raw-value"}', "anthropic-raw-value"),
+        ("{'X-Auth-ID': 'MA123', 'X-Auth-Token': 'vobiz-opaque-value'}", "vobiz-opaque-value"),
         ("call(api_key='plainsecretvalue')", "plainsecretvalue"),
         ("api-key: plainsecretvalue", "plainsecretvalue"),
         ("Authorization: Token 0123456789abcdef0123", "0123456789abcdef0123"),

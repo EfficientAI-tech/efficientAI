@@ -56,7 +56,7 @@ _URL_QUERY_PATTERN = re.compile(
 
 # --- name: value / name=value fields (headers, dict reprs, kwargs, JSON) -----
 _SECRET_FIELD_NAMES = (
-    r"x-goog-api-key|xi-api-key|x-api-key|api[-_]?key|authorization"
+    r"x-goog-api-key|xi-api-key|x-api-key|x-auth-token|api[-_]?key|authorization"
     r"|auth[-_]?token|access[-_]?token|refresh[-_]?token|id[-_]?token"
     r"|client[-_]?secret|secret[-_]?key|secret|password|passwd|token"
 )

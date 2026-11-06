@@ -97,7 +97,14 @@ def _hostname_allowed(hostname: str, allowed_suffixes: List[str]) -> bool:
     return False
 
 
+def _unmap_ipv4(ip: ipaddress._BaseAddress) -> ipaddress._BaseAddress:
+    """Treat ``::ffff:a.b.c.d`` as ``a.b.c.d``; the kernel connects to the IPv4 target."""
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return mapped if mapped is not None else ip
+
+
 def _ip_is_blocked(ip: ipaddress._BaseAddress) -> bool:
+    ip = _unmap_ipv4(ip)
     for network in _BLOCKED_NETWORKS:
         if ip in network:
             return True
@@ -105,6 +112,7 @@ def _ip_is_blocked(ip: ipaddress._BaseAddress) -> bool:
 
 
 def _ip_is_hard_blocked_for_outbound(ip: ipaddress._BaseAddress) -> bool:
+    ip = _unmap_ipv4(ip)
     for network in _HARD_BLOCKED_OUTBOUND_NETWORKS:
         if ip in network:
             return True
@@ -340,7 +348,7 @@ def assert_outbound_http_url_safe(
 ) -> None:
     """Block SSRF to private/metadata networks for operator-configured URLs.
 
-    When ``allowed_networks`` is set (e.g. ``settings.OPERATIONAL_TRUSTED_IPS``),
+    When ``allowed_networks`` is set (e.g. ``settings.LLM_GATEWAY_ALLOWED_NETWORKS``),
     addresses that fall in those CIDRs are accepted even if they are also in
     ``_BLOCKED_NETWORKS``. Link-local and cloud link-local (169.254/16, fe80::/10)
     are never allowed. Loopback is only allowed when ``allow_loopback`` is true,
@@ -358,6 +366,7 @@ def assert_outbound_http_url_safe(
     trusted_nets = _parse_trusted_network_entries(allowed_networks)
 
     def _check_ip(ip: ipaddress._BaseAddress) -> None:
+        ip = _unmap_ipv4(ip)
         if _ip_is_hard_blocked_for_outbound(ip):
             raise ExotelInvalidContentError("URL targets a blocked network address")
         if ip.is_loopback:
@@ -371,6 +380,7 @@ def assert_outbound_http_url_safe(
         raise ExotelInvalidContentError("URL targets a blocked network address")
 
     def _check_resolved_ip(ip: ipaddress._BaseAddress) -> None:
+        ip = _unmap_ipv4(ip)
         if _ip_is_hard_blocked_for_outbound(ip):
             raise ExotelInvalidContentError("URL resolves to a blocked network address")
         if ip.is_loopback:
