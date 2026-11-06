@@ -20,6 +20,7 @@ import type {
   EvaluationUserInsightsState,
 } from '../../../../types/api'
 import AIProviderModelPicker from '../../../../components/AIProviderModelPicker'
+import ConfirmModal from '../../../../components/ConfirmModal'
 import { getActiveWorkspaceId } from '../../../../store/workspaceStore'
 import { UserInsightsTranscriptSourceSelect } from './UserInsightsTranscriptSourceSelect'
 import { clampProseToSentences, formatPct, PROVIDER_DISPLAY } from './evalDisplayUtils'
@@ -238,6 +239,7 @@ function EvaluationTLDRInsights({
     'diarised' | 'production'
   >('diarised')
   const [showPicker, setShowPicker] = useState<boolean>(false)
+  const [replaceConfirmOpen, setReplaceConfirmOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const cached = insightsQuery.data ?? null
@@ -432,7 +434,7 @@ function EvaluationTLDRInsights({
           <div className="flex items-center justify-end gap-2">
             <button
               type="button"
-              onClick={() => generateMutation.mutate(true)}
+              onClick={() => setReplaceConfirmOpen(true)}
               disabled={isPending || !llmReady}
               className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-60"
             >
@@ -450,6 +452,19 @@ function EvaluationTLDRInsights({
       {error && (
         <p className="mt-2 text-[11px] text-red-600">{error}</p>
       )}
+      <ConfirmModal
+        isOpen={replaceConfirmOpen}
+        variant="warning"
+        title="Replace the current insights?"
+        description="The summary and AI user insights already generated for this evaluation will be removed, and a new set will be generated."
+        confirmLabel="Regenerate"
+        isLoading={isPending}
+        onCancel={() => setReplaceConfirmOpen(false)}
+        onConfirm={() => {
+          setReplaceConfirmOpen(false)
+          generateMutation.mutate(true)
+        }}
+      />
     </div>
   )
 }

@@ -13,6 +13,7 @@ import type {
 } from '../../../../types/api'
 import AIProviderModelPicker from '../../../../components/AIProviderModelPicker'
 import Button from '../../../../components/Button'
+import ConfirmModal from '../../../../components/ConfirmModal'
 import { getActiveWorkspaceId } from '../../../../store/workspaceStore'
 import { clampProseToSentences } from './evalDisplayUtils'
 import { EvaluationBackgroundJobCard } from './EvaluationBackgroundJobCard'
@@ -248,6 +249,7 @@ function MetricClusterGenerationModal({
   overlayZIndexClass?: string
 }) {
   const [generating, setGenerating] = useState(false)
+  const [replaceConfirmOpen, setReplaceConfirmOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [pickerProvider, setPickerProvider] = useState('')
   const [pickerModel, setPickerModel] = useState('')
@@ -363,6 +365,15 @@ function MetricClusterGenerationModal({
       )
       return
     }
+    if (hasExistingClusters) {
+      setReplaceConfirmOpen(true)
+      return
+    }
+    await startGeneration()
+  }
+
+  const startGeneration = async () => {
+    setReplaceConfirmOpen(false)
     setGenerating(true)
     reportError(null)
     try {
@@ -399,100 +410,116 @@ function MetricClusterGenerationModal({
 
   if (!open || typeof document === 'undefined') return null
 
-  return createPortal(
-    <div
-      className={`fixed inset-0 ${overlayZIndexClass} flex items-center justify-center p-4 bg-black/40`}
-    >
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[92vh] overflow-hidden flex flex-col">
-        <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-semibold text-gray-900">
-              Generate clusters
-            </h2>
-            <p className="text-sm text-gray-600 mt-0.5">
-              Configure failure values per metric, choose calls, then generate
-              clusters from LLM rationales.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={handleClose}
-            disabled={generating}
-            className="text-gray-400 hover:text-gray-600 disabled:opacity-50"
-            aria-label="Close cluster generation modal"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-        <div className="px-6 py-5 overflow-y-auto flex-1">
-          <div className="mb-4">
-            {failurePoliciesQuery.isLoading ? (
-              <p className="text-xs text-gray-500">Loading failure policies…</p>
-            ) : failurePoliciesQuery.data ? (
-              <MetricFailurePolicyEditor
-                previews={failurePoliciesQuery.data.previews}
-                policies={policies}
-                policiesSource={policiesSource}
-                onChangePolicies={(next) => {
-                  setPoliciesTouched(true)
-                  setPolicies(next)
-                }}
+  return (
+    <>
+      {createPortal(
+        <div
+          className={`fixed inset-0 ${overlayZIndexClass} flex items-center justify-center p-4 bg-black/40`}
+        >
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[92vh] overflow-hidden flex flex-col">
+            <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">
+                  Generate clusters
+                </h2>
+                <p className="text-sm text-gray-600 mt-0.5">
+                  Configure failure values per metric, choose calls, then generate
+                  clusters from LLM rationales.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleClose}
                 disabled={generating}
-              />
-            ) : null}
+                className="text-gray-400 hover:text-gray-600 disabled:opacity-50"
+                aria-label="Close cluster generation modal"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="px-6 py-5 overflow-y-auto flex-1">
+              <div className="mb-4">
+                {failurePoliciesQuery.isLoading ? (
+                  <p className="text-xs text-gray-500">Loading failure policies…</p>
+                ) : failurePoliciesQuery.data ? (
+                  <MetricFailurePolicyEditor
+                    previews={failurePoliciesQuery.data.previews}
+                    policies={policies}
+                    policiesSource={policiesSource}
+                    onChangePolicies={(next) => {
+                      setPoliciesTouched(true)
+                      setPolicies(next)
+                    }}
+                    disabled={generating}
+                  />
+                ) : null}
+              </div>
+              <div className="mb-3">
+                {eligibleRowsQuery.isLoading ? (
+                  <p className="text-xs text-gray-500">Loading eligible calls…</p>
+                ) : (
+                  <MetricClusterRowPicker
+                    totalEligible={totalEligible}
+                    preset={rowPreset}
+                    onChangePreset={setRowPreset}
+                    disabled={generating}
+                  />
+                )}
+              </div>
+              <div className="mb-3 rounded-md border border-gray-100 bg-white/80 p-3">
+                <p className="text-xs font-medium text-gray-800 mb-0.5">
+                  LLM for clustering
+                </p>
+                <p className="text-[10px] text-gray-500 mb-2">
+                  Select a provider and model. Cluster generation stays off until
+                  both are chosen.
+                </p>
+                <AIProviderModelPicker
+                  provider={pickerProvider}
+                  model={pickerModel}
+                  onProviderChange={setPickerProvider}
+                  onModelChange={setPickerModel}
+                  disabled={generating}
+                  size="sm"
+                />
+              </div>
+              {error ? <p className="text-sm text-red-600">{error}</p> : null}
+            </div>
+            <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-end gap-2">
+              <Button variant="outline" onClick={handleClose} disabled={generating}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                onClick={handleGenerate}
+                isLoading={generating}
+                disabled={
+                  generating ||
+                  selectedRowCount === 0 ||
+                  !pickerProvider.trim() ||
+                  !pickerModel.trim()
+                }
+              >
+                {hasExistingClusters ? 'Regenerate' : 'Generate clusters'}
+              </Button>
+            </div>
           </div>
-          <div className="mb-3">
-            {eligibleRowsQuery.isLoading ? (
-              <p className="text-xs text-gray-500">Loading eligible calls…</p>
-            ) : (
-              <MetricClusterRowPicker
-                totalEligible={totalEligible}
-                preset={rowPreset}
-                onChangePreset={setRowPreset}
-                disabled={generating}
-              />
-            )}
-          </div>
-          <div className="mb-3 rounded-md border border-gray-100 bg-white/80 p-3">
-            <p className="text-xs font-medium text-gray-800 mb-0.5">
-              LLM for clustering
-            </p>
-            <p className="text-[10px] text-gray-500 mb-2">
-              Select a provider and model. Cluster generation stays off until
-              both are chosen.
-            </p>
-            <AIProviderModelPicker
-              provider={pickerProvider}
-              model={pickerModel}
-              onProviderChange={setPickerProvider}
-              onModelChange={setPickerModel}
-              disabled={generating}
-              size="sm"
-            />
-          </div>
-          {error ? <p className="text-sm text-red-600">{error}</p> : null}
-        </div>
-        <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-end gap-2">
-          <Button variant="outline" onClick={handleClose} disabled={generating}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            onClick={handleGenerate}
-            isLoading={generating}
-            disabled={
-              generating ||
-              selectedRowCount === 0 ||
-              !pickerProvider.trim() ||
-              !pickerModel.trim()
-            }
-          >
-            Generate clusters
-          </Button>
-        </div>
-      </div>
-    </div>,
-    document.body,
+        </div>,
+        document.body,
+      )}
+      <ConfirmModal
+        isOpen={replaceConfirmOpen}
+        variant="warning"
+        title="Replace the current clusters?"
+        description="The failure diagnostics already generated for this evaluation will be removed, and a new cluster report will be generated."
+        confirmLabel="Regenerate"
+        isLoading={generating}
+        onCancel={() => setReplaceConfirmOpen(false)}
+        onConfirm={() => {
+          void startGeneration()
+        }}
+      />
+    </>
   )
 }
 
@@ -1068,7 +1095,7 @@ function MetricClustersPanel({
             className="shrink-0"
             onClick={() => setClusterActionModalOpen(true)}
           >
-            Generate clusters
+            Regenerate
           </Button>
         </div>
         <div className="mt-2 space-y-1 min-w-0">
@@ -1083,7 +1110,7 @@ function MetricClustersPanel({
           ) : null}
           {state.is_stale ? (
             <p className="text-sm text-amber-700">
-              More rows completed since clusters were generated. Generate again
+              More rows completed since clusters were generated. Regenerate
               to refresh.
             </p>
           ) : null}

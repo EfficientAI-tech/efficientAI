@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 
 import Button from '../../../components/Button'
+import ConfirmModal from '../../../components/ConfirmModal'
 import AIProviderModelPicker from '../../../components/AIProviderModelPicker'
 import { getIntegrationPlatformLogo } from '../../../config/providers'
 import type { LLMGenerationConfig } from '../../../config/llmGenerationParams'
@@ -96,6 +97,7 @@ export default function MetricPromptImprovementsPanel({
   const [pickerLlmConfig, setPickerLlmConfig] = useState<LLMGenerationConfig | null>(null)
   const [agentPickerTouched, setAgentPickerTouched] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [replaceConfirmOpen, setReplaceConfirmOpen] = useState(false)
   const [activeSuggestionId, setActiveSuggestionId] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draftText, setDraftText] = useState('')
@@ -556,7 +558,13 @@ export default function MetricPromptImprovementsPanel({
             <button
               type="button"
               disabled={!effectiveAgentId || !llmReady || generateMutation.isPending}
-              onClick={() => generateMutation.mutate()}
+              onClick={() => {
+                if (improvementsState?.status === 'completed') {
+                  setReplaceConfirmOpen(true)
+                  return
+                }
+                generateMutation.mutate()
+              }}
               className="inline-flex items-center gap-2 rounded-md bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-50"
             >
               {generateMutation.isPending ? (
@@ -564,7 +572,7 @@ export default function MetricPromptImprovementsPanel({
               ) : (
                 <Sparkles className="h-4 w-4" />
               )}
-              Generate suggestions
+              {improvementsState?.status === 'completed' ? 'Regenerate' : 'Generate suggestions'}
             </button>
           </div>
         </div>
@@ -1165,6 +1173,19 @@ export default function MetricPromptImprovementsPanel({
           )
         })()
         : null}
+      <ConfirmModal
+        isOpen={replaceConfirmOpen}
+        variant="warning"
+        title="Replace the current suggestions?"
+        description="The prompt suggestions already generated for this evaluation will be removed, and a new set will be generated."
+        confirmLabel="Regenerate"
+        isLoading={generateMutation.isPending}
+        onCancel={() => setReplaceConfirmOpen(false)}
+        onConfirm={() => {
+          setReplaceConfirmOpen(false)
+          generateMutation.mutate()
+        }}
+      />
     </section>
   )
 }
