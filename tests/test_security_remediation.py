@@ -57,6 +57,42 @@ def test_assert_outbound_http_url_safe_blocks_metadata_ip():
         assert_outbound_http_url_safe("http://169.254.169.254/")
 
 
+def test_assert_outbound_http_url_safe_allows_trusted_cidr_private_ip():
+    assert_outbound_http_url_safe(
+        "http://10.1.2.3:8080/litellm",
+        allowed_networks=["10.0.0.0/8"],
+    )
+
+
+def test_assert_outbound_http_url_safe_blocks_private_without_allowlist():
+    with pytest.raises(ExotelInvalidContentError):
+        assert_outbound_http_url_safe("http://10.1.2.3:8080/litellm")
+
+
+def test_assert_outbound_http_url_safe_keeps_blocks_192_without_allowlist():
+    with pytest.raises(ExotelInvalidContentError):
+        assert_outbound_http_url_safe(
+            "http://192.168.1.5:4000",
+            allowed_networks=["10.0.0.0/8"],
+        )
+
+
+def test_assert_outbound_http_url_safe_never_whitelists_metadata_even_if_cidr_matches():
+    with pytest.raises(ExotelInvalidContentError):
+        assert_outbound_http_url_safe(
+            "http://169.254.169.254/",
+            allowed_networks=["169.254.0.0/16"],
+        )
+
+
+def test_assert_outbound_http_url_safe_loopback_requires_allow_loopback():
+    with pytest.raises(ExotelInvalidContentError):
+        assert_outbound_http_url_safe(
+            "http://127.0.0.1:8080",
+            allowed_networks=["127.0.0.0/8"],
+        )
+
+
 def test_session_epoch_in_access_token():
     user_id = uuid4()
     org_id = uuid4()

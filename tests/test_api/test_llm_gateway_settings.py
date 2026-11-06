@@ -1,5 +1,7 @@
 """API tests for organization LLM gateway settings."""
 
+from unittest.mock import patch
+
 import pytest
 
 from app.config import settings
@@ -120,3 +122,50 @@ def test_update_llm_gateway_settings_rejects_invalid_url(authenticated_client):
         },
     )
     assert response.status_code == 400
+
+
+def test_update_llm_gateway_settings_allows_internal_base_when_in_operational_trusted(
+    authenticated_client, monkeypatch
+):
+    """Org gateway save may allow private IPs covered by OPERATIONAL_TRUSTED_IPS."""
+    monkeypatch.setattr(settings, "DEBUG", False)
+    _set_platform_gateway(enabled=False)
+    monkeypatch.setattr(
+        settings,
+        "OPERATIONAL_TRUSTED_IPS",
+        ["10.0.0.0/8", "172.16.0.0/12", "127.0.0.0/8"],
+    )
+    fake_addr = (2, 1, 6, "", ("10.0.0.5", 0))
+    with patch("socket.getaddrinfo", return_value=[("unused", None, None, None, fake_addr)]):
+        response = authenticated_client.put(
+            "/api/v1/organizations/llm-gateway",
+            json={
+                "mode": "enabled",
+                "gateway_type": "bifrost",
+                "base_url": "http://bifrost.internal.example/litellm",
+                "virtual_key": "vk",
+            },
+        )
+    assert response.status_code == 200
+    assert response.json()["base_url"] == "http://bifrost.internal.example/litellm"
+
+
+def test_update_llm_gateway_settings_blocks_private_when_not_in_operational_trusted(
+    authenticated_client, monkeypatch
+):
+    monkeypatch.setattr(settings, "DEBUG", False)
+    _set_platform_gateway(enabled=False)
+    monkeypatch.setattr(settings, "OPERATIONAL_TRUSTED_IPS", ["192.168.0.0/16"])
+    fake_addr = (2, 1, 6, "", ("10.0.0.5", 0))
+    with patch("socket.getaddrinfo", return_value=[("unused", None, None, None, fake_addr)]):
+        response = authenticated_client.put(
+            "/api/v1/organizations/llm-gateway",
+            json={
+                "mode": "enabled",
+                "gateway_type": "bifrost",
+                "base_url": "http://bifrost.internal.example/litellm",
+                "virtual_key": "vk",
+            },
+        )
+    assert response.status_code == 400
+    assert "blocked network address" in response.json()["detail"]

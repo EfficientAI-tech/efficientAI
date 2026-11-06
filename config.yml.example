@@ -21,6 +21,8 @@ server:
 # This is FastAPI, not Spring Boot Actuator — scanners may flag /health or /metrics
 # under an "Actuator" template. /metrics is IP-gated; /health returns minimal status only.
 # Include VPC CIDRs in trusted_ips if Prometheus scrapes /metrics from inside the VPC.
+# This list is also used to allow internal LLM gateway base URLs when saving org gateway
+# settings (Addresses in these CIDRs bypass the private-IP SSRF check for that save only).
 operational:
   public: false
   # trusted_ips: defaults in app/config.py (10/8, 172.16/12, 127/8); set to replace entirely
