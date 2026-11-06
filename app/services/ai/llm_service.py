@@ -18,6 +18,7 @@ import litellm
 from loguru import logger
 from sqlalchemy.orm import Session
 
+from app.core.logging import log_exception_safely, redact_log_secrets
 from app.models.database import ModelProvider, AIProvider
 from app.services.credentials import resolve_ai_provider, resolve_integration
 from app.services.ai.llm_generation_config import build_litellm_kwargs
@@ -754,8 +755,15 @@ class LLMService:
             else:
                 response = litellm.completion(**call_kwargs)
         except Exception as e:
-            logger.exception("[LLMService] LiteLLM call failed (%s)", model_str)
-            raise RuntimeError(f"LLM generation failed for {model_str}: {e}") from e
+            log_exception_safely(
+                "[LLMService] LiteLLM call failed model={} error_type={}",
+                model_str,
+                type(e).__name__,
+            )
+            safe_detail = redact_log_secrets(str(e))
+            raise RuntimeError(
+                f"LLM generation failed for {model_str}: {safe_detail}"
+            ) from e
 
         # --- normalise response into our standard shape --------------------
         text = response.choices[0].message.content if response.choices else ""
