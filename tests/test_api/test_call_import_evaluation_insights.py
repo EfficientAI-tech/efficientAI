@@ -90,16 +90,25 @@ def stub_workers(db_session):
 
     class _UserInsightsTask:
         @staticmethod
-        def delay(evaluation_id, *, provider=None, model=None, max_llm_calls=None):
+        def _record(kwargs: Dict[str, Any]) -> types.SimpleNamespace:
             user_insights_calls.append(
                 {
-                    "evaluation_id": evaluation_id,
-                    "provider": provider,
-                    "model": model,
-                    "max_llm_calls": max_llm_calls,
+                    "evaluation_id": kwargs.get("evaluation_id"),
+                    "provider": kwargs.get("provider"),
+                    "model": kwargs.get("model"),
+                    "max_llm_calls": kwargs.get("max_llm_calls"),
                 }
             )
             return types.SimpleNamespace(id="user-insights-task-id")
+
+        @classmethod
+        def apply_async(cls, args=None, kwargs=None, **_options):
+            return cls._record(dict(kwargs or {}))
+
+        @classmethod
+        def delay(cls, evaluation_id, **kwargs):
+            kwargs["evaluation_id"] = evaluation_id
+            return cls._record(kwargs)
 
     fake_user_insights_module.generate_evaluation_user_insights_task = _UserInsightsTask()
 

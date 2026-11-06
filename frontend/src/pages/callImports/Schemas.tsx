@@ -166,7 +166,7 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
 
   const createMutation = useMutation({
     mutationFn: () =>
-      apiClient.createCallImportSchema({
+      apiClient.callImports.createCallImportSchema({
         name: name.trim(),
         description: description.trim() || null,
         parameters: parameters.map((p) => ({
@@ -189,7 +189,7 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
   const updateMutation = useMutation({
     mutationFn: () => {
       if (!schema) throw new Error('No schema in scope')
-      return apiClient.updateCallImportSchema(schema.id, {
+      return apiClient.callImports.updateCallImportSchema(schema.id, {
         name: name.trim(),
         description: description.trim() || null,
         parameters: parameters.map((p) => ({
@@ -690,7 +690,7 @@ export default function CallImportSchemasPage() {
 
   const { data: schemasResponse, isLoading } = useQuery({
     queryKey: ['call-import-schemas'],
-    queryFn: () => apiClient.listCallImportSchemas(),
+    queryFn: () => apiClient.callImports.listCallImportSchemas(),
   })
   const schemas: CallImportSchema[] = itemsOf(schemasResponse)
 
@@ -701,7 +701,7 @@ export default function CallImportSchemasPage() {
     }: {
       schemaId: string
       force?: boolean
-    }) => apiClient.deleteCallImportSchema(schemaId, { force }),
+    }) => apiClient.callImports.deleteCallImportSchema(schemaId, { force }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['call-import-schemas'] })
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })

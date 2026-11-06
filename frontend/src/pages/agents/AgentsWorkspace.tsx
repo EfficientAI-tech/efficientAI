@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, Phone, Trash2, X, AlertCircle } from 'lucide-react'
 import { apiClient } from '../../lib/api'
+import { getApiErrorDetail } from '../../lib/authSession'
 import Button from '../../components/Button'
 import { useAgentStore } from '../../store/agentStore'
 import { useToast } from '../../hooks/useToast'
@@ -61,6 +62,27 @@ export default function AgentsWorkspace() {
   const { data: integrations = [] } = useQuery({
     queryKey: ['integrations'],
     queryFn: () => apiClient.listIntegrations(),
+  })
+
+  const favoriteMutation = useMutation({
+    mutationFn: (agent: TestAgent) => apiClient.setAgentFavorite(agent.id, !agent.is_favorite),
+    onMutate: async (agent) => {
+      await queryClient.cancelQueries({ queryKey: ['agents'] })
+      const previous = queryClient.getQueryData<TestAgent[]>(['agents'])
+      queryClient.setQueryData<TestAgent[]>(['agents'], (current) =>
+        (current ?? []).map((row) =>
+          row.id === agent.id ? { ...row, is_favorite: !agent.is_favorite } : row,
+        ),
+      )
+      return { previous }
+    },
+    onError: (err, _agent, context) => {
+      if (context?.previous) queryClient.setQueryData(['agents'], context.previous)
+      showToast(getApiErrorDetail(err) || 'Could not update favorite', 'error')
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
+    },
   })
 
 
@@ -350,6 +372,8 @@ export default function AgentsWorkspace() {
             onSelectAgent={handleSelectAgent}
             onSelectAgentCheckbox={handleSelectAgentCheckbox}
             onSelectAll={handleSelectAll}
+            onToggleFavorite={(agent) => favoriteMutation.mutate(agent)}
+            favoritePendingId={favoriteMutation.isPending ? favoriteMutation.variables?.id : null}
           />
           <AgentWorkspaceDetail
             key={routeAgentId ?? 'none'}

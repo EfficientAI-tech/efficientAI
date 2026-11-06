@@ -1264,6 +1264,7 @@ async def re_evaluate_call_recording(
     """
     import requests as http_requests
     import uuid as _uuid
+    from app.services.playground.post_call_processing import merge_playground_call_data
     from app.services.storage.s3_service import s3_service
 
     call_recording = db.query(CallRecording).filter(

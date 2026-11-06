@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Loader2, X } from 'lucide-react'
 import AIProviderModelPicker from '../AIProviderModelPicker'
 import Button from '../Button'
+import ConfirmModal from '../ConfirmModal'
 import ResultsDateRangePicker from '../../pages/evaluators/results/ResultsDateRangePicker'
 import {
   dateRangeToSinceUntil,
@@ -265,11 +266,10 @@ function MetricFailurePolicyEditor({
                 {preview.metric_name}
               </p>
               <span
-                className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${
-                  isSkipped
-                    ? 'bg-gray-100 text-gray-600'
-                    : 'bg-primary-50 text-primary-800'
-                }`}
+                className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${isSkipped
+                  ? 'bg-gray-100 text-gray-600'
+                  : 'bg-primary-50 text-primary-800'
+                  }`}
               >
                 {isSkipped
                   ? 'Skipped — no matching calls'
@@ -347,8 +347,6 @@ function MetricClusterGenerationModal({
   open,
   onClose,
   client: initialClient,
-  defaultProvider = '',
-  defaultModel = '',
   state,
   onGenerated,
   onError,
@@ -358,8 +356,6 @@ function MetricClusterGenerationModal({
   open: boolean
   onClose: () => void
   client: MetricClustersClient
-  defaultProvider?: string
-  defaultModel?: string
   state: EvaluationMetricClustersState | null
   onGenerated: (nextState?: EvaluationMetricClustersState, scope?: EvaluatorResultClusterScope) => void
   onError?: (message: string | null) => void
@@ -368,11 +364,11 @@ function MetricClusterGenerationModal({
 }) {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const [generating, setGenerating] = useState(false)
+  const [replaceConfirmOpen, setReplaceConfirmOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [pickerProvider, setPickerProvider] = useState('')
   const [pickerModel, setPickerModel] = useState('')
   const [rowPreset, setRowPreset] = useState<MetricClusterRowPreset>(25)
-  const [llmPickerTouched, setLlmPickerTouched] = useState(false)
   const [policies, setPolicies] = useState<Record<string, MetricFailurePolicy>>(
     {},
   )
@@ -479,23 +475,6 @@ function MetricClusterGenerationModal({
     return () => window.clearTimeout(timer)
   }, [open, policies, policiesTouched, generating, client, eligibleRowsQuery])
 
-  useEffect(() => {
-    if (state?.provider) {
-      setPickerProvider(state.provider)
-      if (state.model) setPickerModel(state.model)
-      return
-    }
-    if (llmPickerTouched) return
-    if (defaultProvider) setPickerProvider(defaultProvider)
-    if (defaultModel) setPickerModel(defaultModel)
-  }, [
-    state?.provider,
-    state?.model,
-    defaultProvider,
-    defaultModel,
-    llmPickerTouched,
-  ])
-
   const reportError = (message: string | null) => {
     setError(message)
     onError?.(message)
@@ -524,6 +503,15 @@ function MetricClusterGenerationModal({
       )
       return
     }
+    if (hasExistingClusters) {
+      setReplaceConfirmOpen(true)
+      return
+    }
+    await startGeneration()
+  }
+
+  const startGeneration = async () => {
+    setReplaceConfirmOpen(false)
     setGenerating(true)
     reportError(null)
     try {
@@ -544,7 +532,7 @@ function MetricClusterGenerationModal({
     } catch (e: any) {
       reportError(
         e?.response?.data?.detail ||
-          'Failed to start metric cluster generation.',
+        'Failed to start metric cluster generation.',
       )
     } finally {
       setGenerating(false)
@@ -559,195 +547,204 @@ function MetricClusterGenerationModal({
 
   if (!open || typeof document === 'undefined') return null
 
-  return createPortal(
-    <div
-      className={`fixed inset-0 ${overlayZIndexClass} flex items-center justify-center p-4 bg-black/40`}
-    >
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[92vh] overflow-hidden flex flex-col">
-        <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-semibold text-gray-900">
-              Generate clusters
-            </h2>
-            <p className="text-sm text-gray-600 mt-0.5">
-              Configure failure values per metric, choose calls, then generate
-              clusters from LLM rationales.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={handleClose}
-            disabled={generating}
-            className="text-gray-400 hover:text-gray-600 disabled:opacity-50"
-            aria-label="Close cluster generation modal"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-        <div className="px-6 py-5 overflow-y-auto flex-1">
-          {evaluatorScope ? (
-            <div className="mb-5 space-y-4 rounded-lg border border-gray-200 bg-gray-50/70 p-4">
+  return (
+    <>
+      {createPortal(
+        <div
+          className={`fixed inset-0 ${overlayZIndexClass} flex items-center justify-center p-4 bg-black/40`}
+        >
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[92vh] overflow-hidden flex flex-col">
+            <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">
-                  Cluster scope
-                </p>
-                <p className="text-xs text-gray-600">
-                  Choose which agent, scenarios, and simulation dates to include.
+                <h2 className="text-lg font-semibold text-gray-900">
+                  Generate clusters
+                </h2>
+                <p className="text-sm text-gray-600 mt-0.5">
+                  Configure failure values per metric, choose calls, then generate
+                  clusters from LLM rationales.
                 </p>
               </div>
-              <label className="block text-sm">
-                <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-                  Agent
-                </span>
-                <select
-                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm bg-white"
-                  value={draftAgentId}
-                  disabled={generating}
-                  onChange={(e) => {
-                    setDraftAgentId(e.target.value)
-                    setDraftScenarioIds([])
-                    setPoliciesTouched(false)
-                  }}
-                >
-                  <option value="">Select an agent…</option>
-                  {evaluatorScope.agents.map((agent) => (
-                    <option key={agent.agent_id} value={agent.agent_id}>
-                      {agent.agent_name} ({agent.counts.total})
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {draftAgentId ? (
-                <div>
-                  <p className="text-xs font-medium text-gray-700 mb-2">
-                    Scenarios (optional — leave all unchecked for every scenario)
-                  </p>
-                  {scenarioOptions.length ? (
-                    <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto">
-                      {scenarioOptions.map((scenario) => {
-                        const checked = draftScenarioIds.includes(scenario.id)
-                        return (
-                          <label
-                            key={scenario.id}
-                            className="inline-flex items-center gap-1.5 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-xs text-gray-700"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              disabled={generating}
-                              onChange={(e) => {
-                                setDraftScenarioIds((prev) =>
-                                  e.target.checked
-                                    ? [...prev, scenario.id]
-                                    : prev.filter((id) => id !== scenario.id),
-                                )
-                                setPoliciesTouched(false)
-                              }}
-                            />
-                            {scenario.name}
-                          </label>
-                        )
-                      })}
-                    </div>
-                  ) : (
-                    <p className="text-xs text-gray-500">
-                      No scenarios found for this agent yet.
+              <button
+                type="button"
+                onClick={handleClose}
+                disabled={generating}
+                className="text-gray-400 hover:text-gray-600 disabled:opacity-50"
+                aria-label="Close cluster generation modal"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="px-6 py-5 overflow-y-auto flex-1">
+              {evaluatorScope ? (
+                <div className="mb-5 space-y-4 rounded-lg border border-gray-200 bg-gray-50/70 p-4">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">
+                      Cluster scope
                     </p>
-                  )}
+                    <p className="text-xs text-gray-600">
+                      Choose which agent, scenarios, and simulation dates to include.
+                    </p>
+                  </div>
+                  <label className="block text-sm">
+                    <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                      Agent
+                    </span>
+                    <select
+                      className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm bg-white"
+                      value={draftAgentId}
+                      disabled={generating}
+                      onChange={(e) => {
+                        setDraftAgentId(e.target.value)
+                        setDraftScenarioIds([])
+                        setPoliciesTouched(false)
+                      }}
+                    >
+                      <option value="">Select an agent…</option>
+                      {evaluatorScope.agents.map((agent) => (
+                        <option key={agent.agent_id} value={agent.agent_id}>
+                          {agent.agent_name} ({agent.counts.total})
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {draftAgentId ? (
+                    <div>
+                      <p className="text-xs font-medium text-gray-700 mb-2">
+                        Scenarios (optional — leave all unchecked for every scenario)
+                      </p>
+                      {scenarioOptions.length ? (
+                        <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto">
+                          {scenarioOptions.map((scenario) => {
+                            const checked = draftScenarioIds.includes(scenario.id)
+                            return (
+                              <label
+                                key={scenario.id}
+                                className="inline-flex items-center gap-1.5 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-xs text-gray-700"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  disabled={generating}
+                                  onChange={(e) => {
+                                    setDraftScenarioIds((prev) =>
+                                      e.target.checked
+                                        ? [...prev, scenario.id]
+                                        : prev.filter((id) => id !== scenario.id),
+                                    )
+                                    setPoliciesTouched(false)
+                                  }}
+                                />
+                                {scenario.name}
+                              </label>
+                            )
+                          })}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-gray-500">
+                          No scenarios found for this agent yet.
+                        </p>
+                      )}
+                    </div>
+                  ) : null}
+                  <ResultsDateRangePicker
+                    start={draftStartDate}
+                    end={draftEndDate}
+                    onApply={(start, end) => {
+                      setDraftStartDate(start)
+                      setDraftEndDate(end)
+                      setPoliciesTouched(false)
+                    }}
+                  />
                 </div>
               ) : null}
-              <ResultsDateRangePicker
-                start={draftStartDate}
-                end={draftEndDate}
-                onApply={(start, end) => {
-                  setDraftStartDate(start)
-                  setDraftEndDate(end)
-                  setPoliciesTouched(false)
-                }}
-              />
+              <div className="mb-4">
+                {failurePoliciesQuery.isLoading ? (
+                  <p className="text-xs text-gray-500">Loading failure policies…</p>
+                ) : failurePoliciesQuery.data ? (
+                  <MetricFailurePolicyEditor
+                    previews={failurePoliciesQuery.data.previews}
+                    policies={policies}
+                    policiesSource={policiesSource}
+                    onChangePolicies={(next) => {
+                      setPoliciesTouched(true)
+                      setPolicies(next)
+                    }}
+                    disabled={generating}
+                  />
+                ) : null}
+              </div>
+              <div className="mb-3">
+                {eligibleRowsQuery.isLoading ? (
+                  <p className="text-xs text-gray-500">Loading eligible calls…</p>
+                ) : (
+                  <MetricClusterRowPicker
+                    totalEligible={totalEligible}
+                    preset={rowPreset}
+                    onChangePreset={setRowPreset}
+                    disabled={generating}
+                  />
+                )}
+              </div>
+              <div className="mb-3 rounded-md border border-gray-100 bg-white/80 p-3">
+                <p className="text-xs font-medium text-gray-800 mb-0.5">
+                  LLM for clustering
+                </p>
+                <p className="text-[10px] text-gray-500 mb-2">
+                  Select a provider and model. Cluster generation stays off until
+                  both are chosen.
+                </p>
+                <AIProviderModelPicker
+                  provider={pickerProvider}
+                  model={pickerModel}
+                  onProviderChange={setPickerProvider}
+                  onModelChange={setPickerModel}
+                  disabled={generating}
+                  size="sm"
+                />
+              </div>
+              {error ? <p className="text-sm text-red-600">{error}</p> : null}
             </div>
-          ) : null}
-          <div className="mb-4">
-            {failurePoliciesQuery.isLoading ? (
-              <p className="text-xs text-gray-500">Loading failure policies…</p>
-            ) : failurePoliciesQuery.data ? (
-              <MetricFailurePolicyEditor
-                previews={failurePoliciesQuery.data.previews}
-                policies={policies}
-                policiesSource={policiesSource}
-                onChangePolicies={(next) => {
-                  setPoliciesTouched(true)
-                  setPolicies(next)
-                }}
-                disabled={generating}
-              />
-            ) : null}
+            <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-end gap-2">
+              <Button variant="outline" onClick={handleClose} disabled={generating}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                onClick={handleGenerate}
+                isLoading={generating}
+                disabled={
+                  generating ||
+                  selectedRowCount === 0 ||
+                  !pickerProvider.trim() ||
+                  !pickerModel.trim() ||
+                  (Boolean(evaluatorScope) && !draftAgentId)
+                }
+              >
+                {hasExistingClusters ? 'Regenerate' : 'Generate clusters'}
+              </Button>
+            </div>
           </div>
-          <div className="mb-3">
-            {eligibleRowsQuery.isLoading ? (
-              <p className="text-xs text-gray-500">Loading eligible calls…</p>
-            ) : (
-              <MetricClusterRowPicker
-                totalEligible={totalEligible}
-                preset={rowPreset}
-                onChangePreset={setRowPreset}
-                disabled={generating}
-              />
-            )}
-          </div>
-          <div className="mb-3 rounded-md border border-gray-100 bg-white/80 p-3">
-            <p className="text-xs font-medium text-gray-800 mb-0.5">
-              LLM for clustering
-            </p>
-            <p className="text-[10px] text-gray-500 mb-2">
-              Provider and model used for failure signatures and cluster
-              synthesis. Defaults to this evaluation&apos;s scoring LLM when
-              unset.
-            </p>
-            <AIProviderModelPicker
-              provider={pickerProvider}
-              model={pickerModel}
-              onProviderChange={(next) => {
-                setLlmPickerTouched(true)
-                setPickerProvider(next)
-              }}
-              onModelChange={(next) => {
-                setLlmPickerTouched(true)
-                setPickerModel(next)
-              }}
-              disabled={generating}
-              size="sm"
-            />
-          </div>
-          {error ? <p className="text-sm text-red-600">{error}</p> : null}
-        </div>
-        <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-end gap-2">
-          <Button variant="outline" onClick={handleClose} disabled={generating}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            onClick={handleGenerate}
-            isLoading={generating}
-            disabled={
-              generating ||
-              selectedRowCount === 0 ||
-              (Boolean(evaluatorScope) && !draftAgentId)
-            }
-          >
-            Generate clusters
-          </Button>
-        </div>
-      </div>
-    </div>,
-    document.body,
+        </div>,
+        document.body,
+      )}
+      <ConfirmModal
+        isOpen={replaceConfirmOpen}
+        variant="warning"
+        title="Replace the current clusters?"
+        description="The failure diagnostics already generated will be removed, and a new cluster report will be generated."
+        confirmLabel="Regenerate"
+        isLoading={generating}
+        onCancel={() => setReplaceConfirmOpen(false)}
+        onConfirm={() => {
+          void startGeneration()
+        }}
+      />
+    </>
   )
 }
 
 export function MetricClustersPanel({
   client,
-  defaultProvider = '',
-  defaultModel = '',
   state,
   isLoading,
   onGenerated,
@@ -761,7 +758,6 @@ export function MetricClustersPanel({
   const [error, setError] = useState<string | null>(null)
   const [pickerProvider, setPickerProvider] = useState('')
   const [pickerModel, setPickerModel] = useState('')
-  const [llmPickerTouched, setLlmPickerTouched] = useState(false)
   const [clusterActionModalOpen, setClusterActionModalOpen] = useState(false)
 
   const setModalOpen = (open: boolean) => {
@@ -773,23 +769,6 @@ export function MetricClustersPanel({
     registerOpenGenerateModal?.(() => setModalOpen(true))
   }, [registerOpenGenerateModal])
 
-  useEffect(() => {
-    if (state?.provider) {
-      setPickerProvider(state.provider)
-      if (state.model) setPickerModel(state.model)
-      return
-    }
-    if (llmPickerTouched) return
-    if (defaultProvider) setPickerProvider(defaultProvider)
-    if (defaultModel) setPickerModel(defaultModel)
-  }, [
-    state?.provider,
-    state?.model,
-    defaultProvider,
-    defaultModel,
-    llmPickerTouched,
-  ])
-
   const llmPickerDisabled = cancelling || state?.status === 'running'
 
   const llmPickerBlock = (
@@ -798,20 +777,13 @@ export function MetricClustersPanel({
         LLM for clustering
       </p>
       <p className="text-[10px] text-gray-500 mb-2">
-        Provider and model used for failure signatures and cluster synthesis.
-        Defaults to this evaluation&apos;s scoring LLM when unset.
+        Select a provider and model before generating clusters.
       </p>
       <AIProviderModelPicker
         provider={pickerProvider}
         model={pickerModel}
-        onProviderChange={(next) => {
-          setLlmPickerTouched(true)
-          setPickerProvider(next)
-        }}
-        onModelChange={(next) => {
-          setLlmPickerTouched(true)
-          setPickerModel(next)
-        }}
+        onProviderChange={setPickerProvider}
+        onModelChange={setPickerModel}
         disabled={llmPickerDisabled}
         size="sm"
       />
@@ -826,8 +798,6 @@ export function MetricClustersPanel({
         setError(null)
       }}
       client={client}
-      defaultProvider={defaultProvider}
-      defaultModel={defaultModel}
       state={state}
       onGenerated={onGenerated}
       onError={setError}
@@ -889,8 +859,8 @@ export function MetricClustersPanel({
       : 'flagged calls'
     const metricStage =
       progress?.current_metric_name &&
-      progress?.total_metrics &&
-      progress.total_metrics > 0
+        progress?.total_metrics &&
+        progress.total_metrics > 0
         ? `Metric ${progress.current_metric_index ?? 0} of ${progress.total_metrics}: ${progress.current_metric_name}`
         : null
     return (
@@ -968,22 +938,22 @@ export function MetricClustersPanel({
     return (
       <div className="space-y-3">
         <section className="rounded-lg border border-gray-200 bg-gray-50/80 px-4 py-3">
-        <p className="text-sm font-semibold text-gray-900 mb-1">
-          Failure diagnostics stopped
-        </p>
-        <p className="text-sm text-gray-600">
-          {state.error_message ||
-            'Cluster generation was cancelled. Partial results were not saved.'}
-        </p>
-        {state.progress ? (
-          <p className="text-xs text-gray-500 mt-1">
-            Stopped at {state.progress.completed_llm_calls} /{' '}
-            {state.progress.total_llm_calls} LLM calls
+          <p className="text-sm font-semibold text-gray-900 mb-1">
+            Failure diagnostics stopped
           </p>
-        ) : null}
-        <p className="text-xs text-gray-600 mt-2">
-          Use New report above to start again.
-        </p>
+          <p className="text-sm text-gray-600">
+            {state.error_message ||
+              'Cluster generation was cancelled. Partial results were not saved.'}
+          </p>
+          {state.progress ? (
+            <p className="text-xs text-gray-500 mt-1">
+              Stopped at {state.progress.completed_llm_calls} /{' '}
+              {state.progress.total_llm_calls} LLM calls
+            </p>
+          ) : null}
+          <p className="text-xs text-gray-600 mt-2">
+            Use New report above to start again.
+          </p>
         </section>
         {clusterGenerationModal}
       </div>
@@ -994,15 +964,15 @@ export function MetricClustersPanel({
     return (
       <div className="space-y-3">
         <section className="rounded-lg border border-red-200 bg-red-50/50 px-4 py-3">
-        <p className="text-sm font-semibold text-gray-900 mb-1">
-          Failure diagnostics failed
-        </p>
-        <p className="text-sm text-red-700">
-          {state.error_message || 'Cluster generation failed.'}
-        </p>
-        <p className="text-xs text-gray-600 mt-2">
-          Use New report above to try again with a different scope or configuration.
-        </p>
+          <p className="text-sm font-semibold text-gray-900 mb-1">
+            Failure diagnostics failed
+          </p>
+          <p className="text-sm text-red-700">
+            {state.error_message || 'Cluster generation failed.'}
+          </p>
+          <p className="text-xs text-gray-600 mt-2">
+            Use New report above to try again with a different scope or configuration.
+          </p>
         </section>
         {clusterGenerationModal}
       </div>
@@ -1013,15 +983,15 @@ export function MetricClustersPanel({
     return (
       <section className="space-y-3">
         <section className="rounded-lg border border-dashed border-gray-200 bg-gray-50/60 p-4">
-        <div>
-          <h3 className="text-base font-semibold text-gray-900 mb-1">
-            No cluster results yet
-          </h3>
-          <p className="text-sm text-gray-600">
-            Select a cluster report above or use New report to generate clusters
-            for an agent, scenario set, and date range.
-          </p>
-        </div>
+          <div>
+            <h3 className="text-base font-semibold text-gray-900 mb-1">
+              No cluster results yet
+            </h3>
+            <p className="text-sm text-gray-600">
+              Select a cluster report above or use New report to generate clusters
+              for an agent, scenario set, and date range.
+            </p>
+          </div>
         </section>
         {clusterGenerationModal}
       </section>
@@ -1046,10 +1016,9 @@ export function MetricClustersPanel({
   }
 
   const subtabClass = (view: ClusterReportView) =>
-    `px-3 py-1.5 text-xs font-medium rounded transition ${
-      activeView === view
-        ? 'bg-white text-primary-700 shadow-sm'
-        : 'text-gray-600 hover:text-gray-900'
+    `px-3 py-1.5 text-xs font-medium rounded transition ${activeView === view
+      ? 'bg-white text-primary-700 shadow-sm'
+      : 'text-gray-600 hover:text-gray-900'
     }`
 
   return (

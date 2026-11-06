@@ -160,6 +160,10 @@ def _mount_frontend(app: FastAPI) -> None:
     static_dir = frontend_dist / "assets"
     if static_dir.exists():
         app.mount("/assets", StaticFiles(directory=str(static_dir)), name="assets")
+    # The catch-all below only serves top-level files, so public/ subfolders need a mount.
+    tool_logos_dir = frontend_dist / "tool-logos"
+    if tool_logos_dir.exists():
+        app.mount("/tool-logos", StaticFiles(directory=str(tool_logos_dir)), name="tool-logos")
 
     @app.get("/{full_path:path}")
     async def serve_frontend(full_path: str):

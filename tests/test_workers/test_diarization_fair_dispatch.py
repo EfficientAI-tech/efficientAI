@@ -171,5 +171,8 @@ def test_try_dispatch_single_diarization_row_acquires_slot_before_apply_async(
     assert len(acquire_calls) == 1
     assert len(apply_async_calls) == 1
     assert apply_async_calls[0]["kwargs"]["_eval_slot_task_id"] == acquire_calls[0]
-    assert row.celery_task_id == "task-123"
+    # The row must keep the reserved id the worker compares against, even when
+    # the broker reports a different id.
+    assert row.celery_task_id == acquire_calls[0]
+    assert row.celery_task_id != "task-123"
     db.commit.assert_called_once()

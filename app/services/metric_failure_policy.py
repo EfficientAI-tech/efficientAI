@@ -97,6 +97,18 @@ def suggest_failure_policy(
     numeric_mean: Optional[float] = None,
 ) -> MetricFailurePolicy:
     metric_id = str(metric.id)
+    from app.services.metrics.computed_metrics import (
+        COMPUTED_TRANSCRIPT_SCORING_METHODS,
+        metric_scoring_method_key,
+    )
+
+    if metric_scoring_method_key(metric) in COMPUTED_TRANSCRIPT_SCORING_METHODS:
+        return MetricFailurePolicy(
+            metric_id=metric_id,
+            failure_values=[],
+            numeric_rule={"op": "gt", "threshold": 0.25},
+        )
+
     selection_mode = (getattr(metric, "selection_mode", None) or "").lower()
     is_parent = bool(selection_mode and not getattr(metric, "parent_metric_id", None))
 

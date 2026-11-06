@@ -84,6 +84,7 @@ USAGE_WORKER_QUEUE = "usage"
 PLATFORM_WORKER_QUEUE = "platform"
 NOTIFICATIONS_WORKER_QUEUE = os.environ.get("NOTIFICATIONS_WORKER_QUEUE", "platform")
 TRACES_WORKER_QUEUE = "traces"
+HARBOR_WORKER_QUEUE = "harbor-sim"
 
 
 def _usage_flush_beat_seconds() -> float:
@@ -132,6 +133,10 @@ def _platform_beat_schedule() -> dict:
         "sweep-orphan-s3-batches": {
             "task": "sweep_orphan_s3_batches",
             "schedule": 900.0,
+        },
+        "sweep-stale-running-evaluations": {
+            "task": "sweep_stale_running_evaluations",
+            "schedule": 86400.0,
         },
     }
     if not getattr(settings, "CLICKHOUSE_URL", None):
@@ -217,6 +222,8 @@ celery_app.conf.task_routes = {
     "generate_evaluator_result_metric_clusters": {"queue": "evaluations"},
     "generate_evaluation_prompt_improvements": {"queue": "evaluations"},
     "evaluate_studio_run_item": {"queue": "evaluations"},
+    # Harbor jobs need Python 3.12 + the harbor extra (worker-harbor service).
+    "run_harbor_simulation": {"queue": HARBOR_WORKER_QUEUE},
     "generate_agent_flowchart": {"queue": "celery"},
     "map_agent_flowchart_prompt_sections": {"queue": "celery"},
     "flush_usage_counters": {"queue": USAGE_WORKER_QUEUE},
@@ -225,6 +232,8 @@ celery_app.conf.task_routes = {
     "evaluate_alerts_for_org": {"queue": PLATFORM_WORKER_QUEUE},
     "send_alert_notifications": {"queue": NOTIFICATIONS_WORKER_QUEUE},
     "refresh_fx_rates": {"queue": PLATFORM_WORKER_QUEUE},
+    "sweep_stale_running_evaluations": {"queue": PLATFORM_WORKER_QUEUE},
+    "auto_abort_stale_evaluation": {"queue": EVAL_CONTROL_QUEUE},
     "prune_oss_usage_history": {"queue": PLATFORM_WORKER_QUEUE},
     "dispatch_cron_jobs": {"queue": USAGE_WORKER_QUEUE},
     "run_cron_evaluator_job": {"queue": "celery"},

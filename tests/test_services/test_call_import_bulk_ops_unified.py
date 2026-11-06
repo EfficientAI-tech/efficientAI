@@ -473,3 +473,57 @@ def test_rollup_legacy_import_failure_stays_partial_when_some_rows_failed(db_ses
 
     rollup_call_import_batch_status(db_session, call_import)
     assert call_import.status == CallImportStatus.PARTIAL
+
+
+def test_pending_source_row_indices_keeps_holes_below_the_max():
+    from app.services.call_imports.bulk_ops import pending_source_row_indices
+
+    existing = set(range(0, 250)) | set(range(500, 750))
+    missing = pending_source_row_indices(existing, 1000)
+    assert missing[0] == 250
+    assert 499 in missing
+    assert 500 not in missing
+    assert 749 not in missing
+    assert missing[-1] == 999
+
+
+def test_bulk_materialize_writes_explicit_missing_indices(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from app.services.call_imports.bulk_ops import bulk_materialize_call_import_rows
+
+    captured: dict = {}
+
+    def fake_insert(_db, _call_import_id, mappings, **_kwargs):
+        captured["indices"] = [row["row_index"] for row in mappings]
+        return len(mappings), []
+
+    monkeypatch.setattr(
+        "app.db_sharding.row_ops.bulk_insert_mappings_on_shards",
+        fake_insert,
+    )
+    call_import = SimpleNamespace(id=uuid4(), workspace_id=uuid4())
+    rows = [
+        {
+            "transcript": "a",
+            "conversation_id": "c1",
+            "recording_url": "https://example.test/a",
+            "parameter_values": {},
+        },
+        {
+            "transcript": "b",
+            "conversation_id": "c2",
+            "recording_url": "https://example.test/b",
+            "parameter_values": {},
+        },
+    ]
+    inserted, _pending = bulk_materialize_call_import_rows(
+        MagicMock(),
+        call_import,
+        rows,
+        uuid4(),
+        row_indices=[250, 499],
+    )
+    assert inserted == 2
+    assert captured["indices"] == [250, 499]

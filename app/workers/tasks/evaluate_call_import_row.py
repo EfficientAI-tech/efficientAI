@@ -34,6 +34,7 @@ from app.workers.tasks.evaluate_call_import_row_core import (
     bucket_needs_comparison_pair,
     build_parent_groups,
     categorize_metrics,
+    load_call_import_eval_context,
     load_enabled_metrics,
     metric_text_references_production,
     now_utc,
@@ -308,8 +309,19 @@ def evaluate_call_import_row_task(
                 release_slot = False
                 from celery.exceptions import MaxRetriesExceededError
 
+                from app.workers.concurrency.import_retry_backoff import (
+                    import_transient_retry_countdown,
+                )
+
+                attempt = int(getattr(self.request, "retries", 0) or 0)
+                slot_countdown = import_transient_retry_countdown(
+                    None,
+                    attempt=attempt,
+                    base_seconds=15,
+                    max_seconds=120,
+                )
                 try:
-                    self.retry(countdown=30, max_retries=40)
+                    self.retry(countdown=slot_countdown, max_retries=40)
                 except MaxRetriesExceededError:
                     release_slot = True
                     return {"status": "skipped", "reason": "already_claimed"}
@@ -386,34 +398,35 @@ def evaluate_call_import_row_task(
                 if isinstance(source_row.raw_columns, dict)
                 else {}
             )
-            parent_import = getattr(source_row, "call_import", None)
-            if parent_import is None and source_row.call_import_id:
-                from app.models.database import CallImport
-
-                parent_import = (
-                    catalog_db.query(CallImport)
-                    .filter(CallImport.id == source_row.call_import_id)
-                    .first()
-                )
-            custom_column_mapping = (
-                parent_import.custom_column_mapping
-                if parent_import is not None
-                and isinstance(
-                    getattr(parent_import, "custom_column_mapping", None), dict
-                )
-                else {}
+            custom_column_mapping, speaker_aliases = load_call_import_eval_context(
+                catalog_db, source_row.call_import_id
             )
 
-            (
-                transcript_metrics,
-                audio_metrics,
-                comparison_metrics,
-                metric_scores,
-            ) = _categorize_metrics(
+            categorized = _categorize_metrics(
                 metrics,
                 has_audio,
                 has_production_transcript=bool(production_transcript),
-                has_diarised_transcript=bool(diarised_transcript),
+                has_diarised_transcript=bool(diarised_transcript)
+                or (
+                    isinstance(source_row.diarised_segments, list)
+                    and bool(source_row.diarised_segments)
+                ),
+            )
+            transcript_metrics = categorized.transcript_metrics
+            audio_metrics = categorized.audio_metrics
+            comparison_metrics = categorized.comparison_metrics
+            computed_metrics = categorized.computed_metrics
+            metric_scores = dict(categorized.skipped_scores)
+
+            from app.workers.tasks.evaluate_call_import_row_core import (
+                run_computed_metrics_for_row,
+            )
+
+            run_computed_metrics_for_row(
+                source_row=source_row,
+                computed_metrics=computed_metrics,
+                metric_scores=metric_scores,
+                speaker_aliases=speaker_aliases,
             )
 
             if _skip_audio:
@@ -440,6 +453,7 @@ def evaluate_call_import_row_task(
                 not transcript_metrics
                 and not audio_metrics
                 and not comparison_metrics
+                and not computed_metrics
             ):
                 eval_row.status = "failed"
                 eval_row.error_message = (
@@ -464,6 +478,7 @@ def evaluate_call_import_row_task(
                 transcript_unavailable
                 and not audio_metrics
                 and not comparison_metrics
+                and not computed_metrics
             ):
                 logger.warning(
                     "[CallImportEval {}] Skipping LLM metrics: {} transcript "
@@ -516,7 +531,7 @@ def evaluate_call_import_row_task(
             running_discovered_metrics: list = []
             running_discovered_by_parent: dict[UUID, list] = {}
             llm_metrics_for_scoring: list[Metric] = list(comparison_metrics)
-            if transcript:
+            if transcript and (transcript_metrics or comparison_metrics):
                 llm_metrics_for_scoring = transcript_metrics + comparison_metrics
 
             llm_config_buckets: dict = {}
@@ -594,6 +609,42 @@ def evaluate_call_import_row_task(
                     ),
                     running_discovered_by_parent=running_discovered_by_parent,
                 )
+
+            # Computed metrics (User WER/CER) finish before LLM calls. Persist them
+            # while the row is still running so the UI shows scores during LLM work
+            # and cancel mid-flight does not discard deterministic results.
+            if llm_config_buckets and metric_scores:
+                existing_scores = (
+                    eval_row.metric_scores
+                    if isinstance(eval_row.metric_scores, dict)
+                    else {}
+                )
+                eval_row.metric_scores = {
+                    **existing_scores,
+                    **_as_json_dict(metric_scores),
+                }
+                _persist_eval_sessions(row_db, catalog_db)
+
+            if _was_cancelled_externally(row_db, eval_row):
+                logger.info(
+                    "[CallImportEval {}] Row cancelled before LLM phase; "
+                    "keeping computed scores already persisted",
+                    eval_row.id,
+                )
+                try:
+                    _rollup_parent(
+                        catalog_db,
+                        evaluation,
+                        previous_row_status="running",
+                        new_row_status="failed",
+                    )
+                    catalog_db.commit()
+                except Exception:  # noqa: BLE001
+                    catalog_db.rollback()
+                return {
+                    "status": "cancelled",
+                    "eval_row_id": eval_row_id,
+                }
 
             scoring_inputs = {
                 "eval_row_id": eval_row.id,

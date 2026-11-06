@@ -13,7 +13,7 @@ from app.services.agents.chat_connection import (
     chat_connection_config,
     normalized_chat_connection_type,
 )
-from app.services.agents.chat_llm_config import resolve_simulation_llm
+from app.services.agents.chat_llm_config import ResolvedSimulationLlm, resolve_simulation_llm
 from app.services.agents.chat_outbound_urls import assert_chat_connection_urls_safe
 from app.services.agents.customer_api_chat import call_customer_chat_api
 from app.services.agents.provider_platform_chat import ProviderChatState, generate_provider_platform_reply
@@ -22,14 +22,24 @@ from app.services.testing.simulation_prompts import build_agent_system_prompt
 from app.services.testing.test_agent_simulation_prompt import is_chat_agent
 
 
-def _agent_messages(system_prompt: str, transcript: list[dict[str, str]]) -> list[dict[str, str]]:
-    messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+def _agent_messages(
+    system_prompt: str,
+    transcript: list[dict[str, str]],
+    *,
+    tool_sidecars: Optional[list[list[dict[str, Any]]]] = None,
+) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+    sidecars = tool_sidecars or []
+    assistant_turn = 0
     for entry in transcript:
         speaker = entry.get("speaker")
         text = (entry.get("text") or "").strip()
         if not text:
             continue
         if speaker == "Speaker 2":
+            if assistant_turn < len(sidecars) and sidecars[assistant_turn]:
+                messages.extend(sidecars[assistant_turn])
+            assistant_turn += 1
             messages.append({"role": "assistant", "content": text})
         else:
             messages.append({"role": "user", "content": text})
@@ -152,8 +162,17 @@ def generate_production_chat_reply(
     transcript: list[dict[str, str]],
     provider_state: ProviderChatState,
     evaluator_result: Optional[Any] = None,
+    llm_override: Optional[ResolvedSimulationLlm] = None,
+    toolset: Optional[Any] = None,
 ) -> tuple[str, dict[str, Any]]:
-    """Return assistant text and metadata to merge into evaluator call_data."""
+    """Return assistant text and metadata to merge into evaluator call_data.
+
+    ``toolset`` (``app.services.tools.toolset.Toolset``) is built from the agent when
+    not given; multi-turn callers pass one in to reuse it across turns.
+
+    ``llm_override`` replaces the agent's main LLM on the internal-LLM leg only
+    (live connections always use the customer's own endpoint).
+    """
     conn = normalized_chat_connection_type(agent)
     mode = normalized_chat_eval_mode(agent)
     meta: dict[str, Any] = {
@@ -319,19 +338,65 @@ def generate_production_chat_reply(
             "Check agent connection settings and platform credentials."
         )
 
+    main_llm = llm_override or resolve_simulation_llm(
+        db, agent=agent, organization_id=organization_id, leg="main"
+    )
+    agent_system = build_agent_system_prompt(agent)
+    tool_sidecars_key = "internal_llm_tool_sidecars"
+    tool_sidecars: list[list[dict[str, Any]]] = list(
+        provider_state.extra.get(tool_sidecars_key) or []
+    )
+    messages = _agent_messages(agent_system, transcript, tool_sidecars=tool_sidecars)
+    tool_records: list = []
+    owns_toolset = toolset is None
     try:
-        text = generate_internal_agent_reply(
-            db,
-            agent=agent,
-            organization_id=organization_id,
-            transcript=transcript,
-        )
+        from app.services.knowledge_bases.chat_tools import with_knowledge_base_instructions
+        from app.services.tools.loop import run_tool_loop
+        from app.services.tools.toolset import build_agent_toolset
+
+        if owns_toolset:
+            toolset = build_agent_toolset(
+                db, agent=agent, organization_id=organization_id, llm_model=main_llm.model
+            )
+        if toolset:
+            text, tool_records, tool_message_tail = run_tool_loop(
+                db,
+                toolset=toolset,
+                messages=with_knowledge_base_instructions(messages),
+                organization_id=organization_id,
+                llm_provider=main_llm.provider,
+                llm_model=main_llm.model,
+                llm_config=main_llm.llm_config,
+                credential_id=main_llm.credential_id,
+                task_defaults={"temperature": 0.7, "max_tokens": 1024},
+            )
+            if tool_message_tail:
+                tool_sidecars.append(tool_message_tail)
+                provider_state.extra[tool_sidecars_key] = tool_sidecars
+        else:
+            result = llm_service.generate_response(
+                messages=messages,
+                llm_provider=main_llm.provider,
+                llm_model=main_llm.model,
+                organization_id=organization_id,
+                db=db,
+                llm_config=main_llm.llm_config,
+                credential_id=main_llm.credential_id,
+                task_defaults={"temperature": 0.7, "max_tokens": 400},
+            )
+            text = (result.get("text") or "").strip()
     except RuntimeError as exc:
-        main_llm = resolve_simulation_llm(db, agent=agent, organization_id=organization_id, leg="main")
         raise RuntimeError(
             f"Production-side LLM simulation failed ({main_llm.source}): {exc}"
         ) from exc
-    main_llm = resolve_simulation_llm(db, agent=agent, organization_id=organization_id, leg="main")
+    finally:
+        if owns_toolset and toolset is not None:
+            toolset.close()
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("Production LLM returned an empty message")
     meta["production_leg"] = "internal_llm_sim"
     meta["main_llm_source"] = main_llm.source
+    # This turn's calls only; the simulation loop accumulates them across turns.
+    meta["tool_calls"] = [record.as_dict() for record in tool_records]
     return text, meta

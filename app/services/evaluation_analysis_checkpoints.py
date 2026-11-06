@@ -1,0 +1,448 @@
+"""Persist and load durable batch checkpoints for evaluation analysis jobs."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Literal, Optional, Tuple
+from uuid import UUID, uuid4
+
+from loguru import logger
+from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
+
+from app.db_sharding.scatter_gather import (
+    EVALUATION_ANALYSIS_BATCH_SIZE,
+    EvaluationRowPageCursor,
+    count_completed_evaluation_row_pairs,
+)
+from app.models.database import EvaluationAnalysisBatch
+
+JobKind = Literal["user_insights", "metric_clusters", "prompt_improvements"]
+
+JOB_KIND_USER_INSIGHTS: JobKind = "user_insights"
+JOB_KIND_METRIC_CLUSTERS: JobKind = "metric_clusters"
+JOB_KIND_PROMPT_IMPROVEMENTS: JobKind = "prompt_improvements"
+
+USER_INSIGHTS_CANCELLED_BY_USER_ERROR = "Cancelled by user"
+PROMPT_IMPROVEMENTS_CANCELLED_BY_USER_ERROR = "Cancelled by user"
+
+EVIDENCE_RESERVOIR_CAP = 80
+
+# A running analysis header is stamped after every LLM call. Three cluster
+# calls (180 s timeout + one larger-budget retry each) is the longest gap a
+# live worker can legitimately produce, so allow generous headroom before
+# treating the job as abandoned.
+JOB_HEARTBEAT_STALE_SECONDS = 15 * 60
+
+
+def analysis_header_matches_run(raw: Any, job_run_id: Any) -> bool:
+    """True when *job_run_id* still owns the saved analysis header.
+
+    A missing claim matches any header (the first enqueue, before a run
+    id exists). A claim against a different header means this task is
+    stale and must not write.
+    """
+    if job_run_id is None or str(job_run_id).strip() == "":
+        return True
+    if not isinstance(raw, dict):
+        return False
+    current = raw.get("job_run_id")
+    if not current:
+        return False
+    return str(current) == str(job_run_id)
+
+
+def classify_task_run(raw: Any, job_run_id: Any) -> tuple[str, Optional[UUID]]:
+    """How this task relates to the saved analysis header.
+
+    ``owned`` — the task's claim still matches the header.
+    ``fresh`` — neither side has a run yet; the caller should mint one.
+    ``stale`` — the task names a run that no longer owns the header.
+    ``unclaimed`` — the task has no run id, and the header already belongs
+    to one. That task must not attach to the replacement run.
+    """
+    claimed = str(job_run_id).strip() if job_run_id is not None else ""
+    header = ""
+    if isinstance(raw, dict) and raw.get("job_run_id"):
+        header = str(raw.get("job_run_id")).strip()
+    if claimed:
+        if header != claimed:
+            return "stale", None
+        try:
+            return "owned", UUID(claimed)
+        except ValueError:
+            return "stale", None
+    if header:
+        return "unclaimed", None
+    return "fresh", None
+
+
+def claim_still_owns_header(raw: Any, job_run_id: Any) -> bool:
+    """False when a write would land on a header this run does not own."""
+    if job_run_id is None or str(job_run_id).strip() == "":
+        return False
+    return analysis_header_matches_run(raw, job_run_id)
+
+
+def keep_owned_header_write(
+    db: Session,
+    evaluation: Any,
+    attr: str,
+    job_run_id: Any,
+) -> bool:
+    """Refresh *attr* and keep a pending write only while this run owns it.
+
+    Call after assigning the next header and before commit. A newer run
+    is left in place. When the claim still matches, the pending payload is
+    restored with that run id so a merge cannot adopt the replacement.
+    """
+    pending = getattr(evaluation, attr, None)
+    db.expire(evaluation, [attr])
+    db.refresh(evaluation)
+    current = getattr(evaluation, attr, None)
+    if not claim_still_owns_header(current, job_run_id):
+        logger.info(
+            "Analysis write skipped for {}; run {} no longer owns the header ({})",
+            attr,
+            job_run_id,
+            current.get("job_run_id") if isinstance(current, dict) else None,
+        )
+        return False
+    if isinstance(pending, dict):
+        setattr(evaluation, attr, {**pending, "job_run_id": str(job_run_id)})
+        flag_modified(evaluation, attr)
+    return True
+
+
+def new_job_run_id() -> UUID:
+    return uuid4()
+
+
+def normalize_transcript_source(value: Optional[str]) -> str:
+    source = (value or "diarised").strip().lower()
+    return source if source in {"diarised", "production"} else "diarised"
+
+
+def batch_count_for_rows(total_rows: int, batch_size: int = EVALUATION_ANALYSIS_BATCH_SIZE) -> int:
+    if total_rows <= 0:
+        return 0
+    return (total_rows + batch_size - 1) // batch_size
+
+
+def progress_header(
+    *,
+    completed_rows: int,
+    total_rows: int,
+    completed_batches: int,
+    total_batches: int,
+    completed_llm_calls: int = 0,
+    total_llm_calls: int = 0,
+    phase: Optional[str] = None,
+) -> Dict[str, Any]:
+    if total_rows > 0:
+        completed_rows = min(int(completed_rows), int(total_rows))
+    if total_batches > 0:
+        completed_batches = min(int(completed_batches), int(total_batches))
+    payload: Dict[str, Any] = {
+        "completed_rows": completed_rows,
+        "total_rows": total_rows,
+        "completed_batches": completed_batches,
+        "total_batches": total_batches,
+        "completed_llm_calls": completed_llm_calls,
+        "total_llm_calls": total_llm_calls,
+    }
+    if phase:
+        payload["phase"] = phase
+    return payload
+
+
+def rows_completed_for_batches(
+    completed_batches: int,
+    total_rows: int,
+    *,
+    batch_size: int = EVALUATION_ANALYSIS_BATCH_SIZE,
+) -> int:
+    """Rows finished after ``completed_batches`` full pages (never exceeds total)."""
+    if total_rows <= 0 or completed_batches <= 0:
+        return 0
+    return min(int(total_rows), int(completed_batches) * int(batch_size))
+
+
+def cursor_from_header(raw: Any) -> Optional[EvaluationRowPageCursor]:
+    if not isinstance(raw, dict):
+        return None
+    cursor = raw.get("cursor")
+    if not isinstance(cursor, dict):
+        return None
+    row_index = cursor.get("row_index")
+    eval_row_id = cursor.get("evaluation_row_id")
+    if not isinstance(row_index, (int, float)) or not eval_row_id:
+        return None
+    try:
+        return EvaluationRowPageCursor(
+            row_index=int(row_index),
+            evaluation_row_id=UUID(str(eval_row_id)),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def cursor_to_dict(cursor: EvaluationRowPageCursor) -> Dict[str, Any]:
+    return {
+        "row_index": cursor.row_index,
+        "evaluation_row_id": str(cursor.evaluation_row_id),
+    }
+
+
+def user_insights_raw_is_cancelled(raw: Any) -> bool:
+    if not isinstance(raw, dict):
+        return False
+    if (raw.get("status") or "").lower() == "cancelled":
+        return True
+    return raw.get("error_message") == USER_INSIGHTS_CANCELLED_BY_USER_ERROR
+
+
+def prompt_improvements_raw_is_cancelled(raw: Any) -> bool:
+    if not isinstance(raw, dict):
+        return False
+    if (raw.get("status") or "").lower() == "cancelled":
+        return True
+    return raw.get("error_message") == PROMPT_IMPROVEMENTS_CANCELLED_BY_USER_ERROR
+
+
+def upsert_analysis_batch(
+    db: Session,
+    *,
+    evaluation_id: UUID,
+    job_kind: JobKind,
+    job_run_id: UUID,
+    batch_index: int,
+    payload: Dict[str, Any],
+    cursor: Optional[EvaluationRowPageCursor] = None,
+    transcript_source: Optional[str] = None,
+    status: str = "completed",
+) -> EvaluationAnalysisBatch:
+    row = (
+        db.query(EvaluationAnalysisBatch)
+        .filter(
+            EvaluationAnalysisBatch.evaluation_id == evaluation_id,
+            EvaluationAnalysisBatch.job_kind == job_kind,
+            EvaluationAnalysisBatch.job_run_id == job_run_id,
+            EvaluationAnalysisBatch.batch_index == batch_index,
+        )
+        .first()
+    )
+    if row is None:
+        row = EvaluationAnalysisBatch(
+            evaluation_id=evaluation_id,
+            job_kind=job_kind,
+            job_run_id=job_run_id,
+            batch_index=batch_index,
+        )
+        db.add(row)
+    row.payload = payload
+    row.status = status
+    row.transcript_source = transcript_source
+    if cursor is not None:
+        row.cursor_row_index = cursor.row_index
+        row.cursor_evaluation_row_id = cursor.evaluation_row_id
+    row.updated_at = datetime.now(timezone.utc)
+    db.flush()
+    return row
+
+
+def list_analysis_batches(
+    db: Session,
+    *,
+    evaluation_id: UUID,
+    job_kind: JobKind,
+    job_run_id: UUID,
+) -> List[EvaluationAnalysisBatch]:
+    return (
+        db.query(EvaluationAnalysisBatch)
+        .filter(
+            EvaluationAnalysisBatch.evaluation_id == evaluation_id,
+            EvaluationAnalysisBatch.job_kind == job_kind,
+            EvaluationAnalysisBatch.job_run_id == job_run_id,
+        )
+        .order_by(EvaluationAnalysisBatch.batch_index)
+        .all()
+    )
+
+
+def merge_theme_counts_from_batches(batches: List[EvaluationAnalysisBatch]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for batch in batches:
+        if (getattr(batch, "status", None) or "completed") != "completed":
+            continue
+        payload = batch.payload if isinstance(batch.payload, dict) else {}
+        partial = payload.get("theme_counts")
+        if isinstance(partial, dict):
+            for key, value in partial.items():
+                label = str(key).strip()
+                if not label:
+                    continue
+                try:
+                    counts[label] = counts.get(label, 0) + int(value)
+                except (TypeError, ValueError):
+                    continue
+    return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
+def merge_extractions_from_batches(
+    batches: List[EvaluationAnalysisBatch],
+    *,
+    cap: int = EVIDENCE_RESERVOIR_CAP,
+) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for batch in batches:
+        if (getattr(batch, "status", None) or "completed") != "completed":
+            continue
+        payload = batch.payload if isinstance(batch.payload, dict) else {}
+        samples = payload.get("extractions")
+        if not isinstance(samples, list):
+            continue
+        for item in samples:
+            if isinstance(item, dict):
+                out.append(item)
+            if len(out) >= cap:
+                return out
+    return out
+
+
+def merge_signature_counts_from_cluster_batches(
+    batches: List[EvaluationAnalysisBatch],
+) -> Dict[str, Dict[str, int]]:
+    """metric_id -> signature label -> count."""
+    by_metric: Dict[str, Dict[str, int]] = {}
+    for batch in batches:
+        if (getattr(batch, "status", None) or "completed") != "completed":
+            continue
+        payload = batch.payload if isinstance(batch.payload, dict) else {}
+        metrics_raw = payload.get("metrics")
+        if not isinstance(metrics_raw, dict):
+            continue
+        for metric_id, sig_map in metrics_raw.items():
+            if not isinstance(sig_map, dict):
+                continue
+            bucket = by_metric.setdefault(str(metric_id), {})
+            for label, count in sig_map.items():
+                name = str(label).strip()
+                if not name:
+                    continue
+                try:
+                    bucket[name] = bucket.get(name, 0) + int(count)
+                except (TypeError, ValueError):
+                    continue
+    return by_metric
+
+
+def merge_cluster_extractions_from_batches(
+    batches: List[EvaluationAnalysisBatch],
+    metric_id: str,
+    *,
+    cap: int = 40,
+) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for batch in batches:
+        if (getattr(batch, "status", None) or "completed") != "completed":
+            continue
+        payload = batch.payload if isinstance(batch.payload, dict) else {}
+        metrics_raw = payload.get("metric_extractions")
+        if not isinstance(metrics_raw, dict):
+            continue
+        samples = metrics_raw.get(metric_id)
+        if not isinstance(samples, list):
+            continue
+        for item in samples:
+            if isinstance(item, dict):
+                out.append(item)
+            if len(out) >= cap:
+                return out
+    return out
+
+
+def job_heartbeat_is_stale(
+    raw: Any,
+    *,
+    threshold_seconds: int = JOB_HEARTBEAT_STALE_SECONDS,
+    now: Optional[datetime] = None,
+) -> bool:
+    """True when a ``running`` analysis header has stopped updating.
+
+    Long LLM steps rewrite the header after every call, so a heartbeat older
+    than the threshold means no worker is driving this job any more (crash,
+    restart, revoke without terminate). Without this the card stays on
+    "Synthesizing…" forever and the only escape is Stop.
+    """
+    if not isinstance(raw, dict):
+        return False
+    if (raw.get("status") or "").strip().lower() != "running":
+        return False
+    beat_raw = raw.get("heartbeat_at") or raw.get("generated_at")
+    if not isinstance(beat_raw, str) or not beat_raw:
+        return True
+    try:
+        beat = datetime.fromisoformat(beat_raw)
+    except ValueError:
+        return True
+    if beat.tzinfo is None:
+        beat = beat.replace(tzinfo=timezone.utc)
+    moment = now or datetime.now(timezone.utc)
+    return (moment - beat).total_seconds() >= max(1, threshold_seconds)
+
+
+def stamp_job_heartbeat(header: Dict[str, Any]) -> Dict[str, Any]:
+    """Record that a worker is still driving ``header``. Mutates and returns it."""
+    header["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+    return header
+
+
+def init_job_header(
+    *,
+    job_run_id: UUID,
+    transcript_source: str,
+    total_rows: int,
+    total_batches: int,
+    provider: Optional[str],
+    model: Optional[str],
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    header: Dict[str, Any] = {
+        "status": "running",
+        "job_run_id": str(job_run_id),
+        "transcript_source": transcript_source,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+        "progress": progress_header(
+            completed_rows=0,
+            total_rows=total_rows,
+            completed_batches=0,
+            total_batches=total_batches,
+        ),
+        "theme_counts": {},
+        "provider": provider,
+        "model": model,
+        "error_message": None,
+        "celery_task_id": None,
+    }
+    if extra:
+        header.update(extra)
+    return header
+
+
+def completed_rows_from_batches(batches: List[EvaluationAnalysisBatch]) -> int:
+    total = 0
+    seen: set[int] = set()
+    for batch in batches:
+        if (getattr(batch, "status", None) or "completed") != "completed":
+            continue
+        if batch.batch_index in seen:
+            continue
+        seen.add(batch.batch_index)
+        payload = batch.payload if isinstance(batch.payload, dict) else {}
+        try:
+            total += int(payload.get("rows_processed") or 0)
+        except (TypeError, ValueError):
+            continue
+    return total

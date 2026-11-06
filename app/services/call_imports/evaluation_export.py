@@ -236,6 +236,23 @@ def build_export_layout(
         seen.add(mid)
         header = metric_names[mid]
         metric_headers.append(header)
+        from app.services.metrics.computed_metrics import (
+            COMPUTED_TRANSCRIPT_SCORING_METHODS,
+            metric_scoring_method_key,
+        )
+
+        if metric_scoring_method_key(metric) in COMPUTED_TRANSCRIPT_SCORING_METHODS:
+            metric_headers.extend(
+                [
+                    f"{header} cer",
+                    f"{header} wer",
+                    f"{header} error_rate_mode",
+                    f"{header} script_mismatch",
+                    f"{header} ref chars",
+                    f"{header} ref words",
+                    f"{header} hyp words",
+                ]
+            )
         if include_transcripts and bool(getattr(metric, "capture_rationale", False)):
             rationale_header = f"{header} - LLM Rationale"
             metric_headers.append(rationale_header)
@@ -324,6 +341,34 @@ def project_export_row(
             else:
                 value = metric_score.get("chosen_child_name") or metric_score.get("value")
         row_out[metric.name] = "" if value is None else str(value)
+        from app.services.metrics.computed_metrics import (
+            COMPUTED_TRANSCRIPT_SCORING_METHODS,
+            metric_scoring_method_key,
+        )
+
+        if (
+            metric_scoring_method_key(metric) in COMPUTED_TRANSCRIPT_SCORING_METHODS
+            and isinstance(metric_score, dict)
+        ):
+            details = metric_score.get("details")
+            if isinstance(details, dict):
+                row_out[f"{metric.name} cer"] = str(details.get("cer", ""))
+                row_out[f"{metric.name} wer"] = str(details.get("wer", ""))
+                row_out[f"{metric.name} error_rate_mode"] = str(
+                    details.get("mode", "")
+                )
+                row_out[f"{metric.name} script_mismatch"] = str(
+                    details.get("script_mismatch", "")
+                )
+                row_out[f"{metric.name} ref chars"] = str(
+                    details.get("ref_chars", "")
+                )
+                row_out[f"{metric.name} ref words"] = str(
+                    details.get("ref_words", details.get("ref_word_count", ""))
+                )
+                row_out[f"{metric.name} hyp words"] = str(
+                    details.get("hyp_words", details.get("hyp_word_count", ""))
+                )
         rationale_header = layout.rationale_headers.get(str(metric.id))
         if rationale_header is not None:
             rationale = (

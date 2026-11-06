@@ -20,6 +20,7 @@ const STATUS_STYLES: Record<string, string> = {
   evaluating: 'bg-blue-100 text-blue-800',
   running: 'bg-blue-100 text-blue-800',
   cancelled: 'bg-gray-100 text-gray-600',
+  auto_aborted: 'bg-gray-100 text-gray-600',
   processing: 'bg-blue-100 text-blue-800',
   completed: 'bg-green-100 text-green-800',
   partial: 'bg-amber-100 text-amber-800',
@@ -49,7 +50,7 @@ export default function StatusBadge({ status, size = 'md' }: StatusBadgeProps) {
     if (normalizedStatus === 'completed' || normalizedStatus === 'call_ended') {
       return <CheckCircle2 className={iconClass} />
     }
-    if (normalizedStatus === 'failed') {
+    if (normalizedStatus === 'failed' || normalizedStatus === 'auto_aborted') {
       return <XCircle className={iconClass} />
     }
     if (normalizedStatus === 'partial') {
@@ -67,7 +68,7 @@ export default function StatusBadge({ status, size = 'md' }: StatusBadgeProps) {
   return (
     <span className={`inline-flex items-center gap-1 ${paddingClass} rounded-full ${textClass} font-medium ${style}`}>
       {renderIcon()}
-      {status}
+      {normalizedStatus === 'auto_aborted' ? 'Auto-aborted' : status}
     </span>
   )
 }

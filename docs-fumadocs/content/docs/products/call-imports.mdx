@@ -41,6 +41,12 @@ Abort and force-fail run on the `eval-control` queue (before `evaluations` on `w
 
 When running locally via `eai start` or `eai worker`, the imports worker must consume **`imports,diarization,eval-control,evaluations`**. If `eval-control` is missing, Run Evaluation will enqueue materialize tasks that never run and recording imports will not start.
 
+## Presigned uploads and S3 CORS
+
+CSV/XLSX staging and manual audio uploads PUT files **from the browser straight to object storage** (presigned URL). Your **S3 bucket** (or R2/MinIO equivalent) must allow CORS from the app origin (`http://localhost:8000`, production URL, etc.). API `cors.origins` alone does not fix this. 
+
+Example AWS CLI: `scripts/s3-bucket-cors-call-imports.example.json` — see comments in `config.yml.example` under `s3:`.
+
 ## Database sharding (enterprise scale)
 
 For large batches (10k+ rows), call-import row data can be spread across multiple PostgreSQL data shards with a catalog database for metadata and routing. See [Call Import Sharding](/docs/operations/call-import-sharding/) for the full system design, configuration, and scaling guide.

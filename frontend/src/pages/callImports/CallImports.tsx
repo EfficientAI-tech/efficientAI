@@ -34,9 +34,9 @@ import PlatformImportProgressDock, {
 import { usePlatformImportProgressStore } from '../../store/platformImportProgressStore'
 import { platformImportLabel } from './platformImportLabel'
 import { itemsOf } from '../../lib/safeData'
+import { callImportListPollMs } from './importPolling'
 
 const PAGE_SIZE = 20
-const LIST_POLL_MS = 60_000
 
 function callImportListProgress(item: CallImport): {
   total: number
@@ -104,16 +104,16 @@ export default function CallImports() {
 
   const { data: datasets = [] } = useQuery({
     queryKey: ['call-import-datasets', activeWorkspaceId],
-    queryFn: () => apiClient.listCallImportDatasets(),
+    queryFn: () => apiClient.callImports.listCallImportDatasets(),
   })
 
   const { data: allTags = [] } = useQuery({
     queryKey: ['call-import-tags', activeWorkspaceId],
-    queryFn: () => apiClient.listCallImportTags(),
+    queryFn: () => apiClient.callImports.listCallImportTags(),
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => apiClient.deleteCallImport(id),
+    mutationFn: (id: string) => apiClient.callImports.deleteCallImport(id),
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
       setPendingDelete(null)
@@ -151,26 +151,14 @@ export default function CallImports() {
 
   const { data, isLoading, isFetching, refetch } = useQuery({
     queryKey: ['call-imports', activeWorkspaceId, queryParams],
-    queryFn: () => apiClient.listCallImports(queryParams),
+    queryFn: () => apiClient.callImports.listCallImports(queryParams),
+    refetchOnWindowFocus: false,
     refetchInterval: (query) => {
       const items = itemsOf<CallImport>(query.state.data)
-      const hasDeleting = items.some((i: CallImport) => i.status === 'deleting')
-      if (hasDeleting) return LIST_POLL_MS
-      const hasActiveEvaluation = items.some(
-        (i: CallImport) =>
-          i.latest_evaluation_status === 'pending' ||
-          i.latest_evaluation_status === 'running',
-      )
-      if (hasActiveEvaluation) return LIST_POLL_MS
-      const active = items.filter(
-        (i: CallImport) => i.status === 'pending' || i.status === 'processing',
-      )
-      if (active.length === 0) return false
       const watched = new Set(
         usePlatformImportProgressStore.getState().watches.map((watch) => watch.id),
       )
-      const uncovered = active.filter((item) => !watched.has(item.id))
-      return uncovered.length > 0 ? LIST_POLL_MS : false
+      return callImportListPollMs(items, { watchedPlatformImportIds: watched })
     },
   })
 

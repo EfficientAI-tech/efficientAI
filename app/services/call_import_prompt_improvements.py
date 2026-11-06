@@ -23,6 +23,7 @@ from app.models.schemas import (
 from app.services.agent_flowchart import _extract_json_object
 from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
 from app.services.ai.llm_service import llm_service
+from app.services.evaluation_analysis_checkpoints import job_heartbeat_is_stale
 from app.services.imported_agent_constants import IMPORTED_AGENT_TAG
 
 
@@ -115,6 +116,18 @@ def prompt_improvements_state_from_raw(
         and completed_rows > generated_at_completed
     )
 
+    progress_raw = raw.get("progress")
+    progress: Optional[Dict[str, Any]] = None
+    if isinstance(progress_raw, dict):
+        progress = {}
+        for key, value in progress_raw.items():
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                progress[key] = int(value)
+            elif isinstance(value, str):
+                progress[key] = value
+
     return EvaluationPromptImprovementsState(
         status=raw.get("status") or "idle",
         imported_agent_id=raw.get("imported_agent_id"),
@@ -127,7 +140,9 @@ def prompt_improvements_state_from_raw(
         model=raw.get("model"),
         error_message=raw.get("error_message"),
         is_stale=is_stale,
+        heartbeat_stale=job_heartbeat_is_stale(raw),
         require_review=True,
+        progress=progress,
     )
 
 

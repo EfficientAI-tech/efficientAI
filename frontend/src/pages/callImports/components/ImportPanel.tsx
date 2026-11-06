@@ -37,7 +37,7 @@ export default function ImportPanel({ callImport }: ImportPanelProps) {
         selectedProvider,
         selectedIntegrationId,
       )
-      return apiClient.startCallImport(callImport.id, selection)
+      return apiClient.callImports.startCallImport(callImport.id, selection)
     },
     onSuccess: () => {
       setSubmitError(null)

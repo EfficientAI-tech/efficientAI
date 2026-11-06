@@ -37,6 +37,7 @@ from app.services.metric_clusters_rca_summary import (
     compute_rca_summary,
     enrich_metric_cluster_groups,
 )
+from app.services.evaluation_analysis_checkpoints import job_heartbeat_is_stale
 from app.services.metric_cluster_rows import (
     MetricClusterSourceRow,
     call_import_pair_to_cluster_row,
@@ -1338,16 +1339,12 @@ def metric_clusters_state_from_raw(
     if isinstance(progress_raw, dict):
         progress = {}
         for key, value in progress_raw.items():
-            if key == "current_metric_name" and isinstance(value, str):
-                progress[key] = value
-            elif isinstance(value, (int, float)):
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
                 progress[key] = int(value)
-            elif isinstance(value, str) and key not in progress:
+            elif isinstance(value, str):
                 progress[key] = value
-        if "completed_llm_calls" not in progress:
-            progress["completed_llm_calls"] = 0
-        if "total_llm_calls" not in progress:
-            progress["total_llm_calls"] = 0
+        progress.setdefault("completed_llm_calls", 0)
+        progress.setdefault("total_llm_calls", 0)
 
     rca_summary = None
     rca_raw = raw.get("rca_summary")
@@ -1390,6 +1387,7 @@ def metric_clusters_state_from_raw(
             raw.get("error_message") if isinstance(raw.get("error_message"), str) else None
         ),
         is_stale=completed_rows > snapshot_int and status == "completed",
+        heartbeat_stale=job_heartbeat_is_stale(raw),
         selected_evaluation_row_ids=[
             str(rid)
             for rid in (raw.get("selected_evaluation_row_ids") or [])

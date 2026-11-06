@@ -89,7 +89,7 @@ export default function MappingPanel({
 
   const { data: schemasResponse } = useQuery({
     queryKey: ['call-import-schemas', activeWorkspaceId],
-    queryFn: () => apiClient.listCallImportSchemas(),
+    queryFn: () => apiClient.callImports.listCallImportSchemas(),
   })
   const schemas = useMemo<CallImportSchema[]>(
     () => itemsOf(schemasResponse),
@@ -178,7 +178,7 @@ export default function MappingPanel({
       const skippedColumns = Object.keys(mappingState.skipped).filter(
         (h) => mappingState.skipped[h],
       )
-      return apiClient.updateCallImportMapping(callImport.id, {
+      return apiClient.callImports.updateCallImportMapping(callImport.id, {
         schemaId: selectedSchema.id,
         sheetName: isXlsx ? selectedSheet.name : null,
         parameterMapping,

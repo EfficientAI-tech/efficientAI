@@ -3,6 +3,8 @@
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
+import pytest
+
 from app.models.database import (
     CallImportEvaluation,
     CallImportEvaluationRow,
@@ -70,10 +72,11 @@ def test_enqueue_eval_chain_uses_shard_write_context(mock_context, mock_build_as
 
     assert result is True
     mock_context.assert_called_once_with(db)
-    db.flush.assert_called_once()
-    db.commit.assert_called_once()
+    assert db.commit.call_count == 2
+    mock_build_async.assert_called_once()
     assert eval_row.celery_task_id == "transcribe-task-id"
     assert source_row.celery_task_id == "slot-task-id"
+    assert source_row.diarised_transcript_status == "pending"
 
 
 @patch("app.workers.concurrency.eval_dispatch.build_eval_chain_transcribe_apply_async")
@@ -128,3 +131,81 @@ def test_reserve_slot_and_enqueue_uses_shard_write_context(
     mock_context.assert_called_once_with(db)
     db.commit.assert_called_once()
     assert eval_row.celery_task_id == "queued-task-id"
+
+
+@patch("app.workers.concurrency.eval_dispatch.build_eval_chain_transcribe_apply_async")
+@patch("app.workers.concurrency.eval_dispatch.acquire_eval_slot", return_value=True)
+@patch("app.db_sharding.row_ops.shard_row_write_context")
+def test_reserve_slot_enqueue_commits_pending_before_queue(
+    mock_context, _mock_acquire, mock_build_async
+):
+    from app.workers.concurrency.eval_dispatch import (
+        _reserve_slot_enqueue_eval_transcribe,
+    )
+
+    evaluation, eval_row, source_row = _make_eval_bundle()
+    db = MagicMock()
+    mock_context.return_value.__enter__ = MagicMock(return_value=None)
+    mock_context.return_value.__exit__ = MagicMock(return_value=False)
+    order: list[str] = []
+
+    def _commit():
+        order.append("commit")
+
+    db.commit.side_effect = _commit
+    mock_build_async.side_effect = lambda **_kwargs: (
+        order.append("queue") or MagicMock(id="queued-task-id")
+    )
+
+    assert (
+        _reserve_slot_enqueue_eval_transcribe(
+            evaluation=evaluation,
+            eval_row=eval_row,
+            source_row=source_row,
+            db=db,
+            catalog_db=db,
+        )
+        is True
+    )
+    assert order == ["commit", "queue", "commit"]
+    assert source_row.diarised_transcript_status == "pending"
+    assert eval_row.celery_task_id == "queued-task-id"
+
+
+@patch(
+    "app.workers.concurrency.eval_dispatch.release_eval_slot_for_celery_task"
+)
+@patch("app.workers.concurrency.eval_dispatch.build_eval_chain_transcribe_apply_async")
+@patch("app.workers.concurrency.eval_dispatch.acquire_eval_slot", return_value=True)
+@patch("app.db_sharding.row_ops.shard_row_write_context")
+def test_reserve_slot_enqueue_clears_task_id_when_queue_fails(
+    mock_context,
+    _mock_acquire,
+    mock_build_async,
+    mock_release_slot,
+):
+    from app.workers.concurrency.eval_dispatch import (
+        _reserve_slot_enqueue_eval_transcribe,
+    )
+
+    evaluation, eval_row, source_row = _make_eval_bundle()
+    source_row.celery_task_id = "will-clear"
+    eval_row.celery_task_id = "stale"
+    db = MagicMock()
+    mock_context.return_value.__enter__ = MagicMock(return_value=None)
+    mock_context.return_value.__exit__ = MagicMock(return_value=False)
+    mock_build_async.side_effect = RuntimeError("broker unavailable")
+
+    with pytest.raises(RuntimeError, match="broker unavailable"):
+        _reserve_slot_enqueue_eval_transcribe(
+            evaluation=evaluation,
+            eval_row=eval_row,
+            source_row=source_row,
+            db=db,
+            catalog_db=db,
+        )
+
+    assert source_row.celery_task_id is None
+    assert eval_row.celery_task_id is None
+    assert db.commit.call_count == 2
+    mock_release_slot.assert_called_once()

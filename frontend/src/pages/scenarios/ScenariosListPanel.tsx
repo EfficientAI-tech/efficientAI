@@ -1,4 +1,4 @@
-import { Edit, FileText, Trash2 } from 'lucide-react'
+import { BarChart3, Edit, FileText, Trash2 } from 'lucide-react'
 import { markdownPreview } from './scenarioMarkdown'
 import type { Scenario } from './scenarioTypes'
 
@@ -8,6 +8,8 @@ interface ScenariosListPanelProps {
   onEditScenario: (scenario: Scenario) => void
   onDeleteScenario: (scenario: Scenario) => void
   onViewScenario?: (scenario: Scenario) => void
+  onGenerateMetrics?: (scenario: Scenario) => void
+  showGenerateMetrics?: boolean
 }
 
 export default function ScenariosListPanel({
@@ -16,6 +18,8 @@ export default function ScenariosListPanel({
   onEditScenario,
   onDeleteScenario,
   onViewScenario,
+  onGenerateMetrics,
+  showGenerateMetrics = false,
 }: ScenariosListPanelProps) {
   return (
     <section className="flex-1 min-w-0 rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden flex flex-col max-h-[70vh] lg:max-h-[calc(100vh-11rem)]">
@@ -72,6 +76,16 @@ export default function ScenariosListPanel({
                       ) : null}
                     </button>
                     <div className="flex items-center gap-1 shrink-0">
+                      {showGenerateMetrics && onGenerateMetrics ? (
+                        <button
+                          type="button"
+                          onClick={() => onGenerateMetrics(scenario)}
+                          className="p-1.5 text-gray-400 hover:text-primary-600 hover:bg-primary-50 rounded-lg transition-colors"
+                          title="Generate metric from scenario"
+                        >
+                          <BarChart3 className="h-4 w-4" />
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         onClick={() => onEditScenario(scenario)}

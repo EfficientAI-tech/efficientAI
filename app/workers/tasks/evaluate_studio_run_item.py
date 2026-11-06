@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
@@ -18,12 +19,13 @@ from app.models.database import (
 )
 from app.services.metric_studio.metric_selection import load_studio_run_metrics
 from app.services.metric_studio.run_rollup import rollup_metric_studio_run
-from app.services.metric_studio.source_resolver import resolve_source
+from app.services.metric_studio.source_resolver import ResolvedCallSample, resolve_source
 from app.workers.config import celery_app
 from app.workers.tasks.evaluate_call_import_row_core import (
     bucket_needs_comparison_pair,
     build_llm_config_buckets,
     categorize_metrics,
+    run_computed_metrics_for_row,
 )
 from app.workers.tasks.helpers.audio_evaluation import (
     evaluate_audio_metrics,
@@ -34,6 +36,22 @@ from app.workers.tasks.helpers.llm_evaluation import (
     flatten_metric_groups,
     handle_llm_evaluation_error,
 )
+
+
+def computed_metric_source_from_sample(sample: ResolvedCallSample) -> SimpleNamespace:
+    """Inputs User WER / User CER use for an imported call.
+
+    Segments carry ``text_native``. The rendered transcript drops that
+    text, and custom speaker names live on the import's aliases.
+    """
+    segments = sample.diarised_segments if isinstance(sample.diarised_segments, list) else None
+    return SimpleNamespace(
+        transcript=(sample.transcript or "").strip(),
+        diarised_transcript=(sample.diarised_transcript or "").strip(),
+        diarised_segments=segments,
+        diarised_speaker_swap=bool(sample.diarised_speaker_swap),
+        diarised_native_transcript=(sample.diarised_native_transcript or "").strip(),
+    )
 
 
 def _now_utc() -> datetime:
@@ -114,16 +132,29 @@ def evaluate_studio_run_item_task(self, result_row_id: str) -> dict[str, Any]:
         metrics = load_studio_run_metrics(db, run.organization_id, metric_ids)
         has_audio = bool(sample.audio_s3_key)
         has_production = bool((sample.transcript or "").strip())
-        has_diarised = bool((sample.diarised_transcript or "").strip())
+        has_diarised = bool((sample.diarised_transcript or "").strip()) or (
+            isinstance(sample.diarised_segments, list) and bool(sample.diarised_segments)
+        )
 
-        transcript_metrics, audio_metrics, comparison_metrics, skipped = categorize_metrics(
+        categorized = categorize_metrics(
             metrics,
             has_audio,
             has_production_transcript=has_production,
             has_diarised_transcript=has_diarised,
         )
+        transcript_metrics = categorized.transcript_metrics
+        audio_metrics = categorized.audio_metrics
+        comparison_metrics = categorized.comparison_metrics
+        skipped = categorized.skipped_scores
+        computed_metrics = categorized.computed_metrics
         llm_metrics = transcript_metrics + comparison_metrics
         metric_scores: dict[str, Any] = dict(skipped)
+        run_computed_metrics_for_row(
+            source_row=computed_metric_source_from_sample(sample),
+            computed_metrics=computed_metrics,
+            metric_scores=metric_scores,
+            speaker_aliases=sample.speaker_aliases,
+        )
 
         if not transcript and not has_audio:
             result_row.status = "failed"

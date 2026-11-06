@@ -1,8 +1,9 @@
-export type TestAgentSubTab = 'configuration' | 'prompt'
+export type TestAgentSubTab = 'configuration' | 'prompt' | 'knowledge_bases'
 
 const SUB_TABS: { id: TestAgentSubTab; label: string }[] = [
   { id: 'prompt', label: 'Prompt' },
   { id: 'configuration', label: 'Configuration' },
+  { id: 'knowledge_bases', label: 'Knowledge Bases' },
 ]
 
 export default function TestAgentSubTabNav({

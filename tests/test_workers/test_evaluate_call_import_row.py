@@ -19,6 +19,31 @@ from app.models.database import (
 from app.models.enums import CallImportRowStatus, CallImportStatus
 
 
+@pytest.fixture(autouse=True)
+def _isolate_eval_worker_tests(monkeypatch):
+    import importlib
+    import sys
+
+    for mod_name in (
+        "app.workers.concurrency.limits",
+        "app.workers.concurrency.eval_dispatch",
+        "app.workers.concurrency.fair_dispatch",
+    ):
+        cached = sys.modules.get(mod_name)
+        if cached is not None and not getattr(cached, "__file__", None):
+            sys.modules.pop(mod_name, None)
+            importlib.import_module(mod_name)
+
+    monkeypatch.setattr(
+        "app.db_sharding.sessions.is_sharding_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "app.services.call_imports.metric_aggregate_cache.maybe_refresh_aggregate_cache_after_row",
+        lambda *_a, **_k: None,
+    )
+
+
 class _NonClosingSession:
     """Session proxy that ignores .close() so the test can still inspect rows
     after the Celery task wraps everything in a try/finally that closes the DB.
@@ -612,6 +637,7 @@ def _make_categorize_metric(
     name: str,
     *,
     compare_transcripts: bool = False,
+    scoring_method: str = "llm",
     description: str | None = None,
     parent_metric_id=None,
 ):
@@ -625,6 +651,7 @@ def _make_categorize_metric(
         name=name,
         metric_type="rating",
         compare_transcripts=compare_transcripts,
+        scoring_method=scoring_method,
         description=description,
         parent_metric_id=parent_metric_id,
     )
@@ -642,6 +669,7 @@ def test_categorize_metrics_buckets_comparison_metric_when_both_transcripts_pres
         transcript_metrics,
         audio_metrics,
         comparison_metrics,
+        computed_metrics,
         skipped,
     ) = _categorize_metrics(
         [cmp_metric, regular],
@@ -653,6 +681,7 @@ def test_categorize_metrics_buckets_comparison_metric_when_both_transcripts_pres
     assert [m.id for m in comparison_metrics] == [cmp_metric.id]
     assert [m.id for m in transcript_metrics] == [regular.id]
     assert audio_metrics == []
+    assert computed_metrics == []
     assert skipped == {}
 
 
@@ -666,6 +695,7 @@ def test_categorize_metrics_skips_comparison_metric_when_production_missing():
         transcript_metrics,
         _audio,
         comparison_metrics,
+        _computed,
         skipped,
     ) = _categorize_metrics(
         [cmp_metric],
@@ -693,6 +723,7 @@ def test_categorize_metrics_skips_comparison_metric_when_both_transcripts_missin
         _transcript_metrics,
         _audio,
         comparison_metrics,
+        _computed,
         skipped,
     ) = _categorize_metrics(
         [cmp_metric],
@@ -727,6 +758,7 @@ def test_categorize_metrics_auto_promotes_standalone_when_description_references
         transcript_metrics,
         _audio,
         comparison_metrics,
+        _computed,
         skipped,
     ) = _categorize_metrics(
         [auto_compare, plain],
@@ -738,6 +770,59 @@ def test_categorize_metrics_auto_promotes_standalone_when_description_references
     assert [m.id for m in comparison_metrics] == [auto_compare.id]
     assert [m.id for m in transcript_metrics] == [plain.id]
     assert skipped == {}
+
+
+def test_categorize_metrics_buckets_user_wer_as_computed():
+    from app.workers.tasks.evaluate_call_import_row import _categorize_metrics
+
+    wer = _make_categorize_metric("User WER", scoring_method="user_wer")
+    (
+        transcript_metrics,
+        _audio,
+        comparison_metrics,
+        computed_metrics,
+        skipped,
+    ) = _categorize_metrics(
+        [wer],
+        has_audio=False,
+        has_production_transcript=True,
+        has_diarised_transcript=True,
+    )
+    assert transcript_metrics == []
+    assert comparison_metrics == []
+    assert [m.id for m in computed_metrics] == [wer.id]
+    assert skipped == {}
+
+
+def test_row_needs_audio_phase_accepts_five_field_categorized_metrics(monkeypatch):
+    """Regression for dispatch_fair_eval_rows: do not 4-tuple-unpack categorize results."""
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        CategorizedMetrics,
+        row_needs_audio_phase,
+    )
+
+    wer = SimpleNamespace(id=uuid4(), name="User WER", scoring_method="user_wer")
+
+    monkeypatch.setattr(
+        "app.workers.tasks.evaluate_call_import_row_core.load_enabled_metrics",
+        lambda *_a, **_kw: [wer],
+    )
+    monkeypatch.setattr(
+        "app.workers.tasks.evaluate_call_import_row_core.categorize_row_metrics",
+        lambda *_a, **_kw: CategorizedMetrics([], [], [], [wer], {}),
+    )
+
+    assert (
+        row_needs_audio_phase(
+            db=None,
+            evaluation=SimpleNamespace(),
+            source_row=SimpleNamespace(),
+        )
+        is False
+    )
 
 
 def test_evaluate_call_import_row_scores_comparison_metric_with_both_transcripts(
@@ -1041,7 +1126,7 @@ def test_rollup_parent_emits_pass_delta_when_leaving_running(db_session, monkeyp
         return True
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _capture,
     )
 
@@ -1070,7 +1155,7 @@ def test_rollup_parent_bills_only_retry_delta(db_session, monkeypatch):
         return True
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _capture,
     )
 
@@ -1109,7 +1194,7 @@ def test_rollup_parent_repeat_call_does_not_double_bill(db_session, monkeypatch)
         return True
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _capture,
     )
 
@@ -1143,7 +1228,7 @@ def test_rollup_parent_skips_billing_when_metric_rerun_unchanged(
         return True
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _capture,
     )
 
@@ -1172,7 +1257,7 @@ def test_rollup_parent_does_not_advance_watermark_when_billing_fails(
         return False
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _billing_fails,
     )
 
@@ -1202,7 +1287,7 @@ def test_rollup_parent_retries_billing_after_failed_ingest(db_session, monkeypat
         return attempts["count"] >= 2
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _billing_succeeds_on_retry,
     )
 
@@ -1236,7 +1321,7 @@ def test_rollup_parent_does_not_decrease_watermark_when_completed_rows_drop(
         return True
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _capture,
     )
 
@@ -2171,6 +2256,7 @@ def test_second_terminal_write_does_not_advance_progress(db_session):
     eval_row.status = "running"
     db_session.commit()
 
+    eval_row_id = eval_row.id
     eval_row.status = "completed"
     eval_row.finished_at = datetime.now(timezone.utc)
     commit_terminal_row_and_rollup(
@@ -2182,6 +2268,7 @@ def test_second_terminal_write_does_not_advance_progress(db_session):
     db_session.refresh(evaluation)
     assert evaluation.completed_rows == 1
 
+    eval_row = db_session.get(CallImportEvaluationRow, eval_row_id)
     eval_row.status = "completed"
     commit_terminal_row_and_rollup(
         db_session,

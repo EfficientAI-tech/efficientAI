@@ -709,6 +709,39 @@ def record_call_import_evaluation_completed(
     )
 
 
+def buffer_call_import_evaluation_completed(
+    organization_id: UUID,
+    evaluation_id: UUID,
+    *,
+    workspace_id: UUID,
+    call_import_id: UUID,
+    rows_billed: int,
+    completed_total: int,
+    total_rows: int = 0,
+    metric_count: int = 0,
+) -> bool:
+    if rows_billed <= 0:
+        return False
+    from app.services.billing.flexprice_buffer import enqueue_flexprice_event
+
+    return enqueue_flexprice_event(
+        CALL_IMPORT_EVALUATION_COMPLETED,
+        organization_id,
+        f"{evaluation_id}:{completed_total}",
+        properties=_event_properties(
+            workspace_id,
+            FEATURE_CALL_IMPORTS,
+            quantity=rows_billed,
+            evaluation_id=evaluation_id,
+            call_import_id=call_import_id,
+            completed_total=completed_total,
+            total_rows=total_rows,
+            metric_count=metric_count,
+            rows_billed=rows_billed,
+        ),
+    )
+
+
 def record_call_import_recording_minutes_billed(
     organization_id: UUID,
     evaluation_row_id: UUID,
@@ -735,6 +768,99 @@ def record_call_import_recording_minutes_billed(
             evaluation_id=evaluation_id,
             call_import_id=call_import_id,
             audio_seconds=audio_seconds,
+        ),
+    )
+
+
+def buffer_call_import_recording_minutes_batch(
+    organization_id: UUID,
+    *,
+    workspace_id: UUID,
+    evaluation_id: UUID,
+    call_import_id: UUID,
+    audio_seconds: int,
+    billable_minutes: int,
+    rows_in_batch: int,
+    batch_index: int,
+    batch_size: int = 0,
+    evaluation_total_rows: int = 0,
+) -> bool:
+    """One Flexprice event for many completed rows (summed minutes)."""
+    if billable_minutes <= 0:
+        return False
+    from app.services.billing.flexprice_buffer import enqueue_flexprice_event
+    from app.services.call_imports.eval_flexprice_billing import (
+        RECORDING_MINUTES_TARGET_EVENTS,
+    )
+
+    target = RECORDING_MINUTES_TARGET_EVENTS
+    planned = batch_size or 0
+    total = evaluation_total_rows or 0
+    charge_note = (
+        f"Recording-minutes batch {batch_index} for evaluation {evaluation_id}. "
+        f"{rows_in_batch} completed audio rows"
+        + (f" of {total} evaluation rows" if total else "")
+        + (f", planned {planned} rows per event (~{target} events per run)" if planned else "")
+        + f". Summed audio {audio_seconds}s, billed {billable_minutes} minutes "
+        "(each row rounded up to the next minute, then added). "
+        "quantity is that minute total."
+    )
+    return enqueue_flexprice_event(
+        CALL_IMPORT_RECORDING_MINUTES_BILLED,
+        organization_id,
+        f"{evaluation_id}:audio-batch:{batch_index}",
+        properties=_event_properties(
+            workspace_id,
+            FEATURE_CALL_IMPORTS,
+            quantity=billable_minutes,
+            billable_minutes=billable_minutes,
+            evaluation_id=evaluation_id,
+            call_import_id=call_import_id,
+            audio_seconds=audio_seconds,
+            rows_in_batch=rows_in_batch,
+            batch_index=batch_index,
+            batch_size=planned or None,
+            evaluation_total_rows=total or None,
+            target_events=target,
+            billing_mode="batch",
+            charge_note=charge_note,
+        ),
+    )
+
+
+def buffer_call_import_recording_minutes_billed(
+    organization_id: UUID,
+    evaluation_row_id: UUID,
+    *,
+    workspace_id: UUID,
+    evaluation_id: UUID,
+    call_import_id: UUID,
+    audio_seconds: int,
+    billable_minutes: int,
+) -> bool:
+    if billable_minutes <= 0:
+        return False
+    from app.services.billing.flexprice_buffer import enqueue_flexprice_event
+
+    return enqueue_flexprice_event(
+        CALL_IMPORT_RECORDING_MINUTES_BILLED,
+        organization_id,
+        evaluation_row_id,
+        properties=_event_properties(
+            workspace_id,
+            FEATURE_CALL_IMPORTS,
+            quantity=billable_minutes,
+            billable_minutes=billable_minutes,
+            evaluation_row_id=evaluation_row_id,
+            evaluation_id=evaluation_id,
+            call_import_id=call_import_id,
+            audio_seconds=audio_seconds,
+            billing_mode="single_row",
+            charge_note=(
+                f"One completed audio row {evaluation_row_id} on evaluation "
+                f"{evaluation_id}. {audio_seconds}s billed as {billable_minutes} "
+                "minutes (rounded up to the next minute). quantity is that minute total."
+            ),
         ),
     )
 

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import { Link } from 'react-router-dom'
 import { createPortal } from 'react-dom'
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
@@ -25,7 +26,7 @@ import { isLLMSelectionComplete } from '../../../lib/llmModelOptions'
 import ScenarioAgentMediumTabs from '../../scenarios/ScenarioAgentMediumTabs'
 
 const VOICE_SUITE_STEPS = ['Agent & personas', 'Scenarios', 'Metrics', 'Review'] as const
-const CHAT_SUITE_STEPS = ['Agent', 'Scenarios', 'Metrics', 'Review'] as const
+const CHAT_SUITE_STEPS = ['Agent & personas', 'Scenarios', 'Metrics', 'Review'] as const
 
 const DEFAULT_SCENARIO_NAMES = [
   'Cancel Subscription',
@@ -128,7 +129,9 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
   )
 
   const filteredPersonas = useMemo(() => {
-    if (isChatFlow) return []
+    if (isChatFlow) {
+      return filterPersonasByMedium(personas as { simulation_medium?: string | null }[], 'chat')
+    }
     const voicePersonas = filterPersonasByMedium(
       personas as { tts_provider?: string | null }[],
       'voice',
@@ -148,7 +151,10 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
   const isInbound = selectedAgentObj?.call_type === 'inbound'
   const isOutboundPhone =
     selectedAgentObj?.call_medium === 'phone_call' && selectedAgentObj?.call_type !== 'inbound'
-  const personaCountForCombinations = isChatFlow ? 1 : selectedPersonaIds.length
+  // Chat suites with no persona selected use the built-in "Chat simulation customer".
+  const personaCountForCombinations = isChatFlow
+    ? Math.max(1, selectedPersonaIds.length)
+    : selectedPersonaIds.length
   const totalCombinations = personaCountForCombinations * selectedScenarioIds.length
   const totalRuns = totalCombinations * defaultRuns
 
@@ -201,7 +207,7 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
     onSubmit({
       name: suiteName.trim() || undefined,
       agent_id: modalAgentId,
-      persona_ids: isChatFlow ? [] : selectedPersonaIds,
+      persona_ids: selectedPersonaIds,
       scenario_ids: selectedScenarioIds,
       metric_ids: normalizedMetrics.length > 0 ? normalizedMetrics : undefined,
       llm_provider: llmProvider || undefined,
@@ -316,11 +322,18 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
                     </p>
                   ) : null}
                 </div>
-                {!isChatFlow ? (
+                {modalAgentId || !isChatFlow ? (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Personas * ({selectedPersonaIds.length} selected)
+                      {isChatFlow
+                        ? `Chat personas (${selectedPersonaIds.length} selected, optional)`
+                        : `Personas * (${selectedPersonaIds.length} selected)`}
                     </label>
+                    {isChatFlow ? (
+                      <p className="mb-2 text-xs text-gray-500">
+                        Leave empty to use the built-in “Chat simulation customer”.
+                      </p>
+                    ) : null}
                     {voiceBundleTtsProvider ? (
                       <div className="mb-2 flex items-start gap-2 p-2 bg-blue-50 border border-blue-200 rounded text-xs text-blue-700">
                         <Info className="h-4 w-4 shrink-0 mt-0.5" />
@@ -355,8 +368,17 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
                       ))}
                       {modalAgentId && filteredPersonas.length === 0 && (
                         <p className="text-sm text-gray-500 p-2">
-                          No compatible personas. Add voice personas on the Personas page or match
-                          TTS to the agent bundle.
+                          {isChatFlow ? (
+                            <>
+                              No chat personas yet.{' '}
+                              <Link to="/personas?medium=chat" className="text-primary-600 hover:underline">
+                                Create one on the Personas page
+                              </Link>
+                              .
+                            </>
+                          ) : (
+                            'No compatible personas. Add voice personas on the Personas page or match TTS to the agent bundle.'
+                          )}
                         </p>
                       )}
                     </div>
@@ -404,7 +426,7 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
                   <p>
                     <span className="font-medium">Agent:</span> {selectedAgentObj?.name || '—'}
                   </p>
-                  {!isChatFlow ? (
+                  {!isChatFlow || selectedPersonaIds.length > 0 ? (
                     <>
                       <p>
                         <span className="font-medium">Personas:</span> {selectedPersonaIds.length}{' '}
@@ -419,8 +441,8 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
                   ) : null}
                   <p>
                     <span className="font-medium">Combinations:</span>{' '}
-                    {isChatFlow
-                      ? `${selectedScenarioIds.length} scenario${selectedScenarioIds.length !== 1 ? 's' : ''}`
+                    {isChatFlow && selectedPersonaIds.length === 0
+                      ? `${selectedScenarioIds.length} scenario${selectedScenarioIds.length !== 1 ? 's' : ''} (built-in chat customer)`
                       : `${selectedPersonaIds.length} persona${selectedPersonaIds.length !== 1 ? 's' : ''} × ${selectedScenarioIds.length} scenario${selectedScenarioIds.length !== 1 ? 's' : ''} = ${totalCombinations}`}
                   </p>
                   <ul className="list-disc list-inside text-gray-600 ml-2">

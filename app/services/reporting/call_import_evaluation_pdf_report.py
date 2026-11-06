@@ -96,6 +96,7 @@ class MetricReportSummary:
     weekly_delta_detail: str | None = None
     weekly_delta_why: str | None = None
     group_name: str = "Quality Metrics"
+    lower_is_better: bool = False
 
 
 class CallImportEvaluationPdfReportService:
@@ -205,6 +206,7 @@ class CallImportEvaluationPdfReportService:
                 description=metric.description or "",
                 is_business_metric=self._is_user_insight_metric(metric),
                 group_name=self._metric_group_name(metric),
+                lower_is_better=self._metric_lower_is_better(metric),
             )
             for metric in metrics
         ]
@@ -242,7 +244,7 @@ class CallImportEvaluationPdfReportService:
                 is_failure = (
                     is_metric_failure(eval_row, metric, policy)
                     if metric is not None and policy is not None
-                    else self._is_flagged(value)
+                    else self._is_flagged(value, metric)
                 )
                 if is_failure:
                     summary.flagged_count += 1
@@ -388,10 +390,22 @@ class CallImportEvaluationPdfReportService:
             return score.get("chosen_child_name") or score.get("value")
         return score.get("value")
 
-    def _is_flagged(self, value: Any) -> bool:
+    def _metric_lower_is_better(self, metric: Metric | None) -> bool:
+        if metric is None:
+            return False
+        from app.services.metrics.computed_metrics import (
+            COMPUTED_TRANSCRIPT_SCORING_METHODS,
+            metric_scoring_method_key,
+        )
+
+        return metric_scoring_method_key(metric) in COMPUTED_TRANSCRIPT_SCORING_METHODS
+
+    def _is_flagged(self, value: Any, metric: Metric | None = None) -> bool:
         if isinstance(value, bool):
             return value
         number = self._coerce_number(value)
+        if number is not None and self._metric_lower_is_better(metric):
+            return number > 0.25
         if number is not None:
             return number < 0.5
         if isinstance(value, str):
@@ -445,6 +459,8 @@ class CallImportEvaluationPdfReportService:
         return "Categorical metric measured as response distribution"
 
     def _metric_direction_label(self, summary: MetricReportSummary) -> str:
+        if summary.lower_is_better:
+            return "Lower is better"
         if summary.numeric_values:
             return "Higher score is better"
         return "Lower rate is better"

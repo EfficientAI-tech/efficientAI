@@ -337,7 +337,7 @@ def push_candidate_to_provider(
     db.commit()
 
     return {
-        "message": f"Prompt pushed to {platform_val} and agent description updated",
+        "message": f"Prompt pushed to {integration.platform} and agent description updated",
         "candidate_id": str(candidate.id),
         "provider_response": result,
     }

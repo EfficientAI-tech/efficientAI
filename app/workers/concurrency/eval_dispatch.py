@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timezone
 from typing import Callable, List, Literal, NamedTuple, Optional
 from uuid import UUID
 
@@ -63,15 +64,25 @@ def _needs_transcribe_for_eval(
     *,
     transcribe_overwrite: bool,
     auto_transcribe: bool = True,
+    catalog_db: Session | None = None,
 ) -> bool:
-    if (
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        evaluation_needs_diarised_reference,
+    )
+
+    transcript_source = (
         (getattr(evaluation, "transcript_source", None) or "")
         .strip()
         .lower()
-        == "production"
-    ):
+    )
+    needs_diarised_for_computed = False
+    if catalog_db is not None:
+        needs_diarised_for_computed = evaluation_needs_diarised_reference(
+            catalog_db, evaluation
+        )
+    if transcript_source == "production" and not needs_diarised_for_computed:
         return False
-    if not auto_transcribe:
+    if not auto_transcribe and not needs_diarised_for_computed:
         return False
     transcribe_mode = (
         getattr(evaluation, "transcribe_mode", None) or "stt_llm"
@@ -90,8 +101,44 @@ def _needs_transcribe_for_eval(
     existing_dia = row_text_present(
         source_row, "diarised_transcript", "diarised_transcript_char_length"
     )
-    needs_diarisation = not existing_dia or transcribe_overwrite
-    return bool(can_auto_transcribe and has_audio and needs_diarisation)
+    dia_status = (
+        getattr(source_row, "diarised_transcript_status", None) or ""
+    ).strip().lower()
+    can_diarise = bool(can_auto_transcribe and has_audio)
+    # Overwrite runs re-diarise once per row. A ``completed`` transcript on its
+    # own is not proof the text belongs to *this* pass — it may predate the run
+    # (and the newly picked diariser model / prompt). Only the pass marker the
+    # worker writes when it finishes proves that, so stale transcripts are
+    # re-diarised instead of being scored as fresh.
+    if transcribe_overwrite:
+        if not existing_dia or dia_status != "completed":
+            return can_diarise
+        evaluation_id = getattr(evaluation, "id", None)
+        if evaluation_id is not None:
+            from app.workers.concurrency.fair_dispatch import row_diarised_in_pass
+
+            in_pass = row_diarised_in_pass(
+                evaluation_id, getattr(source_row, "id", None) or ""
+            )
+            if in_pass:
+                return False
+        # ``diarised_at`` is cleared whenever a pass resets the row, so any
+        # value left here came from a diarisation — fresh when it postdates the
+        # run start, stale (and therefore re-diarised) when it predates it.
+        # This keeps the answer independent of Redis availability, so a marker
+        # outage cannot either loop the dispatcher or score old text.
+        diarised_at = getattr(source_row, "diarised_at", None)
+        started_at = getattr(evaluation, "started_at", None)
+        if diarised_at is None:
+            return can_diarise
+        if started_at is None:
+            return False
+        if diarised_at.tzinfo is None:
+            diarised_at = diarised_at.replace(tzinfo=timezone.utc)
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=timezone.utc)
+        return bool(diarised_at < started_at and can_diarise)
+    return bool(can_diarise and not existing_dia)
 
 
 def _diarisation_in_flight(source_row: CallImportRow) -> bool:
@@ -105,14 +152,25 @@ def _diarisation_in_flight(source_row: CallImportRow) -> bool:
 def _needs_import_for_eval(
     source_row: CallImportRow,
     evaluation: CallImportEvaluation | None = None,
+    *,
+    catalog_db: Session | None = None,
 ) -> bool:
     """True when the eval pipeline must fetch a recording before later stages."""
+    needs_diarised_for_computed = False
+    if evaluation is not None and catalog_db is not None:
+        from app.workers.tasks.evaluate_call_import_row_core import (
+            evaluation_needs_diarised_reference,
+        )
+
+        needs_diarised_for_computed = evaluation_needs_diarised_reference(
+            catalog_db, evaluation
+        )
     if evaluation is not None and (
         (getattr(evaluation, "transcript_source", None) or "")
         .strip()
         .lower()
         == "production"
-    ):
+    ) and not needs_diarised_for_computed:
         return False
     if source_row.status in (
         CallImportRowStatus.COMPLETED,
@@ -145,10 +203,51 @@ def _fail_eval_row_for_import(
         commit_terminal_row_and_rollup,
     )
 
-    previous_status = eval_row.status or "pending"
+    previous_status = getattr(eval_row, "status", None) or "pending"
     eval_row.status = "failed"
     eval_row.error_message = (
         source_row.error_message or "Recording fetch failed"
+    )
+    eval_row.finished_at = datetime.now(timezone.utc)
+    eval_row.celery_task_id = None
+    if evaluation is not None:
+        commit_terminal_row_and_rollup(
+            db,
+            evaluation,
+            eval_row,
+            previous_row_status=previous_status,
+            catalog_db=(
+                catalog_db if catalog_db is not None and catalog_db is not db else None
+            ),
+        )
+    else:
+        commit_shard_row_session(db)
+
+
+def _fail_eval_row_for_diarisation(
+    db: Session,
+    eval_row: CallImportEvaluationRow,
+    source_row: CallImportRow,
+    *,
+    catalog_db: Session | None = None,
+    evaluation: CallImportEvaluation | None = None,
+) -> None:
+    """Terminalize an eval row whose diarisation failed and will not be retried.
+
+    Leaving it pending makes the dispatcher reload the same row forever and
+    never reach later rows that are ready to score.
+    """
+    from datetime import datetime, timezone
+
+    from app.db_sharding.row_ops import commit_shard_row_session
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        commit_terminal_row_and_rollup,
+    )
+
+    previous_status = getattr(eval_row, "status", None) or "pending"
+    eval_row.status = "failed"
+    eval_row.error_message = (
+        source_row.diarised_transcript_error or "Diarisation failed"
     )
     eval_row.finished_at = datetime.now(timezone.utc)
     eval_row.celery_task_id = None
@@ -176,12 +275,12 @@ def source_row_import_blocks_eval(source_row: CallImportRow) -> bool:
 def recover_eval_row_for_eval_chain(eval_row: CallImportEvaluationRow) -> None:
     """Undo a premature eval-row failure so the eval chain can continue."""
     from app.workers.tasks.evaluate_call_import_row_core import (
-        EVAL_CANCELLED_BY_USER_ERROR,
+        is_eval_row_user_cancelled,
     )
 
     if eval_row.status != "failed":
         return
-    if (eval_row.error_message or "") == EVAL_CANCELLED_BY_USER_ERROR:
+    if is_eval_row_user_cancelled(eval_row):
         return
     eval_row.status = "pending"
     eval_row.error_message = None
@@ -218,6 +317,7 @@ def build_eval_chain_transcribe_apply_async(
     reserved_task_id: str,
     restricted_metric_ids: Optional[List[str]] = None,
     transcribe_overwrite: bool = False,
+    emit_native_text: bool = False,
 ):
     """Build a Celery ``apply_async`` for eval-chain diarisation."""
     from app.workers.tasks.transcribe_call_import_row import (
@@ -230,6 +330,8 @@ def build_eval_chain_transcribe_apply_async(
     kwargs = {"_eval_slot_task_id": reserved_task_id}
     if restricted_metric_ids:
         kwargs["eval_restricted_metric_ids"] = restricted_metric_ids
+    if emit_native_text:
+        kwargs["emit_native_text"] = True
     return transcribe_call_import_row_task.apply_async(
         args=(
             str(source_row.id),
@@ -255,6 +357,100 @@ def build_eval_chain_transcribe_apply_async(
     )
 
 
+def _reset_source_row_for_eval_transcribe(
+    source_row: CallImportRow,
+    *,
+    reserved_task_id: str,
+    transcribe_overwrite: bool,
+) -> None:
+    previous_task = (source_row.celery_task_id or "").strip()
+    if previous_task and previous_task != reserved_task_id:
+        from app.workers.celery_revoke import revoke_celery_tasks
+
+        revoke_celery_tasks([previous_task])
+    source_row.diarised_transcript_status = "pending"
+    source_row.diarised_transcript_error = None
+    if transcribe_overwrite:
+        source_row.diarised_transcript = None
+        # Drop the old stamp so dispatch can tell this pass's result from an
+        # earlier run's transcript.
+        source_row.diarised_at = None
+    source_row.celery_task_id = reserved_task_id
+
+
+def _clear_transcribe_dispatch_task_ids(
+    db: Session,
+    source_row: CallImportRow,
+    eval_row: CallImportEvaluationRow,
+) -> None:
+    source_row.celery_task_id = None
+    eval_row.celery_task_id = None
+    db.commit()
+
+
+def _reserve_slot_enqueue_eval_transcribe(
+    *,
+    evaluation: CallImportEvaluation,
+    eval_row: CallImportEvaluationRow,
+    source_row: CallImportRow,
+    db: Session,
+    catalog_db: Session,
+    restricted_metric_ids: Optional[List[str]] = None,
+    transcribe_overwrite: bool = False,
+) -> bool:
+    """Commit pending diarisation state before queueing the worker task."""
+    from app.db_sharding.row_ops import shard_row_write_context
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        evaluation_needs_diarised_reference,
+    )
+
+    reserved_task_id = celery_uuid()
+    if not acquire_eval_slot(
+        workspace_id=evaluation.workspace_id,
+        organization_id=evaluation.organization_id,
+        celery_task_id=reserved_task_id,
+        evaluation_id=evaluation.id,
+    ):
+        return False
+
+    slot_released = False
+    try:
+        with shard_row_write_context(db):
+            _reset_source_row_for_eval_transcribe(
+                source_row,
+                reserved_task_id=reserved_task_id,
+                transcribe_overwrite=transcribe_overwrite,
+            )
+            eval_row.celery_task_id = None
+            db.commit()
+
+            try:
+                async_result = build_eval_chain_transcribe_apply_async(
+                    evaluation=evaluation,
+                    eval_row=eval_row,
+                    source_row=source_row,
+                    reserved_task_id=reserved_task_id,
+                    restricted_metric_ids=restricted_metric_ids,
+                    transcribe_overwrite=transcribe_overwrite,
+                    emit_native_text=evaluation_needs_diarised_reference(
+                        catalog_db, evaluation
+                    ),
+                )
+            except Exception:
+                _clear_transcribe_dispatch_task_ids(db, source_row, eval_row)
+                release_eval_slot_for_celery_task(reserved_task_id)
+                slot_released = True
+                raise
+
+            eval_row.celery_task_id = async_result.id
+            db.commit()
+    except Exception:
+        if not slot_released:
+            release_eval_slot_for_celery_task(reserved_task_id)
+        raise
+    return True
+
+
 def enqueue_eval_chain_transcribe_after_import(
     db: Session,
     *,
@@ -270,6 +466,7 @@ def enqueue_eval_chain_transcribe_after_import(
         evaluation,
         source_row,
         transcribe_overwrite=transcribe_overwrite,
+        catalog_db=db,
     ):
         return False
 
@@ -285,20 +482,32 @@ def enqueue_eval_chain_transcribe_after_import(
         return False
 
     with shard_row_write_context(db):
-        source_row.diarised_transcript_status = "pending"
-        source_row.diarised_transcript_error = None
-        source_row.celery_task_id = slot_task_id
-        eval_row.celery_task_id = None
-        db.flush()
-
-        async_result = build_eval_chain_transcribe_apply_async(
-            evaluation=evaluation,
-            eval_row=eval_row,
-            source_row=source_row,
+        _reset_source_row_for_eval_transcribe(
+            source_row,
             reserved_task_id=slot_task_id,
-            restricted_metric_ids=restricted_metric_ids,
             transcribe_overwrite=transcribe_overwrite,
         )
+        eval_row.celery_task_id = None
+        db.commit()
+
+        from app.workers.tasks.evaluate_call_import_row_core import (
+            evaluation_needs_diarised_reference,
+        )
+
+        try:
+            async_result = build_eval_chain_transcribe_apply_async(
+                evaluation=evaluation,
+                eval_row=eval_row,
+                source_row=source_row,
+                reserved_task_id=slot_task_id,
+                restricted_metric_ids=restricted_metric_ids,
+                transcribe_overwrite=transcribe_overwrite,
+                emit_native_text=evaluation_needs_diarised_reference(db, evaluation),
+            )
+        except Exception:
+            _clear_transcribe_dispatch_task_ids(db, source_row, eval_row)
+            raise
+
         eval_row.celery_task_id = async_result.id
         db.commit()
     return True
@@ -480,7 +689,7 @@ def _try_dispatch_single_row(
             if not (source_row.recording_s3_key or "").strip():
                 return EvalDispatchOutcome("skip")
 
-        if _needs_import_for_eval(source_row, evaluation):
+        if _needs_import_for_eval(source_row, evaluation, catalog_db=catalog_db):
             from app.workers.concurrency.import_dispatch import (
                 _peek_authenticated_import_credit,
             )
@@ -523,6 +732,7 @@ def _try_dispatch_single_row(
             source_row,
             transcribe_overwrite=transcribe_overwrite,
             auto_transcribe=auto_transcribe,
+            catalog_db=catalog_db,
         ):
             from app.workers.tasks.evaluate_call_import_row_core import (
                 is_eval_row_user_cancelled,
@@ -539,7 +749,7 @@ def _try_dispatch_single_row(
             ).strip().lower()
             from app.db_sharding.scatter_gather import row_text_present
 
-            if (
+            diarisation_failed = (
                 dia_status == "failed"
                 and not transcribe_overwrite
                 and not row_text_present(
@@ -547,33 +757,37 @@ def _try_dispatch_single_row(
                     "diarised_transcript",
                     "diarised_transcript_char_length",
                 )
-            ):
+            )
+            transcript_source = (
+                (getattr(evaluation, "transcript_source", None) or "diarised")
+                .strip()
+                .lower()
+            )
+            # A failed diarisation with no stored transcript cannot be
+            # retried here. Diarised runs have nothing left to score, so
+            # close the row. Production runs can still score the LLM
+            # metrics; User WER/CER record a skip inside the worker.
+            if diarisation_failed and transcript_source != "production":
+                _fail_eval_row_for_diarisation(
+                    mutate_db,
+                    eval_row,
+                    source_row,
+                    catalog_db=catalog_db,
+                    evaluation=evaluation,
+                )
                 return EvalDispatchOutcome("skip")
-
-            def _enqueue_transcribe(reserved_task_id: str):
-                source_row.diarised_transcript_status = "pending"
-                source_row.diarised_transcript_error = None
-                if transcribe_overwrite:
-                    source_row.diarised_transcript = None
-                source_row.celery_task_id = reserved_task_id
-                mutate_db.flush()
-                return build_eval_chain_transcribe_apply_async(
+            if not diarisation_failed:
+                if _reserve_slot_enqueue_eval_transcribe(
                     evaluation=evaluation,
                     eval_row=eval_row,
                     source_row=source_row,
-                    reserved_task_id=reserved_task_id,
+                    db=mutate_db,
+                    catalog_db=catalog_db,
                     restricted_metric_ids=restricted_metric_ids,
                     transcribe_overwrite=transcribe_overwrite,
-                )
-
-            if _reserve_slot_and_enqueue(
-                evaluation=evaluation,
-                eval_row=eval_row,
-                db=mutate_db,
-                enqueue_fn=_enqueue_transcribe,
-            ):
-                return EvalDispatchOutcome("dispatched")
-            return EvalDispatchOutcome("at_capacity")
+                ):
+                    return EvalDispatchOutcome("dispatched")
+                return EvalDispatchOutcome("at_capacity")
 
         if row_needs_audio_phase(
             catalog_db,

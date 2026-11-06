@@ -26,7 +26,9 @@ from app.db_sharding.sessions import is_sharding_enabled
 _RR_CURSOR_KEY = "import:fair:rr_cursor"
 _WS_CALL_IMPORT_RR_CURSOR_KEY_PREFIX = "import:fair:rr_cursor:ws:"
 _DISPATCH_DEDUPE_KEY = "import:fair:dispatch_dedupe"
+_DISPATCH_BACKOFF_LEVEL_KEY = "import:fair:dispatch_backoff_level"
 _DISPATCH_AT_CAPACITY_BACKOFF_SECONDS = 15
+_DISPATCH_AT_CAPACITY_BACKOFF_MAX_SECONDS = 120
 
 _redis_client: redis.Redis | None = None
 
@@ -44,6 +46,22 @@ def _get_rr_cursor() -> int:
         return int(raw or 0)
     except (redis.RedisError, ValueError, TypeError):
         return 0
+
+
+def _reset_dispatch_backoff_level() -> None:
+    try:
+        _get_redis().delete(_DISPATCH_BACKOFF_LEVEL_KEY)
+    except redis.RedisError:
+        pass
+
+
+def _bump_dispatch_backoff_level() -> int:
+    try:
+        level = int(_get_redis().incr(_DISPATCH_BACKOFF_LEVEL_KEY))
+        _get_redis().expire(_DISPATCH_BACKOFF_LEVEL_KEY, 3600)
+        return max(1, level)
+    except (redis.RedisError, ValueError, TypeError):
+        return 1
 
 
 def _set_rr_cursor(cursor: int) -> None:
@@ -286,10 +304,24 @@ def dispatch_fair_import_rows_task(max_workspace_turns: int = 1) -> dict:
                 skips += 1
                 cursor = (cursor + 1) % len(workspaces)
 
+        if total_dispatched > 0:
+            _reset_dispatch_backoff_level()
+
         if hit_capacity and _workspaces_with_pending_imports(db):
+            from app.workers.concurrency.import_retry_backoff import (
+                import_dispatch_at_capacity_countdown,
+            )
+
+            level = _bump_dispatch_backoff_level()
+            countdown = import_dispatch_at_capacity_countdown(
+                provider_wait_seconds=backoff_seconds,
+                level=level,
+                base_seconds=_DISPATCH_AT_CAPACITY_BACKOFF_SECONDS,
+                max_seconds=_DISPATCH_AT_CAPACITY_BACKOFF_MAX_SECONDS,
+            )
             _schedule_import_dispatch_deduped(
                 max_workspace_turns=1,
-                countdown=backoff_seconds or _DISPATCH_AT_CAPACITY_BACKOFF_SECONDS,
+                countdown=countdown,
             )
 
         return {

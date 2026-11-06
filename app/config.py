@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     MAX_FILE_SIZE_MB: int = 500
     ALLOWED_AUDIO_FORMATS: Annotated[List[str], NoDecode] = ["wav", "mp3", "flac", "m4a"]
     BLOB_STORAGE_PROVIDER: str = "s3"  # "s3", "gcs", or "azure"
+    # Harbor simulation runs: exported tasks + job dirs (one subdir per run)
+    HARBOR_WORK_DIR: str = "./.data/harbor"
+    # Tool connections: stdio MCP servers run a command on the worker, so they are
+    # off unless the deployment is single-tenant / self-hosted.
+    TOOL_CONNECTIONS_ALLOW_STDIO: bool = False
+    TOOL_CALL_TIMEOUT_SECONDS: float = 30.0
 
     # S3 Configuration
     S3_ENABLED: bool = False
@@ -86,6 +92,8 @@ class Settings(BaseSettings):
     # Celery
     CELERY_BROKER_URL: Optional[str] = None
     CELERY_RESULT_BACKEND: Optional[str] = None
+    # worker-imports uses --pool=threads; terminate=True raises NotImplementedError there.
+    CELERY_REVOKE_USE_TERMINATE: bool = False
 
     # Call-import worker concurrency limits (Redis fair-share for evaluations)
     EVAL_WORKSPACE_INFLIGHT_LIMIT: int = 100
@@ -126,7 +134,10 @@ class Settings(BaseSettings):
     PLATFORM_IMPORT_FEATURE_ENABLED: bool = True
 
     # CORS
-    CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000"]
+    CORS_ORIGINS: List[str] = [
+        "http://localhost:8000",
+        "https://sandbox.efficientai.cloud",
+    ]
 
     # API Settings
     API_KEY_HEADER: str = "X-API-Key"
@@ -416,16 +427,16 @@ class Settings(BaseSettings):
         """Parse CORS_ORIGINS from various formats."""
         # Handle None or empty values
         if v is None:
-            return ["http://localhost:3000", "http://localhost:8000"]
+            return ["http://localhost:8000", "https://sandbox.efficientai.cloud"]
         
         if isinstance(v, list):
-            return v if v else ["http://localhost:3000", "http://localhost:8000"]
+            return v if v else ["http://localhost:8000", "https://sandbox.efficientai.cloud"]
         
         if isinstance(v, str):
             # Handle empty or whitespace-only strings
             v = v.strip()
             if not v:
-                return ["http://localhost:3000", "http://localhost:8000"]
+                return ["http://localhost:8000", "https://sandbox.efficientai.cloud"]
             
             # Try JSON first
             if v.startswith("["):
@@ -438,9 +449,9 @@ class Settings(BaseSettings):
             
             # Fall back to comma-separated
             origins = [origin.strip() for origin in v.split(",") if origin.strip()]
-            return origins if origins else ["http://localhost:3000", "http://localhost:8000"]
+            return origins if origins else ["http://localhost:8000", "https://sandbox.efficientai.cloud"]
         
-        return ["http://localhost:3000", "http://localhost:8000"]  # Default
+        return ["http://localhost:8000", "https://sandbox.efficientai.cloud"]  # Default
 
     @field_validator("AUTH_PROVIDERS", mode="before")
     @classmethod
@@ -705,6 +716,10 @@ def load_config_from_file(config_path: str) -> None:
             settings.CELERY_BROKER_URL = celery_config["broker_url"]
         if "result_backend" in celery_config:
             settings.CELERY_RESULT_BACKEND = celery_config["result_backend"]
+        if "revoke_use_terminate" in celery_config:
+            settings.CELERY_REVOKE_USE_TERMINATE = bool(
+                celery_config["revoke_use_terminate"]
+            )
 
     if "workers" in config_data:
         workers_config = config_data["workers"]
@@ -1271,7 +1286,7 @@ except Exception as e:
             # Create with explicit defaults - manually construct with default values
             settings = Settings(
                 ALLOWED_AUDIO_FORMATS=["wav", "mp3", "flac", "m4a"],
-                CORS_ORIGINS=["http://localhost:3000", "http://localhost:8000"],
+                CORS_ORIGINS=["http://localhost:8000", "https://sandbox.efficientai.cloud"],
                 _env_file=None,  # Don't load .env
             )
     else:
