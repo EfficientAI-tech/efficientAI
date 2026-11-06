@@ -47,18 +47,18 @@ def generate_evaluation_prompt_improvements_task(
     **_ignored_kwargs: object,
 ):
     del _ignored_kwargs
-    from app.api.v1.routes.call_import_evaluations import (
-        _aggregate_to_dict,
-        _compute_metric_aggregates,
-        _period_deltas_from_evaluation,
-        _resolve_baseline_evaluation,
-    )
-    from app.models.database import CallImportEvaluationRow
-
     db = SessionLocal()
     evaluation: CallImportEvaluation | None = None
     run_id: UUID | None = None
     try:
+        from app.api.v1.routes.call_import_evaluations.aggregate import (
+            _aggregate_to_dict,
+            _compute_metric_aggregates,
+            _period_deltas_from_evaluation,
+            _resolve_baseline_evaluation,
+        )
+        from app.models.database import CallImportEvaluationRow
+
         evaluation = (
             db.query(CallImportEvaluation)
             .filter(CallImportEvaluation.id == UUID(evaluation_id))
