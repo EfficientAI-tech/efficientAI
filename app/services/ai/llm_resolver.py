@@ -225,14 +225,6 @@ def get_llm_provider_and_model(
         )
         if ai_prov:
             provider_enum = _provider_enum(ai_prov.provider)
-            if (
-                explicit_provider
-                and explicit_provider.lower() != ai_prov.provider.lower()
-            ):
-                raise HTTPException(
-                    status_code=400,
-                    detail="provider does not match the selected credential.",
-                )
             model_str = _resolved_model_for_row(
                 organization_id, db, ai_prov, explicit_model
             )
@@ -244,15 +236,7 @@ def get_llm_provider_and_model(
             credential_id=credential_id,
         )
         if integration_match:
-            provider_enum, integration = integration_match
-            if (
-                explicit_provider
-                and explicit_provider.lower() != integration.platform.lower()
-            ):
-                raise HTTPException(
-                    status_code=400,
-                    detail="provider does not match the selected credential.",
-                )
+            provider_enum, _integration = integration_match
             return provider_enum, _resolved_model_for_integration(
                 provider_enum, explicit_model
             )

@@ -26,19 +26,17 @@ function UserInsightsResumePanel({
     transcript_source: 'diarised' | 'production'
   }) => void
 }) {
-  const [pickerProvider, setPickerProvider] = useState(state.provider ?? '')
-  const [pickerModel, setPickerModel] = useState(state.model ?? '')
+  const [pickerProvider, setPickerProvider] = useState('')
+  const [pickerModel, setPickerModel] = useState('')
   const [transcriptSource, setTranscriptSource] = useState<'diarised' | 'production'>(
     state.transcript_source === 'production' ? 'production' : 'diarised',
   )
 
   useEffect(() => {
-    if (state.provider) setPickerProvider(state.provider)
-    if (state.model) setPickerModel(state.model)
     if (state.transcript_source === 'production' || state.transcript_source === 'diarised') {
       setTranscriptSource(state.transcript_source)
     }
-  }, [state.provider, state.model, state.transcript_source])
+  }, [state.transcript_source])
 
   const canResume = Boolean(pickerProvider.trim() && pickerModel.trim())
 
@@ -62,8 +60,7 @@ function UserInsightsResumePanel({
       <div className="mt-3 space-y-2 rounded-md border border-gray-100 bg-white/90 p-2.5">
         <p className="text-[10px] font-medium text-gray-800">Model for resume</p>
         <p className="text-[10px] text-gray-500 leading-snug">
-          Checkpoints are kept. Pick the provider and model for the remaining extraction
-          passes (defaults to the last run).
+          Checkpoints are kept. Select a provider and model before resuming.
         </p>
         <AIProviderModelPicker
           provider={pickerProvider}
@@ -174,29 +171,31 @@ function UserInsightsStatusBanner({
         ? `Model: ${[state.provider, state.model].filter(Boolean).join(' · ')}`
         : null
     return (
-      <EvaluationBackgroundJobCard
-        title="AI user insights"
-        progress={{
-          ...progressView,
-          metaLine: progressView.metaLine || modelMeta,
-          phaseLabel: state.heartbeat_stale
-            ? 'No worker has updated this job for a while. Resume picks up from the saved checkpoints.'
-            : progressView.phaseLabel,
-        }}
-        onStop={handleCancel}
-        stopLoading={cancelling}
-        onResume={
-          state.heartbeat_stale
-            ? () =>
-              handleResume({
-                provider: state.provider ?? '',
-                model: state.model ?? '',
-                transcript_source: state.transcript_source ?? 'diarised',
-              })
-            : undefined
-        }
-        resumeLoading={resuming}
-      />
+      <div className="space-y-2">
+        <EvaluationBackgroundJobCard
+          title="AI user insights"
+          progress={{
+            ...progressView,
+            metaLine: progressView.metaLine || modelMeta,
+            phaseLabel: state.heartbeat_stale
+              ? 'No worker has updated this job for a while. Resume picks up from the saved checkpoints.'
+              : progressView.phaseLabel,
+          }}
+          onStop={handleCancel}
+          stopLoading={cancelling}
+          resumeLoading={resuming}
+        />
+        {state.heartbeat_stale ? (
+          <UserInsightsResumePanel
+            state={state}
+            tone="neutral"
+            title="Resume user insights"
+            message="Select a provider and model. The job continues from the saved checkpoints."
+            resuming={resuming}
+            onResume={handleResume}
+          />
+        ) : null}
+      </div>
     )
   }
 

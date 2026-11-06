@@ -250,17 +250,6 @@ function EvaluationTLDRInsights({
     enabled: insightsQuery.isSuccess && cached != null,
   })
 
-  // Re-seed the picker with the previously-used provider/model so a
-  // single click on Regenerate gives the user the same model again.
-  useEffect(() => {
-    if (cached?.provider && !pickerProvider) {
-      setPickerProvider(cached.provider)
-    }
-    if (cached?.model && !pickerModel) {
-      setPickerModel(cached.model)
-    }
-  }, [cached?.provider, cached?.model, pickerProvider, pickerModel])
-
   useEffect(() => {
     const source = userInsightsStateQuery.data?.transcript_source
     if (source === 'diarised' || source === 'production') {
@@ -298,6 +287,7 @@ function EvaluationTLDRInsights({
 
   const isLoading = insightsQuery.isLoading
   const isPending = generateMutation.isPending
+  const llmReady = Boolean(pickerProvider.trim() && pickerModel.trim())
 
   if (isLoading) {
     return (
@@ -344,12 +334,12 @@ function EvaluationTLDRInsights({
         </div>
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <p className="text-[10px] text-gray-400">
-            Tokens are only spent when you click Generate.
+            Select a provider and model. Generate stays off until both are chosen.
           </p>
           <button
             type="button"
             onClick={() => generateMutation.mutate(false)}
-            disabled={isPending}
+            disabled={isPending || !llmReady}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-60"
           >
             {isPending ? (
@@ -443,7 +433,7 @@ function EvaluationTLDRInsights({
             <button
               type="button"
               onClick={() => generateMutation.mutate(true)}
-              disabled={isPending}
+              disabled={isPending || !llmReady}
               className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-60"
             >
               {isPending ? (

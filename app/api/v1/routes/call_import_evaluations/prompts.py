@@ -354,6 +354,17 @@ async def generate_call_import_evaluation_prompt_improvements(
 
     call_import = _require_import(db, call_import_id, organization_id)
     imported_agent_id = body.imported_agent_id
+    if imported_agent_id is None and body.resume:
+        saved_agent = (
+            evaluation.prompt_improvements.get("imported_agent_id")
+            if isinstance(evaluation.prompt_improvements, dict)
+            else None
+        )
+        if saved_agent:
+            try:
+                imported_agent_id = UUID(str(saved_agent))
+            except ValueError:
+                imported_agent_id = None
     if imported_agent_id is None:
         linked = resolve_imported_agent_for_call_import(db, call_import, principal)
         if linked is None:

@@ -78,8 +78,6 @@ export default function MetricPromptImprovementsPanel({
   onGenerated,
   linkedImportedAgentPartialId = null,
   platformAgentLabel = null,
-  defaultProvider = '',
-  defaultModel = '',
 }: {
   callImportId: string
   evaluationId: string
@@ -89,16 +87,13 @@ export default function MetricPromptImprovementsPanel({
   onGenerated: () => void
   linkedImportedAgentPartialId?: string | null
   platformAgentLabel?: string | null
-  defaultProvider?: string
-  defaultModel?: string
 }) {
   const queryClient = useQueryClient()
   const [selectedAgentId, setSelectedAgentId] = useState('')
-  const [pickerProvider, setPickerProvider] = useState(defaultProvider)
-  const [pickerModel, setPickerModel] = useState(defaultModel)
+  const [pickerProvider, setPickerProvider] = useState('')
+  const [pickerModel, setPickerModel] = useState('')
   const [pickerCredentialId, setPickerCredentialId] = useState('')
   const [pickerLlmConfig, setPickerLlmConfig] = useState<LLMGenerationConfig | null>(null)
-  const [llmPickerTouched, setLlmPickerTouched] = useState(false)
   const [agentPickerTouched, setAgentPickerTouched] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [activeSuggestionId, setActiveSuggestionId] = useState<string | null>(null)
@@ -169,23 +164,6 @@ export default function MetricPromptImprovementsPanel({
     importedAgents,
     selectedAgentId,
     agentPickerTouched,
-  ])
-
-  useEffect(() => {
-    if (llmPickerTouched) return
-    if (improvementsState?.provider) {
-      setPickerProvider(improvementsState.provider)
-      if (improvementsState.model) setPickerModel(improvementsState.model)
-      return
-    }
-    if (defaultProvider) setPickerProvider(defaultProvider)
-    if (defaultModel) setPickerModel(defaultModel)
-  }, [
-    improvementsState?.provider,
-    improvementsState?.model,
-    defaultProvider,
-    defaultModel,
-    llmPickerTouched,
   ])
 
   const generateMutation = useMutation({
@@ -359,51 +337,50 @@ export default function MetricPromptImprovementsPanel({
 
   const handleResumeImprovements = async () => {
     setCancellingImprovements(true)
+    setError(null)
     try {
       await apiClient.callImports.generateCallImportEvaluationPromptImprovements(
         callImportId,
         evaluationId,
         {
           resume: true,
-          provider: pickerProvider || improvementsState?.provider || undefined,
-          model: pickerModel || improvementsState?.model || undefined,
+          provider: pickerProvider || undefined,
+          model: pickerModel || undefined,
           credential_id: pickerCredentialId || undefined,
+          imported_agent_id:
+            improvementsState?.imported_agent_id || effectiveAgentId || undefined,
         },
       )
       onGenerated()
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail
+      setError(
+        typeof detail === 'string'
+          ? detail
+          : 'Failed to resume prompt improvements.',
+      )
     } finally {
       setCancellingImprovements(false)
     }
   }
 
-  const llmReady = Boolean(
-    pickerCredentialId.trim() || (pickerProvider.trim() && pickerModel.trim()),
-  )
+  const llmReady = Boolean(pickerProvider.trim() && pickerModel.trim())
   const llmPickerBlock = (
     <div className="rounded-md border border-gray-200 bg-white p-2.5">
       <p className="text-xs font-medium text-gray-800 mb-0.5">
         LLM for prompt improvements
       </p>
       <p className="text-[11px] text-gray-500 mb-2">
-        Provider and model used to write the suggested prompt edits. Defaults to
-        this evaluation&apos;s scoring LLM.
+        Select a provider and model. Generate and resume stay off until both
+        are chosen.
       </p>
       <AIProviderModelPicker
         provider={pickerProvider}
         model={pickerModel}
         credentialId={pickerCredentialId}
-        onProviderChange={(next) => {
-          setLlmPickerTouched(true)
-          setPickerProvider(next)
-        }}
-        onCredentialIdChange={(next) => {
-          setLlmPickerTouched(true)
-          setPickerCredentialId(next)
-        }}
-        onModelChange={(next) => {
-          setLlmPickerTouched(true)
-          setPickerModel(next)
-        }}
+        onProviderChange={setPickerProvider}
+        onCredentialIdChange={setPickerCredentialId}
+        onModelChange={setPickerModel}
         llm_config={pickerLlmConfig}
         onLLMConfigChange={setPickerLlmConfig}
         disabled={
@@ -450,6 +427,7 @@ export default function MetricPromptImprovementsPanel({
           </p>
         ) : null}
         <div className="mt-3">{llmPickerBlock}</div>
+        {error ? <p className="mt-2 text-xs text-red-600">{error}</p> : null}
         <div className="mt-2 flex justify-end gap-2">
           <Button
             size="sm"
@@ -602,6 +580,7 @@ export default function MetricPromptImprovementsPanel({
           <button
             type="button"
             disabled={
+              !llmReady ||
               generateFlowchartMutation.isPending ||
               flowchartStatus === 'generating' ||
               flowchartStatus === 'mapping'

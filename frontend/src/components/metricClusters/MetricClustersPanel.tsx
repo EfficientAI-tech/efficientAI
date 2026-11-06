@@ -347,8 +347,6 @@ function MetricClusterGenerationModal({
   open,
   onClose,
   client: initialClient,
-  defaultProvider = '',
-  defaultModel = '',
   state,
   onGenerated,
   onError,
@@ -358,8 +356,6 @@ function MetricClusterGenerationModal({
   open: boolean
   onClose: () => void
   client: MetricClustersClient
-  defaultProvider?: string
-  defaultModel?: string
   state: EvaluationMetricClustersState | null
   onGenerated: (nextState?: EvaluationMetricClustersState, scope?: EvaluatorResultClusterScope) => void
   onError?: (message: string | null) => void
@@ -372,7 +368,6 @@ function MetricClusterGenerationModal({
   const [pickerProvider, setPickerProvider] = useState('')
   const [pickerModel, setPickerModel] = useState('')
   const [rowPreset, setRowPreset] = useState<MetricClusterRowPreset>(25)
-  const [llmPickerTouched, setLlmPickerTouched] = useState(false)
   const [policies, setPolicies] = useState<Record<string, MetricFailurePolicy>>(
     {},
   )
@@ -478,23 +473,6 @@ function MetricClusterGenerationModal({
     }, 600)
     return () => window.clearTimeout(timer)
   }, [open, policies, policiesTouched, generating, client, eligibleRowsQuery])
-
-  useEffect(() => {
-    if (state?.provider) {
-      setPickerProvider(state.provider)
-      if (state.model) setPickerModel(state.model)
-      return
-    }
-    if (llmPickerTouched) return
-    if (defaultProvider) setPickerProvider(defaultProvider)
-    if (defaultModel) setPickerModel(defaultModel)
-  }, [
-    state?.provider,
-    state?.model,
-    defaultProvider,
-    defaultModel,
-    llmPickerTouched,
-  ])
 
   const reportError = (message: string | null) => {
     setError(message)
@@ -700,21 +678,14 @@ function MetricClusterGenerationModal({
               LLM for clustering
             </p>
             <p className="text-[10px] text-gray-500 mb-2">
-              Provider and model used for failure signatures and cluster
-              synthesis. Defaults to this evaluation&apos;s scoring LLM when
-              unset.
+              Select a provider and model. Cluster generation stays off until
+              both are chosen.
             </p>
             <AIProviderModelPicker
               provider={pickerProvider}
               model={pickerModel}
-              onProviderChange={(next) => {
-                setLlmPickerTouched(true)
-                setPickerProvider(next)
-              }}
-              onModelChange={(next) => {
-                setLlmPickerTouched(true)
-                setPickerModel(next)
-              }}
+              onProviderChange={setPickerProvider}
+              onModelChange={setPickerModel}
               disabled={generating}
               size="sm"
             />
@@ -732,6 +703,8 @@ function MetricClusterGenerationModal({
             disabled={
               generating ||
               selectedRowCount === 0 ||
+              !pickerProvider.trim() ||
+              !pickerModel.trim() ||
               (Boolean(evaluatorScope) && !draftAgentId)
             }
           >
@@ -746,8 +719,6 @@ function MetricClusterGenerationModal({
 
 export function MetricClustersPanel({
   client,
-  defaultProvider = '',
-  defaultModel = '',
   state,
   isLoading,
   onGenerated,
@@ -761,7 +732,6 @@ export function MetricClustersPanel({
   const [error, setError] = useState<string | null>(null)
   const [pickerProvider, setPickerProvider] = useState('')
   const [pickerModel, setPickerModel] = useState('')
-  const [llmPickerTouched, setLlmPickerTouched] = useState(false)
   const [clusterActionModalOpen, setClusterActionModalOpen] = useState(false)
 
   const setModalOpen = (open: boolean) => {
@@ -773,23 +743,6 @@ export function MetricClustersPanel({
     registerOpenGenerateModal?.(() => setModalOpen(true))
   }, [registerOpenGenerateModal])
 
-  useEffect(() => {
-    if (state?.provider) {
-      setPickerProvider(state.provider)
-      if (state.model) setPickerModel(state.model)
-      return
-    }
-    if (llmPickerTouched) return
-    if (defaultProvider) setPickerProvider(defaultProvider)
-    if (defaultModel) setPickerModel(defaultModel)
-  }, [
-    state?.provider,
-    state?.model,
-    defaultProvider,
-    defaultModel,
-    llmPickerTouched,
-  ])
-
   const llmPickerDisabled = cancelling || state?.status === 'running'
 
   const llmPickerBlock = (
@@ -798,20 +751,13 @@ export function MetricClustersPanel({
         LLM for clustering
       </p>
       <p className="text-[10px] text-gray-500 mb-2">
-        Provider and model used for failure signatures and cluster synthesis.
-        Defaults to this evaluation&apos;s scoring LLM when unset.
+        Select a provider and model before generating clusters.
       </p>
       <AIProviderModelPicker
         provider={pickerProvider}
         model={pickerModel}
-        onProviderChange={(next) => {
-          setLlmPickerTouched(true)
-          setPickerProvider(next)
-        }}
-        onModelChange={(next) => {
-          setLlmPickerTouched(true)
-          setPickerModel(next)
-        }}
+        onProviderChange={setPickerProvider}
+        onModelChange={setPickerModel}
         disabled={llmPickerDisabled}
         size="sm"
       />
@@ -826,8 +772,6 @@ export function MetricClustersPanel({
         setError(null)
       }}
       client={client}
-      defaultProvider={defaultProvider}
-      defaultModel={defaultModel}
       state={state}
       onGenerated={onGenerated}
       onError={setError}

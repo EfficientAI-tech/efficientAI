@@ -233,8 +233,6 @@ function MetricClusterGenerationModal({
   onClose,
   callImportId,
   evaluationId,
-  defaultProvider = '',
-  defaultModel = '',
   state,
   onGenerated,
   onError,
@@ -244,8 +242,6 @@ function MetricClusterGenerationModal({
   onClose: () => void
   callImportId: string
   evaluationId: string
-  defaultProvider?: string
-  defaultModel?: string
   state: EvaluationMetricClustersState | null
   onGenerated: () => void
   onError?: (message: string | null) => void
@@ -256,7 +252,6 @@ function MetricClusterGenerationModal({
   const [pickerProvider, setPickerProvider] = useState('')
   const [pickerModel, setPickerModel] = useState('')
   const [rowPreset, setRowPreset] = useState<MetricClusterRowPreset>(25)
-  const [llmPickerTouched, setLlmPickerTouched] = useState(false)
   const [policies, setPolicies] = useState<Record<string, MetricFailurePolicy>>(
     {},
   )
@@ -342,23 +337,6 @@ function MetricClusterGenerationModal({
     generating,
     callImportId,
     evaluationId,
-  ])
-
-  useEffect(() => {
-    if (llmPickerTouched) return
-    if (state?.provider) {
-      setPickerProvider(state.provider)
-      if (state.model) setPickerModel(state.model)
-      return
-    }
-    if (defaultProvider) setPickerProvider(defaultProvider)
-    if (defaultModel) setPickerModel(defaultModel)
-  }, [
-    state?.provider,
-    state?.model,
-    defaultProvider,
-    defaultModel,
-    llmPickerTouched,
   ])
 
   const reportError = (message: string | null) => {
@@ -480,21 +458,14 @@ function MetricClusterGenerationModal({
               LLM for clustering
             </p>
             <p className="text-[10px] text-gray-500 mb-2">
-              Provider and model used for failure signatures and cluster
-              synthesis. Defaults to this evaluation&apos;s scoring LLM when
-              unset.
+              Select a provider and model. Cluster generation stays off until
+              both are chosen.
             </p>
             <AIProviderModelPicker
               provider={pickerProvider}
               model={pickerModel}
-              onProviderChange={(next) => {
-                setLlmPickerTouched(true)
-                setPickerProvider(next)
-              }}
-              onModelChange={(next) => {
-                setLlmPickerTouched(true)
-                setPickerModel(next)
-              }}
+              onProviderChange={setPickerProvider}
+              onModelChange={setPickerModel}
               disabled={generating}
               size="sm"
             />
@@ -509,7 +480,12 @@ function MetricClusterGenerationModal({
             variant="primary"
             onClick={handleGenerate}
             isLoading={generating}
-            disabled={generating || selectedRowCount === 0}
+            disabled={
+              generating ||
+              selectedRowCount === 0 ||
+              !pickerProvider.trim() ||
+              !pickerModel.trim()
+            }
           >
             Generate clusters
           </Button>
@@ -772,16 +748,18 @@ function MetricClustersRcaSummaryPanel({
   )
 }
 
-function resumeClusterOptions(state: {
-  provider?: string | null
-  model?: string | null
-  selected_evaluation_row_ids?: string[] | null
-}) {
+function resumeClusterOptions(
+  state: {
+    selected_evaluation_row_ids?: string[] | null
+  },
+  provider: string,
+  model: string,
+) {
   const ids = (state.selected_evaluation_row_ids ?? []).filter(Boolean)
   return {
     resume: true as const,
-    provider: state.provider ?? undefined,
-    model: state.model ?? undefined,
+    provider,
+    model,
     ...(ids.length > 0 ? { evaluation_row_ids: ids } : {}),
   }
 }
@@ -789,16 +767,12 @@ function resumeClusterOptions(state: {
 function MetricClustersPanel({
   callImportId,
   evaluationId,
-  defaultProvider = '',
-  defaultModel = '',
   state,
   isLoading,
   onGenerated,
 }: {
   callImportId: string
   evaluationId: string
-  defaultProvider?: string
-  defaultModel?: string
   state: EvaluationMetricClustersState | null
   isLoading: boolean
   onGenerated: () => void
@@ -808,27 +782,11 @@ function MetricClustersPanel({
   const [error, setError] = useState<string | null>(null)
   const [pickerProvider, setPickerProvider] = useState('')
   const [pickerModel, setPickerModel] = useState('')
-  const [llmPickerTouched, setLlmPickerTouched] = useState(false)
   const [clusterActionModalOpen, setClusterActionModalOpen] = useState(false)
 
-  useEffect(() => {
-    if (llmPickerTouched) return
-    if (state?.provider) {
-      setPickerProvider(state.provider)
-      if (state.model) setPickerModel(state.model)
-      return
-    }
-    if (defaultProvider) setPickerProvider(defaultProvider)
-    if (defaultModel) setPickerModel(defaultModel)
-  }, [
-    state?.provider,
-    state?.model,
-    defaultProvider,
-    defaultModel,
-    llmPickerTouched,
-  ])
-
-  const llmPickerDisabled = cancelling || state?.status === 'running'
+  const clusterLlmReady = Boolean(pickerProvider.trim() && pickerModel.trim())
+  const llmPickerDisabled =
+    cancelling || (state?.status === 'running' && !state.heartbeat_stale)
 
   const llmPickerBlock = (
     <div className="mb-3 rounded-md border border-gray-100 bg-white/80 p-3">
@@ -836,20 +794,14 @@ function MetricClustersPanel({
         LLM for clustering
       </p>
       <p className="text-[10px] text-gray-500 mb-2">
-        Provider and model used for failure signatures and cluster synthesis.
-        Defaults to this evaluation&apos;s scoring LLM when unset.
+        Select a provider and model. Generate, resume, and start-over stay off
+        until both are chosen.
       </p>
       <AIProviderModelPicker
         provider={pickerProvider}
         model={pickerModel}
-        onProviderChange={(next) => {
-          setLlmPickerTouched(true)
-          setPickerProvider(next)
-        }}
-        onModelChange={(next) => {
-          setLlmPickerTouched(true)
-          setPickerModel(next)
-        }}
+        onProviderChange={setPickerProvider}
+        onModelChange={setPickerModel}
         disabled={llmPickerDisabled}
         size="sm"
       />
@@ -867,8 +819,6 @@ function MetricClustersPanel({
       }}
       callImportId={callImportId}
       evaluationId={evaluationId}
-      defaultProvider={defaultProvider}
-      defaultModel={defaultModel}
       state={state}
       onGenerated={onGenerated}
       onError={setError}
@@ -920,7 +870,7 @@ function MetricClustersPanel({
         await apiClient.callImports.generateCallImportEvaluationMetricClusters(
           callImportId,
           evaluationId,
-          resumeClusterOptions(state),
+          resumeClusterOptions(state, pickerProvider.trim(), pickerModel.trim()),
         )
         onGenerated()
       } catch (e: any) {
@@ -945,8 +895,10 @@ function MetricClustersPanel({
           onStop={handleCancel}
           stopLoading={cancelling}
           onResume={state.heartbeat_stale ? resumeStalled : undefined}
+          resumeDisabled={!clusterLlmReady}
           resumeLoading={resuming}
         />
+        {state.heartbeat_stale ? llmPickerBlock : null}
         {error ? <p className="text-xs text-red-600 mt-2">{error}</p> : null}
         {clusterGenerationModal}
       </>
@@ -982,6 +934,7 @@ function MetricClustersPanel({
               : null}
           </p>
         ) : null}
+        {llmPickerBlock}
         <div className="mt-3 flex items-center gap-2">
           <Button
             variant="primary"
@@ -992,7 +945,7 @@ function MetricClustersPanel({
                 await apiClient.callImports.generateCallImportEvaluationMetricClusters(
                   callImportId,
                   evaluationId,
-                  resumeClusterOptions(state),
+                  resumeClusterOptions(state, pickerProvider.trim(), pickerModel.trim()),
                 )
                 onGenerated()
               } catch (e: any) {
@@ -1003,7 +956,7 @@ function MetricClustersPanel({
                 setCancelling(false)
               }
             }}
-            disabled={cancelling}
+            disabled={cancelling || !clusterLlmReady}
           >
             Resume
           </Button>
@@ -1038,6 +991,7 @@ function MetricClustersPanel({
               : null}
           </p>
         ) : null}
+        {llmPickerBlock}
         <div className="mt-3 flex items-center gap-2">
           <Button
             variant="primary"
@@ -1048,7 +1002,7 @@ function MetricClustersPanel({
                 await apiClient.callImports.generateCallImportEvaluationMetricClusters(
                   callImportId,
                   evaluationId,
-                  resumeClusterOptions(state),
+                  resumeClusterOptions(state, pickerProvider.trim(), pickerModel.trim()),
                 )
                 onGenerated()
               } catch (e: any) {
@@ -1059,7 +1013,7 @@ function MetricClustersPanel({
                 setCancelling(false)
               }
             }}
-            disabled={cancelling}
+            disabled={cancelling || !clusterLlmReady}
           >
             Resume
           </Button>

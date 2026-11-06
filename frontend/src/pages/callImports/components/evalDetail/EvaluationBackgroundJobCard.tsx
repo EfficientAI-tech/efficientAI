@@ -10,6 +10,7 @@ function EvaluationBackgroundJobCard({
   stopLoading,
   stopDisabled,
   onResume,
+  resumeDisabled = false,
   resumeLoading,
   footer,
 }: {
@@ -19,6 +20,7 @@ function EvaluationBackgroundJobCard({
   stopLoading?: boolean
   stopDisabled?: boolean
   onResume?: () => void
+  resumeDisabled?: boolean
   resumeLoading?: boolean
   footer?: ReactNode
 }) {
@@ -77,7 +79,7 @@ function EvaluationBackgroundJobCard({
                 size="sm"
                 onClick={onResume}
                 isLoading={resumeLoading}
-                disabled={resumeLoading || stopLoading}
+                disabled={resumeDisabled || resumeLoading || stopLoading}
                 className="h-8 min-h-8 px-2.5 text-[11px] font-medium"
               >
                 Resume

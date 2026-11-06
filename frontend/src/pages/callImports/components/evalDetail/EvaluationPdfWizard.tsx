@@ -48,7 +48,6 @@ export function EvaluationPdfWizard(props: EvaluationPdfWizardProps) {
   const {
     id,
     evalId,
-    evaluation,
     activeWorkspaceId,
     pdf,
     reportQualityMetrics,
@@ -946,8 +945,6 @@ export function EvaluationPdfWizard(props: EvaluationPdfWizardProps) {
           onClose={() => setPdfClusterModalOpen(false)}
           callImportId={id}
           evaluationId={evalId}
-          defaultProvider={evaluation?.llm_provider ?? ''}
-          defaultModel={evaluation?.llm_model ?? ''}
           state={metricClustersQuery.data ?? null}
           overlayZIndexClass="z-[70]"
           onGenerated={() => {
