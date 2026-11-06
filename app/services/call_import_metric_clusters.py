@@ -104,6 +104,7 @@ def build_metric_cluster_progress(
         payload["current_metric_name"] = current_metric_name
     return payload
 CancelCheck = Callable[[], bool]
+FailurePredicate = Callable[[MetricClusterSourceRow, Metric], bool]
 
 
 def metric_clusters_raw_is_cancelled(raw: Any) -> bool:
@@ -349,7 +350,9 @@ def _build_flagged_row_payload(
 def _build_flagged_row_payload_from_source(
     source_row: MetricClusterSourceRow,
     metric: Metric,
-    policy: MetricFailurePolicy,
+    policy: Optional[MetricFailurePolicy],
+    *,
+    failure_predicate: Optional[FailurePredicate] = None,
 ) -> Optional[Dict[str, Any]]:
     scores = source_row.metric_scores if isinstance(source_row.metric_scores, dict) else {}
     entry = scores.get(str(metric.id))
@@ -360,7 +363,10 @@ def _build_flagged_row_payload_from_source(
     if isinstance(entry, dict) and (entry.get("skipped") or entry.get("error")):
         return None
 
-    if not is_metric_failure_from_scores(scores, metric, policy):
+    if failure_predicate is not None:
+        if not failure_predicate(source_row, metric):
+            return None
+    elif policy is None or not is_metric_failure_from_scores(scores, metric, policy):
         return None
 
     value = _score_value(entry, metric) if isinstance(entry, dict) else None
@@ -911,8 +917,12 @@ def estimate_metric_clusters_llm_calls_for_source_rows(
     policies: Dict[str, MetricFailurePolicy],
     *,
     max_llm_calls: Optional[int] = None,
+    failure_predicate: Optional[FailurePredicate] = None,
 ) -> Tuple[int, int]:
-    """Return ``(flagged_metric_count, total_estimated_llm_calls)``."""
+    """Return ``(flagged_metric_count, total_estimated_llm_calls)``.
+
+    ``failure_predicate`` replaces the per-metric failure policies when given.
+    """
     llm_budget = normalize_max_llm_calls(max_llm_calls)
     quality_metrics = [m for m in metrics if _metric_is_quality(m)]
     flagged_metric_count = 0
@@ -922,13 +932,17 @@ def estimate_metric_clusters_llm_calls_for_source_rows(
 
     for metric in quality_metrics:
         policy = policies.get(str(metric.id))
-        if policy is None or not policy_has_failure_criteria(policy, metric):
+        if failure_predicate is None and (
+            policy is None or not policy_has_failure_criteria(policy, metric)
+        ):
             continue
         flagged_count = 0
         for source_row in source_rows:
             if source_row.status != "completed":
                 continue
-            if _build_flagged_row_payload_from_source(source_row, metric, policy):
+            if _build_flagged_row_payload_from_source(
+                source_row, metric, policy, failure_predicate=failure_predicate
+            ):
                 flagged_count += 1
         if flagged_count <= 0:
             continue
@@ -959,8 +973,13 @@ def generate_metric_clusters_for_source_rows(
     on_progress: Optional[ProgressCallback] = None,
     max_llm_calls: Optional[int] = None,
     is_cancelled: Optional[CancelCheck] = None,
+    failure_predicate: Optional[FailurePredicate] = None,
 ) -> EvaluationMetricClustersState:
-    """Run per-metric clustering + proactive discovery for internal diagnostics."""
+    """Run per-metric clustering + proactive discovery for internal diagnostics.
+
+    ``failure_predicate`` replaces the per-metric failure policies when given
+    (e.g. simulation runs flag metrics that missed their success rule).
+    """
     llm_budget = normalize_max_llm_calls(max_llm_calls)
     quality_metrics = [m for m in metrics if _metric_is_quality(m)]
     selected_row_ids = _selected_evaluation_row_ids_from_raw(metric_clusters_raw)
@@ -990,6 +1009,7 @@ def generate_metric_clusters_for_source_rows(
         source_rows,
         policies,
         max_llm_calls=llm_budget,
+        failure_predicate=failure_predicate,
     )
     if flagged_metric_count <= 0:
         return EvaluationMetricClustersState(
@@ -1037,13 +1057,17 @@ def generate_metric_clusters_for_source_rows(
         if cancelled_state is not None:
             return cancelled_state
         policy = policies.get(str(metric.id))
-        if policy is None or not policy_has_failure_criteria(policy, metric):
+        if failure_predicate is None and (
+            policy is None or not policy_has_failure_criteria(policy, metric)
+        ):
             continue
         flagged_payloads: List[Dict[str, Any]] = []
         for source_row in source_rows:
             if source_row.status != "completed":
                 continue
-            payload = _build_flagged_row_payload_from_source(source_row, metric, policy)
+            payload = _build_flagged_row_payload_from_source(
+                source_row, metric, policy, failure_predicate=failure_predicate
+            )
             if payload:
                 flagged_payloads.append(payload)
                 all_flagged_samples.append(payload)

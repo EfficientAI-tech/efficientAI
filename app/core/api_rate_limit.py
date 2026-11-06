@@ -47,6 +47,9 @@ SCALE_EXEMPT_ROUTE_MODULE_PREFIXES: frozenset[str] = frozenset(
         "evaluator",
         "conversation_evaluation",
         "manual_evaluation",
+        "simulation",
+        "knowledge_base",
+        "tool_connection",
     }
 )
 

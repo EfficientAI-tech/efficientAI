@@ -1,4 +1,4 @@
-import { Mic, MessagesSquare } from 'lucide-react'
+import { Brain, Mic, MessagesSquare } from 'lucide-react'
 import type { AgentMedium } from './createAgentTypes'
 import { WizardStepHeader } from './WizardStepHeader'
 import WizardIconCard from './WizardIconCard'
@@ -16,8 +16,25 @@ const OPTIONS: {
   subtitle: string
   icon: typeof Mic
 }[] = [
-  { id: 'voice', label: 'Voice', subtitle: 'Phone or platform voice agents', icon: Mic },
-  { id: 'chat', label: 'Chat', subtitle: 'Text evals against live or API chat', icon: MessagesSquare },
+  {
+    id: 'hosted',
+    label: 'Hosted agent from scratch',
+    subtitle:
+      'Create your production agent from scratch and self improve by simulating them against 100s of scenarios',
+    icon: Brain,
+  },
+  {
+    id: 'voice',
+    label: 'Voice',
+    subtitle: 'Test your voice agents already hosted in production.',
+    icon: Mic,
+  },
+  {
+    id: 'chat',
+    label: 'Chat',
+    subtitle: 'Test your chat agents already hosted in production.',
+    icon: MessagesSquare,
+  },
 ]
 
 export default function AgentMediumStep({ value, onChange, embedded, compact }: AgentMediumStepProps) {
@@ -26,12 +43,12 @@ export default function AgentMediumStep({ value, onChange, embedded, compact }: 
       {!embedded ? (
         <WizardStepHeader
           title="What kind of agent?"
-          subtitle="Pick voice or chat — connection options come next."
+          subtitle="Hosted on EfficientAI, voice with telephony or a platform, or external chat."
           prominence={compact ? 'entry' : 'default'}
         />
       ) : null}
       <div
-        className={`grid grid-cols-2 w-full ${compact ? 'gap-3.5 mt-4' : 'gap-4 mt-6 sm:grid-cols-2'}`}
+        className={`grid w-full grid-cols-1 ${compact ? 'gap-3.5 mt-4 sm:grid-cols-3' : 'gap-4 mt-6 sm:grid-cols-3'}`}
       >
         {OPTIONS.map((option) => (
           <WizardIconCard

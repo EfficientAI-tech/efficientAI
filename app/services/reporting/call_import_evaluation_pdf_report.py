@@ -2181,465 +2181,7 @@ class CallImportEvaluationPdfReportService:
         <head>
           <meta charset="utf-8" />
           <style>
-            @page {{
-              size: A4;
-              margin: 18mm 14mm 17mm 14mm;
-              @top-left {{ content: element(repeatHeader); }}
-              @bottom-center {{ content: "Page " counter(page) " of " counter(pages); color: #667085; font-size: 9px; }}
-            }}
-            @page:first {{
-              @top-left {{ content: none; }}
-            }}
-            body {{ font-family: Helvetica, Arial, sans-serif; color: #111827; font-size: 11px; line-height: 1.4; }}
-            header {{ border-bottom: 0; padding-bottom: 8px; margin-bottom: 12px; }}
-            .brand-header {{ margin-bottom: 10px; }}
-            .brand-logo-row {{ display: flex; align-items: center; justify-content: space-between; gap: 32px; min-height: 58px; margin-bottom: 8px; }}
-            .brand-logo-slot {{ flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }}
-            .brand-logo-slot-internal {{ align-items: flex-start; }}
-            .brand-logo-slot-external {{ align-items: flex-end; text-align: right; }}
-            .brand-placeholder {{ display: block; min-height: 1px; }}
-            .brand-logo {{ max-width: 230px; max-height: 58px; object-fit: contain; }}
-            .repeat-page-header {{ position: running(repeatHeader); height: 10mm; }}
-            .repeat-page-logo {{ max-width: 92px; max-height: 28px; object-fit: contain; }}
-            .brand-text {{ margin-top: 2px; font-size: 15px; font-weight: 800; line-height: 1.1; color: #111827; letter-spacing: .16em; text-transform: uppercase; }}
-            .title-rule {{ height: 2px; background: #b85f4b; margin: 10px 0 10px; }}
-            .eyebrow {{ text-transform: uppercase; letter-spacing: .34em; font-size: 10px; color: #b85f4b; font-weight: 800; margin-bottom: 10px; }}
-            .eyebrow .dotsep {{ color: #7a756d; padding: 0 16px; letter-spacing: 0; }}
-            .eyebrow .muted {{ color: #7a756d; }}
-            h1 {{ font-size: 28px; font-weight: 800; margin: 4px 0; letter-spacing: .1px; }}
-            .subtitle {{ font-size: 13px; color: #666; margin-bottom: 10px; }}
-            h2 {{ font-size: 16px; margin: 8px 0 6px; color: #0b1220; border-bottom: 2px solid #0b1220; padding-bottom: 2px; break-after: avoid; page-break-after: avoid; }}
-            h3 {{ font-size: 13px; margin: 0; break-after: avoid; page-break-after: avoid; }}
-            .report-body section {{ margin: 0 0 10px; padding: 0; }}
-            .report-body section > .method:first-of-type {{ margin-top: 0; margin-bottom: 6px; }}
-            .metric-group {{ margin-bottom: 8px; break-inside: auto; page-break-inside: auto; }}
-            .meta {{ display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }}
-            .summary {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }}
-            .metric-group-title {{ font-size: 13px; margin: 8px 0 6px; color: #374151; text-transform: uppercase; letter-spacing: .08em; break-after: avoid; page-break-after: avoid; }}
-            .box {{ border: 1px solid #d9dee8; padding: 7px 8px; border-radius: 6px; background: #f7f9fc; }}
-            .box strong {{ display: block; font-size: 13px; color: #111827; }}
-            .box span {{ color: #667085; font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }}
-            .metric {{ break-inside: avoid; page-break-inside: avoid; border: 1px solid #d9dee8; border-radius: 2px; padding: 10px; margin-bottom: 8px; background: #fff; }}
-            .metric-compact-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 6px; break-inside: auto; page-break-inside: auto; }}
-            .metric-compact {{ padding: 9px 10px 8px; margin-bottom: 0; min-height: 0; break-inside: avoid; page-break-inside: avoid; }}
-            .metric-compact-head {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 6px; }}
-            .metric-compact-head .metric-title {{ font-size: 9px; letter-spacing: .08em; color: #667085; font-weight: 800; }}
-            .metric-compact-status {{ width: 7px; height: 7px; border-radius: 50%; background: #16a34a; margin-top: 2px; flex-shrink: 0; }}
-            .metric-compact-body {{ display: flex; gap: 8px; align-items: stretch; }}
-            .metric-compact-hero {{ display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; }}
-            .metric-compact-main {{ flex: 1; min-width: 0; }}
-            .metric-compact .metric-percent {{ font-size: 24px; margin-bottom: 4px; }}
-            .metric-compact-delta {{ margin-top: 2px; }}
-            .metric-compact-delta-row {{ display: grid; grid-template-columns: 68px 1fr auto; gap: 6px; align-items: center; font-size: 9px; color: #475569; }}
-            .metric-compact-delta-row span {{ text-transform: lowercase; color: #667085; }}
-            .metric-compact-delta-row strong {{ font-size: 10px; text-align: right; }}
-            .metric-compact-delta-row small {{ color: #667085; white-space: nowrap; }}
-            .metric-compact-delta.delta-good strong {{ color: #047857; }}
-            .metric-compact-delta.delta-bad strong {{ color: #b42318; }}
-            .metric-compact-delta.delta-flat strong {{ color: #475569; }}
-            .metric-compact-delta-detail {{ display: block; margin-top: 3px; color: #667085; font-size: 9px; line-height: 1.3; }}
-            .metric-compact-sparkline {{ flex-shrink: 0; width: 118px; }}
-            .metric-sparkline {{ display: block; width: 100%; max-width: 118px; }}
-            .metric-sparkline-area {{ fill: rgba(22, 163, 74, 0.12); stroke: none; }}
-            .metric-sparkline-line {{ fill: none; stroke: #16a34a; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }}
-            .metric-sparkline-dot {{ fill: #16a34a; }}
-            .metric-sparkline-label {{ fill: #94a3b8; font-size: 7px; font-family: Helvetica, Arial, sans-serif; }}
-            .metric-compact-meaning {{ margin: 8px 0 0; font-size: 10px; line-height: 1.35; color: #374151; }}
-            .metric-compact-meta {{ margin-top: 6px; color: #94a3b8; font-size: 8px; letter-spacing: .02em; }}
-            .metric-head {{ display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid #eef1f5; padding-bottom: 6px; margin-bottom: 7px; }}
-            .metric-title {{ font-size: 12px; text-transform: uppercase; letter-spacing: .04em; font-weight: 800; color: #1f2937; }}
-            .dot {{ display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #b85f4b; margin-right: 8px; }}
-            .metric-type {{ color: #7a756d; font-size: 10px; text-transform: uppercase; margin-top: 3px; }}
-            .direction-badge {{ border: 1px solid #d7cfc2; background: #fff8f5; padding: 5px 8px; color: #7a756d; align-self: start; text-align: right; min-width: 104px; }}
-            .direction-badge span {{ display: block; font-size: 9px; text-transform: uppercase; font-weight: 800; letter-spacing: .04em; }}
-            .direction-badge strong {{ display: block; margin-top: 2px; color: #b85f4b; font-size: 11px; text-transform: uppercase; }}
-            .metric-hero {{ display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }}
-            .metric-percent {{ font-size: 27px; line-height: 1; font-weight: 800; color: #111; }}
-            .metric-count {{ color: #7a756d; font-size: 10px; letter-spacing: .04em; font-weight: 800; }}
-            .metric-count strong {{ color: #111827; font-size: 13px; letter-spacing: 0; margin-left: 8px; }}
-            .metric-bar {{ height: 8px; background: #e7ddd1; border: 1px solid #d7cfc2; margin: 8px 0; }}
-            .metric-bar-fill {{ height: 100%; background: #c7725e; }}
-            .metric-grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }}
-            .metric-grid div {{ background: #f8fafc; border-radius: 6px; padding: 7px 8px; min-height: 40px; }}
-            .metric-grid strong, .measurement-grid strong {{ display: block; color: #111827; font-size: 13px; line-height: 1.25; overflow-wrap: anywhere; word-break: normal; }}
-            .metric-grid small, .measurement-grid small {{ display: block; margin-top: 4px; color: #667085; font-size: 9px; line-height: 1.2; text-transform: uppercase; letter-spacing: .04em; }}
-            .delta-card {{ margin-top: 8px; border: 1px solid #d9dee8; border-radius: 6px; padding: 8px 9px; background: #f8fafc; }}
-            .delta-head {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 5px; }}
-            .delta-head span {{ color: #667085; font-size: 9px; text-transform: uppercase; letter-spacing: .05em; font-weight: 800; }}
-            .delta-head strong {{ font-size: 12px; }}
-            .delta-good .delta-head strong {{ color: #047857; }}
-            .delta-bad .delta-head strong {{ color: #b42318; }}
-            .delta-flat .delta-head strong {{ color: #475569; }}
-            .delta-bars {{ display: grid; gap: 4px; }}
-            .delta-row {{ display: grid; grid-template-columns: 58px 1fr 42px; gap: 7px; align-items: center; }}
-            .delta-row span {{ color: #475569; font-size: 9px; font-weight: 700; }}
-            .delta-row b {{ text-align: right; font-size: 9px; }}
-            .delta-track {{ height: 7px; background: #e7ddd1; border: 1px solid #d7cfc2; }}
-            .delta-fill {{ height: 100%; }}
-            .delta-fill-prev {{ background: #94a3b8; }}
-            .delta-fill-current {{ background: #c7725e; }}
-            .delta-benchmark {{ margin-top: 4px; color: #475569; font-size: 9px; line-height: 1.3; }}
-            .measurement-grid {{ display: grid; grid-template-columns: 2fr 1fr; gap: 8px; margin-top: 8px; }}
-            .measurement-grid div {{ background: #fff8f5; border: 1px solid #f3d3c5; border-radius: 6px; padding: 7px 8px; min-height: 40px; }}
-            .distribution {{ margin: 8px 0 0; color: #374151; }}
-            .meaning {{ margin: 8px 0 0; color: #444; font-size: 13px; line-height: 1.45; }}
-            .distribution-bars {{ margin-top: 10px; }}
-            .subhead {{ font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: #7a756d; font-weight: 800; margin-bottom: 5px; }}
-            .dist-row {{ display: grid; grid-template-columns: 110px 1fr 74px; gap: 8px; align-items: center; margin: 4px 0; }}
-            .dist-label {{ font-size: 10px; font-weight: 700; color: #1f2937; overflow-wrap: anywhere; }}
-            .dist-track {{ height: 9px; background: #e7ddd1; border: 1px solid #d7cfc2; }}
-            .dist-fill {{ height: 100%; background: #c7725e; }}
-            .dist-value {{ text-align: right; font-size: 10px; font-weight: 800; color: #111827; }}
-            .empty-bars {{ color: #667085; font-size: 10px; font-style: italic; }}
-            .insight-block {{ break-inside: auto; page-break-inside: auto; margin: 8px 0 10px; }}
-            .insight-heading {{ margin-bottom: 6px; break-after: avoid; page-break-after: avoid; }}
-            .insight-heading h3 {{ margin: 0; }}
-            .insight-body {{ display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 10px; align-items: start; break-inside: auto; page-break-inside: auto; }}
-            .insight-table-col {{ min-width: 0; break-inside: auto; page-break-inside: auto; }}
-            .insight-sidecol {{ display: grid; gap: 8px; min-width: 0; }}
-            .insight-overview-box {{ break-inside: auto; page-break-inside: auto; margin: 0 0 10px; padding: 10px 12px; border: 1px solid #e7ddd1; border-radius: 8px; background: #faf7f2; }}
-            .insight-overview-label {{ font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: #7a756d; font-weight: 800; margin-bottom: 6px; }}
-            .insight-overview-box p {{ margin: 0; color: #374151; line-height: 1.5; }}
-            .insight-callout {{ break-inside: avoid; page-break-inside: avoid; border: 1px solid #eadfce; border-radius: 8px; padding: 10px 12px; }}
-            .insight-observation-box {{ background: #fdf3f0; border-color: #f0d4cb; }}
-            .insight-evidence-box {{ background: #faf6ef; border-color: #eadfce; }}
-            .insight-callout-label {{ font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: #b85f4b; font-weight: 800; margin-bottom: 6px; }}
-            .insight-callout p {{ margin: 0 0 6px; color: #374151; line-height: 1.45; }}
-            .insight-callout p:last-child {{ margin-bottom: 0; }}
-            .insight-evidence-id {{ color: #7a756d; font-size: 9px; margin-top: 4px; }}
-            .insight-table td:nth-child(2), .insight-table td:nth-child(4) {{ white-space: nowrap; font-weight: 800; }}
-            .insight-track {{ height: 9px; background: #e8edff; border: 1px solid #cfd8ff; min-width: 120px; }}
-            .insight-fill {{ height: 100%; background: #4f46e5; }}
-            .failure-diagnostics {{ margin-top: 0; max-width: 100%; break-inside: auto; page-break-inside: auto; }}
-            .failure-diagnostics-intro {{ break-inside: auto; margin-bottom: 6px; max-width: 100%; }}
-            .failure-diagnostics-intro h2 {{ margin-bottom: 4px; }}
-            .failure-diagnostics .method {{ margin: 0 0 6px; }}
-            .failure-diagnostics .insight-block {{ margin: 6px 0 8px; break-inside: auto; }}
-            .failure-diagnostics-metrics {{ display: grid; gap: 8px; max-width: 100%; }}
-            .fd-summary-box {{
-              break-inside: auto;
-              margin: 0 0 8px;
-              padding: 8px 10px;
-              max-width: 100%;
-              overflow: hidden;
-              box-sizing: border-box;
-            }}
-            .fd-summary-box .insight-table {{
-              margin-top: 4px;
-              width: 100%;
-              max-width: 100%;
-              table-layout: fixed;
-            }}
-            .fd-summary-table th, .fd-level1-table th {{ font-size: 9px; }}
-            .fd-summary-table td, .fd-level1-table td {{
-              font-size: 10px;
-              padding: 5px 6px;
-              overflow-wrap: anywhere;
-              white-space: normal;
-            }}
-            .fd-summary-table .fd-col-metric {{ width: 24%; }}
-            .fd-summary-table .fd-col-num {{ width: 11%; }}
-            .fd-summary-table .fd-col-preview {{ width: 54%; }}
-            .failure-diagnostics .fd-summary-table td.fd-col-num {{
-              white-space: nowrap;
-              font-weight: 800;
-              text-align: right;
-            }}
-            .failure-diagnostics .fd-summary-table td.fd-col-preview {{
-              white-space: normal;
-              font-weight: 400;
-            }}
-            .failure-diagnostics .fd-level1-table td:nth-child(2),
-            .failure-diagnostics .fd-level1-table td:nth-child(3) {{
-              white-space: normal;
-              font-weight: 400;
-            }}
-            .fd-preview-list {{
-              margin: 0;
-              padding-left: 14px;
-              list-style: disc;
-              color: #374151;
-              line-height: 1.35;
-            }}
-            .fd-preview-list li {{ margin: 0 0 3px; }}
-            .fd-preview-list li:last-child {{ margin-bottom: 0; }}
-            .fd-preview-more {{ color: #6b7280; font-style: italic; list-style: none; margin-left: -14px; }}
-            .fd-level1-table {{
-              width: 100%;
-              max-width: 100%;
-              table-layout: fixed;
-              margin: 0 0 8px;
-            }}
-            .fd-level1-table .fd-col-index {{ width: 6%; }}
-            .fd-level1-table .fd-col-cluster {{ width: 34%; }}
-            .fd-level1-table .fd-col-gap {{ width: 14%; }}
-            .fd-level1-table .fd-col-num {{ width: 9%; }}
-            .fd-level1-table .fd-col-share {{ width: 9%; }}
-            .fd-level1-table .fd-col-bar {{ width: 28%; }}
-            .failure-diagnostics .fd-level1-table td.fd-col-num,
-            .failure-diagnostics .fd-level1-table td:nth-child(5) {{
-              white-space: nowrap;
-              font-weight: 800;
-            }}
-            .failure-diagnostics .insight-track {{
-              min-width: 0;
-              max-width: 100%;
-              width: 100%;
-            }}
-            .fd-summary-discovered-row td {{ background: #f8fafc; }}
-            .fd-num {{ color: #6b7280; font-weight: 800; width: 24px; }}
-            .fd-breakdown-caption {{ margin: 0 0 4px; font-size: 9px; color: #6b7280; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; }}
-            .fd-discovered-block {{ margin-top: 4px; padding-top: 6px; border-top: 1px solid #e5e7eb; max-width: 100%; }}
-            .fd-rca-block {{ margin: 10px 0 12px; max-width: 100%; overflow: hidden; box-sizing: border-box; }}
-            .fd-rca-block h3 {{ margin: 0 0 4px; font-size: 12px; }}
-            .fd-rca-base {{ margin: 0 0 6px; font-size: 9px; }}
-            .fd-rca-patterns-wrap {{ width: 100%; max-width: 100%; margin: 0 auto; overflow: hidden; box-sizing: border-box; }}
-            .fd-rca-table {{ table-layout: fixed; width: 100%; max-width: 100%; box-sizing: border-box; }}
-            .fd-rca-table td, .fd-rca-table th {{ font-size: 10px; padding: 5px 4px; overflow-wrap: anywhere; word-break: break-word; box-sizing: border-box; }}
-            .fd-rca-patterns-table {{ margin-left: auto; margin-right: auto; }}
-            .fd-rca-patterns-table .fd-rca-col-finding {{ width: 41%; text-align: left; }}
-            .fd-rca-patterns-table th.fd-rca-col-finding {{ text-align: left; }}
-            .fd-rca-patterns-table .fd-rca-col-pct {{ width: 12%; white-space: nowrap; text-align: center; font-weight: 800; vertical-align: top; }}
-            .fd-rca-patterns-table th.fd-rca-col-pct {{ text-align: center; }}
-            .fd-rca-patterns-table .fd-rca-col-bar {{ width: 29%; vertical-align: middle; padding-left: 6px; padding-right: 6px; }}
-            .fd-rca-patterns-table th.fd-rca-col-bar {{ text-align: center; }}
-            .fd-rca-patterns-table .fd-rca-col-count {{ width: 18%; white-space: nowrap; text-align: center; font-weight: 800; vertical-align: top; }}
-            .fd-rca-patterns-table th.fd-rca-col-count {{ text-align: center; }}
-            .fd-rca-track {{ height: 9px; background: #e7ddd1; border: 1px solid #d7cfc2; min-width: 0; max-width: 100%; width: 100%; box-sizing: border-box; }}
-            .fd-rca-fill {{ height: 100%; background: #c7725e; max-width: 100%; }}
-            .fd-rca-hotspots-table .fd-rca-col-pct {{ white-space: nowrap; text-align: center; font-weight: 800; width: 14%; }}
-            .fd-rca-hotspots-table .fd-rca-col-bar {{ width: 28%; }}
-            .fd-rca-hotspots-table .fd-rca-col-count {{ white-space: nowrap; text-align: center; font-weight: 800; width: 14%; vertical-align: top; }}
-            .fd-finding-sub {{ margin-top: 3px; font-size: 9px; color: #6b7280; font-weight: 400; line-height: 1.35; }}
-            .fd-evidence-line {{ font-size: 8px; color: #6b7280; font-weight: 600; line-height: 1.3; }}
-            .fd-evidence-primary {{ font-size: 10px; font-weight: 800; color: #111827; line-height: 1.3; }}
-            .fd-cluster-appendix {{ margin-top: 14px; padding-top: 10px; border-top: 1px solid #e5e7eb; break-inside: avoid; }}
-            .fd-cluster-appendix h3 {{ margin: 0 0 4px; font-size: 11px; }}
-            .fd-rca-interpretation {{ margin-top: 6px; }}
-            .fd-rca-summary-grid {{ display: grid; grid-template-columns: 1.2fr 1fr; gap: 10px; align-items: start; }}
-            .fd-rca-twocol {{ display: grid; gap: 8px; }}
-            .fd-rca-mini-table {{ table-layout: fixed; width: 100%; }}
-            .fd-why-flagged {{ margin: 0 0 6px; font-size: 10px; color: #374151; line-height: 1.4; }}
-            .insight-evidence-id a {{ color: #b85f4b; font-weight: 700; text-decoration: none; }}
-            .metric-cluster-metric-group {{
-              margin: 0;
-              padding: 8px 0;
-              border-top: 1px solid #e5e7eb;
-              break-inside: auto;
-            }}
-            .metric-cluster-metric-group:first-child {{ border-top: none; padding-top: 4px; }}
-            .metric-cluster-metric-head {{
-              display: flex;
-              justify-content: space-between;
-              align-items: baseline;
-              gap: 8px;
-              margin-bottom: 4px;
-            }}
-            .metric-cluster-metric-head h3 {{ margin: 0; font-size: 13px; }}
-            .metric-cluster-metric-head span {{
-              color: #6b7280;
-              font-size: 9px;
-              font-weight: 700;
-              text-transform: uppercase;
-              letter-spacing: .03em;
-              white-space: normal;
-              text-align: right;
-              flex-shrink: 1;
-              min-width: 0;
-            }}
-            .metric-cluster-detail-section-title {{ margin-top: 6px; }}
-            .metric-cluster-details {{ display: grid; gap: 6px; }}
-            .metric-cluster-detail {{
-              border: 1px solid #e5e7eb;
-              border-radius: 6px;
-              background: #fff;
-              padding: 6px 8px;
-              break-inside: auto;
-              page-break-inside: auto;
-            }}
-            .metric-cluster-detail-compact .insight-callout {{ margin-top: 4px; }}
-            .fd-cluster-observation {{ margin: 0 0 4px; font-size: 10px; color: #374151; line-height: 1.35; }}
-            .fd-omitted-metrics {{ margin: 6px 0 8px; font-size: 9px; }}
-            .metric-cluster-detail-head {{ display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 4px; }}
-            .metric-cluster-detail-head h4 {{ margin: 0; font-size: 11px; font-weight: 800; color: #111827; line-height: 1.3; }}
-            .metric-cluster-detail-head span {{
-              color: #6b7280;
-              font-size: 9px;
-              font-weight: 700;
-              text-transform: uppercase;
-              letter-spacing: .03em;
-              white-space: normal;
-              text-align: right;
-              flex-shrink: 1;
-              min-width: 0;
-            }}
-            .metric-cluster-detail-body {{ grid-template-columns: 1.1fr 0.9fr; gap: 10px; }}
-            .metric-cluster-detail-body .subhead {{ margin-bottom: 3px; }}
-            .metric-cluster-sub-bars {{ margin: 0; }}
-            .metric-cluster-sub-row {{ margin: 2px 0; grid-template-columns: 96px 1fr 62px; gap: 6px; }}
-            .metric-cluster-sub-fill {{ background: #6366f1; }}
-            .insight-callout-empty p {{ margin: 0; }}
-            .insight-observation, .insight-evidence {{ margin: 0; color: #374151; }}
-            .insight-evidence span {{ color: #7a756d; font-size: 9px; margin-left: 6px; }}
-            .design-notes {{ margin: 8px 0 0; padding-left: 18px; }}
-            .design-notes li {{ margin-bottom: 8px; line-height: 1.5; }}
-            .gap-badge {{ display: inline-block; font-size: 9px; font-weight: 800; letter-spacing: .04em; color: #b42318; text-transform: uppercase; }}
-            table {{ width: 100%; border-collapse: collapse; margin-top: 6px; break-inside: auto; page-break-inside: auto; }}
-            thead {{ display: table-header-group; }}
-            tr {{ break-inside: avoid; page-break-inside: avoid; }}
-            th, td {{ text-align: left; border-bottom: 1px solid #e5e7eb; padding: 7px; vertical-align: top; }}
-            th {{ background: #111827; color: #fff; font-size: 10px; text-transform: uppercase; }}
-            .method {{ color: #475467; line-height: 1.5; }}
-            .audit-summary p {{ margin: 0 0 7px; }}
-            .audit-summary ul {{ margin: 7px 0 10px; padding-left: 16px; }}
-            .audit-summary li {{ margin-bottom: 5px; }}
-            .audit-summary-section {{ margin-bottom: 0; break-after: auto; page-break-after: auto; }}
-            .audit-summary-section + section {{ margin-top: 0; }}
-            .audit-summary-section + section h2 {{ margin-top: 8px; }}
-            .audit-stat-strip {{ display: flex; gap: 0; margin: 10px 0 0; border-top: 1px solid #111827; break-after: auto; page-break-after: auto; }}
-            .audit-stat-strip:last-child {{ margin-bottom: 10px; }}
-            .audit-stat-card {{ flex: 1; min-width: 0; padding: 10px 12px 12px 0; }}
-            .audit-stat-card + .audit-stat-card {{ border-left: 1px solid #d1d5db; padding-left: 12px; }}
-            .audit-stat-rule {{ display: none; }}
-            .audit-stat-label {{ font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #d16532; margin-bottom: 6px; line-height: 1.3; }}
-            .audit-stat-value {{ font-family: Georgia, 'Times New Roman', serif; font-size: 28px; font-weight: 700; color: #111827; line-height: 1; }}
-            .audit-delta-panel {{ break-inside: auto; page-break-inside: auto; margin: 6px 0 8px; padding-top: 6px; border-top: 1px solid #e5e7eb; }}
-            .audit-delta-title {{ font-size: 13px; font-weight: 900; letter-spacing: .04em; text-transform: uppercase; color: #111827; margin-bottom: 6px; break-after: avoid; page-break-after: avoid; }}
-            .audit-delta-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; break-inside: auto; page-break-inside: auto; }}
-            .audit-delta-card {{ break-inside: avoid; page-break-inside: avoid; border: 1px solid #d9dee8; border-radius: 6px; padding: 8px 9px; background: #f8fafc; min-height: 0; }}
-            .audit-delta-head {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 4px; }}
-            .audit-delta-head-main {{ min-width: 0; }}
-            .audit-delta-head span {{ display: block; color: #111827; font-size: 9px; font-weight: 900; letter-spacing: .06em; line-height: 1.25; text-transform: uppercase; overflow-wrap: anywhere; }}
-            .audit-delta-direction {{ display: block; margin-top: 2px; color: #94a3b8; font-size: 7px; font-weight: 600; letter-spacing: .03em; text-transform: none; }}
-            .audit-delta-head strong {{ flex-shrink: 0; font-size: 10px; line-height: 1.2; text-align: right; white-space: nowrap; }}
-            .audit-delta-card.delta-good .audit-delta-head strong {{ color: #047857; }}
-            .audit-delta-card.delta-bad .audit-delta-head strong {{ color: #b42318; }}
-            .audit-delta-card.delta-flat .audit-delta-head strong {{ color: #475569; }}
-            .audit-delta-chart {{ min-height: 50px; }}
-            .audit-delta-chart .metric-sparkline {{ width: 100%; max-width: 100%; }}
-            .audit-delta-empty {{ height: 50px; display: flex; align-items: center; justify-content: center; border: 1px dashed #cbd5e1; background: #fff; color: #667085; font-size: 9px; }}
-            .audit-delta-reason {{ margin: 6px 0 0; padding-top: 5px; border-top: 1px solid #e5e7eb; color: #374151; font-size: 10px; font-weight: 600; line-height: 1.45; }}
-            .report-footer {{ margin-top: 14px; border-top: 1px solid #1f2937; padding-top: 10px; display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; color: #4b5563; font-size: 10px; break-inside: avoid; page-break-inside: avoid; }}
-            .footer-left, .footer-right {{ display: flex; flex-direction: column; gap: 3px; }}
-            .footer-right {{ text-align: right; }}
-            .brand-title {{ color: #111827; font-weight: 800; font-size: 11px; letter-spacing: .2px; }}
-            .brand-link {{ color: #d16532; font-weight: 700; text-decoration: none; }}
-            .internal-report .insight-block {{ margin: 6px 0 8px; }}
-            .internal-report .failure-diagnostics-intro h2,
-            .internal-report .prompt-improvements > h2 {{
-              margin-top: 8px;
-            }}
-            .prompt-improvements {{ margin-top: 0; max-width: 100%; break-inside: auto; page-break-inside: auto; }}
-            .prompt-improvement-card {{
-              margin: 0 0 10px;
-              padding: 8px 10px;
-              border: 1px solid #e5e7eb;
-              border-radius: 6px;
-              background: #fafafa;
-              max-width: 100%;
-              box-sizing: border-box;
-              break-inside: auto;
-              page-break-inside: auto;
-            }}
-            .prompt-improvements .metric-cluster-metric-head h3 {{
-              flex: 1;
-              min-width: 0;
-              overflow-wrap: anywhere;
-              word-break: break-word;
-            }}
-            .prompt-improvements .method {{
-              overflow-wrap: anywhere;
-              word-break: break-word;
-              max-width: 100%;
-            }}
-            .prompt-suggestion-block {{
-              margin: 6px 0;
-              padding: 8px 10px;
-              border: 1px solid #e5e7eb;
-              border-radius: 6px;
-              background: #fff;
-              font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-              font-size: 9px;
-              line-height: 1.45;
-              color: #111827;
-              white-space: pre-wrap;
-              overflow-wrap: anywhere;
-              word-break: break-word;
-              max-width: 100%;
-              width: 100%;
-              box-sizing: border-box;
-            }}
-            .prompt-improvement-meta {{
-              display: inline-flex;
-              flex-wrap: wrap;
-              align-items: center;
-              gap: 6px;
-            }}
-            .prompt-change-badge {{
-              display: inline-block;
-              font-size: 8px;
-              font-weight: 800;
-              text-transform: uppercase;
-              letter-spacing: .06em;
-              border-radius: 4px;
-              padding: 2px 5px;
-              border: 1px solid transparent;
-            }}
-            .prompt-change-badge-edit {{
-              color: #9f1239;
-              background: #fff1f2;
-              border-color: #fecdd3;
-            }}
-            .prompt-change-badge-add {{
-              color: #065f46;
-              background: #ecfdf5;
-              border-color: #a7f3d0;
-            }}
-            .prompt-change-grid {{
-              display: grid;
-              grid-template-columns: repeat(2, minmax(0, 1fr));
-              gap: 8px;
-              margin: 8px 0;
-            }}
-            .prompt-change-box {{
-              border-radius: 6px;
-              padding: 8px 10px;
-              min-width: 0;
-            }}
-            .prompt-change-before {{
-              border: 1px solid #fecdd3;
-              background: #fff1f2;
-            }}
-            .prompt-change-after {{
-              border: 1px solid #a7f3d0;
-              background: #ecfdf5;
-            }}
-            .prompt-change-add {{
-              border: 1px solid #e5e7eb;
-              background: #fff;
-              margin: 8px 0;
-            }}
-            .prompt-change-label {{
-              font-size: 8px;
-              font-weight: 800;
-              text-transform: uppercase;
-              letter-spacing: .08em;
-              margin-bottom: 6px;
-            }}
-            .prompt-change-before .prompt-change-label {{ color: #be123c; }}
-            .prompt-change-after .prompt-change-label {{ color: #047857; }}
-            .prompt-change-add .prompt-change-label {{ color: #6b7280; }}
-            .prompt-change-text {{
-              font-size: 9px;
-              line-height: 1.45;
-              color: #111827;
-              white-space: pre-wrap;
-              overflow-wrap: anywhere;
-              word-break: break-word;
-            }}
-            .prompt-improvement-rationale {{
-              margin-top: 6px;
-            }}
+{self._report_css()}
           </style>
         </head>
         <body class="{report_body_class}">
@@ -2691,6 +2233,470 @@ class CallImportEvaluationPdfReportService:
         </body>
         </html>
         """
+
+    def _report_css(self) -> str:
+        """Shared stylesheet for EfficientAI PDF reports."""
+        return """
+            @page {
+              size: A4;
+              margin: 18mm 14mm 17mm 14mm;
+              @top-left { content: element(repeatHeader); }
+              @bottom-center { content: "Page " counter(page) " of " counter(pages); color: #667085; font-size: 9px; }
+            }
+            @page:first {
+              @top-left { content: none; }
+            }
+            body { font-family: Helvetica, Arial, sans-serif; color: #111827; font-size: 11px; line-height: 1.4; }
+            header { border-bottom: 0; padding-bottom: 8px; margin-bottom: 12px; }
+            .brand-header { margin-bottom: 10px; }
+            .brand-logo-row { display: flex; align-items: center; justify-content: space-between; gap: 32px; min-height: 58px; margin-bottom: 8px; }
+            .brand-logo-slot { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+            .brand-logo-slot-internal { align-items: flex-start; }
+            .brand-logo-slot-external { align-items: flex-end; text-align: right; }
+            .brand-placeholder { display: block; min-height: 1px; }
+            .brand-logo { max-width: 230px; max-height: 58px; object-fit: contain; }
+            .repeat-page-header { position: running(repeatHeader); height: 10mm; }
+            .repeat-page-logo { max-width: 92px; max-height: 28px; object-fit: contain; }
+            .brand-text { margin-top: 2px; font-size: 15px; font-weight: 800; line-height: 1.1; color: #111827; letter-spacing: .16em; text-transform: uppercase; }
+            .title-rule { height: 2px; background: #b85f4b; margin: 10px 0 10px; }
+            .eyebrow { text-transform: uppercase; letter-spacing: .34em; font-size: 10px; color: #b85f4b; font-weight: 800; margin-bottom: 10px; }
+            .eyebrow .dotsep { color: #7a756d; padding: 0 16px; letter-spacing: 0; }
+            .eyebrow .muted { color: #7a756d; }
+            h1 { font-size: 28px; font-weight: 800; margin: 4px 0; letter-spacing: .1px; }
+            .subtitle { font-size: 13px; color: #666; margin-bottom: 10px; }
+            h2 { font-size: 16px; margin: 8px 0 6px; color: #0b1220; border-bottom: 2px solid #0b1220; padding-bottom: 2px; break-after: avoid; page-break-after: avoid; }
+            h3 { font-size: 13px; margin: 0; break-after: avoid; page-break-after: avoid; }
+            .report-body section { margin: 0 0 10px; padding: 0; }
+            .report-body section > .method:first-of-type { margin-top: 0; margin-bottom: 6px; }
+            .metric-group { margin-bottom: 8px; break-inside: auto; page-break-inside: auto; }
+            .meta { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+            .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+            .metric-group-title { font-size: 13px; margin: 8px 0 6px; color: #374151; text-transform: uppercase; letter-spacing: .08em; break-after: avoid; page-break-after: avoid; }
+            .box { border: 1px solid #d9dee8; padding: 7px 8px; border-radius: 6px; background: #f7f9fc; }
+            .box strong { display: block; font-size: 13px; color: #111827; }
+            .box span { color: #667085; font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
+            .metric { break-inside: avoid; page-break-inside: avoid; border: 1px solid #d9dee8; border-radius: 2px; padding: 10px; margin-bottom: 8px; background: #fff; }
+            .metric-compact-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 6px; break-inside: auto; page-break-inside: auto; }
+            .metric-compact { padding: 9px 10px 8px; margin-bottom: 0; min-height: 0; break-inside: avoid; page-break-inside: avoid; }
+            .metric-compact-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 6px; }
+            .metric-compact-head .metric-title { font-size: 9px; letter-spacing: .08em; color: #667085; font-weight: 800; }
+            .metric-compact-status { width: 7px; height: 7px; border-radius: 50%; background: #16a34a; margin-top: 2px; flex-shrink: 0; }
+            .metric-compact-body { display: flex; gap: 8px; align-items: stretch; }
+            .metric-compact-hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; }
+            .metric-compact-main { flex: 1; min-width: 0; }
+            .metric-compact .metric-percent { font-size: 24px; margin-bottom: 4px; }
+            .metric-compact-delta { margin-top: 2px; }
+            .metric-compact-delta-row { display: grid; grid-template-columns: 68px 1fr auto; gap: 6px; align-items: center; font-size: 9px; color: #475569; }
+            .metric-compact-delta-row span { text-transform: lowercase; color: #667085; }
+            .metric-compact-delta-row strong { font-size: 10px; text-align: right; }
+            .metric-compact-delta-row small { color: #667085; white-space: nowrap; }
+            .metric-compact-delta.delta-good strong { color: #047857; }
+            .metric-compact-delta.delta-bad strong { color: #b42318; }
+            .metric-compact-delta.delta-flat strong { color: #475569; }
+            .metric-compact-delta-detail { display: block; margin-top: 3px; color: #667085; font-size: 9px; line-height: 1.3; }
+            .metric-compact-sparkline { flex-shrink: 0; width: 118px; }
+            .metric-sparkline { display: block; width: 100%; max-width: 118px; }
+            .metric-sparkline-area { fill: rgba(22, 163, 74, 0.12); stroke: none; }
+            .metric-sparkline-line { fill: none; stroke: #16a34a; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+            .metric-sparkline-dot { fill: #16a34a; }
+            .metric-sparkline-label { fill: #94a3b8; font-size: 7px; font-family: Helvetica, Arial, sans-serif; }
+            .metric-compact-meaning { margin: 8px 0 0; font-size: 10px; line-height: 1.35; color: #374151; }
+            .metric-compact-meta { margin-top: 6px; color: #94a3b8; font-size: 8px; letter-spacing: .02em; }
+            .metric-head { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid #eef1f5; padding-bottom: 6px; margin-bottom: 7px; }
+            .metric-title { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; font-weight: 800; color: #1f2937; }
+            .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #b85f4b; margin-right: 8px; }
+            .metric-type { color: #7a756d; font-size: 10px; text-transform: uppercase; margin-top: 3px; }
+            .direction-badge { border: 1px solid #d7cfc2; background: #fff8f5; padding: 5px 8px; color: #7a756d; align-self: start; text-align: right; min-width: 104px; }
+            .direction-badge span { display: block; font-size: 9px; text-transform: uppercase; font-weight: 800; letter-spacing: .04em; }
+            .direction-badge strong { display: block; margin-top: 2px; color: #b85f4b; font-size: 11px; text-transform: uppercase; }
+            .metric-hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+            .metric-percent { font-size: 27px; line-height: 1; font-weight: 800; color: #111; }
+            .metric-count { color: #7a756d; font-size: 10px; letter-spacing: .04em; font-weight: 800; }
+            .metric-count strong { color: #111827; font-size: 13px; letter-spacing: 0; margin-left: 8px; }
+            .metric-bar { height: 8px; background: #e7ddd1; border: 1px solid #d7cfc2; margin: 8px 0; }
+            .metric-bar-fill { height: 100%; background: #c7725e; }
+            .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+            .metric-grid div { background: #f8fafc; border-radius: 6px; padding: 7px 8px; min-height: 40px; }
+            .metric-grid strong, .measurement-grid strong { display: block; color: #111827; font-size: 13px; line-height: 1.25; overflow-wrap: anywhere; word-break: normal; }
+            .metric-grid small, .measurement-grid small { display: block; margin-top: 4px; color: #667085; font-size: 9px; line-height: 1.2; text-transform: uppercase; letter-spacing: .04em; }
+            .delta-card { margin-top: 8px; border: 1px solid #d9dee8; border-radius: 6px; padding: 8px 9px; background: #f8fafc; }
+            .delta-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 5px; }
+            .delta-head span { color: #667085; font-size: 9px; text-transform: uppercase; letter-spacing: .05em; font-weight: 800; }
+            .delta-head strong { font-size: 12px; }
+            .delta-good .delta-head strong { color: #047857; }
+            .delta-bad .delta-head strong { color: #b42318; }
+            .delta-flat .delta-head strong { color: #475569; }
+            .delta-bars { display: grid; gap: 4px; }
+            .delta-row { display: grid; grid-template-columns: 58px 1fr 42px; gap: 7px; align-items: center; }
+            .delta-row span { color: #475569; font-size: 9px; font-weight: 700; }
+            .delta-row b { text-align: right; font-size: 9px; }
+            .delta-track { height: 7px; background: #e7ddd1; border: 1px solid #d7cfc2; }
+            .delta-fill { height: 100%; }
+            .delta-fill-prev { background: #94a3b8; }
+            .delta-fill-current { background: #c7725e; }
+            .delta-benchmark { margin-top: 4px; color: #475569; font-size: 9px; line-height: 1.3; }
+            .measurement-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 8px; margin-top: 8px; }
+            .measurement-grid div { background: #fff8f5; border: 1px solid #f3d3c5; border-radius: 6px; padding: 7px 8px; min-height: 40px; }
+            .distribution { margin: 8px 0 0; color: #374151; }
+            .meaning { margin: 8px 0 0; color: #444; font-size: 13px; line-height: 1.45; }
+            .distribution-bars { margin-top: 10px; }
+            .subhead { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: #7a756d; font-weight: 800; margin-bottom: 5px; }
+            .dist-row { display: grid; grid-template-columns: 110px 1fr 74px; gap: 8px; align-items: center; margin: 4px 0; }
+            .dist-label { font-size: 10px; font-weight: 700; color: #1f2937; overflow-wrap: anywhere; }
+            .dist-track { height: 9px; background: #e7ddd1; border: 1px solid #d7cfc2; }
+            .dist-fill { height: 100%; background: #c7725e; }
+            .dist-value { text-align: right; font-size: 10px; font-weight: 800; color: #111827; }
+            .empty-bars { color: #667085; font-size: 10px; font-style: italic; }
+            .insight-block { break-inside: auto; page-break-inside: auto; margin: 8px 0 10px; }
+            .insight-heading { margin-bottom: 6px; break-after: avoid; page-break-after: avoid; }
+            .insight-heading h3 { margin: 0; }
+            .insight-body { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 10px; align-items: start; break-inside: auto; page-break-inside: auto; }
+            .insight-table-col { min-width: 0; break-inside: auto; page-break-inside: auto; }
+            .insight-sidecol { display: grid; gap: 8px; min-width: 0; }
+            .insight-overview-box { break-inside: auto; page-break-inside: auto; margin: 0 0 10px; padding: 10px 12px; border: 1px solid #e7ddd1; border-radius: 8px; background: #faf7f2; }
+            .insight-overview-label { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: #7a756d; font-weight: 800; margin-bottom: 6px; }
+            .insight-overview-box p { margin: 0; color: #374151; line-height: 1.5; }
+            .insight-callout { break-inside: avoid; page-break-inside: avoid; border: 1px solid #eadfce; border-radius: 8px; padding: 10px 12px; }
+            .insight-observation-box { background: #fdf3f0; border-color: #f0d4cb; }
+            .insight-evidence-box { background: #faf6ef; border-color: #eadfce; }
+            .insight-callout-label { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: #b85f4b; font-weight: 800; margin-bottom: 6px; }
+            .insight-callout p { margin: 0 0 6px; color: #374151; line-height: 1.45; }
+            .insight-callout p:last-child { margin-bottom: 0; }
+            .insight-evidence-id { color: #7a756d; font-size: 9px; margin-top: 4px; }
+            .insight-table td:nth-child(2), .insight-table td:nth-child(4) { white-space: nowrap; font-weight: 800; }
+            .insight-track { height: 9px; background: #e8edff; border: 1px solid #cfd8ff; min-width: 120px; }
+            .insight-fill { height: 100%; background: #4f46e5; }
+            .failure-diagnostics { margin-top: 0; max-width: 100%; break-inside: auto; page-break-inside: auto; }
+            .failure-diagnostics-intro { break-inside: auto; margin-bottom: 6px; max-width: 100%; }
+            .failure-diagnostics-intro h2 { margin-bottom: 4px; }
+            .failure-diagnostics .method { margin: 0 0 6px; }
+            .failure-diagnostics .insight-block { margin: 6px 0 8px; break-inside: auto; }
+            .failure-diagnostics-metrics { display: grid; gap: 8px; max-width: 100%; }
+            .fd-summary-box {
+              break-inside: auto;
+              margin: 0 0 8px;
+              padding: 8px 10px;
+              max-width: 100%;
+              overflow: hidden;
+              box-sizing: border-box;
+            }
+            .fd-summary-box .insight-table {
+              margin-top: 4px;
+              width: 100%;
+              max-width: 100%;
+              table-layout: fixed;
+            }
+            .fd-summary-table th, .fd-level1-table th { font-size: 9px; }
+            .fd-summary-table td, .fd-level1-table td {
+              font-size: 10px;
+              padding: 5px 6px;
+              overflow-wrap: anywhere;
+              white-space: normal;
+            }
+            .fd-summary-table .fd-col-metric { width: 24%; }
+            .fd-summary-table .fd-col-num { width: 11%; }
+            .fd-summary-table .fd-col-preview { width: 54%; }
+            .failure-diagnostics .fd-summary-table td.fd-col-num {
+              white-space: nowrap;
+              font-weight: 800;
+              text-align: right;
+            }
+            .failure-diagnostics .fd-summary-table td.fd-col-preview {
+              white-space: normal;
+              font-weight: 400;
+            }
+            .failure-diagnostics .fd-level1-table td:nth-child(2),
+            .failure-diagnostics .fd-level1-table td:nth-child(3) {
+              white-space: normal;
+              font-weight: 400;
+            }
+            .fd-preview-list {
+              margin: 0;
+              padding-left: 14px;
+              list-style: disc;
+              color: #374151;
+              line-height: 1.35;
+            }
+            .fd-preview-list li { margin: 0 0 3px; }
+            .fd-preview-list li:last-child { margin-bottom: 0; }
+            .fd-preview-more { color: #6b7280; font-style: italic; list-style: none; margin-left: -14px; }
+            .fd-level1-table {
+              width: 100%;
+              max-width: 100%;
+              table-layout: fixed;
+              margin: 0 0 8px;
+            }
+            .fd-level1-table .fd-col-index { width: 6%; }
+            .fd-level1-table .fd-col-cluster { width: 34%; }
+            .fd-level1-table .fd-col-gap { width: 14%; }
+            .fd-level1-table .fd-col-num { width: 9%; }
+            .fd-level1-table .fd-col-share { width: 9%; }
+            .fd-level1-table .fd-col-bar { width: 28%; }
+            .failure-diagnostics .fd-level1-table td.fd-col-num,
+            .failure-diagnostics .fd-level1-table td:nth-child(5) {
+              white-space: nowrap;
+              font-weight: 800;
+            }
+            .failure-diagnostics .insight-track {
+              min-width: 0;
+              max-width: 100%;
+              width: 100%;
+            }
+            .fd-summary-discovered-row td { background: #f8fafc; }
+            .fd-num { color: #6b7280; font-weight: 800; width: 24px; }
+            .fd-breakdown-caption { margin: 0 0 4px; font-size: 9px; color: #6b7280; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; }
+            .fd-discovered-block { margin-top: 4px; padding-top: 6px; border-top: 1px solid #e5e7eb; max-width: 100%; }
+            .fd-rca-block { margin: 10px 0 12px; max-width: 100%; overflow: hidden; box-sizing: border-box; }
+            .fd-rca-block h3 { margin: 0 0 4px; font-size: 12px; }
+            .fd-rca-base { margin: 0 0 6px; font-size: 9px; }
+            .fd-rca-patterns-wrap { width: 100%; max-width: 100%; margin: 0 auto; overflow: hidden; box-sizing: border-box; }
+            .fd-rca-table { table-layout: fixed; width: 100%; max-width: 100%; box-sizing: border-box; }
+            .fd-rca-table td, .fd-rca-table th { font-size: 10px; padding: 5px 4px; overflow-wrap: anywhere; word-break: break-word; box-sizing: border-box; }
+            .fd-rca-patterns-table { margin-left: auto; margin-right: auto; }
+            .fd-rca-patterns-table .fd-rca-col-finding { width: 41%; text-align: left; }
+            .fd-rca-patterns-table th.fd-rca-col-finding { text-align: left; }
+            .fd-rca-patterns-table .fd-rca-col-pct { width: 12%; white-space: nowrap; text-align: center; font-weight: 800; vertical-align: top; }
+            .fd-rca-patterns-table th.fd-rca-col-pct { text-align: center; }
+            .fd-rca-patterns-table .fd-rca-col-bar { width: 29%; vertical-align: middle; padding-left: 6px; padding-right: 6px; }
+            .fd-rca-patterns-table th.fd-rca-col-bar { text-align: center; }
+            .fd-rca-patterns-table .fd-rca-col-count { width: 18%; white-space: nowrap; text-align: center; font-weight: 800; vertical-align: top; }
+            .fd-rca-patterns-table th.fd-rca-col-count { text-align: center; }
+            .fd-rca-track { height: 9px; background: #e7ddd1; border: 1px solid #d7cfc2; min-width: 0; max-width: 100%; width: 100%; box-sizing: border-box; }
+            .fd-rca-fill { height: 100%; background: #c7725e; max-width: 100%; }
+            .fd-rca-hotspots-table .fd-rca-col-pct { white-space: nowrap; text-align: center; font-weight: 800; width: 14%; }
+            .fd-rca-hotspots-table .fd-rca-col-bar { width: 28%; }
+            .fd-rca-hotspots-table .fd-rca-col-count { white-space: nowrap; text-align: center; font-weight: 800; width: 14%; vertical-align: top; }
+            .fd-finding-sub { margin-top: 3px; font-size: 9px; color: #6b7280; font-weight: 400; line-height: 1.35; }
+            .fd-evidence-line { font-size: 8px; color: #6b7280; font-weight: 600; line-height: 1.3; }
+            .fd-evidence-primary { font-size: 10px; font-weight: 800; color: #111827; line-height: 1.3; }
+            .fd-cluster-appendix { margin-top: 14px; padding-top: 10px; border-top: 1px solid #e5e7eb; break-inside: avoid; }
+            .fd-cluster-appendix h3 { margin: 0 0 4px; font-size: 11px; }
+            .fd-rca-interpretation { margin-top: 6px; }
+            .fd-rca-summary-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 10px; align-items: start; }
+            .fd-rca-twocol { display: grid; gap: 8px; }
+            .fd-rca-mini-table { table-layout: fixed; width: 100%; }
+            .fd-why-flagged { margin: 0 0 6px; font-size: 10px; color: #374151; line-height: 1.4; }
+            .insight-evidence-id a { color: #b85f4b; font-weight: 700; text-decoration: none; }
+            .metric-cluster-metric-group {
+              margin: 0;
+              padding: 8px 0;
+              border-top: 1px solid #e5e7eb;
+              break-inside: auto;
+            }
+            .metric-cluster-metric-group:first-child { border-top: none; padding-top: 4px; }
+            .metric-cluster-metric-head {
+              display: flex;
+              justify-content: space-between;
+              align-items: baseline;
+              gap: 8px;
+              margin-bottom: 4px;
+            }
+            .metric-cluster-metric-head h3 { margin: 0; font-size: 13px; }
+            .metric-cluster-metric-head span {
+              color: #6b7280;
+              font-size: 9px;
+              font-weight: 700;
+              text-transform: uppercase;
+              letter-spacing: .03em;
+              white-space: normal;
+              text-align: right;
+              flex-shrink: 1;
+              min-width: 0;
+            }
+            .metric-cluster-detail-section-title { margin-top: 6px; }
+            .metric-cluster-details { display: grid; gap: 6px; }
+            .metric-cluster-detail {
+              border: 1px solid #e5e7eb;
+              border-radius: 6px;
+              background: #fff;
+              padding: 6px 8px;
+              break-inside: auto;
+              page-break-inside: auto;
+            }
+            .metric-cluster-detail-compact .insight-callout { margin-top: 4px; }
+            .fd-cluster-observation { margin: 0 0 4px; font-size: 10px; color: #374151; line-height: 1.35; }
+            .fd-omitted-metrics { margin: 6px 0 8px; font-size: 9px; }
+            .metric-cluster-detail-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+            .metric-cluster-detail-head h4 { margin: 0; font-size: 11px; font-weight: 800; color: #111827; line-height: 1.3; }
+            .metric-cluster-detail-head span {
+              color: #6b7280;
+              font-size: 9px;
+              font-weight: 700;
+              text-transform: uppercase;
+              letter-spacing: .03em;
+              white-space: normal;
+              text-align: right;
+              flex-shrink: 1;
+              min-width: 0;
+            }
+            .metric-cluster-detail-body { grid-template-columns: 1.1fr 0.9fr; gap: 10px; }
+            .metric-cluster-detail-body .subhead { margin-bottom: 3px; }
+            .metric-cluster-sub-bars { margin: 0; }
+            .metric-cluster-sub-row { margin: 2px 0; grid-template-columns: 96px 1fr 62px; gap: 6px; }
+            .metric-cluster-sub-fill { background: #6366f1; }
+            .insight-callout-empty p { margin: 0; }
+            .insight-observation, .insight-evidence { margin: 0; color: #374151; }
+            .insight-evidence span { color: #7a756d; font-size: 9px; margin-left: 6px; }
+            .design-notes { margin: 8px 0 0; padding-left: 18px; }
+            .design-notes li { margin-bottom: 8px; line-height: 1.5; }
+            .gap-badge { display: inline-block; font-size: 9px; font-weight: 800; letter-spacing: .04em; color: #b42318; text-transform: uppercase; }
+            table { width: 100%; border-collapse: collapse; margin-top: 6px; break-inside: auto; page-break-inside: auto; }
+            thead { display: table-header-group; }
+            tr { break-inside: avoid; page-break-inside: avoid; }
+            th, td { text-align: left; border-bottom: 1px solid #e5e7eb; padding: 7px; vertical-align: top; }
+            th { background: #111827; color: #fff; font-size: 10px; text-transform: uppercase; }
+            .method { color: #475467; line-height: 1.5; }
+            .audit-summary p { margin: 0 0 7px; }
+            .audit-summary ul { margin: 7px 0 10px; padding-left: 16px; }
+            .audit-summary li { margin-bottom: 5px; }
+            .audit-summary-section { margin-bottom: 0; break-after: auto; page-break-after: auto; }
+            .audit-summary-section + section { margin-top: 0; }
+            .audit-summary-section + section h2 { margin-top: 8px; }
+            .audit-stat-strip { display: flex; gap: 0; margin: 10px 0 0; border-top: 1px solid #111827; break-after: auto; page-break-after: auto; }
+            .audit-stat-strip:last-child { margin-bottom: 10px; }
+            .audit-stat-card { flex: 1; min-width: 0; padding: 10px 12px 12px 0; }
+            .audit-stat-card + .audit-stat-card { border-left: 1px solid #d1d5db; padding-left: 12px; }
+            .audit-stat-rule { display: none; }
+            .audit-stat-label { font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #d16532; margin-bottom: 6px; line-height: 1.3; }
+            .audit-stat-value { font-family: Georgia, 'Times New Roman', serif; font-size: 28px; font-weight: 700; color: #111827; line-height: 1; }
+            .audit-delta-panel { break-inside: auto; page-break-inside: auto; margin: 6px 0 8px; padding-top: 6px; border-top: 1px solid #e5e7eb; }
+            .audit-delta-title { font-size: 13px; font-weight: 900; letter-spacing: .04em; text-transform: uppercase; color: #111827; margin-bottom: 6px; break-after: avoid; page-break-after: avoid; }
+            .audit-delta-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; break-inside: auto; page-break-inside: auto; }
+            .audit-delta-card { break-inside: avoid; page-break-inside: avoid; border: 1px solid #d9dee8; border-radius: 6px; padding: 8px 9px; background: #f8fafc; min-height: 0; }
+            .audit-delta-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 4px; }
+            .audit-delta-head-main { min-width: 0; }
+            .audit-delta-head span { display: block; color: #111827; font-size: 9px; font-weight: 900; letter-spacing: .06em; line-height: 1.25; text-transform: uppercase; overflow-wrap: anywhere; }
+            .audit-delta-direction { display: block; margin-top: 2px; color: #94a3b8; font-size: 7px; font-weight: 600; letter-spacing: .03em; text-transform: none; }
+            .audit-delta-head strong { flex-shrink: 0; font-size: 10px; line-height: 1.2; text-align: right; white-space: nowrap; }
+            .audit-delta-card.delta-good .audit-delta-head strong { color: #047857; }
+            .audit-delta-card.delta-bad .audit-delta-head strong { color: #b42318; }
+            .audit-delta-card.delta-flat .audit-delta-head strong { color: #475569; }
+            .audit-delta-chart { min-height: 50px; }
+            .audit-delta-chart .metric-sparkline { width: 100%; max-width: 100%; }
+            .audit-delta-empty { height: 50px; display: flex; align-items: center; justify-content: center; border: 1px dashed #cbd5e1; background: #fff; color: #667085; font-size: 9px; }
+            .audit-delta-reason { margin: 6px 0 0; padding-top: 5px; border-top: 1px solid #e5e7eb; color: #374151; font-size: 10px; font-weight: 600; line-height: 1.45; }
+            .report-footer { margin-top: 14px; border-top: 1px solid #1f2937; padding-top: 10px; display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; color: #4b5563; font-size: 10px; break-inside: avoid; page-break-inside: avoid; }
+            .footer-left, .footer-right { display: flex; flex-direction: column; gap: 3px; }
+            .footer-right { text-align: right; }
+            .brand-title { color: #111827; font-weight: 800; font-size: 11px; letter-spacing: .2px; }
+            .brand-link { color: #d16532; font-weight: 700; text-decoration: none; }
+            .internal-report .insight-block { margin: 6px 0 8px; }
+            .internal-report .failure-diagnostics-intro h2,
+            .internal-report .prompt-improvements > h2 {
+              margin-top: 8px;
+            }
+            .prompt-improvements { margin-top: 0; max-width: 100%; break-inside: auto; page-break-inside: auto; }
+            .prompt-improvement-card {
+              margin: 0 0 10px;
+              padding: 8px 10px;
+              border: 1px solid #e5e7eb;
+              border-radius: 6px;
+              background: #fafafa;
+              max-width: 100%;
+              box-sizing: border-box;
+              break-inside: auto;
+              page-break-inside: auto;
+            }
+            .prompt-improvements .metric-cluster-metric-head h3 {
+              flex: 1;
+              min-width: 0;
+              overflow-wrap: anywhere;
+              word-break: break-word;
+            }
+            .prompt-improvements .method {
+              overflow-wrap: anywhere;
+              word-break: break-word;
+              max-width: 100%;
+            }
+            .prompt-suggestion-block {
+              margin: 6px 0;
+              padding: 8px 10px;
+              border: 1px solid #e5e7eb;
+              border-radius: 6px;
+              background: #fff;
+              font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+              font-size: 9px;
+              line-height: 1.45;
+              color: #111827;
+              white-space: pre-wrap;
+              overflow-wrap: anywhere;
+              word-break: break-word;
+              max-width: 100%;
+              width: 100%;
+              box-sizing: border-box;
+            }
+            .prompt-improvement-meta {
+              display: inline-flex;
+              flex-wrap: wrap;
+              align-items: center;
+              gap: 6px;
+            }
+            .prompt-change-badge {
+              display: inline-block;
+              font-size: 8px;
+              font-weight: 800;
+              text-transform: uppercase;
+              letter-spacing: .06em;
+              border-radius: 4px;
+              padding: 2px 5px;
+              border: 1px solid transparent;
+            }
+            .prompt-change-badge-edit {
+              color: #9f1239;
+              background: #fff1f2;
+              border-color: #fecdd3;
+            }
+            .prompt-change-badge-add {
+              color: #065f46;
+              background: #ecfdf5;
+              border-color: #a7f3d0;
+            }
+            .prompt-change-grid {
+              display: grid;
+              grid-template-columns: repeat(2, minmax(0, 1fr));
+              gap: 8px;
+              margin: 8px 0;
+            }
+            .prompt-change-box {
+              border-radius: 6px;
+              padding: 8px 10px;
+              min-width: 0;
+            }
+            .prompt-change-before {
+              border: 1px solid #fecdd3;
+              background: #fff1f2;
+            }
+            .prompt-change-after {
+              border: 1px solid #a7f3d0;
+              background: #ecfdf5;
+            }
+            .prompt-change-add {
+              border: 1px solid #e5e7eb;
+              background: #fff;
+              margin: 8px 0;
+            }
+            .prompt-change-label {
+              font-size: 8px;
+              font-weight: 800;
+              text-transform: uppercase;
+              letter-spacing: .08em;
+              margin-bottom: 6px;
+            }
+            .prompt-change-before .prompt-change-label { color: #be123c; }
+            .prompt-change-after .prompt-change-label { color: #047857; }
+            .prompt-change-add .prompt-change-label { color: #6b7280; }
+            .prompt-change-text {
+              font-size: 9px;
+              line-height: 1.45;
+              color: #111827;
+              white-space: pre-wrap;
+              overflow-wrap: anywhere;
+              word-break: break-word;
+            }
+            .prompt-improvement-rationale {
+              margin-top: 6px;
+            }
+"""
 
     def _render_weasyprint(
         self,

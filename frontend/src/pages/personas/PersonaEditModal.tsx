@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { Save, X } from 'lucide-react'
 import Button from '../../components/Button'
 import PersonaTabContent from './PersonaTabContent'
+import { personaSimulationMedium } from '../../lib/personaMedium'
 import {
-  PERSONA_TILE_TABS,
+  personaTilesTabsFor,
   personaToFormData,
   type Persona,
   type PersonaFormData,
@@ -38,6 +39,8 @@ export default function PersonaEditModal({
   const baseline = useMemo(() => personaToFormData(persona), [persona])
   const isDirty = !formDataEquals(draft, baseline)
   const lockProvider = Boolean(persona.tts_provider)
+  const medium = personaSimulationMedium(persona)
+  const tabs = personaTilesTabsFor(medium)
 
   const handleClose = () => {
     if (isDirty && !window.confirm('Discard unsaved changes?')) {
@@ -84,7 +87,7 @@ export default function PersonaEditModal({
 
         <div className="px-6 border-b border-gray-100">
           <nav className="flex gap-1 overflow-x-auto" aria-label="Persona settings">
-            {PERSONA_TILE_TABS.map((tab) => (
+            {tabs.map((tab) => (
               <button
                 key={tab.id}
                 type="button"
@@ -110,6 +113,7 @@ export default function PersonaEditModal({
             lockProvider={lockProvider}
             voiceFieldSize="md"
             promptEmbedded
+            medium={medium}
           />
         </div>
 

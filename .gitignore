@@ -137,5 +137,8 @@ enterprise/keys/*.pem
 celerybeat-schedule
 celerybeat-schedule-*
 celerybeat-schedule.*
+.claude/
+.cursor/
+
 
 #

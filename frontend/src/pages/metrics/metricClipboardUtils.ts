@@ -1,3 +1,5 @@
+import { enumOptionsToCsv } from '../../lib/metricOptionLabels'
+
 export type MetricClipboardScope = 'workspace' | 'organization'
 
 export interface MetricClipboardChild {
@@ -203,9 +205,7 @@ export function singleFormFromMetricClipboard(
       | 'enum'
       | 'number_range'
       | 'classification',
-    enum_options_csv: Array.isArray(payload.custom_config?.options)
-      ? (payload.custom_config.options as string[]).join(', ')
-      : '',
+    enum_options_csv: enumOptionsToCsv(payload.custom_config?.options),
     number_min: Number(payload.custom_config?.min ?? 0),
     number_max: Number(payload.custom_config?.max ?? 10),
     number_step: Number(payload.custom_config?.step ?? 1),
@@ -216,6 +216,10 @@ export function singleFormFromMetricClipboard(
     allow_discovery: !!payload.allow_discovery,
     compare_transcripts: !!payload.compare_transcripts,
     scope: targetScope,
+    scenario_scope_mode: 'all' as const,
+    scenario_link_ids: [] as string[],
+    agent_scope_mode: 'all' as const,
+    agent_link_ids: [] as string[],
   }
 }
 
@@ -242,5 +246,9 @@ export function categoryFormFromMetricClipboard(
             example: (child.example || '').trim(),
           }))
         : [{ local_id: newChildLocalId(), name: '', description: '', example: '' }],
+    scenario_scope_mode: 'all' as const,
+    scenario_link_ids: [] as string[],
+    agent_scope_mode: 'all' as const,
+    agent_link_ids: [] as string[],
   }
 }

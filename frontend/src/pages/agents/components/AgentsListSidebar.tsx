@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Search } from 'lucide-react'
+import { Search, Star } from 'lucide-react'
 import { TestAgent, Integration, IntegrationPlatform } from '../../../types/api'
 import { getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../../config/providers'
 import { CallTypeBadge } from '../../evaluators/components/evaluatorUi'
@@ -22,6 +22,8 @@ interface AgentsListSidebarProps {
   onSelectAgent: (agent: TestAgent) => void
   onSelectAgentCheckbox: (agentId: string, checked: boolean) => void
   onSelectAll: () => void
+  onToggleFavorite: (agent: TestAgent) => void
+  favoritePendingId?: string | null
 }
 
 export default function AgentsListSidebar({
@@ -33,6 +35,8 @@ export default function AgentsListSidebar({
   onSelectAgent,
   onSelectAgentCheckbox,
   onSelectAll,
+  onToggleFavorite,
+  favoritePendingId,
 }: AgentsListSidebarProps) {
   const [search, setSearch] = useState('')
   const [mediumFilter, setMediumFilter] = useState<'all' | 'voice' | 'chat'>('all')
@@ -45,13 +49,16 @@ export default function AgentsListSidebar({
       list = list.filter((a) => !isChatMedium(a.call_medium))
     }
     const q = search.trim().toLowerCase()
-    if (!q) return list
-    return list.filter((agent) => {
-      const id = agent.agent_id?.toLowerCase() || ''
-      const name = agent.name.toLowerCase()
-      const internal = agent.id.toLowerCase()
-      return id.includes(q) || name.includes(q) || internal.includes(q)
-    })
+    if (q) {
+      list = list.filter((agent) => {
+        const id = agent.agent_id?.toLowerCase() || ''
+        const name = agent.name.toLowerCase()
+        const internal = agent.id.toLowerCase()
+        return id.includes(q) || name.includes(q) || internal.includes(q)
+      })
+    }
+    if (mediumFilter !== 'all') return list
+    return [...list].sort((a, b) => Number(Boolean(b.is_favorite)) - Number(Boolean(a.is_favorite)))
   }, [agents, search, mediumFilter])
 
   const getIntegrationLogo = (agent: TestAgent) => {
@@ -129,7 +136,20 @@ export default function AgentsListSidebar({
                 isActive ? 'bg-primary-50 ring-1 ring-primary-200' : 'hover:bg-gray-50'
               }`}
             >
-              <div className="flex items-center pl-2" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center gap-1 pl-2" onClick={(e) => e.stopPropagation()}>
+                <button
+                  type="button"
+                  aria-label={agent.is_favorite ? `Remove ${agent.name} from favorites` : `Add ${agent.name} to favorites`}
+                  aria-pressed={Boolean(agent.is_favorite)}
+                  disabled={favoritePendingId === agent.id}
+                  title={agent.is_favorite ? 'Remove from your favorites' : 'Add to your favorites'}
+                  onClick={() => onToggleFavorite(agent)}
+                  className="rounded p-0.5 text-gray-300 hover:text-amber-500 disabled:opacity-50"
+                >
+                  <Star
+                    className={`h-3.5 w-3.5 ${agent.is_favorite ? 'fill-amber-400 text-amber-500' : ''}`}
+                  />
+                </button>
                 <input
                   type="checkbox"
                   checked={selectedAgents.has(agent.id)}

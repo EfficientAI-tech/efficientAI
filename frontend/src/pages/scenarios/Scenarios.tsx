@@ -1,11 +1,26 @@
 import { useState, useMemo, useEffect, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { FileText, Tag, Plus, Sparkles, Trash2, X, Loader, Phone, Brain, ChevronDown, AlertCircle } from 'lucide-react'
+import {
+  FileText,
+  Tag,
+  Plus,
+  Sparkles,
+  Trash2,
+  X,
+  Loader,
+  Phone,
+  Brain,
+  ChevronDown,
+  AlertCircle,
+  Lock,
+  BarChart3,
+} from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
 import { AIProvider, ModelProvider } from '../../types/api'
+import type { ExpectedToolCall } from '../../types/api'
 import { getProviderLabel, getProviderLogo } from '../../config/providers'
 import LLMAdvancedOptionsPanel from '../../components/providers/LLMAdvancedOptionsPanel'
 import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
@@ -22,19 +37,69 @@ import MarkdownEditor from '../../components/shared/MarkdownEditor'
 import ScenarioMarkdownView from './ScenarioMarkdownView'
 import ScenariosAgentSidebar from './ScenariosAgentSidebar'
 import ScenariosListPanel from './ScenariosListPanel'
+import ExpectedToolCallsField from './ExpectedToolCallsField'
 import type { Scenario, AgentOption } from './scenarioTypes'
 import ScenarioAgentMediumTabs from './ScenarioAgentMediumTabs'
+import ScenarioMetricsFromScenariosModal from './ScenarioMetricsFromScenariosModal'
 import {
   filterAgentsByMedium,
   isChatMedium,
   type AgentMediumFilter,
 } from '../../lib/agentMedium'
+import { useLicenseStore } from '../../store/licenseStore'
+
+interface GeneratedScenarioMetricDraft {
+  name: string
+  description: string
+  metric_type: 'rating' | 'boolean' | 'number' | 'text'
+  custom_data_type: 'boolean' | 'enum' | 'number_range' | null
+  custom_config: Record<string, unknown>
+  supported_surfaces: string[]
+  enabled_surfaces: string[]
+  tags: string[]
+}
+
+type PlannedScenarioMetricType = 'auto' | 'boolean' | 'rating' | 'number' | 'text'
 
 interface GeneratedScenarioDraft {
   id: string
   name: string
   description: string
   goal?: string
+  plannedMetricType: PlannedScenarioMetricType
+  /** Set after the scenario row exists in the DB (save or metric push). */
+  savedScenarioId?: string
+  metric?: GeneratedScenarioMetricDraft
+  metricPushed?: boolean
+}
+
+function customDataTypeForMetricType(
+  metricType: GeneratedScenarioMetricDraft['metric_type']
+): GeneratedScenarioMetricDraft['custom_data_type'] {
+  if (metricType === 'boolean') return 'boolean'
+  if (metricType === 'number') return 'number_range'
+  if (metricType === 'text') return null
+  return 'enum'
+}
+
+function mergeRequiredMetricTags(tags: string[], agentName: string): string[] {
+  const required = [agentName.trim(), 'auto-generated'].filter(Boolean)
+  const seen = new Set<string>()
+  const merged: string[] = []
+  for (const tag of required) {
+    if (!seen.has(tag)) {
+      seen.add(tag)
+      merged.push(tag)
+    }
+  }
+  for (const tag of tags) {
+    const trimmed = tag.trim()
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed)
+      merged.push(trimmed)
+    }
+  }
+  return merged
 }
 
 type CreateMode = 'agent_prompt' | 'call' | 'custom' | null
@@ -42,6 +107,8 @@ type CreateMode = 'agent_prompt' | 'call' | 'custom' | null
 export default function Scenarios() {
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
+  const { isFeatureEnabled, isLoaded: licenseLoaded, getFeatureMeta } = useLicenseStore()
+  const scenarioMetricsEnabled = licenseLoaded && isFeatureEnabled('scenario_metrics')
   const [showMainModal, setShowMainModal] = useState(false)
   const [createMode, setCreateMode] = useState<CreateMode>(null)
   const [showDetailsModal, setShowDetailsModal] = useState(false)
@@ -54,6 +121,7 @@ export default function Scenarios() {
     agent_id: '',
     description: '',
     required_info: {} as Record<string, string>,
+    expected_tool_calls: [] as ExpectedToolCall[],
   })
 
   const renderModal = (content: ReactNode) => {
@@ -72,9 +140,22 @@ export default function Scenarios() {
   const [additionalAgentPromptContext, setAdditionalAgentPromptContext] = useState('')
   const [generatedScenarioDrafts, setGeneratedScenarioDrafts] = useState<GeneratedScenarioDraft[]>([])
   const [isGeneratingFromAgentPrompt, setIsGeneratingFromAgentPrompt] = useState(false)
+  const [isGeneratingScenarioMetrics, setIsGeneratingScenarioMetrics] = useState(false)
   const [savingDraftIds, setSavingDraftIds] = useState<Set<string>>(new Set())
+  const [pushingMetricDraftIds, setPushingMetricDraftIds] = useState<Set<string>>(new Set())
+  const [metricSelectedAIProvider, setMetricSelectedAIProvider] = useState<ModelProvider | null>(
+    null
+  )
+  const [metricSelectedModel, setMetricSelectedModel] = useState<string>('')
+  const [metricLlmConfig, setMetricLlmConfig] = useState<LLMGenerationConfig | null>(null)
+  const [showMetricProviderDropdown, setShowMetricProviderDropdown] = useState(false)
+  const metricProviderDropdownRef = useRef<HTMLDivElement>(null)
   const [editGeneratePrompt, setEditGeneratePrompt] = useState('')
   const [isGeneratingEditDescription, setIsGeneratingEditDescription] = useState(false)
+  const [showScenarioMetricsModal, setShowScenarioMetricsModal] = useState(false)
+  const [scenarioMetricsModalScenarios, setScenarioMetricsModalScenarios] = useState<Scenario[]>(
+    []
+  )
 
   useWalkthroughSectionState('scenarios', { createMode }, [createMode])
 
@@ -115,6 +196,15 @@ export default function Scenarios() {
     enabled: !!selectedAIProvider && (createMode === 'agent_prompt' || showEditModal),
   })
 
+  const { data: metricModelOptions } = useQuery({
+    queryKey: ['model-options', metricSelectedAIProvider],
+    queryFn: () => apiClient.getModelOptions(metricSelectedAIProvider!),
+    enabled:
+      !!metricSelectedAIProvider &&
+      createMode === 'agent_prompt' &&
+      generatedScenarioDrafts.length > 0,
+  })
+
   // Get LLM models for the selected provider
   const llmModels = useMemo(() => {
     return modelOptions?.llm || []
@@ -137,6 +227,26 @@ export default function Scenarios() {
 
   const gatewayDirectModel =
     llmModelResolution.mode === 'gateway_direct' ? llmModelResolution.model : null
+
+  const metricLlmModels = useMemo(() => metricModelOptions?.llm || [], [metricModelOptions])
+
+  const metricSelectedAiCredential = useMemo(() => {
+    if (!metricSelectedAIProvider) return undefined
+    return resolveActiveAIProvider(aiProviders, metricSelectedAIProvider)
+  }, [aiProviders, metricSelectedAIProvider])
+
+  const metricLlmModelResolution = useMemo(() => {
+    if (!metricSelectedAiCredential) {
+      return { mode: 'catalog' as const, models: metricLlmModels }
+    }
+    return resolveLLMModelsForCredential(metricSelectedAiCredential, metricLlmModels)
+  }, [metricSelectedAiCredential, metricLlmModels])
+
+  const selectableMetricLlmModels =
+    metricLlmModelResolution.mode === 'catalog' ? metricLlmModelResolution.models : []
+
+  const metricGatewayDirectModel =
+    metricLlmModelResolution.mode === 'gateway_direct' ? metricLlmModelResolution.model : null
 
   const userScenarios = useMemo(() => scenarios as Scenario[], [scenarios])
   const availableAgents = useMemo(() => agents as AgentOption[], [agents])
@@ -238,26 +348,49 @@ export default function Scenarios() {
     }
   }, [selectedAIProvider, selectableLlmModels, gatewayDirectModel])
 
+  useEffect(() => {
+    if (metricGatewayDirectModel) {
+      setMetricSelectedModel(metricGatewayDirectModel)
+    } else if (
+      metricSelectedModel &&
+      !selectableMetricLlmModels.includes(metricSelectedModel)
+    ) {
+      setMetricSelectedModel('')
+    } else if (!metricSelectedAIProvider) {
+      setMetricSelectedModel('')
+    }
+  }, [
+    metricSelectedAIProvider,
+    selectableMetricLlmModels,
+    metricGatewayDirectModel,
+    metricSelectedModel,
+  ])
+
   // Handle click outside provider dropdown
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (providerDropdownRef.current && !providerDropdownRef.current.contains(event.target as Node)) {
         setShowProviderDropdown(false)
       }
+      if (
+        metricProviderDropdownRef.current &&
+        !metricProviderDropdownRef.current.contains(event.target as Node)
+      ) {
+        setShowMetricProviderDropdown(false)
+      }
     }
 
-    if (showProviderDropdown) {
+    if (showProviderDropdown || showMetricProviderDropdown) {
       document.addEventListener('mousedown', handleClickOutside)
     }
 
     return () => {
       document.removeEventListener('mousedown', handleClickOutside)
     }
-  }, [showProviderDropdown])
+  }, [showProviderDropdown, showMetricProviderDropdown])
 
   const createMutation = useMutation({
-    mutationFn: (data: { name: string; agent_id?: string | null; description?: string; required_info: Record<string, string> }) =>
-      apiClient.createScenario(data),
+    mutationFn: (data: Parameters<typeof apiClient.createScenario>[0]) => apiClient.createScenario(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['scenarios'] })
       showToast('Scenario created successfully!', 'success')
@@ -291,7 +424,7 @@ export default function Scenarios() {
   })
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: { name: string; agent_id?: string | null; description?: string; required_info: Record<string, string> } }) =>
+    mutationFn: ({ id, data }: { id: string; data: Parameters<typeof apiClient.updateScenario>[1] }) =>
       apiClient.updateScenario(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['scenarios'] })
@@ -334,6 +467,7 @@ export default function Scenarios() {
       agent_id: '',
       description: '',
       required_info: {},
+      expected_tool_calls: [],
     })
   }
 
@@ -348,6 +482,7 @@ export default function Scenarios() {
       agent_id: formData.agent_id || undefined,
       description: formData.description || undefined,
       required_info: formData.required_info || {},
+      expected_tool_calls: formData.expected_tool_calls.length ? formData.expected_tool_calls : null,
     })
   }
 
@@ -402,6 +537,7 @@ export default function Scenarios() {
         name: String(item.name).trim(),
         description: String(item.description).trim(),
         goal: item.goal ? String(item.goal).trim() : undefined,
+        plannedMetricType: 'auto' as PlannedScenarioMetricType,
       }))
       if (drafts.length === 0) {
         showToast('Could not parse generated scenarios. Try again.', 'error')
@@ -427,6 +563,180 @@ export default function Scenarios() {
     setGeneratedScenarioDrafts((prev) => prev.filter((draft) => draft.id !== draftId))
   }
 
+  const resolveAgentProductionPrompt = (agent: AgentOption) => {
+    const chatAgent = isChatMedium(agent.call_medium)
+    return (
+      chatAgent
+        ? (agent.provider_prompt || agent.description || '').trim()
+        : (agent.description || '').trim()
+    )
+  }
+
+  const updateGeneratedDraftMetric = (
+    draftId: string,
+    updates: Partial<GeneratedScenarioMetricDraft>
+  ) => {
+    setGeneratedScenarioDrafts((prev) =>
+      prev.map((draft) =>
+        draft.id === draftId && draft.metric
+          ? { ...draft, metric: { ...draft.metric, ...updates } }
+          : draft
+      )
+    )
+  }
+
+  const handleGenerateMetricsForDrafts = async () => {
+    if (!scenarioMetricsEnabled) {
+      const title = getFeatureMeta('scenario_metrics')?.title ?? 'Scenario Metrics'
+      showToast(`${title} requires an EfficientAI Enterprise license.`, 'error')
+      return
+    }
+    const selectedAgent = availableAgents.find((a) => a.id === selectedAgentIdForGeneration)
+    if (!selectedAgent) {
+      showToast('Please select an agent', 'error')
+      return
+    }
+    if (!metricSelectedAIProvider || !metricSelectedModel) {
+      showToast('Please select an AI provider and model for metric generation', 'error')
+      return
+    }
+    if (generatedScenarioDrafts.length === 0) {
+      showToast('Generate scenarios first', 'error')
+      return
+    }
+
+    const agentPrompt = resolveAgentProductionPrompt(selectedAgent)
+    if (!agentPrompt) {
+      showToast('Selected agent has no production prompt', 'error')
+      return
+    }
+
+    setIsGeneratingScenarioMetrics(true)
+    try {
+      const response = await apiClient.generateMetricsFromScenarios({
+        agent_name: selectedAgent.name,
+        production_prompt: agentPrompt,
+        call_medium: selectedAgent.call_medium,
+        scenarios: generatedScenarioDrafts.map((draft) => ({
+          name: draft.name.trim(),
+          description: draft.description.trim(),
+          goal: draft.goal?.trim() || undefined,
+          metric_type: draft.plannedMetricType,
+        })),
+        provider: metricSelectedAIProvider,
+        model: metricSelectedModel,
+        ...(metricLlmConfig ? { llm_config: metricLlmConfig } : {}),
+      })
+
+      setGeneratedScenarioDrafts((prev) =>
+        prev.map((draft, index) => {
+          const generated = response.metrics[index]
+          if (!generated) return draft
+          return {
+            ...draft,
+            metricPushed: false,
+            metric: {
+              name: generated.name,
+              description: generated.description,
+              metric_type: generated.metric_type,
+              custom_data_type: generated.custom_data_type,
+              custom_config: generated.custom_config ?? {},
+              supported_surfaces: generated.supported_surfaces,
+              enabled_surfaces: generated.enabled_surfaces,
+              tags: generated.tags ?? [],
+            },
+          }
+        })
+      )
+      showToast(`Generated ${response.metrics.length} metric drafts`, 'success')
+    } catch (error: any) {
+      showToast(
+        `Failed to generate metrics: ${error.response?.data?.detail || error.message}`,
+        'error'
+      )
+    } finally {
+      setIsGeneratingScenarioMetrics(false)
+    }
+  }
+
+  const scenarioPayloadFromDraft = (draft: GeneratedScenarioDraft) => {
+    const required_info: Record<string, string> = {}
+    if (draft.goal?.trim()) required_info.goal = draft.goal.trim()
+    return {
+      name: draft.name.trim(),
+      agent_id: selectedAgentIdForGeneration || undefined,
+      description: draft.description?.trim() || undefined,
+      required_info,
+    }
+  }
+
+  const persistDraftScenarioIfNeeded = async (
+    draft: GeneratedScenarioDraft,
+  ): Promise<string> => {
+    if (draft.savedScenarioId) return draft.savedScenarioId
+    const created = await apiClient.createScenario(scenarioPayloadFromDraft(draft))
+    const scenarioId = String(created.id)
+    setGeneratedScenarioDrafts((prev) =>
+      prev.map((item) =>
+        item.id === draft.id ? { ...item, savedScenarioId: scenarioId } : item,
+      ),
+    )
+    await queryClient.invalidateQueries({ queryKey: ['scenarios'] })
+    return scenarioId
+  }
+
+  const pushMetricForDraft = async (draft: GeneratedScenarioDraft) => {
+    if (!draft.metric || draft.metricPushed) return
+    if (!selectedAgentIdForGeneration) {
+      showToast('Select an agent before adding generated metrics', 'error')
+      return
+    }
+    const selectedAgent = availableAgents.find((a) => a.id === selectedAgentIdForGeneration)
+    const agentName = selectedAgent?.name?.trim() || 'Agent'
+    const metric = draft.metric
+    const tags = mergeRequiredMetricTags(metric.tags, agentName)
+
+    setPushingMetricDraftIds((prev) => new Set(prev).add(draft.id))
+    try {
+      const scenarioId = await persistDraftScenarioIfNeeded(draft)
+      await apiClient.createMetric({
+        name: metric.name.trim(),
+        description: metric.description.trim() || undefined,
+        metric_type: metric.metric_type,
+        metric_origin: 'custom',
+        supported_surfaces: metric.supported_surfaces,
+        enabled_surfaces: metric.enabled_surfaces,
+        custom_data_type: metric.custom_data_type ?? undefined,
+        custom_config:
+          metric.custom_config && Object.keys(metric.custom_config).length > 0
+            ? metric.custom_config
+            : undefined,
+        tags,
+        scope: 'workspace',
+        agent_ids: [selectedAgentIdForGeneration],
+        scenario_ids: [scenarioId],
+      })
+      await queryClient.invalidateQueries({ queryKey: ['metrics'] })
+      setGeneratedScenarioDrafts((prev) =>
+        prev.map((item) =>
+          item.id === draft.id ? { ...item, metricPushed: true, metric: { ...metric, tags } } : item
+        )
+      )
+      showToast(
+        `Added metric "${metric.name}" (linked to ${agentName} and this scenario).`,
+        'success',
+      )
+    } catch (error: any) {
+      showToast(`Failed to add metric: ${error.response?.data?.detail || error.message}`, 'error')
+    } finally {
+      setPushingMetricDraftIds((prev) => {
+        const next = new Set(prev)
+        next.delete(draft.id)
+        return next
+      })
+    }
+  }
+
   const saveGeneratedDraft = async (draft: GeneratedScenarioDraft) => {
     if (!draft.name.trim()) {
       showToast('Scenario name cannot be empty', 'error')
@@ -435,12 +745,12 @@ export default function Scenarios() {
 
     setSavingDraftIds((prev) => new Set(prev).add(draft.id))
     try {
-      await apiClient.createScenario({
-        name: draft.name.trim(),
-        agent_id: selectedAgentIdForGeneration || undefined,
-        description: draft.description?.trim() || undefined,
-        required_info: draft.goal ? { goal: draft.goal } : {},
-      })
+      const payload = scenarioPayloadFromDraft(draft)
+      if (draft.savedScenarioId) {
+        await apiClient.updateScenario(draft.savedScenarioId, payload)
+      } else {
+        await apiClient.createScenario(payload)
+      }
       queryClient.invalidateQueries({ queryKey: ['scenarios'] })
       showToast(`Saved scenario "${draft.name}"`, 'success')
       removeGeneratedDraft(draft.id)
@@ -487,6 +797,12 @@ export default function Scenarios() {
     setAdditionalAgentPromptContext('')
     setGeneratedScenarioDrafts([])
     setSavingDraftIds(new Set())
+    setPushingMetricDraftIds(new Set())
+    setIsGeneratingScenarioMetrics(false)
+    setMetricSelectedAIProvider(null)
+    setMetricSelectedModel('')
+    setMetricLlmConfig(null)
+    setShowMetricProviderDropdown(false)
     setShowProviderDropdown(false)
     setScenarioMediumFilter('voice')
     resetForm()
@@ -498,6 +814,17 @@ export default function Scenarios() {
     setSelectedModel('') // Reset model selection when provider changes
   }
 
+  const handleMetricProviderSelect = (provider: ModelProvider) => {
+    setMetricSelectedAIProvider(provider)
+    setShowMetricProviderDropdown(false)
+    setMetricSelectedModel('')
+  }
+
+  const agentPromptModalWidthClass =
+    createMode === 'agent_prompt' && generatedScenarioDrafts.length > 0
+      ? 'max-w-6xl'
+      : 'max-w-2xl'
+
   const handleGenerateFromCall = () => {
     if (!callData.trim()) {
       showToast('Please enter call data', 'error')
@@ -505,6 +832,21 @@ export default function Scenarios() {
     }
     generateFromCallMutation.mutate(callData)
   }
+
+  const openScenarioMetricsWorkflow = (items: Scenario[]) => {
+    const eligible = items.filter(
+      (s) => (s.description || '').trim().length > 0 || s.name.trim().length > 0
+    )
+    if (eligible.length === 0) {
+      showToast('Add a description to scenarios before generating metrics', 'error')
+      return
+    }
+    setScenarioMetricsModalScenarios(eligible)
+    setShowScenarioMetricsModal(true)
+  }
+
+  const scenarioMetricsModalDefaultAgentId =
+    selectedNavAgentId && selectedNavAgentId !== 'unlinked' ? selectedNavAgentId : null
 
   const openCreateModal = () => {
     resetForm()
@@ -553,6 +895,7 @@ export default function Scenarios() {
       agent_id: scenario.agent_id || '',
       description: scenario.description || '',
       required_info: scenario.required_info,
+      expected_tool_calls: scenario.expected_tool_calls ?? [],
     })
     setShowEditModal(true)
   }
@@ -572,6 +915,7 @@ export default function Scenarios() {
         agent_id: formData.agent_id || null,
         description: formData.description || undefined,
         required_info: formData.required_info,
+        expected_tool_calls: formData.expected_tool_calls.length ? formData.expected_tool_calls : null,
       },
     })
   }
@@ -674,6 +1018,21 @@ export default function Scenarios() {
           </p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2 pr-2">
+          {visibleScenarios.length > 0 ? (
+            <Button
+              variant="outline"
+              onClick={() => openScenarioMetricsWorkflow(visibleScenarios)}
+              leftIcon={
+                !scenarioMetricsEnabled && licenseLoaded ? (
+                  <Lock className="h-4 w-4 text-amber-600" />
+                ) : (
+                  <BarChart3 className="h-4 w-4" />
+                )
+              }
+            >
+              Generate metrics
+            </Button>
+          ) : null}
           <Button
             variant="primary"
             onClick={openCreateModal}
@@ -709,6 +1068,8 @@ export default function Scenarios() {
             onEditScenario={handleEdit}
             onDeleteScenario={handleDelete}
             onViewScenario={handleViewScenario}
+            showGenerateMetrics={licenseLoaded}
+            onGenerateMetrics={(scenario) => openScenarioMetricsWorkflow([scenario])}
           />
         </div>
       )}
@@ -716,7 +1077,9 @@ export default function Scenarios() {
       {/* Main Create Scenario Modal */}
       {showMainModal && renderModal(
         <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">
-          <div className="bg-white rounded-lg shadow-xl w-full mx-4 max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+          <div
+            className={`bg-white rounded-lg shadow-xl w-full mx-4 ${agentPromptModalWidthClass} max-h-[90vh] overflow-hidden flex flex-col`}
+          >
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
               <h3 className="text-lg font-semibold">Create Scenario</h3>
               <button
@@ -990,53 +1353,355 @@ export default function Scenarios() {
 
                   {generatedScenarioDrafts.length > 0 && (
                     <div className="pt-4 border-t border-gray-200 space-y-4">
-                      <h5 className="text-sm font-semibold text-gray-900">
-                        Generated Scenarios ({generatedScenarioDrafts.length})
-                      </h5>
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                        <h5 className="text-sm font-semibold text-gray-900">
+                          Generated Scenarios ({generatedScenarioDrafts.length})
+                        </h5>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => {
+                            void handleGenerateMetricsForDrafts()
+                          }}
+                          isLoading={isGeneratingScenarioMetrics}
+                          disabled={
+                            !selectedAgentIdForGeneration ||
+                            !metricSelectedAIProvider ||
+                            !metricSelectedModel ||
+                            isGeneratingFromAgentPrompt
+                          }
+                          className="shrink-0"
+                        >
+                          {!scenarioMetricsEnabled && (
+                            <Lock className="h-4 w-4 text-amber-600 mr-1.5" aria-hidden />
+                          )}
+                          <BarChart3 className="h-4 w-4 mr-1.5" aria-hidden />
+                          Generate Metrics
+                        </Button>
+                      </div>
+                      {!scenarioMetricsEnabled && licenseLoaded && (
+                        <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                          {getFeatureMeta('scenario_metrics')?.title ?? 'Scenario Metrics'} is an
+                          Enterprise feature. Set{' '}
+                          <code className="font-mono text-[11px] bg-amber-100/80 px-1 rounded">
+                            EFFICIENTAI_LICENSE
+                          </code>{' '}
+                          on your server to generate and push metrics from these scenarios.
+                        </p>
+                      )}
+                      {scenarioMetricsEnabled && (
+                        <div className="rounded-lg border border-gray-200 bg-white p-4 space-y-4">
+                          <div>
+                            <h6 className="text-sm font-semibold text-gray-900">
+                              Metric generation model
+                            </h6>
+                            <p className="text-xs text-gray-500 mt-1">
+                              Choose a separate AI provider and model for generating metrics (independent
+                              from scenario generation).
+                            </p>
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-2">
+                                AI Provider *
+                              </label>
+                              <div className="relative" ref={metricProviderDropdownRef}>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setShowMetricProviderDropdown(!showMetricProviderDropdown)
+                                  }
+                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white text-left flex items-center justify-between"
+                                >
+                                  <div className="flex items-center gap-2">
+                                    {metricSelectedAIProvider &&
+                                    getProviderLogo(metricSelectedAIProvider) ? (
+                                      <img
+                                        src={getProviderLogo(metricSelectedAIProvider)!}
+                                        alt={getProviderLabel(metricSelectedAIProvider)}
+                                        className="w-5 h-5 object-contain"
+                                      />
+                                    ) : metricSelectedAIProvider ? (
+                                      <Brain className="h-5 w-5 text-primary-600" />
+                                    ) : null}
+                                    <span>
+                                      {metricSelectedAIProvider
+                                        ? getProviderLabel(metricSelectedAIProvider)
+                                        : 'Select an AI Provider'}
+                                    </span>
+                                  </div>
+                                  <ChevronDown
+                                    className={`h-4 w-4 text-gray-400 transition-transform ${showMetricProviderDropdown ? 'transform rotate-180' : ''}`}
+                                  />
+                                </button>
+                                {showMetricProviderDropdown && (
+                                  <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-auto">
+                                    {configuredProviders.map((provider: ModelProvider) => (
+                                      <button
+                                        key={`metric-${provider}`}
+                                        type="button"
+                                        onClick={() => handleMetricProviderSelect(provider)}
+                                        className="w-full px-3 py-2 text-left hover:bg-gray-50 transition-colors flex items-center gap-2"
+                                      >
+                                        {getProviderLogo(provider) ? (
+                                          <img
+                                            src={getProviderLogo(provider)!}
+                                            alt={getProviderLabel(provider)}
+                                            className="w-5 h-5 object-contain"
+                                          />
+                                        ) : (
+                                          <Brain className="h-5 w-5 text-primary-600" />
+                                        )}
+                                        {getProviderLabel(provider)}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-2">
+                                Model *
+                              </label>
+                              {metricGatewayDirectModel ? (
+                                <div
+                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-700 truncate"
+                                  title={metricGatewayDirectModel}
+                                >
+                                  {metricGatewayDirectModel}
+                                </div>
+                              ) : (
+                                <select
+                                  value={metricSelectedModel}
+                                  onChange={(e) => setMetricSelectedModel(e.target.value)}
+                                  disabled={
+                                    !metricSelectedAIProvider ||
+                                    selectableMetricLlmModels.length === 0
+                                  }
+                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent disabled:bg-gray-100 disabled:text-gray-500"
+                                >
+                                  <option value="">
+                                    {!metricSelectedAIProvider
+                                      ? 'Select provider first'
+                                      : selectableMetricLlmModels.length === 0
+                                        ? 'No models found'
+                                        : 'Select model'}
+                                  </option>
+                                  {selectableMetricLlmModels.map((model) => (
+                                    <option key={`metric-model-${model}`} value={model}>
+                                      {model}
+                                    </option>
+                                  ))}
+                                </select>
+                              )}
+                            </div>
+                            {metricSelectedAIProvider && !metricGatewayDirectModel && (
+                              <div className="md:col-span-2">
+                                <LLMAdvancedOptionsPanel
+                                  provider={metricSelectedAIProvider}
+                                  value={metricLlmConfig}
+                                  onChange={setMetricLlmConfig}
+                                />
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
                       {generatedScenarioDrafts.map((draft) => (
                         <div key={draft.id} className="border border-gray-200 rounded-lg p-4 bg-gray-50">
-                          <div className="space-y-3">
-                            <div>
-                              <label className="block text-xs font-medium text-gray-700 mb-1">Name</label>
-                              <input
-                                type="text"
-                                value={draft.name}
-                                onChange={(e) => updateGeneratedDraft(draft.id, { name: e.target.value })}
-                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
-                              />
+                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 lg:gap-6 items-start">
+                            <div className="space-y-3 min-w-0">
+                              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                                Scenario
+                              </p>
+                              <div>
+                                <label className="block text-xs font-medium text-gray-700 mb-1">
+                                  Name
+                                </label>
+                                <input
+                                  type="text"
+                                  value={draft.name}
+                                  onChange={(e) =>
+                                    updateGeneratedDraft(draft.id, { name: e.target.value })
+                                  }
+                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-medium text-gray-700 mb-1">
+                                  Description
+                                </label>
+                                <MarkdownEditor
+                                  value={draft.description}
+                                  onChange={(description) =>
+                                    updateGeneratedDraft(draft.id, { description })
+                                  }
+                                  rows={8}
+                                  defaultMode="preview"
+                                  placeholder="Scenario description (markdown supported)..."
+                                />
+                              </div>
+                              <div className="flex items-center justify-end gap-2 pt-1">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  onClick={() => removeGeneratedDraft(draft.id)}
+                                >
+                                  Remove
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="primary"
+                                  isLoading={savingDraftIds.has(draft.id)}
+                                  onClick={() => {
+                                    void saveGeneratedDraft(draft)
+                                  }}
+                                >
+                                  Save Scenario
+                                </Button>
+                              </div>
                             </div>
-                            <div>
-                              <label className="block text-xs font-medium text-gray-700 mb-1">
-                                Description
-                              </label>
-                              <MarkdownEditor
-                                value={draft.description}
-                                onChange={(description) =>
-                                  updateGeneratedDraft(draft.id, { description })
-                                }
-                                rows={8}
-                                defaultMode="preview"
-                                placeholder="Scenario description (markdown supported)..."
-                              />
-                            </div>
-                            <div className="flex items-center justify-end gap-2">
-                              <Button
-                                type="button"
-                                variant="outline"
-                                onClick={() => removeGeneratedDraft(draft.id)}
-                              >
-                                Remove
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="primary"
-                                isLoading={savingDraftIds.has(draft.id)}
-                                onClick={() => {
-                                  void saveGeneratedDraft(draft)
-                                }}
-                              >
-                                Save Scenario
-                              </Button>
+
+                            <div className="space-y-3 min-w-0 lg:border-l lg:border-gray-200 lg:pl-6">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="text-xs font-semibold text-primary-700 uppercase tracking-wide">
+                                  Metric
+                                </p>
+                                {draft.metricPushed && (
+                                  <span className="text-xs font-medium text-green-700 bg-green-50 border border-green-200 rounded-full px-2 py-0.5">
+                                    In Metrics
+                                  </span>
+                                )}
+                              </div>
+
+                              {!draft.metric ? (
+                                <div className="rounded-lg border border-dashed border-primary-200 bg-white p-4 space-y-3 min-h-[220px]">
+                                  <div>
+                                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                                      Metric type to generate
+                                    </label>
+                                    <select
+                                      value={draft.plannedMetricType}
+                                      disabled={!scenarioMetricsEnabled || draft.metricPushed}
+                                      onChange={(e) =>
+                                        updateGeneratedDraft(draft.id, {
+                                          plannedMetricType: e.target
+                                            .value as PlannedScenarioMetricType,
+                                        })
+                                      }
+                                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white text-sm"
+                                    >
+                                      <option value="auto">Auto (LLM chooses)</option>
+                                      <option value="boolean">Boolean</option>
+                                      <option value="rating">Rating</option>
+                                      <option value="number">Number</option>
+                                      <option value="text">Text</option>
+                                    </select>
+                                  </div>
+                                  <p className="text-xs text-gray-500 leading-relaxed">
+                                    Pick how this scenario should be scored, then click{' '}
+                                    <span className="font-medium">Generate Metrics</span> above. The
+                                    generated rubric will appear here beside the scenario.
+                                  </p>
+                                </div>
+                              ) : (
+                                <div className="rounded-lg border border-primary-200 bg-white p-3 space-y-3 min-h-[220px]">
+                                  <div>
+                                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                                      Metric name
+                                    </label>
+                                    <input
+                                      type="text"
+                                      value={draft.metric.name}
+                                      disabled={draft.metricPushed}
+                                      onChange={(e) =>
+                                        updateGeneratedDraftMetric(draft.id, {
+                                          name: e.target.value,
+                                        })
+                                      }
+                                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white disabled:bg-gray-100"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                                      Metric description (rubric)
+                                    </label>
+                                    <textarea
+                                      value={draft.metric.description}
+                                      disabled={draft.metricPushed}
+                                      onChange={(e) =>
+                                        updateGeneratedDraftMetric(draft.id, {
+                                          description: e.target.value,
+                                        })
+                                      }
+                                      rows={4}
+                                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white disabled:bg-gray-100 text-sm"
+                                    />
+                                  </div>
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <div>
+                                      <label className="block text-xs font-medium text-gray-700 mb-1">
+                                        Type
+                                      </label>
+                                      <select
+                                        value={draft.metric.metric_type}
+                                        disabled={draft.metricPushed}
+                                        onChange={(e) => {
+                                          const metric_type = e.target
+                                            .value as GeneratedScenarioMetricDraft['metric_type']
+                                          updateGeneratedDraftMetric(draft.id, {
+                                            metric_type,
+                                            custom_data_type: customDataTypeForMetricType(metric_type),
+                                            custom_config:
+                                              metric_type === 'text' ? {} : draft.metric?.custom_config,
+                                          })
+                                        }}
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white disabled:bg-gray-100 text-sm"
+                                      >
+                                        <option value="boolean">Boolean</option>
+                                        <option value="rating">Rating</option>
+                                        <option value="number">Number</option>
+                                        <option value="text">Text</option>
+                                      </select>
+                                    </div>
+                                    <div>
+                                      <label className="block text-xs font-medium text-gray-700 mb-1">
+                                        Tags
+                                      </label>
+                                      <input
+                                        type="text"
+                                        value={draft.metric.tags.join(', ')}
+                                        disabled={draft.metricPushed}
+                                        onChange={(e) =>
+                                          updateGeneratedDraftMetric(draft.id, {
+                                            tags: e.target.value
+                                              .split(',')
+                                              .map((t) => t.trim())
+                                              .filter(Boolean),
+                                          })
+                                        }
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white disabled:bg-gray-100 text-sm"
+                                        placeholder="Agent name and auto-generated are always applied"
+                                      />
+                                    </div>
+                                  </div>
+                                  {!draft.metricPushed && scenarioMetricsEnabled && (
+                                    <div className="flex justify-end">
+                                      <Button
+                                        type="button"
+                                        variant="primary"
+                                        isLoading={pushingMetricDraftIds.has(draft.id)}
+                                        disabled={!draft.metric.name.trim()}
+                                        onClick={() => {
+                                          void pushMetricForDraft(draft)
+                                        }}
+                                      >
+                                        Add to Metrics
+                                      </Button>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -1151,6 +1816,11 @@ export default function Scenarios() {
                       placeholder="Describe what this scenario tests... (markdown supported)"
                     />
                   </div>
+                  <ExpectedToolCallsField
+                    agentId={formData.agent_id || null}
+                    value={formData.expected_tool_calls}
+                    onChange={(expected_tool_calls) => setFormData({ ...formData, expected_tool_calls })}
+                  />
                   <div className="flex gap-3 pt-4">
                     <Button
                       type="button"
@@ -1252,6 +1922,22 @@ export default function Scenarios() {
                 variant="outline"
                 onClick={() => {
                   setShowDetailsModal(false)
+                  openScenarioMetricsWorkflow([selectedScenario])
+                }}
+                leftIcon={
+                  !scenarioMetricsEnabled && licenseLoaded ? (
+                    <Lock className="h-4 w-4 text-amber-600" />
+                  ) : (
+                    <BarChart3 className="h-4 w-4" />
+                  )
+                }
+              >
+                Generate metric
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setShowDetailsModal(false)
                   handleEdit(selectedScenario)
                 }}
               >
@@ -1325,6 +2011,11 @@ export default function Scenarios() {
                     placeholder="Describe what this scenario tests... (markdown supported)"
                   />
                 </div>
+                <ExpectedToolCallsField
+                  agentId={formData.agent_id || null}
+                  value={formData.expected_tool_calls}
+                  onChange={(expected_tool_calls) => setFormData({ ...formData, expected_tool_calls })}
+                />
                 <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg space-y-3">
                   <div className="flex items-center gap-2">
                     <Sparkles className="h-4 w-4 text-amber-600" />
@@ -1564,6 +2255,18 @@ export default function Scenarios() {
           </div>
         </div>
       )}
+
+      <ScenarioMetricsFromScenariosModal
+        open={showScenarioMetricsModal}
+        onClose={() => {
+          setShowScenarioMetricsModal(false)
+          setScenarioMetricsModalScenarios([])
+        }}
+        scenarios={scenarioMetricsModalScenarios}
+        agents={availableAgents}
+        aiProviders={availableProviders}
+        defaultAgentId={scenarioMetricsModalDefaultAgentId}
+      />
     </div>
   )
 }

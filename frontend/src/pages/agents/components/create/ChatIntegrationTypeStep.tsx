@@ -20,7 +20,7 @@ const ICONS: Record<ChatIntegrationOptionId, LucideIcon> = {
 }
 
 const WIZARD_LABELS: Record<ChatIntegrationOptionId, string> = {
-  internal_llm: 'LLM',
+  internal_llm: 'Hosted agent',
   provider_chat: WIZARD_EXISTING_PLATFORM_LABEL,
   customer_api: 'HTTP API',
   customer_websocket: 'WebSocket',

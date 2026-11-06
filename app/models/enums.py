@@ -28,6 +28,20 @@ class EvaluatorResultStatus(str, enum.Enum):
     COMPLETED = "completed"
     FAILED = "failed"
 
+class SimulationRunStatus(str, enum.Enum):
+    """Harbor simulation run (job) status."""
+    QUEUED = "queued"
+    PREPARING = "preparing"  # Exporting Harbor tasks
+    RUNNING = "running"  # Harbor job executing trials
+    INGESTING = "ingesting"  # Reading job results / uploading artifacts
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+    @classmethod
+    def terminal(cls) -> frozenset[str]:
+        return frozenset({cls.COMPLETED.value, cls.FAILED.value, cls.CANCELLED.value})
+
 class RoleEnum(str, enum.Enum):
     """User role enumeration for RBAC."""
     READER = "reader"
