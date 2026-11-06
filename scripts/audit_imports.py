@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import importlib.util
 import pathlib
 import sys
 import traceback
@@ -18,6 +19,9 @@ SPLIT_PACKAGES = (
     "app.api.v1.routes.call_import_evaluations",
     "app.api.v1.routes.call_imports",
 )
+# Optional extras that a normal API/worker install does not have. Modules that
+# import one of these at the top level are skipped when the package is absent.
+OPTIONAL_IMPORT_ROOTS = frozenset({"harbor"})
 
 
 def iter_modules() -> list[str]:
@@ -31,14 +35,43 @@ def iter_modules() -> list[str]:
     return names
 
 
-def module_import_failures() -> list[tuple[str, str]]:
+def top_level_import_roots(source: str) -> set[str]:
+    roots: set[str] = set()
+    tree = ast.parse(source)
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                roots.add(alias.name.split(".", 1)[0])
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            roots.add(node.module.split(".", 1)[0])
+    return roots
+
+
+def missing_optional_root(source: str) -> str | None:
+    """Optional import this module needs at import time, when it is not installed."""
+    for root in top_level_import_roots(source):
+        if root in OPTIONAL_IMPORT_ROOTS and importlib.util.find_spec(root) is None:
+            return root
+    return None
+
+
+def module_import_failures() -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     failures: list[tuple[str, str]] = []
+    skipped: list[tuple[str, str]] = []
     for name in iter_modules():
+        path = ROOT.joinpath(*name.split(".")).with_suffix(".py")
+        if not path.is_file():
+            path = ROOT.joinpath(*name.split("."), "__init__.py")
+        source = path.read_text(encoding="utf-8") if path.is_file() else ""
+        optional = missing_optional_root(source) if source else None
+        if optional is not None:
+            skipped.append((name, optional))
+            continue
         try:
             importlib.import_module(name)
         except Exception as exc:  # noqa: BLE001
             failures.append((name, f"{type(exc).__name__}: {exc}"))
-    return failures
+    return failures, skipped
 
 
 def imported_names(path: pathlib.Path) -> list[tuple[str, str, int]]:
@@ -88,11 +121,15 @@ def submodule_shadow_entries() -> list[tuple[str, str]]:
 
 def main() -> int:
     print("== module import failures ==")
-    mod_failures = module_import_failures()
+    mod_failures, skipped = module_import_failures()
     for name, err in mod_failures:
         print(f"  FAIL {name}: {err}")
     if not mod_failures:
         print("  none")
+    if skipped:
+        print("== skipped (optional extra not installed) ==")
+        for name, root in skipped:
+            print(f"  SKIP {name}: {root} is not installed")
 
     print("== split-package re-export failures ==")
     re_failures = reexport_failures()

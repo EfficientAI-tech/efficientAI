@@ -23,9 +23,17 @@ CALL_RE = re.compile(
 TEMPLATE_RE = re.compile(r"`(?P<path>/api/[^`]*)`")
 
 
+# ${API_BASE_URL} or an http(s) origin sitting in front of the path.
+_BASE_PREFIX_RE = re.compile(r"^(?:(?:https?:)?//[^/`'\s]+|\$\{[^}]+\})(?=/)")
+
+
 def normalize(path: str) -> str:
     path = path.split("?")[0]
+    # Drop the origin before path params are collapsed. Otherwise
+    # ${API_BASE_URL}/api/v1/... becomes {}/api/v1/... and fails the match.
+    path = _BASE_PREFIX_RE.sub("", path)
     path = re.sub(r"\$\{[^}]*\}", "{}", path)
+    path = re.sub(r"\{[^}]*\}", "{}", path)
     path = re.sub(r"/+", "/", path)
     return path.rstrip("/") or "/"
 

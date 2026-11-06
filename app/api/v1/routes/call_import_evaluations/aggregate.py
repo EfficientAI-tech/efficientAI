@@ -9,7 +9,7 @@ import json
 import math
 import re
 import statistics
-from typing import Any, Dict, Iterator, List, Literal, Optional, Set, Tuple
+from typing import Any, Dict, Iterator, List, Literal, Optional, Sequence, Set, Tuple
 from uuid import UUID, uuid4
 
 from datetime import date, datetime, timedelta, timezone

@@ -244,6 +244,8 @@ def _execute_judge_gepa_with_context(
     evaluator: Evaluator,
     db: Session,
 ) -> Dict[str, Any]:
+    from app.services.optimization.gepa_service import _ensure_gepa
+
     dev_ids: List[str] = cfg.get("dev_sample_ids", [])
     if not dev_ids:
         raise RuntimeError("Optimisation run has no dev_sample_ids in config")

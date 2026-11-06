@@ -170,6 +170,7 @@ from app.api.v1.routes.call_import_evaluations.discovered import (  # noqa: E402
 )
 from app.api.v1.routes.call_import_evaluations.flow import (  # noqa: E402
     _DISCOVERED_NODE_PREFIX,
+    _FLOW_START_NODE_ID,
 )
 
 def _apply_classification_metric_filters(
@@ -991,115 +992,6 @@ async def get_call_import_evaluation_row(
     finally:
         close_row_sessions(row_db, catalog_db)
 
-
-@router.post(
-    "/{eval_id}/rows/{eval_row_id}/cancel",
-    response_model=CallImportEvaluationRowResponse,
-    status_code=status.HTTP_200_OK,
-    operation_id="cancelCallImportEvaluationRow",
-)
-async def cancel_call_import_evaluation_row(
-    call_import_id: UUID,
-    eval_id: UUID,
-    eval_row_id: UUID,
-    api_key: str = Depends(get_api_key),
-    organization_id: UUID = Depends(get_organization_id),
-    principal: Principal = Depends(get_principal),
-    db: Session = Depends(get_db),
-) -> CallImportEvaluationRowResponse:
-    """Abort an in-flight (or queued) evaluation for a single row.
-
-    Idempotent: calling on a row that's already terminal (``completed``
-    / ``failed``) returns the row unchanged with a 200 so the UI can
-    wire this to a "Stop" button without having to pre-check the
-    state. Updates the parent run's rollup so its counters reflect
-    the cancel immediately.
-    """
-    del api_key
-    _require_import(db, call_import_id, organization_id)
-
-    evaluation = (
-        db.query(CallImportEvaluation)
-        .filter(
-            CallImportEvaluation.id == eval_id,
-            CallImportEvaluation.call_import_id == call_import_id,
-            CallImportEvaluation.organization_id == organization_id,
-        )
-        .first()
-    )
-    if not evaluation:
-        raise HTTPException(
-            status_code=404, detail="Call import evaluation not found"
-        )
-
-    _require_no_evaluation_bulk_operation(eval_id)
-
-    from app.db_sharding.eval_rows import evaluation_row_session
-    from app.db_sharding.sessions import is_sharding_enabled
-
-    if is_sharding_enabled():
-        try:
-            with evaluation_row_session(eval_row_id) as (
-                row_db,
-                _catalog_db,
-                eval_row,
-                source_row,
-                _shard_id,
-            ):
-                if eval_row.evaluation_id != eval_id:
-                    raise HTTPException(
-                        status_code=404,
-                        detail="Evaluation row not found in this run",
-                    )
-                _apply_evaluation_cancel(
-                    [eval_row],
-                    source_rows={source_row.id: source_row},
-                    cascade_diarisation=True,
-                )
-                row_db.commit()
-                _rollup_evaluation_status(evaluation, db)
-                stamp_evaluation_actor(evaluation, principal)
-                db.commit()
-                row_db.refresh(eval_row)
-                return _to_evaluation_row_response(eval_row, source_row, evaluation)
-        except LookupError as exc:
-            raise HTTPException(
-                status_code=404, detail="Evaluation row not found in this run"
-            ) from exc
-
-    eval_row = (
-        db.query(CallImportEvaluationRow)
-        .filter(
-            CallImportEvaluationRow.id == eval_row_id,
-            CallImportEvaluationRow.evaluation_id == eval_id,
-        )
-        .first()
-    )
-    if not eval_row:
-        raise HTTPException(
-            status_code=404, detail="Evaluation row not found in this run"
-        )
-
-    source_row = (
-        db.query(CallImportRow)
-        .filter(CallImportRow.id == eval_row.call_import_row_id)
-        .first()
-    )
-    source_rows = (
-        {source_row.id: source_row} if source_row is not None else None
-    )
-    _apply_evaluation_cancel(
-        [eval_row],
-        source_rows=source_rows,
-        cascade_diarisation=True,
-    )
-    db.flush()
-    _rollup_evaluation_status(evaluation, db)
-    stamp_evaluation_actor(evaluation, principal)
-    db.commit()
-    db.refresh(eval_row)
-
-    return _to_evaluation_row_response(eval_row, source_row, evaluation)
 
 @router.delete(
     "/{eval_id}/rows/{eval_row_id}",
