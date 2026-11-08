@@ -138,6 +138,13 @@ def _platform_beat_schedule() -> dict:
             "task": "sweep_stale_running_evaluations",
             "schedule": 86400.0,
         },
+        # Fair diarisation is only triggered after bulk enqueue + chain;
+        # periodic tick clears stale locks and drains the diarisation queue.
+        "dispatch-fair-diarization-rows": {
+            "task": "dispatch_fair_diarization_rows",
+            "schedule": 30.0,
+            "kwargs": {"max_workspace_turns": 4},
+        },
     }
     if not getattr(settings, "CLICKHOUSE_URL", None):
         schedule["sweep-staging-ingest"] = {
@@ -214,7 +221,8 @@ celery_app.conf.task_routes = {
     "transcribe_call_import_row": {"queue": "diarization"},
     "dispatch_evaluation_rows": {"queue": "evaluations"},
     "dispatch_fair_eval_rows": {"queue": "evaluations"},
-    "dispatch_fair_diarization_rows": {"queue": "diarization"},
+    # Scheduler-only; run on imports next to bulk_diarize (see fair_diarization_dispatch)
+    "dispatch_fair_diarization_rows": {"queue": "imports"},
     "dispatch_fair_import_rows": {"queue": "imports"},
     "generate_evaluation_tldr_insights": {"queue": "evaluations"},
     "generate_evaluation_user_insights": {"queue": "evaluations"},

@@ -12,7 +12,7 @@ export type JobProgressView = {
   indeterminate: boolean
 }
 
-const EVAL_ANALYSIS_BATCH_SIZE = 500
+const EVAL_ANALYSIS_BATCH_SIZE = 250
 
 function formatRowStat(completed: number, total: number): string | null {
   if (total <= 0) return null
@@ -124,7 +124,7 @@ export function getMetricClustersJobProgress(
   const metricName = progress?.current_metric_name
   const metricIdx = progress?.current_metric_index ?? 0
   const totalMetrics = progress?.total_metrics ?? 0
-  // Batch progress alone never moves inside a single 500-row page, so derive
+  // Batch progress alone never moves inside a single checkpoint page, so derive
   // the row-driven fraction from rows when available.
   const rowPct = pctOf(
     completedRows,
@@ -171,8 +171,12 @@ export function getMetricClustersJobProgress(
   if (totalBatches > 0) {
     const nextBatch = Math.min(completedBatches + 1, totalBatches)
     const done = totalRows > 0 ? completedRows / totalRows : rowPct / 100
+    const rowsExtractLabel =
+      metricName && totalMetrics > 0
+        ? `Extracting clusters for ${metricName} (${Math.max(metricIdx, 1)}/${totalMetrics})…`
+        : `Clustering flagged calls (batch ${nextBatch} of ${totalBatches})…`
     return {
-      phaseLabel: `Clustering flagged calls (batch ${nextBatch} of ${totalBatches})…`,
+      phaseLabel: rowsExtractLabel,
       statsLine: formatRowStat(completedRows, totalRows),
       metaLine:
         progress?.total_selected_calls != null

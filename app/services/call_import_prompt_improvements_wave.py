@@ -17,11 +17,12 @@ from app.models.schemas import (
     EvaluationPromptImprovementsState,
     PromptImprovementSuggestion,
 )
-from app.services.agent_flowchart import _extract_json_object
 from app.services.call_import_prompt_improvements import (
+    PROMPT_SUGGESTION_MAX_TOKENS,
     _IMPROVEMENTS_SYSTEM_PROMPT,
     _build_cluster_context,
     _extract_flow_nodes,
+    _generate_prompt_improvement_json,
     _parse_suggestions,
     prompt_improvements_state_to_db,
 )
@@ -36,12 +37,9 @@ from app.services.evaluation_analysis_checkpoints import (
     upsert_analysis_batch,
 )
 from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
-from app.services.ai.llm_service import llm_service
 
 CancelCheck = Callable[[], bool]
 ProgressCallback = Callable[[Dict[str, Any]], None]
-
-PROMPT_SUGGESTION_MAX_TOKENS = 6000
 
 
 def _suggestions_from_batches(
@@ -231,16 +229,13 @@ def process_prompt_improvements_wave_step(
         {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
     ]
 
-    result = llm_service.generate_response(
+    parsed = _generate_prompt_improvement_json(
         messages=messages,
         llm_provider=provider_enum,
         llm_model=model_str,
         organization_id=organization_id,
         db=db,
-        temperature=0.3,
-        max_tokens=PROMPT_SUGGESTION_MAX_TOKENS,
     )
-    parsed = _extract_json_object(result["text"])
     overview, suggestions = _parse_suggestions(
         parsed,
         cluster_context,

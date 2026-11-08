@@ -1014,6 +1014,26 @@ def load_call_import_rows_for_delete(
     )
 
 
+def load_call_import_rows_for_cancel(
+    catalog_db: Session,
+    call_import_id: UUID,
+    row_ids: List[UUID],
+) -> List[CallImportRow]:
+    """Rows targeted for bulk stop-diarisation (shard-aware when enabled)."""
+    columns = (
+        CallImportRow.id,
+        CallImportRow.row_index,
+        CallImportRow.diarised_transcript_status,
+        CallImportRow.celery_task_id,
+    )
+    return _load_call_import_rows_scatter(
+        catalog_db,
+        call_import_id,
+        columns=columns,
+        requested_row_ids=row_ids,
+    )
+
+
 def _legacy_catalog_rows(
     catalog_db: Session,
     call_import_id: UUID,
@@ -1823,7 +1843,7 @@ def load_evaluation_row_pairs(
 DEFAULT_EVAL_ROW_PAIR_SAMPLE = 1500
 INSIGHTS_TLDR_ROW_SAMPLE = 1000
 USER_INSIGHTS_ROW_INPUT_CAP = 3000
-EVALUATION_ANALYSIS_BATCH_SIZE = 500
+EVALUATION_ANALYSIS_BATCH_SIZE = 250
 
 
 class EvaluationRowPageCursor(NamedTuple):

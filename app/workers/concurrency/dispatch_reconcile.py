@@ -175,3 +175,78 @@ def reconcile_orphaned_eval_dispatch_locks(
             if owns_session:
                 shard_db.close()
     return total
+
+
+def _reconcile_diarization_rows_on_session(db: Session) -> int:
+    """Clear stale diarisation locks and repair orphan ``running`` rows.
+
+    Fair dispatch only enqueues rows that are ``pending`` with no
+    ``celery_task_id``. If we clear a finished task id but leave
+    ``diarised_transcript_status='running'`` (worker exited without a terminal
+    write), the row would never match the dispatcher — so we flip those back
+    to ``pending``.
+
+    Rows that are ``running`` with ``celery_task_id IS NULL`` are similarly
+    stuck (nothing owns them); reset to ``pending`` so dispatch can retry.
+    """
+    fixed = 0
+    rows = (
+        db.query(CallImportRow)
+        .filter(
+            CallImportRow.celery_task_id.isnot(None),
+            CallImportRow.diarised_transcript_status.in_(("pending", "running")),
+        )
+        .limit(_RECONCILE_BATCH)
+        .all()
+    )
+    for row in rows:
+        task_id = (row.celery_task_id or "").strip()
+        if not task_id or not _celery_task_is_finished(task_id):
+            continue
+        row.celery_task_id = None
+        if (row.diarised_transcript_status or "").lower() == "running":
+            row.diarised_transcript_status = "pending"
+        fixed += 1
+
+    orphans = (
+        db.query(CallImportRow)
+        .filter(
+            CallImportRow.diarised_transcript_status == "running",
+            CallImportRow.celery_task_id.is_(None),
+        )
+        .limit(_RECONCILE_BATCH)
+        .all()
+    )
+    for row in orphans:
+        row.diarised_transcript_status = "pending"
+        fixed += 1
+
+    if fixed:
+        db.commit()
+    return fixed
+
+
+def reconcile_orphaned_diarization_dispatch_locks(catalog_db: Session) -> int:
+    """Clear stale diarisation locks (worker restart, duplicate delivery).
+
+    Fair diarisation dispatch only picks rows with ``diarised_transcript_status``
+    pending and ``celery_task_id IS NULL``. Stale task ids and orphan
+    ``running`` states are repaired here so dispatch can make progress.
+    """
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    if not is_sharding_enabled():
+        return _reconcile_diarization_rows_on_session(catalog_db)
+
+    from app.db_sharding.pool_manager import db_pool_manager
+
+    router = db_pool_manager.router
+    assert router is not None
+    total = 0
+    for shard_id in router.shard_ids:
+        shard_db = db_pool_manager.shard_session_factory(shard_id)()
+        try:
+            total += _reconcile_diarization_rows_on_session(shard_db)
+        finally:
+            shard_db.close()
+    return total

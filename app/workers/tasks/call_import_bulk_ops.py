@@ -19,6 +19,9 @@ from app.services.call_imports.bulk_ops import (
     execute_evaluation_retry,
     materialize_and_enqueue_evaluation,
 )
+from app.workers.concurrency.fair_diarization_dispatch import (
+    drain_after_diarization_enqueue,
+)
 from app.workers.config import celery_app
 
 
@@ -57,11 +60,18 @@ def bulk_diarize_call_import_task(
             payload,
             requested_row_ids=parsed_row_ids,
         )
-        return {
+        out = {
             "queued": result.queued,
             "skipped_rows": result.skipped_rows,
             "skipped_reason_counts": result.skipped_reason_counts,
         }
+        dispatch_summary = drain_after_diarization_enqueue(
+            result.queued,
+            log_context=f"bulk_diarize_call_import import={call_import_id}",
+        )
+        if dispatch_summary is not None:
+            out["post_enqueue_dispatch"] = dispatch_summary
+        return out
     except ValueError as exc:
         logger.warning(
             "bulk_diarize_call_import_task validation failed for {}: {}",

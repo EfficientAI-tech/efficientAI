@@ -313,12 +313,21 @@ def _diarisation_update_if_owned(
     (tests, repair scripts) carry none, so they fall back to writing the
     loaded ``row`` object directly — the pre-ownership behaviour — instead of
     reporting ``superseded`` for work nobody else could own.
+
+    Terminal statuses (``completed`` / ``failed``) always clear
+    ``celery_task_id`` so fair dispatch can enqueue future work and rows
+    are never left ``pending`` with a stale lock after a successful run.
     """
     from sqlalchemy import update
 
     from app.models.database import CallImportRow
 
     cleaned = _owner_task_id(task_id)
+    values_to_apply = dict(values)
+    status_val = values_to_apply.get("diarised_transcript_status")
+    if isinstance(status_val, str) and status_val.lower() in ("completed", "failed"):
+        values_to_apply["celery_task_id"] = None
+
     if not cleaned:
         if row is None:
             return False
@@ -326,7 +335,7 @@ def _diarisation_update_if_owned(
         # ``.run()`` call (test, repair script) where the caller already holds
         # the session and row, so write through instead of reporting
         # ``superseded``.
-        for column, value in values.items():
+        for column, value in values_to_apply.items():
             setattr(row, column, value)
         row_db.commit()
         return True
@@ -337,7 +346,9 @@ def _diarisation_update_if_owned(
     ]
     if require_pending:
         filters.append(CallImportRow.diarised_transcript_status == "pending")
-    result = row_db.execute(update(CallImportRow).where(*filters).values(**values))
+    result = row_db.execute(
+        update(CallImportRow).where(*filters).values(**values_to_apply)
+    )
     row_db.commit()
     return result.rowcount == 1
 
@@ -418,6 +429,12 @@ def _apply_eval_chain_transcribe_cleanup(run_eval_row_id: str) -> None:
             else:
                 row_db.commit()
         else:
+            # Eval-chain transcribe stores the Celery id on the source row for
+            # ownership; clear it once this worker finishes so bulk/fair
+            # diarisation dispatch is not blocked (dispatch only considers rows
+            # with ``celery_task_id IS NULL``).
+            if (source_row.diarised_transcript_status or "").lower() == "completed":
+                source_row.celery_task_id = None
             row_db.commit()
     finally:
         close_row_sessions(row_db, catalog_db)

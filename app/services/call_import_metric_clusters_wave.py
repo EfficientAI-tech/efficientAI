@@ -300,7 +300,7 @@ def process_metric_clusters_wave_step(
         metric_extractions: Dict[str, List[Dict[str, Any]]] = {}
         flagged_samples: List[Dict[str, Any]] = []
 
-        # Resume inside a page. A 500-row page can need dozens of extraction
+        # Resume inside a page. A full checkpoint page can need dozens of extraction
         # calls; a task that hits the 25 minute soft limit must not re-pay for
         # sub-batches that already checkpointed, otherwise a large page can
         # never finish.
@@ -336,10 +336,17 @@ def process_metric_clusters_wave_step(
                 ]
             break
 
-        for metric in quality_metrics:
-            policy = failure_policies.get(str(metric.id))
-            if policy is None or not policy_has_failure_criteria(policy, metric):
-                continue
+        metrics_for_page_progress = [
+            m
+            for m in quality_metrics
+            if failure_policies.get(str(m.id)) is not None
+            and policy_has_failure_criteria(failure_policies[str(m.id)], m)
+        ]
+        total_metrics_in_page = len(metrics_for_page_progress)
+        cumulative_prior_flagged = 0
+
+        for metric_idx_one_based, metric in enumerate(metrics_for_page_progress, start=1):
+            policy = failure_policies[str(metric.id)]
             mid = str(metric.id)
             flagged_payloads: List[Dict[str, Any]] = []
             for eval_row, source_row in pairs:
@@ -357,6 +364,7 @@ def process_metric_clusters_wave_step(
                         flagged_samples.append(payload)
 
             sub_batches = _sub_batch_payloads(flagged_payloads)
+            rows_done_this_metric = 0
             for sub_idx, sub_batch in enumerate(sub_batches):
                 sub_key = f"{mid}:{sub_idx}"
                 if sub_key in done_sub:
@@ -395,6 +403,22 @@ def process_metric_clusters_wave_step(
                     reservoir.extend(extracted)
                     metric_extractions[mid] = reservoir[:40]
                 done_sub.add(sub_key)
+                rows_done_this_metric += len(sub_batch)
+                completed_rows_partial = rows_before_this_batch + (
+                    cumulative_prior_flagged + rows_done_this_metric
+                )
+                header_progress_rows = progress_header(
+                    completed_rows=completed_rows_partial,
+                    total_rows=total_rows,
+                    completed_batches=completed_batches,
+                    total_batches=total_batches,
+                    completed_llm_calls=llm_calls_used,
+                    total_llm_calls=total_llm_calls,
+                    phase="rows",
+                )
+                header_progress_rows["current_metric_name"] = metric.name
+                header_progress_rows["current_metric_index"] = metric_idx_one_based
+                header_progress_rows["total_metrics"] = total_metrics_in_page
                 upsert_analysis_batch(
                     db,
                     evaluation_id=evaluation.id,
@@ -421,7 +445,7 @@ def process_metric_clusters_wave_step(
                             else {}
                         ),
                         "status": "running",
-                        "progress": {**progress, "phase": "rows"},
+                        "progress": header_progress_rows,
                         "llm_calls_used": llm_calls_used,
                     }
                 )
@@ -431,6 +455,10 @@ def process_metric_clusters_wave_step(
                 ):
                     return "idle", None
                 db.commit()
+                if on_progress:
+                    on_progress(header_progress_rows)
+
+            cumulative_prior_flagged += len(flagged_payloads)
 
         page_cursor = evaluation_row_page_cursor_from_pair(pairs[-1])
         upsert_analysis_batch(

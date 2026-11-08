@@ -235,6 +235,17 @@ async def transcribe_call_import_row(
     stamp_call_import_actor(call_import, principal)
     db.commit()
 
+    from app.workers.concurrency.fair_diarization_dispatch import (
+        drain_after_diarization_enqueue,
+    )
+
+    drain_after_diarization_enqueue(
+        result.queued,
+        log_context=(
+            f"transcribe_call_import_row import={call_import_id} row={row_id}"
+        ),
+    )
+
     return CallImportTranscribeResponse(
         queued=result.queued,
         skipped_rows=result.skipped_rows,
@@ -370,10 +381,6 @@ async def cancel_call_import_diarisation(
             detail="Call import not found",
         )
 
-    base_query = db.query(CallImportRow).filter(
-        CallImportRow.call_import_id == call_import_id
-    )
-
     requested_ids = (
         payload.row_ids if payload and payload.row_ids is not None else None
     )
@@ -384,55 +391,36 @@ async def cancel_call_import_diarisation(
             detail="Pass either row_ids or row_filter, not both.",
         )
 
-    cancelled = 0
-    skipped = 0
-    skipped_missing = 0
+    from app.services.call_imports.bulk_ops import execute_bulk_diarisation_cancel
 
     if row_filter is not None:
         from app.services.call_imports.row_selection import normalize_row_selection_filter
-        from app.db_sharding.scatter_gather import fetch_call_import_rows_filtered_page
 
         search_term, diarised_status = normalize_row_selection_filter(row_filter)
-        offset = 0
-        page_size = 500
-        while True:
-            page = fetch_call_import_rows_filtered_page(
-                db,
-                call_import_id,
-                offset=offset,
-                limit=page_size,
-                search_term=search_term,
-                diarised_status_filter=diarised_status,
-            )
-            if not page:
-                break
-            page_cancelled, page_skipped = _apply_diarisation_cancel(page)
-            cancelled += page_cancelled
-            skipped += page_skipped
-            if len(page) < page_size:
-                break
-            offset += page_size
+        cancelled, skipped = execute_bulk_diarisation_cancel(
+            db,
+            call_import_id,
+            search_term=search_term,
+            diarised_status_filter=diarised_status,
+        )
     elif requested_ids is not None:
-        if not requested_ids:
-            return CallImportCancelDiarisationResponse(cancelled=0, skipped=0)
-        rows = base_query.filter(CallImportRow.id.in_(requested_ids)).all()
-        found_ids = {r.id for r in rows}
-        missing = [rid for rid in requested_ids if rid not in found_ids]
-        skipped_missing = len(missing)
-        cancelled, skipped = _apply_diarisation_cancel(rows)
+        cancelled, skipped = execute_bulk_diarisation_cancel(
+            db,
+            call_import_id,
+            row_ids=list(requested_ids),
+        )
     else:
-        rows = base_query.filter(
-            CallImportRow.diarised_transcript_status.in_(
-                list(_cancellable_diarisation_states())
-            )
-        ).all()
-        cancelled, skipped = _apply_diarisation_cancel(rows)
+        cancelled, skipped = execute_bulk_diarisation_cancel(
+            db,
+            call_import_id,
+            cancel_all_inflight=True,
+        )
 
     stamp_call_import_actor(call_import, principal)
     db.commit()
     return CallImportCancelDiarisationResponse(
         cancelled=cancelled,
-        skipped=skipped + skipped_missing,
+        skipped=skipped,
     )
 
 

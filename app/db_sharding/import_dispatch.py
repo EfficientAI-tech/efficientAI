@@ -143,6 +143,7 @@ def _diarization_dispatch_row_options():
     return load_only(
         CallImportRow.id,
         CallImportRow.call_import_id,
+        CallImportRow.row_index,
         CallImportRow.diarised_transcript_status,
         CallImportRow.celery_task_id,
     )

@@ -32,6 +32,10 @@ from app.models.schemas import (
 )
 from app.services.ai.llm_service import llm_service
 from app.services.evaluation_analysis_checkpoints import job_heartbeat_is_stale
+from app.services.import_eval_llm_output_budgets import (
+    IMPORT_EVAL_LLM_OUTPUT_FIRST,
+    IMPORT_EVAL_LLM_OUTPUT_RETRY,
+)
 
 MAX_LLM_CALLS_DEFAULT = 200
 MAX_LLM_CALLS_MIN = 20
@@ -39,8 +43,8 @@ MAX_LLM_CALLS_MAX = 500
 SYNTHESIS_CALLS = 1
 ROW_TRANSCRIPT_CHAR_CAP = 3000
 RATIONALE_CHAR_CAP = 600
-EXTRACTION_MAX_TOKENS = 1800
-SYNTHESIS_MAX_TOKENS = 2400
+EXTRACTION_MAX_TOKENS = IMPORT_EVAL_LLM_OUTPUT_FIRST
+SYNTHESIS_MAX_TOKENS = IMPORT_EVAL_LLM_OUTPUT_FIRST
 
 ProgressCallback = Callable[[int, int], None]
 
@@ -227,21 +231,40 @@ def _call_llm(
     max_tokens: int,
     usage_ctx: Optional[LLMUsageContext] = None,
 ) -> str:
+    """Two-step output budget: ``max_tokens`` then double on truncation."""
     from app.services.usage.context import get_usage_context, llm_usage_context
 
     effective_ctx = usage_ctx or get_usage_context()
+    retry_tokens = min(IMPORT_EVAL_LLM_OUTPUT_RETRY, max_tokens * 2)
+    budgets = [max_tokens] if retry_tokens <= max_tokens else [max_tokens, retry_tokens]
 
     def _run() -> str:
-        result = llm_service.generate_response(
-            messages=messages,
-            llm_provider=provider,
-            llm_model=model,
-            organization_id=organization_id,
-            db=db,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        return str(result.get("text") or "")
+        last_text = ""
+        for attempt_idx, token_budget in enumerate(budgets):
+            result = llm_service.generate_response(
+                messages=messages,
+                llm_provider=provider,
+                llm_model=model,
+                organization_id=organization_id,
+                db=db,
+                temperature=temperature,
+                max_tokens=token_budget,
+            )
+            last_text = str(result.get("text") or "")
+            if not result.get("truncated"):
+                return last_text
+            if attempt_idx < len(budgets) - 1:
+                logger.warning(
+                    "User insights LLM output truncated at max_tokens={} (model={}); retrying at {}.",
+                    token_budget,
+                    model,
+                    budgets[attempt_idx + 1],
+                )
+                continue
+            raise RuntimeError(
+                f"User insights LLM still truncated after max_tokens={token_budget} (model={model})."
+            )
+        return last_text
 
     if effective_ctx is not None:
         with llm_usage_context(effective_ctx):

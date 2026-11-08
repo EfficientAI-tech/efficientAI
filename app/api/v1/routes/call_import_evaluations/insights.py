@@ -148,6 +148,10 @@ from app.services.call_import_user_insights import (
     total_llm_calls_for_rows,
     user_insights_state_from_raw,
 )
+from app.services.import_eval_llm_output_budgets import (
+    IMPORT_EVAL_LLM_OUTPUT_FIRST,
+    IMPORT_EVAL_LLM_OUTPUT_RETRY,
+)
 
 from app.api.v1.routes.call_import_evaluations._router import router
 
@@ -545,39 +549,61 @@ def _generate_and_persist_tldr_summary(
                 call_import_id=evaluation.call_import_id,
             )
         ):
-            llm_result = llm_service.generate_response(
-                messages=messages,
-                llm_provider=provider_enum,
-                llm_model=model_str,
-                organization_id=organization_id,
-                db=db,
-                temperature=0.4,
-                max_tokens=4096,
-            )
-            if llm_result.get("truncated"):
+            budgets = [
+                IMPORT_EVAL_LLM_OUTPUT_FIRST,
+                IMPORT_EVAL_LLM_OUTPUT_RETRY,
+            ]
+            summary: Optional[EvaluationTldrSummary] = None
+            for budget_idx, max_tok in enumerate(budgets):
+                temperature = 0.4 if budget_idx == 0 else 0.2
                 llm_result = llm_service.generate_response(
                     messages=messages,
                     llm_provider=provider_enum,
                     llm_model=model_str,
                     organization_id=organization_id,
                     db=db,
-                    temperature=0.2,
-                    max_tokens=8192,
+                    temperature=temperature,
+                    max_tokens=max_tok,
                 )
+                if llm_result.get("truncated"):
+                    logger.warning(
+                        "[CallImportInsights] TLDR truncated at max_tokens={} (model={})",
+                        max_tok,
+                        model_str,
+                    )
+                    if budget_idx >= len(budgets) - 1:
+                        raise HTTPException(
+                            status_code=502,
+                            detail=(
+                                "Insights response was cut off before it finished. Try again."
+                            ),
+                        )
+                    continue
+                try:
+                    summary = _parse_insights_response(llm_result.get("text", ""))
+                    break
+                except HTTPException as parse_exc:
+                    logger.warning(
+                        "[CallImportInsights] TLDR parse failed at max_tokens={} (model={}): {}",
+                        max_tok,
+                        model_str,
+                        parse_exc.detail,
+                    )
+                    if budget_idx >= len(budgets) - 1:
+                        raise parse_exc
     except Exception as e:
         logger.error(f"[CallImportInsights] LLM call failed: {e}")
         raise HTTPException(
             status_code=502, detail=f"LLM call failed: {e}"
         ) from e
 
-    if llm_result.get("truncated"):
+    if summary is None:
         raise HTTPException(
             status_code=502,
             detail="Insights response was cut off before it finished. Try again.",
         )
 
     total = int(evaluation.total_rows or 0)
-    summary = _parse_insights_response(llm_result.get("text", ""))
     ui_completed = min(int(evaluation.completed_rows or 0), total) if total else int(
         evaluation.completed_rows or 0
     )

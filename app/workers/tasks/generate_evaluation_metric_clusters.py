@@ -310,7 +310,7 @@ def generate_evaluation_metric_clusters_task(
                 flag_modified(evaluation, "metric_clusters")
                 db.commit()
     except SoftTimeLimitExceeded:
-        # A single 500-row page can outlast the 25 minute soft limit. The
+        # A single checkpoint page can outlast the 25 minute soft limit. The
         # extraction sub-batches are already checkpointed, so hand the next
         # step to a fresh task instead of failing the whole job.
         logger.warning(

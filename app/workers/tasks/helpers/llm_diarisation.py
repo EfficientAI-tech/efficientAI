@@ -57,6 +57,10 @@ from sqlalchemy.orm import Session
 
 from app.models.enums import ModelProvider
 from app.services.ai.llm_service import llm_service
+from app.services.import_eval_llm_output_budgets import (
+    DIARISER_COMPACT_OUTPUT_FIRST,
+    DIARISER_COMPACT_OUTPUT_RETRY,
+)
 
 from .json_utils import repair_truncated_json
 
@@ -227,6 +231,20 @@ _MODEL_OUTPUT_TOKEN_CEILINGS: tuple[tuple[str, int], ...] = (
     ("gemini-1.5-flash", 65_536),
 )
 
+# Gemini 3.x and GLM use a smaller two-step output budget (8k then 16k).
+_GEMINI_3_DIARISER_RE = re.compile(
+    r"(?:^|[/-])gemini-3(?:\.\d+)?(?:[-.]|$)", re.IGNORECASE
+)
+
+
+def _diariser_uses_compact_output_budget(llm_model: str) -> bool:
+    name = (llm_model or "").strip().lower()
+    if _GEMINI_3_DIARISER_RE.search(name):
+        return True
+    if "glm" in name:
+        return True
+    return False
+
 
 def _diarisation_output_token_ceiling(llm_model: str) -> int:
     """Provider/model-specific max ``max_tokens`` for diariser completions."""
@@ -284,10 +302,18 @@ def _generate_diarisation_response(
         llm_model=llm_model,
         emit_native_text=emit_native_text,
     )
-    retry_budget = min(ceiling, base_budget * 2)
-    budgets = [base_budget]
-    if allow_budget_retry and retry_budget > base_budget:
-        budgets.append(retry_budget)
+    if _diariser_uses_compact_output_budget(llm_model):
+        budgets = [DIARISER_COMPACT_OUTPUT_FIRST]
+        if (
+            allow_budget_retry
+            and DIARISER_COMPACT_OUTPUT_RETRY > DIARISER_COMPACT_OUTPUT_FIRST
+        ):
+            budgets.append(DIARISER_COMPACT_OUTPUT_RETRY)
+    else:
+        retry_budget = min(ceiling, base_budget * 2)
+        budgets = [base_budget]
+        if allow_budget_retry and retry_budget > base_budget:
+            budgets.append(retry_budget)
 
     response: Dict[str, Any] = {}
     for attempt_idx, max_tokens in enumerate(budgets):

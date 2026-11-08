@@ -59,6 +59,10 @@ from app.services.call_import_user_insights import (
 from app.services.reporting.call_import_evaluation_pdf_report import (
     call_import_evaluation_pdf_report_service,
 )
+from app.services.import_eval_llm_output_budgets import (
+    IMPORT_EVAL_LLM_OUTPUT_FIRST,
+    IMPORT_EVAL_LLM_OUTPUT_RETRY,
+)
 
 MAX_LLM_CALLS_DEFAULT = 200
 DISCOVERY_CALLS = 1
@@ -67,10 +71,10 @@ METRIC_CLUSTERS_CANCELLED_BY_USER_ERROR = (
 )
 ROW_TRANSCRIPT_CHAR_CAP = 3000
 RATIONALE_CHAR_CAP = 600
-EXTRACTION_MAX_TOKENS = 8000
-CLUSTER_SYNTHESIS_MAX_TOKENS = 8000
-DISCOVERY_MAX_TOKENS = 6000
-CLUSTER_TOKEN_CEILING = 16000
+EXTRACTION_MAX_TOKENS = IMPORT_EVAL_LLM_OUTPUT_FIRST
+CLUSTER_SYNTHESIS_MAX_TOKENS = IMPORT_EVAL_LLM_OUTPUT_FIRST
+DISCOVERY_MAX_TOKENS = IMPORT_EVAL_LLM_OUTPUT_FIRST
+CLUSTER_TOKEN_CEILING = IMPORT_EVAL_LLM_OUTPUT_RETRY
 CLUSTER_CALL_TIMEOUT_SECONDS = 180
 # GLM-5.3 rejects reasoning_effort="none". A small thinking budget leaves
 # the rest of max_tokens for the JSON answer.
@@ -450,11 +454,10 @@ def _cluster_llm_attempts(model: str, max_tokens: int) -> List[Dict[str, Any]]:
             min(2048, max(CLUSTER_THINKING_BUDGET_TOKENS, max_tokens // 4)),
         )
         attempts: List[Dict[str, Any]] = []
-        for idx, thinking_budget in enumerate(thinking_budgets):
-            token_budget = min(max_tokens, 4096) if idx == 0 else max_tokens
+        for thinking_budget in thinking_budgets:
             attempts.append(
                 {
-                    "max_tokens": token_budget,
+                    "max_tokens": max_tokens,
                     "llm_config": {"timeout": timeout},
                     "completion_extra": {
                         "thinking": {
@@ -465,7 +468,7 @@ def _cluster_llm_attempts(model: str, max_tokens: int) -> List[Dict[str, Any]]:
                 }
             )
         return attempts
-    retry_budget = min(CLUSTER_TOKEN_CEILING, max(max_tokens * 2, 8000))
+    retry_budget = min(CLUSTER_TOKEN_CEILING, max_tokens * 2)
     budgets = [max_tokens] if retry_budget <= max_tokens else [max_tokens, retry_budget]
     return [
         {"max_tokens": budget, "llm_config": {"timeout": timeout}}

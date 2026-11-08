@@ -72,9 +72,10 @@ def test_progress_header_clamps_completed_batches():
 
 def test_rows_completed_for_batches_uses_page_size_and_caps():
     assert rows_completed_for_batches(0, 277) == 0
-    assert rows_completed_for_batches(1, 277) == 277
-    assert rows_completed_for_batches(1, 1200) == 500
-    assert rows_completed_for_batches(3, 1200) == 1200
+    assert rows_completed_for_batches(1, 277) == 250
+    assert rows_completed_for_batches(2, 277) == 277
+    assert rows_completed_for_batches(1, 1200) == 250
+    assert rows_completed_for_batches(5, 1200) == 1200
     assert rows_completed_for_batches(9, 1200) == 1200
 
 
@@ -105,7 +106,7 @@ def test_completed_rows_from_batches_ignores_duplicate_batch_indexes():
             job_run_id=run_id,
             batch_index=0,
             status="completed",
-            payload={"rows_processed": 500},
+            payload={"rows_processed": 250},
         ),
         EvaluationAnalysisBatch(
             evaluation_id=uuid4(),
@@ -113,7 +114,7 @@ def test_completed_rows_from_batches_ignores_duplicate_batch_indexes():
             job_run_id=run_id,
             batch_index=0,
             status="completed",
-            payload={"rows_processed": 500},
+            payload={"rows_processed": 250},
         ),
         EvaluationAnalysisBatch(
             evaluation_id=uuid4(),
@@ -124,15 +125,15 @@ def test_completed_rows_from_batches_ignores_duplicate_batch_indexes():
             payload={"rows_processed": 77},
         ),
     ]
-    assert completed_rows_from_batches(batches) == 577
+    assert completed_rows_from_batches(batches) == 327
 
 
 def test_user_insights_llm_estimate_matches_extraction_plan():
-    # 277 rows fit in one 500-row checkpoint page.
+    # 277 rows span two 250-row checkpoint pages (250 + 27).
     assert estimate_user_insights_total_llm_calls(277) == 7  # 6 passes + synthesis
     assert estimate_user_insights_total_llm_calls(0) == 0
-    # 1200 rows span three pages of 500/500/200.
-    assert estimate_user_insights_total_llm_calls(1200) == 25
+    # 1200 rows span five pages of 250/250/250/250/200.
+    assert estimate_user_insights_total_llm_calls(1200) == 26
 
 
 def test_reconcile_header_repairs_legacy_budget_and_overcount():
@@ -160,8 +161,8 @@ def test_reconcile_header_repairs_legacy_budget_and_overcount():
 
     progress = reconciled["progress"]
     assert progress["total_rows"] == 277
-    assert progress["total_batches"] == 1
-    assert progress["completed_batches"] == 1
+    assert progress["total_batches"] == 2
+    assert progress["completed_batches"] == 2
     assert progress["completed_rows"] <= 277
     assert progress["total_llm_calls"] == 7
     # Extraction passes must never move backwards after a resume.
@@ -180,15 +181,15 @@ def test_resume_header_keeps_checkpoints_and_swaps_model():
         "provider": "openrouter",
         "model": "google/gemini-3.5-flash",
         "transcript_source": "diarised",
-        "cursor": {"row_index": 499, "evaluation_row_id": str(uuid4())},
+        "cursor": {"row_index": 249, "evaluation_row_id": str(uuid4())},
         "llm_calls_used": 10,
         "progress": {
-            "completed_rows": 500,
+            "completed_rows": 250,
             "total_rows": 1200,
             "completed_batches": 1,
-            "total_batches": 3,
+            "total_batches": 5,
             "completed_llm_calls": 10,
-            "total_llm_calls": 25,
+            "total_llm_calls": 26,
             "phase": "rows",
         },
     }
@@ -212,9 +213,9 @@ def test_resume_header_keeps_checkpoints_and_swaps_model():
     assert resumed["model"] == "gpt-5-nano"
     assert resumed["llm_calls_used"] == 10
     assert resumed["progress"]["completed_batches"] == 1
-    assert resumed["progress"]["completed_rows"] == 500
-    assert resumed["progress"]["total_batches"] == 3
-    assert resumed["progress"]["total_llm_calls"] == 25
+    assert resumed["progress"]["completed_rows"] == 250
+    assert resumed["progress"]["total_batches"] == 5
+    assert resumed["progress"]["total_llm_calls"] == 26
 
 
 def test_unclaimed_task_does_not_adopt_a_replacement_run():

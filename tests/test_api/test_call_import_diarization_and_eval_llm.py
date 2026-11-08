@@ -1520,3 +1520,41 @@ def test_diariser_retries_when_first_response_truncated(monkeypatch):
         budgets[0] * 2,
     )
     assert turns[0]["text"] == "Done"
+
+
+def test_diariser_gemini3_uses_compact_budget_then_doubles(monkeypatch):
+    from app.services.import_eval_llm_output_budgets import (
+        DIARISER_COMPACT_OUTPUT_FIRST,
+        DIARISER_COMPACT_OUTPUT_RETRY,
+    )
+    from app.workers.tasks.helpers import llm_diarisation
+
+    budgets: list[int] = []
+
+    def _fake_generate_response(**kwargs):
+        budgets.append(kwargs["task_defaults"]["max_tokens"])
+        if len(budgets) == 1:
+            return {
+                "text": '{"turns": [{"speaker": "agent", "text": "partial',
+                "truncated": True,
+            }
+        return {
+            "text": '{"turns": [{"speaker": "agent", "text": "Done"}]}',
+            "truncated": False,
+        }
+
+    monkeypatch.setattr(
+        llm_diarisation.llm_service,
+        "generate_response",
+        _fake_generate_response,
+    )
+
+    llm_diarisation.diarize_transcript_with_llm(
+        "word " * 500,
+        llm_provider="openai",
+        llm_model="openrouter/google/gemini-3.5-flash",
+        organization_id=uuid4(),
+        db=SimpleNamespace(),
+    )
+
+    assert budgets == [DIARISER_COMPACT_OUTPUT_FIRST, DIARISER_COMPACT_OUTPUT_RETRY]

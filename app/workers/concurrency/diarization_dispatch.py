@@ -153,6 +153,36 @@ def pop_row_diarization_params(row_id: UUID | str) -> Optional[DiarizationRowPar
     return params
 
 
+def _persist_diarization_row_fields(
+    catalog_db: Session,
+    call_import: CallImport,
+    row: CallImportRow,
+    patch: dict,
+) -> None:
+    """Write diarisation dispatch fields on the shard that owns the row."""
+    from app.db_sharding.row_ops import update_call_import_rows_on_shards
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    if not is_sharding_enabled():
+        for key, value in patch.items():
+            setattr(row, key, value)
+        catalog_db.commit()
+        return
+
+    row_index = getattr(row, "row_index", None)
+    if row_index is None:
+        raise ValueError(
+            f"row_index required for sharded diarisation dispatch on row {row.id}"
+        )
+    update_call_import_rows_on_shards(
+        catalog_db,
+        call_import.id,
+        [{"id": row.id, "row_index": int(row_index), **patch}],
+    )
+    for key, value in patch.items():
+        setattr(row, key, value)
+
+
 def build_diarization_params_from_request(
     *,
     stt_provider: Optional[str],
@@ -210,9 +240,15 @@ def _try_dispatch_single_diarization_row(
 
     slot_released = False
     try:
-        row.celery_task_id = reserved_task_id
-        row.diarised_transcript_error = None
-        db.commit()
+        _persist_diarization_row_fields(
+            db,
+            call_import,
+            row,
+            {
+                "celery_task_id": reserved_task_id,
+                "diarised_transcript_error": None,
+            },
+        )
 
         try:
             async_result = transcribe_call_import_row_task.apply_async(
@@ -235,8 +271,12 @@ def _try_dispatch_single_diarization_row(
                 task_id=reserved_task_id,
             )
         except Exception:
-            row.celery_task_id = None
-            db.commit()
+            _persist_diarization_row_fields(
+                db,
+                call_import,
+                row,
+                {"celery_task_id": None},
+            )
             release_eval_slot_for_celery_task(reserved_task_id)
             slot_released = True
             raise

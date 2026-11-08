@@ -14,6 +14,7 @@ from app.workers.concurrency.diarization_dispatch import (
 )
 from app.workers.concurrency.fair_diarization_dispatch import (
     _dispatch_batch_for_workspace,
+    drain_after_diarization_enqueue,
 )
 
 
@@ -34,6 +35,7 @@ def test_dispatch_batch_marks_row_failed_when_params_missing(monkeypatch):
     row_id = uuid4()
     row = SimpleNamespace(
         id=row_id,
+        row_index=0,
         diarised_transcript_status="pending",
         diarised_transcript_error=None,
         celery_task_id=None,
@@ -81,3 +83,34 @@ def test_dispatch_batch_marks_row_failed_when_params_missing(monkeypatch):
 
 def test_redis_store_error_message_is_actionable():
     assert "Redis" in _REDIS_PARAMS_STORE_ERROR
+
+
+def test_drain_after_diarization_enqueue_skips_zero():
+    assert drain_after_diarization_enqueue(0) is None
+
+
+def test_drain_after_diarization_enqueue_runs_dispatch_apply(monkeypatch):
+    captured: list[dict] = []
+
+    class _AsyncResult:
+        def successful(self) -> bool:
+            return True
+
+        @property
+        def result(self) -> dict:
+            return {"dispatched": 2, "status": "ok"}
+
+    def _fake_apply(*, kwargs):
+        captured.append(kwargs)
+        return _AsyncResult()
+
+    monkeypatch.setattr(
+        "app.workers.concurrency.fair_diarization_dispatch."
+        "dispatch_fair_diarization_rows_task.apply",
+        _fake_apply,
+    )
+
+    out = drain_after_diarization_enqueue(10, log_context="unit-test")
+
+    assert out == {"dispatched": 2, "status": "ok"}
+    assert captured == [{"max_workspace_turns": 4}]

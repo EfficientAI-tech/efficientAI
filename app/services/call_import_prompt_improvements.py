@@ -24,7 +24,68 @@ from app.services.agent_flowchart import _extract_json_object
 from app.services.ai.llm_resolver import get_llm_provider_and_model_for_request
 from app.services.ai.llm_service import llm_service
 from app.services.evaluation_analysis_checkpoints import job_heartbeat_is_stale
+from app.services.import_eval_llm_output_budgets import (
+    IMPORT_EVAL_LLM_OUTPUT_FIRST,
+    IMPORT_EVAL_LLM_OUTPUT_RETRY,
+)
 from app.services.imported_agent_constants import IMPORTED_AGENT_TAG
+
+
+PROMPT_SUGGESTION_MAX_TOKENS = IMPORT_EVAL_LLM_OUTPUT_FIRST
+
+
+def _generate_prompt_improvement_json(
+    *,
+    messages: List[Dict[str, str]],
+    llm_provider: Any,
+    llm_model: str,
+    organization_id: UUID,
+    db: Session,
+) -> Dict[str, Any]:
+    """Two-step max_tokens with retry on truncation or JSON extraction failure."""
+    budgets = [
+        IMPORT_EVAL_LLM_OUTPUT_FIRST,
+        IMPORT_EVAL_LLM_OUTPUT_RETRY,
+    ]
+    last_error: Optional[Exception] = None
+    for budget_idx, max_tok in enumerate(budgets):
+        result = llm_service.generate_response(
+            messages=messages,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+            organization_id=organization_id,
+            db=db,
+            temperature=0.3 if budget_idx == 0 else 0.2,
+            max_tokens=max_tok,
+        )
+        if result.get("truncated"):
+            logger.warning(
+                "Prompt improvements LLM truncated at max_tokens={} (model={})",
+                max_tok,
+                llm_model,
+            )
+            last_error = RuntimeError("truncated")
+            if budget_idx < len(budgets) - 1:
+                continue
+            raise RuntimeError(
+                f"Prompt improvement output was truncated ({llm_model})."
+            ) from last_error
+        try:
+            return _extract_json_object(result["text"])
+        except ValueError as exc:
+            logger.warning(
+                "Prompt improvements JSON extract failed at max_tokens={} (model={}): {}",
+                max_tok,
+                llm_model,
+                exc,
+            )
+            last_error = exc
+            if budget_idx < len(budgets) - 1:
+                continue
+            raise
+    raise RuntimeError(
+        f"Prompt improvement LLM failed after retries ({llm_model}): {last_error}"
+    )
 
 
 def flag_evaluation_prompt_improvements_modified(evaluation: CallImportEvaluation) -> None:
@@ -399,16 +460,13 @@ def generate_prompt_improvements(
         },
     ]
 
-    result = llm_service.generate_response(
+    raw = _generate_prompt_improvement_json(
         messages=messages,
         llm_provider=provider_enum,
         llm_model=model_str,
         organization_id=organization_id,
         db=db,
-        temperature=0.3,
-        max_tokens=6000,
     )
-    raw = _extract_json_object(result["text"])
     overview, suggestions = _parse_suggestions(
         raw,
         cluster_context,

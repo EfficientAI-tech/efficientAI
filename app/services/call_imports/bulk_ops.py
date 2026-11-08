@@ -203,7 +203,8 @@ def _enqueue_diarization_for_rows(
         update_call_import_rows_on_shards(db, call_import.id, updates)
 
     if queued > 0:
-        schedule_fair_diarization_dispatch(max_workspace_turns=999)
+        # Delayed backup tick (bulk task also drains synchronously after commit).
+        schedule_fair_diarization_dispatch(max_workspace_turns=999, countdown=5)
 
     return BulkDiarizationResult(
         queued=queued,
@@ -262,6 +263,113 @@ def execute_bulk_diarization(
         skipped_rows=sum(skip_counts.values()),
         skipped_reason_counts=skip_counts,
     )
+
+
+def execute_bulk_diarisation_cancel(
+    db: Session,
+    call_import_id: UUID,
+    *,
+    row_ids: Optional[List[UUID]] = None,
+    search_term: str = "",
+    diarised_status_filter: Optional[str] = None,
+    cancel_all_inflight: bool = False,
+) -> Tuple[int, int]:
+    """Stop diarisation for many import rows (shard-aware when enabled).
+
+    Returns ``(cancelled, skipped)``. ``skipped`` includes rows that were not
+    in a cancellable state and row ids that were not found.
+    """
+    from app.db_sharding.row_ops import update_call_import_rows_on_shards
+    from app.db_sharding.scatter_gather import (
+        fetch_call_import_rows_filtered_page,
+        load_call_import_rows_for_cancel,
+    )
+    from app.services.call_imports.diarisation_route_helpers import (
+        CANCELLED_BY_USER_ERROR,
+        _cancellable_diarisation_states,
+    )
+
+    cancellable = {s.lower() for s in _cancellable_diarisation_states()}
+    cancelled = 0
+    skipped = 0
+
+    def _cancel_loaded_rows(rows: List[CallImportRow]) -> None:
+        nonlocal cancelled, skipped
+        if not rows:
+            return
+        updates: List[dict] = []
+        task_ids: List[str] = []
+        seen_tasks: set[str] = set()
+        for row in rows:
+            status = (row.diarised_transcript_status or "").strip().lower()
+            if status not in cancellable:
+                skipped += 1
+                continue
+            tid = (row.celery_task_id or "").strip()
+            if tid and tid not in seen_tasks:
+                seen_tasks.add(tid)
+                task_ids.append(tid)
+            updates.append(
+                {
+                    "id": row.id,
+                    "row_index": int(row.row_index or 0),
+                    "diarised_transcript_status": "failed",
+                    "diarised_transcript_error": CANCELLED_BY_USER_ERROR,
+                    "celery_task_id": None,
+                }
+            )
+            cancelled += 1
+        if task_ids:
+            _batch_revoke_celery_task_ids(task_ids, terminate=True)
+        if updates:
+            update_call_import_rows_on_shards(db, call_import_id, updates)
+
+    if cancel_all_inflight:
+        for status in _cancellable_diarisation_states():
+            offset = 0
+            while True:
+                page = fetch_call_import_rows_filtered_page(
+                    db,
+                    call_import_id,
+                    search_term="",
+                    diarised_status_filter=status,
+                    offset=offset,
+                    limit=_IMPORT_ROW_FILTER_PAGE_SIZE,
+                )
+                if not page:
+                    break
+                _cancel_loaded_rows(page)
+                if len(page) < _IMPORT_ROW_FILTER_PAGE_SIZE:
+                    break
+                offset += _IMPORT_ROW_FILTER_PAGE_SIZE
+        return cancelled, skipped
+
+    if row_ids is not None:
+        if not row_ids:
+            return 0, 0
+        rows = load_call_import_rows_for_cancel(db, call_import_id, row_ids)
+        found_ids = {row.id for row in rows}
+        skipped += sum(1 for rid in row_ids if rid not in found_ids)
+        _cancel_loaded_rows(rows)
+        return cancelled, skipped
+
+    offset = 0
+    while True:
+        page = fetch_call_import_rows_filtered_page(
+            db,
+            call_import_id,
+            search_term=search_term,
+            diarised_status_filter=diarised_status_filter,
+            offset=offset,
+            limit=_IMPORT_ROW_FILTER_PAGE_SIZE,
+        )
+        if not page:
+            break
+        _cancel_loaded_rows(page)
+        if len(page) < _IMPORT_ROW_FILTER_PAGE_SIZE:
+            break
+        offset += _IMPORT_ROW_FILTER_PAGE_SIZE
+    return cancelled, skipped
 
 
 def count_completed_source_rows(db: Session, call_import_id: UUID) -> int:
