@@ -151,7 +151,7 @@ class AnthropicLLMService(LLMService):
         self,
         *,
         api_key: str,
-        model: str = "claude-sonnet-4-5-20250929",
+        model: str = "claude-sonnet-5-5",
         params: Optional[InputParams] = None,
         client=None,
         retry_timeout_secs: Optional[float] = 5.0,
@@ -162,7 +162,7 @@ class AnthropicLLMService(LLMService):
 
         Args:
             api_key: Anthropic API key for authentication.
-            model: Model name to use. Defaults to "claude-sonnet-4-5-20250929".
+            model: Model name to use. Defaults to "claude-sonnet-5-5".
             params: Optional model parameters for inference.
             client: Optional custom Anthropic client instance.
             retry_timeout_secs: Request timeout in seconds for retry logic.
@@ -259,7 +259,7 @@ class AnthropicLLMService(LLMService):
             stream=False,
         )
 
-        return response.content[0].text
+        return "".join(block.text for block in response.content if block.type == "text")
 
     def create_context_aggregator(
         self,
@@ -358,6 +358,11 @@ class AnthropicLLMService(LLMService):
             params.update(params_from_context)
 
             params.update(self._settings["extra"])
+
+            if params["model"] == "claude-sonnet-5-5":
+                # Sonnet 5.5 rejects sampling parameters, including overrides in extra.
+                for key in ("temperature", "top_k", "top_p"):
+                    params.pop(key, None)
 
             response = await self._create_message_stream(self._client.messages.create, params)
 
