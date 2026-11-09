@@ -550,6 +550,10 @@ def materialize_and_enqueue_evaluation(
             db.commit()
             commit_pending_shard_sessions(pending_shard_sessions)
         evaluation.total_rows = committed
+        # Stamp the run start before any row is dispatched: the UI shows it,
+        # the stale-run sweep ages from it, and overwrite runs compare each
+        # row's ``diarised_at`` with it to tell fresh transcripts from old ones.
+        evaluation.started_at = evaluation.started_at or datetime.now(timezone.utc)
         db.commit()
         from app.services.call_imports.eval_progress_buffer import seed_best_effort
 

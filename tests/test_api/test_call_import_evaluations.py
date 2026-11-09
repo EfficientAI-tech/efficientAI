@@ -1728,3 +1728,20 @@ def test_call_import_without_evaluation_has_null_latest_eval_progress(
     assert body["latest_evaluation_total_rows"] is None
     assert body["latest_evaluation_completed_rows"] is None
     assert body["latest_evaluation_failed_rows"] is None
+
+
+def test_materialized_evaluation_has_started_at(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """Materialize stamps the run start before any row is dispatched."""
+    metric = _make_metric(db_session, org_id)
+    call_import, _ = _make_call_import(db_session, org_id, rows=2)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    db_session.expire_all()
+    parent = db_session.get(CallImportEvaluation, UUID(created["id"]))
+    assert parent.status == "running"
+    assert parent.started_at is not None

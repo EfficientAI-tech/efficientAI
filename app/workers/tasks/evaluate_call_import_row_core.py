@@ -899,33 +899,49 @@ def mark_evaluation_running_if_pending(
     catalog_db: Session,
     evaluation: EvaluationSnapshot | CallImportEvaluation,
 ) -> None:
-    """Flip the parent ``pending -> running`` once, without an ORM write.
+    """Make sure the parent is ``running`` and has a ``started_at``.
 
-    Fair dispatch normally does this when it dispatches the first row; this
-    only covers a worker that starts before that commit lands. The guarded
-    UPDATE is a no-op when another worker already flipped it. The version
-    bump makes cached snapshots elsewhere reload instead of retrying.
+    Materialize and fair dispatch normally do both before any row runs; this
+    covers a worker that starts before those commits land, and runs created
+    before ``started_at`` was stamped there. Each guarded UPDATE is a no-op
+    when another worker got there first, and the version bump makes cached
+    snapshots elsewhere reload instead of retrying. No SQL at all when the
+    snapshot already shows a started run.
     """
-    if (getattr(evaluation, "status", None) or "").strip().lower() != "pending":
+    status = (getattr(evaluation, "status", None) or "").strip().lower()
+    needs_flip = status == "pending"
+    needs_start = getattr(evaluation, "started_at", None) is None and status == "running"
+    if not (needs_flip or needs_start):
         return
     from app.services.call_imports.eval_settings_version import bump_settings_version
 
     now = now_utc()
-    catalog_db.execute(
-        update(CallImportEvaluation)
-        .where(
-            CallImportEvaluation.id == evaluation.id,
-            CallImportEvaluation.status == "pending",
+    if needs_flip:
+        catalog_db.execute(
+            update(CallImportEvaluation)
+            .where(
+                CallImportEvaluation.id == evaluation.id,
+                CallImportEvaluation.status == "pending",
+            )
+            .values(
+                status="running",
+                started_at=func.coalesce(CallImportEvaluation.started_at, now),
+            )
+            .execution_options(synchronize_session=False)
         )
-        .values(
-            status="running",
-            started_at=func.coalesce(CallImportEvaluation.started_at, now),
+        evaluation.status = "running"
+    else:
+        catalog_db.execute(
+            update(CallImportEvaluation)
+            .where(
+                CallImportEvaluation.id == evaluation.id,
+                CallImportEvaluation.started_at.is_(None),
+            )
+            .values(started_at=now)
+            .execution_options(synchronize_session=False)
         )
-        .execution_options(synchronize_session=False)
-    )
     catalog_db.commit()
     bump_settings_version([evaluation.id])
-    evaluation.status = "running"
     if getattr(evaluation, "started_at", None) is None:
         evaluation.started_at = now
 

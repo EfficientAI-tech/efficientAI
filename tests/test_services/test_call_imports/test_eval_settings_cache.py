@@ -255,3 +255,51 @@ def test_second_row_issues_no_catalog_statements(db_session, monkeypatch, redis_
         second = task_module.evaluate_call_import_row_task.run(str(eval_rows[1].id))
     assert second["status"] == "completed"
     assert seen == [], seen
+
+
+# --- started_at is always stamped ---------------------------------------------------------
+
+
+def test_worker_stamps_missing_started_at_on_running_run(db_session, redis_ok):
+    _ci, evaluation, _rows = _evaluation(db_session, status="running")
+    evaluation.started_at = None
+    db_session.commit()
+    eid = evaluation.id
+    snap = load_evaluation_snapshot(db_session, eid)
+    mark_evaluation_running_if_pending(db_session, snap)
+    assert snap.started_at is not None
+    db_session.expire_all()
+    stamped = db_session.get(CallImportEvaluation, eid).started_at
+    assert stamped is not None
+
+    # Next snapshot sees it (version bumped) and issues no SQL.
+    fresh = load_evaluation_snapshot(db_session, eid)
+    with count_statements(db_session, "call_import_evaluations") as seen:
+        mark_evaluation_running_if_pending(db_session, fresh)
+    assert seen == []
+
+
+def test_worker_never_overwrites_existing_started_at(db_session, redis_ok):
+    from datetime import datetime, timezone
+
+    _ci, evaluation, _rows = _evaluation(db_session, status="running")
+    original = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    evaluation.started_at = None
+    db_session.commit()
+    snap = load_evaluation_snapshot(db_session, evaluation.id)  # sees None
+    evaluation.started_at = original  # another worker stamped it meanwhile
+    db_session.commit()
+    mark_evaluation_running_if_pending(db_session, snap)
+    db_session.expire_all()
+    stored = db_session.get(CallImportEvaluation, evaluation.id).started_at
+    assert stored.replace(tzinfo=timezone.utc) == original
+
+
+def test_end_to_end_run_has_started_at(db_session, monkeypatch, redis_ok):
+    _ci, evaluation, eval_rows = _evaluation(db_session, status="running")
+    evaluation.started_at = None
+    db_session.commit()
+    task_module = _patch_dependencies(monkeypatch, db_session)
+    task_module.evaluate_call_import_row_task.run(str(eval_rows[0].id))
+    db_session.expire_all()
+    assert db_session.get(CallImportEvaluation, evaluation.id).started_at is not None

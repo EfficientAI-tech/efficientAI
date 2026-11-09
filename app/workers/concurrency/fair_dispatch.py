@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import List, Optional
 from uuid import UUID
 
@@ -474,8 +475,14 @@ def _dispatch_batch_for_workspace(
                 dispatched += 1
                 evaluation_dispatched = True
                 skips = 0
-                if evaluation.status == "pending":
-                    evaluation.status = "running"
+                # ``started_at`` is the run start shown in the UI and the
+                # freshness cutoff for overwrite re-diarisation.
+                missing_start = getattr(evaluation, "started_at", False) is None
+                if evaluation.status == "pending" or missing_start:
+                    if evaluation.status == "pending":
+                        evaluation.status = "running"
+                    if missing_start:
+                        evaluation.started_at = datetime.now(timezone.utc)
                     db.commit()
                 break
             if outcome.result in ("at_capacity", "credential_throttled"):
