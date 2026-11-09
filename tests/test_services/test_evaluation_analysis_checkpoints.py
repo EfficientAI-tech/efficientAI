@@ -132,8 +132,8 @@ def test_user_insights_llm_estimate_matches_extraction_plan():
     # 277 rows span two 250-row checkpoint pages (250 + 27).
     assert estimate_user_insights_total_llm_calls(277) == 7  # 6 passes + synthesis
     assert estimate_user_insights_total_llm_calls(0) == 0
-    # 1200 rows span five pages of 250/250/250/250/200.
-    assert estimate_user_insights_total_llm_calls(1200) == 26
+    # 1200 rows = four pages of 250 + one page of 200 → 4×5 + 4 extractions + 1 synth.
+    assert estimate_user_insights_total_llm_calls(1200) == 25
 
 
 def test_reconcile_header_repairs_legacy_budget_and_overcount():
@@ -189,7 +189,7 @@ def test_resume_header_keeps_checkpoints_and_swaps_model():
             "completed_batches": 1,
             "total_batches": 5,
             "completed_llm_calls": 10,
-            "total_llm_calls": 26,
+            "total_llm_calls": 25,
             "phase": "rows",
         },
     }
@@ -215,7 +215,7 @@ def test_resume_header_keeps_checkpoints_and_swaps_model():
     assert resumed["progress"]["completed_batches"] == 1
     assert resumed["progress"]["completed_rows"] == 250
     assert resumed["progress"]["total_batches"] == 5
-    assert resumed["progress"]["total_llm_calls"] == 26
+    assert resumed["progress"]["total_llm_calls"] == 25
 
 
 def test_unclaimed_task_does_not_adopt_a_replacement_run():

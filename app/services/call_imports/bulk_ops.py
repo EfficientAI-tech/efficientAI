@@ -326,22 +326,20 @@ def execute_bulk_diarisation_cancel(
 
     if cancel_all_inflight:
         for status in _cancellable_diarisation_states():
-            offset = 0
+            # Always offset=0: cancelled rows drop out of the status filter, so
+            # advancing offset would skip the next pending page (P1 bulk stop-all).
             while True:
                 page = fetch_call_import_rows_filtered_page(
                     db,
                     call_import_id,
                     search_term="",
                     diarised_status_filter=status,
-                    offset=offset,
+                    offset=0,
                     limit=_IMPORT_ROW_FILTER_PAGE_SIZE,
                 )
                 if not page:
                     break
                 _cancel_loaded_rows(page)
-                if len(page) < _IMPORT_ROW_FILTER_PAGE_SIZE:
-                    break
-                offset += _IMPORT_ROW_FILTER_PAGE_SIZE
         return cancelled, skipped
 
     if row_ids is not None:
@@ -353,6 +351,7 @@ def execute_bulk_diarisation_cancel(
         _cancel_loaded_rows(rows)
         return cancelled, skipped
 
+    drain_at_zero = (diarised_status_filter or "").strip().lower() in cancellable
     offset = 0
     while True:
         page = fetch_call_import_rows_filtered_page(
@@ -360,12 +359,14 @@ def execute_bulk_diarisation_cancel(
             call_import_id,
             search_term=search_term,
             diarised_status_filter=diarised_status_filter,
-            offset=offset,
+            offset=0 if drain_at_zero else offset,
             limit=_IMPORT_ROW_FILTER_PAGE_SIZE,
         )
         if not page:
             break
         _cancel_loaded_rows(page)
+        if drain_at_zero:
+            continue
         if len(page) < _IMPORT_ROW_FILTER_PAGE_SIZE:
             break
         offset += _IMPORT_ROW_FILTER_PAGE_SIZE

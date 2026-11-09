@@ -343,7 +343,7 @@ def process_metric_clusters_wave_step(
             and policy_has_failure_criteria(failure_policies[str(m.id)], m)
         ]
         total_metrics_in_page = len(metrics_for_page_progress)
-        cumulative_prior_flagged = 0
+        processed_evaluation_row_ids: set[str] = set()
 
         for metric_idx_one_based, metric in enumerate(metrics_for_page_progress, start=1):
             policy = failure_policies[str(metric.id)]
@@ -364,7 +364,6 @@ def process_metric_clusters_wave_step(
                         flagged_samples.append(payload)
 
             sub_batches = _sub_batch_payloads(flagged_payloads)
-            rows_done_this_metric = 0
             for sub_idx, sub_batch in enumerate(sub_batches):
                 sub_key = f"{mid}:{sub_idx}"
                 if sub_key in done_sub:
@@ -403,9 +402,13 @@ def process_metric_clusters_wave_step(
                     reservoir.extend(extracted)
                     metric_extractions[mid] = reservoir[:40]
                 done_sub.add(sub_key)
-                rows_done_this_metric += len(sub_batch)
-                completed_rows_partial = rows_before_this_batch + (
-                    cumulative_prior_flagged + rows_done_this_metric
+                for item in sub_batch:
+                    if isinstance(item, dict):
+                        row_id = item.get("evaluation_row_id")
+                        if row_id:
+                            processed_evaluation_row_ids.add(str(row_id))
+                completed_rows_partial = rows_before_this_batch + len(
+                    processed_evaluation_row_ids
                 )
                 header_progress_rows = progress_header(
                     completed_rows=completed_rows_partial,
@@ -457,8 +460,6 @@ def process_metric_clusters_wave_step(
                 db.commit()
                 if on_progress:
                     on_progress(header_progress_rows)
-
-            cumulative_prior_flagged += len(flagged_payloads)
 
         page_cursor = evaluation_row_page_cursor_from_pair(pairs[-1])
         upsert_analysis_batch(
