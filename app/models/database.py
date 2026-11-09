@@ -3822,3 +3822,12 @@ class LLMUsageDaily(Base):
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+# Bump the Redis settings version when an evaluation's worker-visible settings
+# change, so eval workers drop their cached copy (see eval_settings_version).
+from app.services.call_imports.eval_settings_version import (  # noqa: E402
+    register_settings_version_hooks as _register_eval_settings_hooks,
+)
+
+_register_eval_settings_hooks()

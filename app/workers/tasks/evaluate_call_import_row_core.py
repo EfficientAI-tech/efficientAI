@@ -242,33 +242,53 @@ def load_call_import_eval_context(
     catalog_db: Session,
     call_import_id: UUID | None,
 ) -> tuple[dict[str, Any], Any]:
-    """Load import-level fields for eval without ORM lazy-load of ``CallImport``.
+    """Import-level ``(custom_column_mapping, speaker_aliases)`` for scoring.
 
-    Uses narrow SQL so pre-migration-114 databases (no ``speaker_aliases``) still
-    score LLM metrics; computed metrics fall back to default speaker aliases.
+    Static for the life of a run, so it is cached per worker process
+    (``cached_catalog_fetch``, 120 s) instead of read on every row. Each call
+    gets its own copy so worker threads never share mutable JSON.
     """
     if call_import_id is None:
         return {}, None
-    from sqlalchemy import text
+    import copy
+
+    from app.workers.catalog_cache import cached_catalog_fetch
+
+    cached = cached_catalog_fetch(
+        "call_import_eval_context",
+        str(call_import_id),
+        lambda: _query_call_import_eval_context(catalog_db, call_import_id),
+    )
+    return copy.deepcopy(cached)
+
+
+def _query_call_import_eval_context(
+    catalog_db: Session,
+    call_import_id: UUID | str,
+) -> tuple[dict[str, Any], Any]:
+    """Narrow typed select (uses the primary-key index).
+
+    Avoids an ORM lazy-load of ``CallImport``. Pre-migration-114 databases
+    have no ``speaker_aliases`` column; those still score LLM metrics and
+    computed metrics fall back to default speaker aliases.
+    """
+    from sqlalchemy import select
     from sqlalchemy.exc import ProgrammingError
 
-    params = {"id": str(call_import_id)}
+    from app.models.database import CallImport
+
+    table = CallImport.__table__
+    cid = call_import_id if isinstance(call_import_id, UUID) else UUID(str(call_import_id))
     try:
         row = catalog_db.execute(
-            text(
-                "SELECT custom_column_mapping, speaker_aliases "
-                "FROM call_imports WHERE CAST(id AS TEXT) = :id"
-            ),
-            params,
+            select(table.c.custom_column_mapping, table.c.speaker_aliases).where(
+                table.c.id == cid
+            )
         ).one_or_none()
     except ProgrammingError:
         catalog_db.rollback()
         row = catalog_db.execute(
-            text(
-                "SELECT custom_column_mapping FROM call_imports "
-                "WHERE CAST(id AS TEXT) = :id"
-            ),
-            params,
+            select(table.c.custom_column_mapping).where(table.c.id == cid)
         ).one_or_none()
         if row is None:
             return {}, None
@@ -810,6 +830,106 @@ def load_evaluation_for_worker(
     )
 
 
+_SNAPSHOT_CACHE_TTL_SECONDS = 300.0
+
+
+class EvaluationSnapshot:
+    """Read-only copy of the parent evaluation's worker columns.
+
+    Not an ORM instance: nothing assigned to it is ever flushed. Code that
+    must write the parent (status flip, Redis-down rollup) uses Core updates
+    or reloads an attached object instead.
+    """
+
+    __slots__ = tuple(column.key for column in _EVALUATION_WORKER_COLUMNS)
+
+    def __init__(self, **values: Any) -> None:
+        for name in self.__slots__:
+            setattr(self, name, values.get(name))
+
+    def __repr__(self) -> str:
+        return f"EvaluationSnapshot(id={getattr(self, 'id', None)!r})"
+
+
+def _query_evaluation_snapshot(
+    db: Session,
+    evaluation_id: UUID,
+) -> EvaluationSnapshot | None:
+    row = (
+        db.query(*_EVALUATION_WORKER_COLUMNS)
+        .filter(CallImportEvaluation.id == evaluation_id)
+        .first()
+    )
+    if row is None:
+        return None
+    return EvaluationSnapshot(**dict(row._mapping))
+
+
+def load_evaluation_snapshot(
+    db: Session,
+    evaluation_id: UUID,
+) -> EvaluationSnapshot | None:
+    """Parent evaluation settings for scoring, cached per worker process.
+
+    Keyed by the Redis settings version (``eval:settings_ver:{id}``), which
+    the API bumps on any settings change, so a retry with a new model or an
+    alias edit is picked up on the next row. When Redis is down the version
+    is unknown, so this reads the catalog directly instead of trusting the
+    cache. Every caller gets its own deep copy (worker threads share the
+    process cache).
+    """
+    import copy
+
+    from app.services.call_imports.eval_settings_version import read_settings_version
+    from app.workers.catalog_cache import cached_catalog_fetch
+
+    version = read_settings_version(evaluation_id)
+    if version is None:
+        return _query_evaluation_snapshot(db, evaluation_id)
+    cached = cached_catalog_fetch(
+        "evaluation_worker",
+        f"{evaluation_id}:{version}",
+        lambda: _query_evaluation_snapshot(db, evaluation_id),
+        ttl_seconds=_SNAPSHOT_CACHE_TTL_SECONDS,
+    )
+    return copy.deepcopy(cached)
+
+
+def mark_evaluation_running_if_pending(
+    catalog_db: Session,
+    evaluation: EvaluationSnapshot | CallImportEvaluation,
+) -> None:
+    """Flip the parent ``pending -> running`` once, without an ORM write.
+
+    Fair dispatch normally does this when it dispatches the first row; this
+    only covers a worker that starts before that commit lands. The guarded
+    UPDATE is a no-op when another worker already flipped it. The version
+    bump makes cached snapshots elsewhere reload instead of retrying.
+    """
+    if (getattr(evaluation, "status", None) or "").strip().lower() != "pending":
+        return
+    from app.services.call_imports.eval_settings_version import bump_settings_version
+
+    now = now_utc()
+    catalog_db.execute(
+        update(CallImportEvaluation)
+        .where(
+            CallImportEvaluation.id == evaluation.id,
+            CallImportEvaluation.status == "pending",
+        )
+        .values(
+            status="running",
+            started_at=func.coalesce(CallImportEvaluation.started_at, now),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    catalog_db.commit()
+    bump_settings_version([evaluation.id])
+    evaluation.status = "running"
+    if getattr(evaluation, "started_at", None) is None:
+        evaluation.started_at = now
+
+
 def commit_terminal_row_and_rollup(
     row_db: Session,
     evaluation: CallImportEvaluation,
@@ -910,10 +1030,11 @@ def commit_terminal_row_and_rollup(
         new_row_status=eval_row.status,
     ):
         return
-    if parent_db is not row_db:
-        evaluation = load_evaluation_for_worker(parent_db, evaluation.id)
-        if evaluation is None:
-            return
+    # Redis-down fallback writes the parent directly, so it needs an attached
+    # ORM object (the worker holds a read-only snapshot).
+    evaluation = load_evaluation_for_worker(parent_db, evaluation.id)
+    if evaluation is None:
+        return
     rollup_parent(
         parent_db,
         evaluation,

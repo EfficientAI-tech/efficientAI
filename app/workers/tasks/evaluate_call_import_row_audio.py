@@ -18,6 +18,7 @@ from app.workers.tasks.evaluate_call_import_row_core import (
     as_json_dict,
     categorize_row_metrics,
     load_enabled_metrics,
+    mark_evaluation_running_if_pending,
     now_utc,
     parse_restricted_metric_uuids,
     claim_eval_row_for_task,
@@ -36,12 +37,6 @@ def _rollup_terminal(row_db, catalog_db, evaluation, eval_row, *, previous_row_s
         previous_row_status=previous_row_status,
         catalog_db=cat,
     )
-
-
-def _persist_sessions(row_db, catalog_db) -> None:
-    row_db.commit()
-    if catalog_db is not row_db:
-        catalog_db.commit()
 
 
 _CHAIN_TTL_SECONDS = 7200
@@ -246,10 +241,10 @@ def evaluate_call_import_row_audio_task(
             _shard_id,
         ):
             from app.workers.tasks.evaluate_call_import_row_core import (
-                load_evaluation_for_worker,
+                load_evaluation_snapshot,
             )
 
-            evaluation = load_evaluation_for_worker(
+            evaluation = load_evaluation_snapshot(
                 catalog_db, eval_row.evaluation_id
             )
             if not evaluation:
@@ -347,10 +342,7 @@ def evaluate_call_import_row_audio_task(
                 return {"status": "skipped", "reason": "already_claimed"}
 
             previous_row_status = "running"
-            if evaluation.status == "pending":
-                evaluation.status = "running"
-                evaluation.started_at = evaluation.started_at or now_utc()
-                catalog_db.commit()
+            mark_evaluation_running_if_pending(catalog_db, evaluation)
 
             restricted_uuids = parse_restricted_metric_uuids(restricted_metric_ids)
             if restricted_metric_ids is not None and restricted_uuids is not None:
@@ -457,10 +449,10 @@ def evaluate_call_import_row_audio_task(
                 )
                 rebind_evaluation_row_session(origin_row_db, row_db, catalog_db)
                 from app.workers.tasks.evaluate_call_import_row_core import (
-                    load_evaluation_for_worker,
+                    load_evaluation_snapshot,
                 )
 
-                evaluation = load_evaluation_for_worker(
+                evaluation = load_evaluation_snapshot(
                     catalog_db, eval_row.evaluation_id
                 )
                 if evaluation is None:

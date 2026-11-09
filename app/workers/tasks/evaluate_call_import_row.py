@@ -39,6 +39,7 @@ from app.workers.tasks.evaluate_call_import_row_core import (
     metric_text_references_production,
     now_utc,
     parse_restricted_metric_uuids,
+    mark_evaluation_running_if_pending,
     rollup_parent,
     commit_terminal_row_and_rollup,
     was_cancelled_externally,
@@ -81,9 +82,11 @@ def _rollup_terminal(
 
 
 def _persist_eval_sessions(row_db, catalog_db) -> None:
+    # Only the shard holds changes here. The worker reads the parent from a
+    # cached snapshot, so the catalog session has nothing to commit; with no
+    # query run it never opened a transaction and closing it is free.
+    del catalog_db
     row_db.commit()
-    if catalog_db is not row_db:
-        catalog_db.commit()
 
 
 def _run_llm_scoring(
@@ -256,10 +259,10 @@ def evaluate_call_import_row_task(
                 return {"status": "skipped", "reason": "row_not_found"}
 
             from app.workers.tasks.evaluate_call_import_row_core import (
-                load_evaluation_for_worker,
+                load_evaluation_snapshot,
             )
 
-            evaluation = load_evaluation_for_worker(
+            evaluation = load_evaluation_snapshot(
                 catalog_db, eval_row.evaluation_id
             )
             if not evaluation:
@@ -328,10 +331,7 @@ def evaluate_call_import_row_task(
             owns_execution = True
 
             previous_row_status = "running"
-            if evaluation.status == "pending":
-                evaluation.status = "running"
-                evaluation.started_at = evaluation.started_at or _now()
-                catalog_db.commit()
+            mark_evaluation_running_if_pending(catalog_db, evaluation)
 
             production_transcript = (source_row.transcript or "").strip()
             diarised_transcript = (source_row.diarised_transcript or "").strip()
@@ -702,10 +702,10 @@ def evaluate_call_import_row_task(
                 )
                 return {"status": "skipped", "reason": "row_not_found"}
             from app.workers.tasks.evaluate_call_import_row_core import (
-                load_evaluation_for_worker,
+                load_evaluation_snapshot,
             )
 
-            evaluation = load_evaluation_for_worker(
+            evaluation = load_evaluation_snapshot(
                 catalog_db, eval_row.evaluation_id
             )
             if not evaluation:
