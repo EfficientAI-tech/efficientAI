@@ -795,78 +795,80 @@ def pending_eval_row_triples(
     return collected
 
 
-def aggregate_evaluation_row_counts(
-    catalog_db: Session,
-    evaluation_id: UUID,
-) -> tuple[int, int, int]:
-    """Return (total, completed, failed) across all shards."""
+def _evaluation_row_count_columns():
     from sqlalchemy import case, func
 
-    if not is_sharding_enabled():
+    def _status_sum(*statuses: str):
+        return func.coalesce(
+            func.sum(
+                case(
+                    (CallImportEvaluationRow.status.in_(statuses), 1),
+                    else_=0,
+                )
+            ),
+            0,
+        )
+
+    return (
+        func.count(CallImportEvaluationRow.id),
+        _status_sum("completed"),
+        _status_sum("failed"),
+        _status_sum("pending", "running"),
+    )
+
+
+def aggregate_evaluation_row_counts_detailed(
+    catalog_db: Session,
+    evaluation_id: UUID,
+) -> tuple[int, int, int, int]:
+    """Return (total, completed, failed, in_progress) across all shards.
+
+    ``in_progress`` counts ``pending`` + ``running`` directly instead of
+    deriving it from the other three, so a row in any other status never
+    looks in flight.
+    """
+
+    def _one(session: Session) -> tuple[int, int, int, int]:
         row = (
-            catalog_db.query(
-                func.count(CallImportEvaluationRow.id),
-                func.coalesce(
-                    func.sum(
-                        case(
-                            (CallImportEvaluationRow.status == "completed", 1),
-                            else_=0,
-                        )
-                    ),
-                    0,
-                ),
-                func.coalesce(
-                    func.sum(
-                        case(
-                            (CallImportEvaluationRow.status == "failed", 1),
-                            else_=0,
-                        )
-                    ),
-                    0,
-                ),
-            )
+            session.query(*_evaluation_row_count_columns())
             .filter(CallImportEvaluationRow.evaluation_id == evaluation_id)
             .one()
         )
-        return int(row[0] or 0), int(row[1] or 0), int(row[2] or 0)
+        return (
+            int(row[0] or 0),
+            int(row[1] or 0),
+            int(row[2] or 0),
+            int(row[3] or 0),
+        )
 
-    total = completed = failed = 0
+    if not is_sharding_enabled():
+        return _one(catalog_db)
+
+    total = completed = failed = in_progress = 0
     router = db_pool_manager.router
     assert router is not None
     for shard_id in router.shard_ids:
         factory = db_pool_manager.shard_session_factory(shard_id)
         shard_db = factory()
         try:
-            row = (
-                shard_db.query(
-                    func.count(CallImportEvaluationRow.id),
-                    func.coalesce(
-                        func.sum(
-                            case(
-                                (CallImportEvaluationRow.status == "completed", 1),
-                                else_=0,
-                            )
-                        ),
-                        0,
-                    ),
-                    func.coalesce(
-                        func.sum(
-                            case(
-                                (CallImportEvaluationRow.status == "failed", 1),
-                                else_=0,
-                            )
-                        ),
-                        0,
-                    ),
-                )
-                .filter(CallImportEvaluationRow.evaluation_id == evaluation_id)
-                .one()
-            )
-            total += int(row[0] or 0)
-            completed += int(row[1] or 0)
-            failed += int(row[2] or 0)
+            t, c, f, p = _one(shard_db)
+            total += t
+            completed += c
+            failed += f
+            in_progress += p
         finally:
             shard_db.close()
+    return total, completed, failed, in_progress
+
+
+def aggregate_evaluation_row_counts(
+    catalog_db: Session,
+    evaluation_id: UUID,
+) -> tuple[int, int, int]:
+    """Return (total, completed, failed) across all shards."""
+    total, completed, failed, _in_progress = aggregate_evaluation_row_counts_detailed(
+        catalog_db, evaluation_id
+    )
     return total, completed, failed
 
 

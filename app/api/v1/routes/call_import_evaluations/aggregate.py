@@ -1762,11 +1762,14 @@ async def get_call_import_evaluation_aggregate(
     _fp_stored, failure_policies_source = policies_from_evaluation_raw(
         evaluation.metric_clusters
     )
+    from app.services.call_imports.progress_counters import merge_eval_counters_for_ui
+
+    ui_completed, ui_failed = merge_eval_counters_for_ui(evaluation)
     return CallImportEvaluationAggregateResponse(
         evaluation_id=eval_id,
         total_rows=evaluation.total_rows,
-        completed_rows=evaluation.completed_rows,
-        failed_rows=evaluation.failed_rows,
+        completed_rows=ui_completed,
+        failed_rows=ui_failed,
         metrics=metrics,
         period_deltas=period_deltas,
         baseline_evaluation_id=resolved_baseline_id,

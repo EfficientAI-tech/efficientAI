@@ -632,12 +632,8 @@ def evaluate_call_import_row_task(
                     eval_row.id,
                 )
                 try:
-                    _rollup_parent(
-                        catalog_db,
-                        evaluation,
-                        previous_row_status="running",
-                        new_row_status="failed",
-                    )
+                    # The cancel path already moved this row to failed and recounted
+                    # the parent; recording running -> failed here would double-count.
                     catalog_db.commit()
                 except Exception:  # noqa: BLE001
                     catalog_db.rollback()
@@ -722,12 +718,8 @@ def evaluate_call_import_row_task(
                     eval_row.id,
                 )
                 try:
-                    _rollup_parent(
-                        catalog_db,
-                        evaluation,
-                        previous_row_status="running",
-                        new_row_status="failed",
-                    )
+                    # The cancel path already moved this row to failed and recounted
+                    # the parent; recording running -> failed here would double-count.
                     catalog_db.commit()
                 except Exception:  # noqa: BLE001 — rollup is best-effort here
                     catalog_db.rollback()

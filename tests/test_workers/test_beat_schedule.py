@@ -47,6 +47,7 @@ def test_platform_beat_schedule_includes_platform_and_trace_tasks():
         "prune-oss-usage-history",
         "sweep-idle-traces",
         "sweep-orphan-s3-batches",
+        "flush-eval-progress-counters",
         "sweep-stale-running-evaluations",
         "bootstrap-platform-import-discovery",
         "dispatch-fair-diarization-rows",

@@ -592,7 +592,9 @@ def _normalize_name(value: Optional[str]) -> Optional[str]:
 def _rollup_evaluation_status(evaluation: CallImportEvaluation, db: Session) -> None:
     """Recompute counters + terminal status after rows are added/removed.
 
-    Uses a single aggregate query instead of loading every row status.
+    Uses a single aggregate query instead of loading every row status. The
+    counter reconcile is the fenced recount, so buffered Redis deltas are
+    discarded rather than re-applied.
     """
     from app.workers.tasks.evaluate_call_import_row_core import (
         _apply_parent_status_from_counters,
@@ -612,6 +614,11 @@ def _rollup_evaluation_status(evaluation: CallImportEvaluation, db: Session) -> 
     if evaluation.status in {"completed", "failed", "partial"}:
         from app.models.database import CallImport
         from app.services.call_imports.bulk_ops import rollup_call_import_batch_status
+        from app.services.call_imports.eval_progress_buffer import (
+            delete as delete_eval_counters,
+        )
+
+        delete_eval_counters(evaluation.id)
 
         call_import = (
             db.query(CallImport)

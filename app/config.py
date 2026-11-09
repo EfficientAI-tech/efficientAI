@@ -101,6 +101,13 @@ class Settings(BaseSettings):
     EVAL_GLOBAL_INFLIGHT_LIMIT: int = 128
     EVAL_JOB_INFLIGHT_LIMIT: int = 75
     EVAL_FAIR_DISPATCH_BATCH_SIZE: int = 75
+    # Redis-buffered evaluation progress counters. Eval workers add
+    # completed/failed deltas to Redis instead of updating the catalog parent
+    # row per scored row; a beat task flushes them every
+    # EVAL_PROGRESS_FLUSH_SECONDS and fenced shard recounts run at most every
+    # EVAL_PROGRESS_RECOUNT_SECONDS for running evaluations.
+    EVAL_PROGRESS_FLUSH_SECONDS: int = 30
+    EVAL_PROGRESS_RECOUNT_SECONDS: int = 300
     DIARIZATION_FAIR_DISPATCH_BATCH_SIZE: int = 75
     IMPORT_FAIR_DISPATCH_BATCH_SIZE: int = 75
     IMPORT_WORKSPACE_INFLIGHT_LIMIT: int = 8
@@ -742,6 +749,14 @@ def load_config_from_file(config_path: str) -> None:
         if "eval_job_inflight_limit" in workers_config:
             settings.EVAL_JOB_INFLIGHT_LIMIT = int(
                 workers_config["eval_job_inflight_limit"]
+            )
+        if "eval_progress_flush_seconds" in workers_config:
+            settings.EVAL_PROGRESS_FLUSH_SECONDS = max(
+                5, int(workers_config["eval_progress_flush_seconds"])
+            )
+        if "eval_progress_recount_seconds" in workers_config:
+            settings.EVAL_PROGRESS_RECOUNT_SECONDS = max(
+                30, int(workers_config["eval_progress_recount_seconds"])
             )
         if "diarization_fair_dispatch_batch_size" in workers_config:
             settings.DIARIZATION_FAIR_DISPATCH_BATCH_SIZE = int(

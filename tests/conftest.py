@@ -46,6 +46,72 @@ _TASKS_PACKAGE_DIR = str(
 )
 
 
+_EVAL_BUFFER_TEST_REDIS_URL = os.getenv(
+    "EVAL_BUFFER_TEST_REDIS_URL", "redis://localhost:6379/15"
+)
+_eval_buffer_test_client_cache: list = []
+
+
+def _eval_buffer_test_client():
+    """Redis db 15 when reachable, else a client that fails fast.
+
+    The unreachable client makes the worker hot path take its Redis-down
+    fallback (direct catalog write), which is a supported production path.
+    """
+    if _eval_buffer_test_client_cache:
+        return _eval_buffer_test_client_cache[0]
+    import redis
+
+    client = redis.from_url(
+        _EVAL_BUFFER_TEST_REDIS_URL,
+        decode_responses=True,
+        socket_connect_timeout=0.2,
+    )
+    try:
+        client.ping()
+    except redis.RedisError:
+        from redis.retry import Retry
+        from redis.backoff import NoBackoff
+
+        client = redis.Redis(
+            host="127.0.0.1",
+            port=1,
+            decode_responses=True,
+            socket_connect_timeout=0.05,
+            retry=Retry(NoBackoff(), 0),
+        )
+    _eval_buffer_test_client_cache.append(client)
+    return client
+
+
+@pytest.fixture(autouse=True)
+def isolate_eval_progress_buffer(monkeypatch):
+    """Keep buffered eval counters off the dev Redis and the Celery broker.
+
+    Yields the evaluation ids the code asked to finalize; tests settle the
+    parent by calling ``finalize_evaluation_progress`` themselves.
+    """
+    import redis
+
+    from app.services.call_imports import eval_progress_buffer as buf
+
+    client = _eval_buffer_test_client()
+    try:
+        client.flushdb()
+    except redis.RedisError:
+        pass
+    monkeypatch.setattr(buf, "_redis", client)
+    monkeypatch.setattr(buf, "_scripts", {})
+    finalize_requests: list[str] = []
+
+    def _record_finalize(evaluation_id):
+        finalize_requests.append(str(evaluation_id))
+        return True
+
+    monkeypatch.setattr(buf, "request_finalize", _record_finalize)
+    yield finalize_requests
+
+
 @pytest.fixture(autouse=True)
 def mock_flexprice_locally(monkeypatch, request):
     """Stub all Flexprice billing I/O; only test_flexprice_service.py uses a mocked SDK."""

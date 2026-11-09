@@ -13,6 +13,7 @@ from app.workers.tasks.transcribe_call_import_row import (
 from tests.test_workers.test_evaluate_call_import_row import (
     _patch_row_location,
     _seed,
+    _settle_parent,
 )
 
 
@@ -68,8 +69,8 @@ def test_eval_chain_transcribe_cleanup_rollup_partial_after_retry(
 
     _apply_eval_chain_transcribe_cleanup(str(eval_rows[3].id))
 
-    db_session.refresh(evaluation)
     db_session.refresh(eval_rows[3])
+    _settle_parent(db_session, evaluation)
 
     assert eval_rows[3].status == "failed"
     assert evaluation.completed_rows == 3
@@ -102,8 +103,8 @@ def test_fail_eval_row_for_import_rollup(db_session, monkeypatch):
         evaluation=evaluation,
     )
 
-    db_session.refresh(evaluation)
     db_session.refresh(eval_rows[1])
+    _settle_parent(db_session, evaluation)
 
     assert eval_rows[1].status == "failed"
     assert evaluation.completed_rows == 1

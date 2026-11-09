@@ -603,10 +603,11 @@ def _generate_and_persist_tldr_summary(
             detail="Insights response was cut off before it finished. Try again.",
         )
 
-    total = int(evaluation.total_rows or 0)
-    ui_completed = min(int(evaluation.completed_rows or 0), total) if total else int(
-        evaluation.completed_rows or 0
-    )
+    from app.services.call_imports.progress_counters import merge_eval_counters_for_ui
+
+    # Include buffered (not yet flushed) progress: the summary was built from
+    # shard rows, which already contain those completions.
+    ui_completed, _ui_failed = merge_eval_counters_for_ui(evaluation)
     summary.generated_at_completed_rows = ui_completed
     summary.provider = provider_enum.value
     summary.model = model_str

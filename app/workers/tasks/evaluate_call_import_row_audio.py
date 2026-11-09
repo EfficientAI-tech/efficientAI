@@ -20,7 +20,6 @@ from app.workers.tasks.evaluate_call_import_row_core import (
     load_enabled_metrics,
     now_utc,
     parse_restricted_metric_uuids,
-    rollup_parent,
     claim_eval_row_for_task,
     commit_terminal_row_and_rollup,
     row_needs_llm_phase,
@@ -469,12 +468,8 @@ def evaluate_call_import_row_audio_task(
 
             if was_cancelled_externally(row_db, eval_row):
                 try:
-                    rollup_parent(
-                        catalog_db,
-                        evaluation,
-                        previous_row_status="running",
-                        new_row_status="failed",
-                    )
+                    # The cancel path already moved this row to failed and recounted
+                    # the parent; recording running -> failed here would double-count.
                     catalog_db.commit()
                 except Exception:  # noqa: BLE001
                     catalog_db.rollback()

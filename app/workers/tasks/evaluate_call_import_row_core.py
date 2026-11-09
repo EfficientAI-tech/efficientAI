@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, List, NamedTuple, Optional
 from uuid import UUID
 
-from sqlalchemy import and_, case, func, or_, update
+from sqlalchemy import and_, func, or_, update
 from sqlalchemy.orm import Session, load_only
 
 from app.models.database import (
@@ -561,61 +561,121 @@ def counter_deltas_for_status_transition(
     return completed_delta, failed_delta
 
 
+def _count_evaluation_rows(
+    db: Session,
+    evaluation_id: UUID,
+) -> tuple[int, int, int, int]:
+    """(total, completed, failed, in_progress) from the row tables."""
+    from app.db_sharding.scatter_gather import aggregate_evaluation_row_counts_detailed
+
+    return aggregate_evaluation_row_counts_detailed(db, evaluation_id)
+
+
 def reconcile_evaluation_counters(
     db: Session,
     evaluation: CallImportEvaluation,
 ) -> None:
-    """Sync parent counters from child rows using aggregate queries."""
-    from app.db_sharding.sessions import is_sharding_enabled
+    """Sync parent counters from child rows (fenced recount).
 
-    if is_sharding_enabled():
-        from app.db_sharding.scatter_gather import aggregate_evaluation_row_counts
+    Every caller (abort, retry, row delete, finalize) discards buffered Redis
+    deltas instead of double-applying them.
+    """
+    recount_evaluation_counters(db, evaluation)
 
-        total, completed, failed = aggregate_evaluation_row_counts(db, evaluation.id)
-    else:
-        counts = (
-            db.query(
-                func.count().label("total"),
-                func.coalesce(
-                    func.sum(
-                        case(
-                            (CallImportEvaluationRow.status == "completed", 1),
-                            else_=0,
-                        )
-                    ),
-                    0,
-                ).label("completed"),
-                func.coalesce(
-                    func.sum(
-                        case(
-                            (CallImportEvaluationRow.status == "failed", 1),
-                            else_=0,
-                        )
-                    ),
-                    0,
-                ).label("failed"),
-            )
-            .filter(CallImportEvaluationRow.evaluation_id == evaluation.id)
-            .one()
-        )
-        total = int(counts.total or 0)
-        completed = int(counts.completed or 0)
-        failed = int(counts.failed or 0)
 
-    db.execute(
+def _bump_progress_counter_gen(db: Session, evaluation_id: UUID) -> tuple[int, int] | None:
+    """Increment the catalog fence gen; returns ``(new_gen, flush_seq)``.
+
+    The UPDATE takes the parent row lock until the caller commits, so a flush
+    that drained under the old gen blocks and then matches 0 rows.
+    """
+    stmt = (
         update(CallImportEvaluation)
-        .where(CallImportEvaluation.id == evaluation.id)
-        .values(
-            total_rows=total,
-            completed_rows=completed,
-            failed_rows=failed,
+        .where(CallImportEvaluation.id == evaluation_id)
+        .values(progress_counter_gen=CallImportEvaluation.progress_counter_gen + 1)
+        .returning(
+            CallImportEvaluation.progress_counter_gen,
+            CallImportEvaluation.progress_flush_seq,
         )
     )
-    db.flush()
-    db.refresh(evaluation)
-    from app.services.call_imports.progress_counters import clear_eval_progress_redis
+    row = db.execute(stmt).first()
+    if row is None:
+        return None
+    return int(row[0] or 0), int(row[1] or 0)
 
-    clear_eval_progress_redis(evaluation.id)
+
+def recount_evaluation_counters(
+    db: Session,
+    evaluation: CallImportEvaluation,
+) -> int:
+    """Fenced shard recount. Returns rows still pending or running.
+
+    Order matters:
+
+    1. Bump ``progress_counter_gen`` in the catalog (source of truth for gen,
+       survives Redis loss; holds the parent row lock until commit).
+    2. Fence Redis: adopt the new gen, drop buffered and pending deltas. They
+       describe rows already committed on the shards, so the count below
+       includes them.
+    3. Count the shards (total / completed / failed / in_progress).
+    4. Write absolute counters, guarded by the new gen so an older,
+       overlapping recount can never overwrite a newer one.
+    5. Set Redis ``remaining`` from the shard in-progress count.
+    """
+    import redis as redis_lib
+    from loguru import logger
+
+    from app.services.call_imports import eval_progress_buffer as buf
+
+    evaluation_id = evaluation.id
+    token = buf.acquire_lock(evaluation_id)
+    try:
+        bumped = _bump_progress_counter_gen(db, evaluation_id)
+        if bumped is None:
+            return 0
+        new_gen, catalog_seq = bumped
+        fenced = True
+        try:
+            buf.fence(evaluation_id, gen=new_gen, catalog_seq=catalog_seq)
+        except redis_lib.RedisError as exc:
+            fenced = False
+            logger.warning(
+                "eval counter fence failed for {} (gen guard still applies): {}",
+                evaluation_id,
+                exc,
+            )
+
+        total, completed, failed, in_progress = _count_evaluation_rows(db, evaluation_id)
+        db.execute(
+            update(CallImportEvaluation)
+            .where(
+                CallImportEvaluation.id == evaluation_id,
+                CallImportEvaluation.progress_counter_gen == new_gen,
+            )
+            .values(
+                total_rows=total,
+                completed_rows=completed,
+                failed_rows=failed,
+            )
+        )
+        db.flush()
+        db.refresh(evaluation)
+
+        if fenced:
+            try:
+                buf.set_remaining_after_count(
+                    evaluation_id, gen=new_gen, in_progress=in_progress
+                )
+            except redis_lib.RedisError as exc:
+                logger.warning(
+                    "eval counter remaining reset failed for {}: {}", evaluation_id, exc
+                )
+        from app.services.call_imports.progress_counters import clear_eval_progress_redis
+
+        clear_eval_progress_redis(evaluation_id)
+        return in_progress
+    finally:
+        buf.release_lock(evaluation_id, token)
 
 
 def _should_confirm_eval_finished(
@@ -844,6 +904,12 @@ def commit_terminal_row_and_rollup(
             eval_row.id,
             eval_row.metric_scores,
         )
+    if record_buffered_transition(
+        evaluation.id,
+        previous_row_status=previous_row_status,
+        new_row_status=eval_row.status,
+    ):
+        return
     if parent_db is not row_db:
         evaluation = load_evaluation_for_worker(parent_db, evaluation.id)
         if evaluation is None:
@@ -855,6 +921,126 @@ def commit_terminal_row_and_rollup(
         new_row_status=eval_row.status,
     )
     parent_db.commit()
+
+
+def record_buffered_transition(
+    evaluation_id: UUID,
+    *,
+    previous_row_status: str | None,
+    new_row_status: str | None,
+) -> bool:
+    """Buffer one row transition in Redis instead of writing the catalog.
+
+    Returns ``False`` when Redis is down; the caller then runs the direct
+    catalog rollup. Triggers finalize when ``remaining``
+    reaches 0, when this is the only task still in flight (covers a lost
+    decrement), or when the counter hash had to be recreated (``uninit``).
+    """
+    from app.services.call_imports import eval_progress_buffer as buf
+
+    if new_row_status is None:
+        return False
+    import redis as redis_lib
+    from loguru import logger
+
+    completed_delta, failed_delta = counter_deltas_for_status_transition(
+        previous_row_status, new_row_status
+    )
+    remaining_delta = buf.remaining_delta_for_transition(
+        previous_row_status, new_row_status
+    )
+    if not (completed_delta or failed_delta or remaining_delta):
+        return True
+    try:
+        result = buf.record_transition(
+            evaluation_id,
+            completed_delta=completed_delta,
+            failed_delta=failed_delta,
+            remaining_delta=remaining_delta,
+        )
+    except redis_lib.RedisError as exc:
+        logger.warning(
+            "eval counter buffer unavailable for {}, using direct catalog write: {}",
+            evaluation_id,
+            exc,
+        )
+        return False
+
+    if result.remaining <= 0 or result.created:
+        buf.request_finalize(evaluation_id)
+    elif remaining_delta < 0:
+        from app.workers.concurrency.limits import read_job_inflight
+
+        if read_job_inflight(evaluation_id) == 1:
+            buf.request_finalize(evaluation_id)
+    return True
+
+
+_TERMINAL_EVAL_STATUSES = frozenset({"completed", "failed", "partial"})
+
+
+def finalize_evaluation_progress(db: Session, evaluation_id: UUID) -> str:
+    """Fenced recount, then the terminal tail once no row is in flight.
+
+    Returns a short outcome label: ``missing``, ``in_progress`` or the final
+    evaluation status.
+    """
+    from app.services.call_imports import eval_progress_buffer as buf
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(CallImportEvaluation.id == evaluation_id)
+        .first()
+    )
+    if evaluation is None:
+        buf.delete(evaluation_id)
+        return "missing"
+
+    previous_status = (evaluation.status or "").strip().lower()
+    in_progress = recount_evaluation_counters(db, evaluation)
+    if in_progress > 0:
+        db.commit()
+        return "in_progress"
+
+    previous_finished_at = evaluation.finished_at
+    _apply_parent_status_from_counters(evaluation)
+    if (
+        previous_status in _TERMINAL_EVAL_STATUSES
+        and previous_finished_at is not None
+        and (evaluation.status or "").strip().lower() == previous_status
+    ):
+        # Re-finalizing an already closed run (late trigger, sweep): keep
+        # the original close time.
+        evaluation.finished_at = previous_finished_at
+    db.flush()
+
+    from app.services.call_imports.eval_flexprice_billing import (
+        maybe_finalize_evaluation_flexprice_billing,
+    )
+    from app.services.call_imports.metric_aggregate_cache import (
+        maybe_refresh_aggregate_cache_after_row,
+    )
+
+    maybe_finalize_evaluation_flexprice_billing(db, evaluation)
+    maybe_refresh_aggregate_cache_after_row(
+        db,
+        evaluation,
+        new_row_status="completed",
+    )
+    if (evaluation.status or "").lower() in _TERMINAL_EVAL_STATUSES:
+        from app.models.database import CallImport
+        from app.services.call_imports.bulk_ops import rollup_call_import_batch_status
+
+        call_import = (
+            db.query(CallImport)
+            .filter(CallImport.id == evaluation.call_import_id)
+            .first()
+        )
+        if call_import is not None:
+            rollup_call_import_batch_status(db, call_import)
+    db.commit()
+    buf.delete(evaluation_id)
+    return str(evaluation.status or "")
 
 
 def rollup_parent(

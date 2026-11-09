@@ -10,6 +10,7 @@ from sqlalchemy import (
     Enum,
     event,
     Float,
+    Index,
     ForeignKey,
     Integer,
     JSON,
@@ -3190,6 +3191,16 @@ class CallImportEvaluation(Base):
     billed_completed_rows = Column(
         Integer, nullable=False, default=0, server_default="0"
     )
+    # Redis-buffered progress counters (``eval_progress_buffer``). ``gen`` is
+    # bumped by every fenced shard recount; flushes carrying an older gen are
+    # ignored. ``flush_seq`` is the last applied flush, so re-sending the same
+    # pending batch is a no-op.
+    progress_counter_gen = Column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    progress_flush_seq = Column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
     error_message = Column(Text, nullable=True)
     celery_group_id = Column(String(255), nullable=True)
 
@@ -3215,6 +3226,11 @@ class CallImportEvaluationRow(Base):
     __table_args__ = (
         UniqueConstraint(
             "evaluation_id", "call_import_row_id", name="uq_call_import_evaluation_row"
+        ),
+        Index(
+            "ix_call_import_evaluation_rows_evaluation_status",
+            "evaluation_id",
+            "status",
         ),
     )
 

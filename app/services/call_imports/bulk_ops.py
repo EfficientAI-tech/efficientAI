@@ -551,6 +551,15 @@ def materialize_and_enqueue_evaluation(
             commit_pending_shard_sessions(pending_shard_sessions)
         evaluation.total_rows = committed
         db.commit()
+        from app.services.call_imports.eval_progress_buffer import seed_best_effort
+
+        # Seed before any row is dispatched so ``remaining`` starts at total.
+        seed_best_effort(
+            evaluation_id,
+            gen=int(evaluation.progress_counter_gen or 0),
+            seq=int(evaluation.progress_flush_seq or 0),
+            remaining=committed,
+        )
     except Exception as exc:
         committed = getattr(exc, "committed", committed)
         if shard_sessions is not None:
@@ -2500,6 +2509,20 @@ def execute_evaluation_retry(
     eval_only = 0
     transcribe = 0
     scheduled_early = False
+
+    reopened_status: Optional[str] = None
+    if (getattr(evaluation, "status", None) or "").strip().lower() in {
+        "completed",
+        "failed",
+        "partial",
+    }:
+        # Rows reset below can be dispatched (and finish) before the final
+        # recount. Mark the parent running first so finalize triggered by
+        # those rows treats the run as open rather than already closed.
+        reopened_status = evaluation.status
+        evaluation.status = "running"
+        evaluation.finished_at = None
+        db.commit()
     seen: set[UUID] = set()
     orphans: List[UUID] = []
     shard_reset: List[UUID] = []
@@ -2615,6 +2638,9 @@ def execute_evaluation_retry(
 
         requeued = eval_only + transcribe
         if requeued == 0:
+            if reopened_status is not None:
+                _rollup_evaluation_status(evaluation, db)
+                db.commit()
             return {
                 "evaluation_id": str(evaluation_id),
                 "requeued": 0,

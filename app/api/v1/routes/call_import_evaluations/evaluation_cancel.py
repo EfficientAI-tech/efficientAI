@@ -677,6 +677,11 @@ async def delete_call_import_evaluation(
     clear_discovered_running_cache(eval_id)
     db.delete(row)
     db.commit()
+    from app.services.call_imports.eval_progress_buffer import (
+        delete as delete_eval_counters,
+    )
+
+    delete_eval_counters(eval_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -717,10 +722,18 @@ async def bulk_delete_call_import_evaluations(
         .all()
     )
     deleted = 0
+    deleted_ids = []
     for row in rows:
         _revoke_pending_tasks(row)
+        deleted_ids.append(row.id)
         db.delete(row)
         deleted += 1
     db.commit()
+    from app.services.call_imports.eval_progress_buffer import (
+        delete as delete_eval_counters,
+    )
+
+    for deleted_id in deleted_ids:
+        delete_eval_counters(deleted_id)
     return {"deleted": deleted}
 

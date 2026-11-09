@@ -164,14 +164,60 @@ def clear_eval_progress_redis(evaluation_id: UUID | str) -> None:
         logger.debug("eval progress redis clear skipped: {}", exc)
 
 
+_TERMINAL_EVAL_STATUSES = frozenset({"completed", "failed", "partial"})
+
+
+def _catalog_fence(evaluation) -> tuple[int, int]:
+    try:
+        gen = int(getattr(evaluation, "progress_counter_gen", 0) or 0)
+        seq = int(getattr(evaluation, "progress_flush_seq", 0) or 0)
+    except Exception:  # noqa: BLE001 - detached/deferred column
+        return 0, 0
+    return gen, seq
+
+
 def merge_eval_counters_for_ui(
     evaluation,
 ) -> tuple[int, int]:
-    """Catalog counters plus unflushed Redis deltas for progress display."""
+    """Catalog counters plus unflushed Redis deltas for progress display.
+
+    Adds the legacy ``eval:progress`` deltas and the buffered
+    ``eval:ctr:{id}`` deltas that the catalog has not applied yet (the pending
+    slot only while its seq is ahead of the catalog). Clamped to
+    ``[0, total_rows]``.
+    """
     completed = int(getattr(evaluation, "completed_rows", 0) or 0)
     failed = int(getattr(evaluation, "failed_rows", 0) or 0)
     rc, rf = read_eval_progress(evaluation.id)
-    return completed + rc, failed + rf
+    completed += rc
+    failed += rf
+
+    status = str(getattr(evaluation, "status", "") or "").strip().lower()
+    if status not in _TERMINAL_EVAL_STATUSES:
+        from app.services.call_imports.eval_progress_buffer import (
+            read_buffered,
+            unapplied_deltas,
+        )
+
+        catalog_gen, catalog_seq = _catalog_fence(evaluation)
+        bc, bf = unapplied_deltas(
+            read_buffered(evaluation.id),
+            catalog_gen=catalog_gen,
+            catalog_seq=catalog_seq,
+        )
+        completed += bc
+        failed += bf
+
+    completed = max(0, completed)
+    failed = max(0, failed)
+    try:
+        total = int(getattr(evaluation, "total_rows", 0) or 0)
+    except (TypeError, ValueError):
+        total = 0
+    if total > 0:
+        completed = min(completed, total)
+        failed = min(failed, total)
+    return completed, failed
 
 
 def read_import_progress(call_import_id: UUID | str) -> tuple[int, int]:

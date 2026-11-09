@@ -203,6 +203,21 @@ def _patch_eval_row_storage(monkeypatch):
     return fake
 
 
+
+def _settle_parent(db_session, evaluation):
+    """Bring the catalog parent up to date the way production does.
+
+    Workers only buffer progress in Redis; the finalize task (fenced shard
+    recount + terminal status) is what moves the catalog parent.
+    """
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        finalize_evaluation_progress,
+    )
+
+    finalize_evaluation_progress(db_session, evaluation.id)
+    db_session.refresh(evaluation)
+
+
 def _patch_row_location(monkeypatch, db_session):
     """Route shard-aware row lookup to the pytest session."""
 
@@ -314,7 +329,7 @@ def test_evaluate_call_import_row_happy_path(db_session, monkeypatch):
     assert result["status"] == "completed"
 
     db_session.refresh(eval_row)
-    db_session.refresh(evaluation)
+    _settle_parent(db_session, evaluation)
 
     assert eval_row.status == "completed"
     assert eval_row.error_message is None
@@ -377,7 +392,7 @@ def test_evaluate_call_import_row_marks_failed_on_empty_transcript(
     assert result["reason"] == "missing_transcript"
 
     db_session.refresh(eval_rows[0])
-    db_session.refresh(evaluation)
+    _settle_parent(db_session, evaluation)
     assert eval_rows[0].status == "failed"
     # Normal metrics always require a diarised transcript.
     err = (eval_rows[0].error_message or "").lower()
@@ -401,7 +416,7 @@ def test_evaluate_call_import_row_partial_when_mixed_outcomes(db_session, monkey
     task_module = _patch_dependencies(monkeypatch, db_session)
     task_module.evaluate_call_import_row_task.run(str(eval_rows[0].id))
 
-    db_session.refresh(evaluation)
+    _settle_parent(db_session, evaluation)
     assert evaluation.completed_rows == 1
     assert evaluation.failed_rows == 1
     assert evaluation.status == "partial"
@@ -420,7 +435,7 @@ def test_evaluate_call_import_row_handles_llm_exception(db_session, monkeypatch)
     assert result["status"] == "failed"
 
     db_session.refresh(eval_rows[0])
-    db_session.refresh(evaluation)
+    _settle_parent(db_session, evaluation)
     assert eval_rows[0].status == "failed"
     assert "LLM blew up" in (eval_rows[0].error_message or "")
     assert evaluation.status == "failed"
@@ -1109,8 +1124,10 @@ def test_evaluate_call_import_row_skips_terminal_write_when_cancelled(
     assert refreshed.error_message == "Evaluation cancelled by user"
     assert refreshed.metric_scores in (None, {}, {} or None)
 
-    # Parent rollup still ran, so its counters reflect the cancelled row.
+    # The worker must not count the cancelled row itself; the cancel path's
+    # fenced recount (finalize here) is what reflects it on the parent.
     refreshed_eval = db_session.get(CallImportEvaluation, evaluation.id)
+    _settle_parent(db_session, refreshed_eval)
     assert refreshed_eval.failed_rows == 1
     assert refreshed_eval.completed_rows == 0
 
@@ -1518,7 +1535,7 @@ def test_evaluate_call_import_row_audio_chain_enqueue_failure_marks_failed(
     assert redispatched["called"] is True
 
     db_session.refresh(eval_rows[0])
-    db_session.refresh(evaluation)
+    _settle_parent(db_session, evaluation)
     assert eval_rows[0].status == "failed"
     assert eval_rows[0].error_message == "Failed to enqueue LLM evaluation phase"
     assert eval_rows[0].finished_at is not None
@@ -2172,7 +2189,7 @@ def test_duplicate_task_scores_and_bills_the_row_once(db_session, monkeypatch):
     assert llm_calls == [1]
     assert usage_calls == [1]
     db_session.refresh(eval_row)
-    db_session.refresh(evaluation)
+    _settle_parent(db_session, evaluation)
     assert eval_row.status == "completed"
     assert evaluation.completed_rows == 1
 
@@ -2184,7 +2201,7 @@ def test_duplicate_task_scores_and_bills_the_row_once(db_session, monkeypatch):
     assert again == {"status": "skipped", "reason": "already_claimed"}
     assert llm_calls == [1]
     assert usage_calls == [1]
-    db_session.refresh(evaluation)
+    _settle_parent(db_session, evaluation)
     assert evaluation.completed_rows == 1
 
 
@@ -2265,7 +2282,7 @@ def test_second_terminal_write_does_not_advance_progress(db_session):
         eval_row,
         previous_row_status="running",
     )
-    db_session.refresh(evaluation)
+    _settle_parent(db_session, evaluation)
     assert evaluation.completed_rows == 1
 
     eval_row = db_session.get(CallImportEvaluationRow, eval_row_id)
@@ -2276,7 +2293,7 @@ def test_second_terminal_write_does_not_advance_progress(db_session):
         eval_row,
         previous_row_status="running",
     )
-    db_session.refresh(evaluation)
+    _settle_parent(db_session, evaluation)
     db_session.refresh(eval_row)
     assert evaluation.completed_rows == 1
     assert eval_row.status == "completed"

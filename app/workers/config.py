@@ -103,6 +103,13 @@ def _cron_dispatch_beat_seconds() -> float:
         return 30.0
 
 
+def _eval_progress_flush_beat_seconds() -> float:
+    try:
+        return max(5.0, float(getattr(settings, "EVAL_PROGRESS_FLUSH_SECONDS", 30) or 30))
+    except (TypeError, ValueError):
+        return 30.0
+
+
 def _platform_beat_schedule() -> dict:
     """Periodic platform tasks — run from dedicated ``celery beat`` (single replica)."""
     schedule = {
@@ -133,6 +140,12 @@ def _platform_beat_schedule() -> dict:
         "sweep-orphan-s3-batches": {
             "task": "sweep_orphan_s3_batches",
             "schedule": 900.0,
+        },
+        # Redis-buffered eval progress counters -> catalog (one batched
+        # UPDATE per tick) plus the periodic fenced recount sweep.
+        "flush-eval-progress-counters": {
+            "task": "flush_eval_progress_counters",
+            "schedule": _eval_progress_flush_beat_seconds(),
         },
         "sweep-stale-running-evaluations": {
             "task": "sweep_stale_running_evaluations",
@@ -242,6 +255,8 @@ celery_app.conf.task_routes = {
     "refresh_fx_rates": {"queue": PLATFORM_WORKER_QUEUE},
     "sweep_stale_running_evaluations": {"queue": PLATFORM_WORKER_QUEUE},
     "auto_abort_stale_evaluation": {"queue": EVAL_CONTROL_QUEUE},
+    "finalize_call_import_evaluation": {"queue": EVAL_CONTROL_QUEUE},
+    "flush_eval_progress_counters": {"queue": EVAL_CONTROL_QUEUE},
     "prune_oss_usage_history": {"queue": PLATFORM_WORKER_QUEUE},
     "dispatch_cron_jobs": {"queue": USAGE_WORKER_QUEUE},
     "run_cron_evaluator_job": {"queue": "celery"},
