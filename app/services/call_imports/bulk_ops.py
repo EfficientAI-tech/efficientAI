@@ -2633,6 +2633,11 @@ def execute_evaluation_retry(
             reset_groups.append((shard_id, shard_reset))
         return len(shard_reset)
 
+    # Dispatch skips evaluations that hold a bulk-operation lock, and the
+    # ``retry`` lock is only released in ``finally`` below. Dispatch requested
+    # while it is held can run first, skip this run and never be re-triggered
+    # (nothing else is in flight after an abort), so ask again once released.
+    dispatch_after_release = False
     try:
         saw_rows = 0
         for session, shard_id in iter_evaluation_row_sessions(db, import_id):
@@ -2676,6 +2681,7 @@ def execute_evaluation_retry(
         evaluation.finished_at = None
         _rollup_evaluation_status(evaluation, db)
         db.commit()
+        dispatch_after_release = True
         return {
             "evaluation_id": str(evaluation_id),
             "requeued": requeued,
@@ -2688,6 +2694,8 @@ def execute_evaluation_retry(
         )
 
         clear_evaluation_bulk_operation(evaluation_id)
+        if dispatch_after_release:
+            schedule_fair_dispatch(max_workspace_turns=999)
 
 
 _IMPORT_RETRY_COLUMNS = (

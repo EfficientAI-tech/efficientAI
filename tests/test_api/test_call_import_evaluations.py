@@ -1745,3 +1745,54 @@ def test_materialized_evaluation_has_started_at(
     parent = db_session.get(CallImportEvaluation, UUID(created["id"]))
     assert parent.status == "running"
     assert parent.started_at is not None
+
+
+def test_retry_after_abort_dispatches_after_bulk_lock_is_released(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    """Dispatch skips evaluations holding a bulk-op lock. Retry must ask for a
+    dispatch *after* it releases its ``retry`` lock, or an aborted run (with
+    nothing else in flight to re-trigger dispatch) never resumes."""
+    import sys
+
+    from app.services.call_imports import evaluation_bulk_op
+
+    metric = _make_metric(db_session, org_id)
+    call_import, _ = _make_call_import(db_session, org_id, rows=2)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+    _stub_celery_revoke(monkeypatch)
+    _force_running(db_session, created["id"])
+    aborted = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{created['id']}/cancel"
+    )
+    assert aborted.status_code == 202, aborted.text
+
+    events: list[str] = []
+    real_clear = evaluation_bulk_op.clear_evaluation_bulk_operation
+
+    def _clear(evaluation_id):
+        events.append("release")
+        real_clear(evaluation_id)
+
+    monkeypatch.setattr(evaluation_bulk_op, "clear_evaluation_bulk_operation", _clear)
+    fair = sys.modules["app.workers.concurrency.fair_dispatch"]
+    monkeypatch.setattr(
+        fair, "schedule_fair_dispatch", lambda *_a, **_kw: events.append("dispatch")
+    )
+
+    retried = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{created['id']}/retry",
+        json={},
+    )
+    assert retried.status_code == 202, retried.text
+    assert retried.json()["requeued"] == 2
+    assert "release" in events
+    assert events[-1] == "dispatch"
+    assert events.index("release") < len(events) - 1
+
+    db_session.expire_all()
+    parent = db_session.get(CallImportEvaluation, UUID(created["id"]))
+    assert parent.status == "running"

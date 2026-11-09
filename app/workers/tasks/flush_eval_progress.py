@@ -273,6 +273,16 @@ def sweep_running_evaluations(db: Session, *, now: float | None = None) -> int:
             continue
         if buf.request_finalize(eid):
             requested += 1
+    if rows:
+        # Eval dispatch has no beat of its own; it runs when something asks.
+        # A lost request (e.g. one that ran while a bulk-op lock was held)
+        # would leave pending rows of a running evaluation idle forever.
+        try:
+            from app.workers.concurrency.fair_dispatch import schedule_fair_dispatch
+
+            schedule_fair_dispatch(max_workspace_turns=999)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("eval dispatch safety-net schedule failed: {}", exc)
     return requested
 
 
