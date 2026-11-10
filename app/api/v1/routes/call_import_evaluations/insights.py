@@ -246,6 +246,13 @@ def _tldr_summary_payload(
         generated_at = evaluation.updated_at or datetime.now(timezone.utc)
     snapshot = raw.get("generated_at_completed_rows")
     snapshot_int = int(snapshot) if isinstance(snapshot, (int, float)) else 0
+    from app.services.call_imports.progress_counters import merge_eval_counters_for_ui
+
+    # Same live count the snapshot was stamped with (catalog + unflushed
+    # Redis), so new completions mark the summary stale without waiting for
+    # the next progress flush.
+    merged_completed, _merged_failed = merge_eval_counters_for_ui(evaluation)
+    current_completed = max(int(evaluation.completed_rows or 0), merged_completed)
     return EvaluationTldrSummary(
         narrative=_clamp_prose_to_sentences(narrative.strip()),
         patterns=patterns,
@@ -254,7 +261,7 @@ def _tldr_summary_payload(
         generated_at_completed_rows=snapshot_int,
         provider=raw.get("provider") if isinstance(raw.get("provider"), str) else None,
         model=raw.get("model") if isinstance(raw.get("model"), str) else None,
-        is_stale=evaluation.completed_rows > snapshot_int,
+        is_stale=current_completed > snapshot_int,
     )
 
 
@@ -493,6 +500,12 @@ def _generate_and_persist_tldr_summary(
 ) -> EvaluationTldrSummary:
     """LLM TLDR generation used by the imports-queue Celery worker."""
     eval_id = evaluation.id
+    from app.services.call_imports.progress_counters import merge_eval_counters_for_ui
+
+    # Stamp the summary with the completion count at the moment its input is
+    # collected. Rows finishing while the LLM runs are not in the summary, so
+    # they must still make it stale.
+    input_completed_rows, _input_failed_rows = merge_eval_counters_for_ui(evaluation)
     from app.db_sharding.scatter_gather import (
         INSIGHTS_TLDR_ROW_SAMPLE,
         load_completed_evaluation_row_pairs_sample,
@@ -603,12 +616,7 @@ def _generate_and_persist_tldr_summary(
             detail="Insights response was cut off before it finished. Try again.",
         )
 
-    from app.services.call_imports.progress_counters import merge_eval_counters_for_ui
-
-    # Include buffered (not yet flushed) progress: the summary was built from
-    # shard rows, which already contain those completions.
-    ui_completed, _ui_failed = merge_eval_counters_for_ui(evaluation)
-    summary.generated_at_completed_rows = ui_completed
+    summary.generated_at_completed_rows = input_completed_rows
     summary.provider = provider_enum.value
     summary.model = model_str
     summary.is_stale = False
