@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Literal, Optional, Tuple
 from uuid import UUID, uuid4
 
 from loguru import logger
@@ -213,6 +213,12 @@ def _enqueue_diarization_for_rows(
     )
 
 
+def _id_chunks(ids: List[UUID]) -> Iterator[List[UUID]]:
+    size = _IMPORT_ROW_FILTER_PAGE_SIZE
+    for start in range(0, len(ids), size):
+        yield ids[start : start + size]
+
+
 def execute_bulk_diarization(
     db: Session,
     call_import: CallImport,
@@ -229,34 +235,40 @@ def execute_bulk_diarization(
         )
 
     from app.services.call_imports.row_selection import normalize_row_selection_filter
-    from app.db_sharding.scatter_gather import fetch_call_import_rows_filtered_page
+    from app.db_sharding.scatter_gather import (
+        list_call_import_row_ids_filtered,
+        load_call_import_rows_for_transcription,
+    )
 
     search_term, diarised_status = normalize_row_selection_filter(payload.row_filter)
     skip_counts: Dict[str, int] = {}
     queued_total = 0
-    offset = 0
-    page_size = _IMPORT_ROW_FILTER_PAGE_SIZE
 
-    while True:
-        page = fetch_call_import_rows_filtered_page(
+    # Snapshot matching ids first: enqueueing moves rows to ``pending``, which
+    # drops them out of a status filter (e.g. retrying ``failed``), so offset
+    # paging over the live filter would skip every other page.
+    for chunk in _id_chunks(
+        list_call_import_row_ids_filtered(
             db,
             call_import.id,
-            offset=offset,
-            limit=page_size,
             search_term=search_term,
             diarised_status_filter=diarised_status,
         )
+    ):
+        page = sorted(
+            load_call_import_rows_for_transcription(
+                db, call_import.id, requested_row_ids=chunk
+            ),
+            key=lambda row: int(row.row_index or 0),
+        )
         if not page:
-            break
+            continue
         selected = _apply_transcription_selection(page, payload, skip_counts)
         result = _enqueue_diarization_for_rows(
             db, call_import, payload, selected, skip_counts
         )
         queued_total += result.queued
         skip_counts = dict(result.skipped_reason_counts)
-        if len(page) < page_size:
-            break
-        offset += page_size
 
     return BulkDiarizationResult(
         queued=queued_total,
@@ -649,31 +661,20 @@ def execute_bulk_row_delete_by_filter(
     search_term: str = "",
     diarised_status_filter: Optional[str] = None,
 ) -> int:
-    from app.db_sharding.scatter_gather import fetch_call_import_rows_filtered_page
+    from app.db_sharding.scatter_gather import list_call_import_row_ids_filtered
 
+    # Snapshot ids first: each delete removes its page from the live results,
+    # so offset paging would skip every other page.
     deleted_total = 0
-    offset = 0
-    page_size = _IMPORT_ROW_FILTER_PAGE_SIZE
-    while True:
-        page = fetch_call_import_rows_filtered_page(
+    for chunk in _id_chunks(
+        list_call_import_row_ids_filtered(
             db,
             call_import.id,
-            offset=offset,
-            limit=page_size,
             search_term=search_term,
             diarised_status_filter=diarised_status_filter,
         )
-        if not page:
-            break
-        deleted_total += execute_bulk_row_delete(
-            db,
-            organization_id,
-            call_import,
-            [row.id for row in page],
-        )
-        if len(page) < page_size:
-            break
-        offset += page_size
+    ):
+        deleted_total += execute_bulk_row_delete(db, organization_id, call_import, chunk)
     return deleted_total
 
 

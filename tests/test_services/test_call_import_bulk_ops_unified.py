@@ -527,3 +527,71 @@ def test_bulk_materialize_writes_explicit_missing_indices(monkeypatch):
     )
     assert inserted == 2
     assert captured["indices"] == [250, 499]
+
+
+def _seed_failed_diarisation_rows(db_session, count):
+    call_import, rows = _seed_import_with_rows(db_session, completed=count, pending=0)
+    for i, row in enumerate(rows):
+        row.recording_s3_key = f"recordings/conv-{i}.mp3"
+        row.diarised_transcript_status = "failed"
+    db_session.commit()
+    return call_import, rows
+
+
+def test_bulk_diarization_retry_by_status_covers_every_page(monkeypatch, db_session):
+    """Queued rows leave the ``failed`` filter; paging must not skip the rest."""
+    import app.services.call_imports.bulk_ops as bulk_ops
+
+    monkeypatch.setattr(bulk_ops, "is_sharding_enabled", lambda: False)
+    monkeypatch.setattr(bulk_ops, "_IMPORT_ROW_FILTER_PAGE_SIZE", 2)
+    monkeypatch.setattr(
+        "app.workers.concurrency.diarization_dispatch.store_row_diarization_params_batch",
+        lambda row_ids, _params: (list(row_ids), []),
+    )
+    monkeypatch.setattr(
+        "app.workers.concurrency.fair_diarization_dispatch.schedule_fair_diarization_dispatch",
+        lambda **_kw: None,
+    )
+    call_import, rows = _seed_failed_diarisation_rows(db_session, 5)
+
+    payload = CallImportTranscribeRequest(
+        stt_provider="deepgram",
+        stt_model="nova-2",
+        diarization_llm_provider="openai",
+        diarization_llm_model="gpt-4o-mini",
+        overwrite_existing=True,
+        row_filter={"diarised_status": "failed"},
+    )
+    result = execute_bulk_diarization(db_session, call_import, payload)
+
+    assert result.queued == 5
+    for row in rows:
+        db_session.refresh(row)
+        assert row.diarised_transcript_status == "pending"
+
+
+def test_bulk_delete_by_filter_covers_every_page(monkeypatch, db_session):
+    """Each delete shrinks the filtered results; paging must not skip the rest."""
+    import app.services.call_imports.bulk_ops as bulk_ops
+    from app.models.database import CallImportRow
+
+    monkeypatch.setattr(bulk_ops, "_IMPORT_ROW_FILTER_PAGE_SIZE", 2)
+    monkeypatch.setattr(
+        "app.api.v1.routes.call_imports._delete_s3_objects", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "app.api.v1.routes.call_imports._revoke_pending_tasks", lambda *a, **k: None
+    )
+    call_import, _rows = _seed_import_with_rows(db_session, completed=5, pending=0)
+
+    deleted = bulk_ops.execute_bulk_row_delete_by_filter(
+        db_session, call_import.organization_id, call_import
+    )
+
+    assert deleted == 5
+    assert (
+        db_session.query(CallImportRow)
+        .filter(CallImportRow.call_import_id == call_import.id)
+        .count()
+        == 0
+    )
