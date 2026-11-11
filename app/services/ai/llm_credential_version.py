@@ -75,7 +75,7 @@ def read_llm_config_version(organization_id: UUID | str) -> Optional[int]:
             return hit[1]
     try:
         raw = _client().get(version_key(org))
-    except redis.RedisError as exc:
+    except Exception as exc:  # noqa: BLE001 - any client failure means "unknown version"
         logger.debug("llm config version read failed for org {}: {}", org, exc)
         return None
     try:
@@ -102,7 +102,11 @@ def bump_llm_config_version(organization_ids: Iterable[UUID | str]) -> None:
             pipe.incr(key)
             pipe.expire(key, _KEY_TTL_SECONDS)
         pipe.execute()
-    except redis.RedisError as exc:
+    except Exception as exc:  # noqa: BLE001
+        # Runs from SQLAlchemy's after_commit hook: the commit already
+        # succeeded, so a cache-invalidation failure must never surface
+        # as an error to the caller. Catch beyond RedisError (e.g. socket
+        # setup errors) for that reason.
         logger.warning(
             "llm config version bump failed for orgs {} (stale for up to {}s): {}",
             sorted(orgs),
