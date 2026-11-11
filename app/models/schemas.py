@@ -3865,6 +3865,13 @@ class CallImportResponse(BaseModel):
     total_rows: int
     completed_rows: int
     failed_rows: int
+    import_rows_processing: int = Field(
+        0,
+        description=(
+            "Import rows currently in the processing status. Used to keep "
+            "recording-download progress polling after an evaluation exists."
+        ),
+    )
     status: CallImportStatus
     error_message: Optional[str] = None
     latest_evaluation_status: Optional[str] = Field(

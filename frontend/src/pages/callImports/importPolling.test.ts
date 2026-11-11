@@ -85,6 +85,23 @@ describe('importPolling', () => {
     expect(callImportListPollMs([header as never])).toBe(false)
   })
 
+  it('polls recording downloads while rows are processing after an evaluation finished', () => {
+    const header = {
+      id: 'retry',
+      status: 'processing' as const,
+      latest_evaluation_status: 'completed',
+      latest_evaluation_transcript_source: 'production',
+      latest_evaluation_total_rows: 10,
+      latest_evaluation_completed_rows: 10,
+      latest_evaluation_failed_rows: 0,
+      latest_evaluation_bulk_operation: null,
+      import_rows_processing: 4,
+    }
+    expect(importHeaderPollMs(header)).toBe(IMPORT_FETCH_POLL_MS)
+    expect(importRowsPollMs(header)).toBe(IMPORT_FETCH_POLL_MS)
+    expect(callImportListPollMs([header as never])).toBe(5000)
+  })
+
   it('polls a processing import that has no evaluation yet', () => {
     const header = {
       id: 'fetch',

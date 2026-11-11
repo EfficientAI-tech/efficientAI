@@ -31,6 +31,7 @@ from app.services.usage.read_cache import (
     cache_ttl_seconds,
     get_cached_response,
     get_stale_response,
+    read_cache_version,
     release_read_lock,
     set_cached_response,
     wait_for_cached_response,
@@ -226,30 +227,35 @@ def _usage_range_is_historical(access) -> bool:
 
 
 def _prepare_usage_read(organization_id, endpoint, cache_key, model):
-    """Return a cached payload, or (None, leader) when this request should query."""
-    cached = get_cached_response(organization_id, endpoint, cache_key)
+    """Return a cached payload, or (None, leader, version) when this request should query.
+
+    ``version`` is read before the database work so a flush during the query
+    cannot store the old totals under the new cache epoch.
+    """
+    version = read_cache_version(organization_id)
+    cached = get_cached_response(organization_id, endpoint, cache_key, version)
     if cached is not None:
         try:
-            return model.model_validate(cached), False
+            return model.model_validate(cached), False, version
         except Exception:
             pass
     if cache_ttl_seconds() <= 0:
-        return None, False
+        return None, False, version
     if acquire_read_lock(organization_id, endpoint, cache_key):
-        return None, True
+        return None, True, version
     stale = get_stale_response(organization_id, endpoint, cache_key)
     if stale is not None:
         try:
-            return model.model_validate(stale), False
+            return model.model_validate(stale), False, version
         except Exception:
             pass
     waited = wait_for_cached_response(organization_id, endpoint, cache_key)
     if waited is not None:
         try:
-            return model.model_validate(waited), False
+            return model.model_validate(waited), False, version
         except Exception:
             pass
-    return None, False
+    return None, False, version
 
 
 def _usage_policy_meta(access) -> UsagePolicyMeta:
@@ -1173,7 +1179,7 @@ def get_usage_summary(
         dataset=dataset,
         tag_id=tag_id,
     )
-    cached_response, cache_leader = _prepare_usage_read(
+    cached_response, cache_leader, cache_version = _prepare_usage_read(
         organization_id, "summary", cache_key, UsageSummaryResponse
     )
     if cached_response is not None:
@@ -1211,6 +1217,7 @@ def get_usage_summary(
             cache_key,
             response.model_dump(mode="json"),
             historical=_usage_range_is_historical(access),
+            version=cache_version,
         )
         return response
     finally:
@@ -1264,7 +1271,7 @@ def get_usage_breakdown(
         limit=limit,
         offset=offset,
     )
-    cached_response, cache_leader = _prepare_usage_read(
+    cached_response, cache_leader, cache_version = _prepare_usage_read(
         organization_id, "breakdown", cache_key, UsageBreakdownResponse
     )
     if cached_response is not None:
@@ -1513,6 +1520,7 @@ def get_usage_breakdown(
             cache_key,
             response.model_dump(mode="json"),
             historical=_usage_range_is_historical(access),
+            version=cache_version,
         )
         return response
     finally:
@@ -1559,7 +1567,7 @@ def get_usage_filters(
         tag_id=tag_id,
         q=q,
     )
-    cached_response, cache_leader = _prepare_usage_read(
+    cached_response, cache_leader, cache_version = _prepare_usage_read(
         organization_id, "filters", cache_key, UsageFiltersResponse
     )
     if cached_response is not None:
@@ -1807,6 +1815,7 @@ def get_usage_filters(
             cache_key,
             response.model_dump(mode="json"),
             historical=_usage_range_is_historical(access),
+            version=cache_version,
         )
         return response
     finally:

@@ -172,16 +172,19 @@ def _serialize_call_import(
         if isinstance(call_import.status, CallImportStatus)
         else str(call_import.status or "")
     )
-    # Active imports: optional row recount (detail/poll only — list uses catalog+Redis).
-    if refresh_import_progress_from_rows and batch_status in {"pending", "processing"}:
+    # Active imports need the live processing count so a recording retry
+    # still polls after an evaluation has already finished.
+    import_rows_processing = 0
+    if batch_status in {"pending", "processing"}:
         from app.services.call_imports.bulk_ops import (
             _aggregate_import_row_status_counts,
         )
 
-        agg_total, agg_completed, agg_failed, _, _ = (
+        agg_total, agg_completed, agg_failed, _, agg_processing = (
             _aggregate_import_row_status_counts(db, call_import.id)
         )
-        if agg_total > 0:
+        import_rows_processing = int(agg_processing or 0)
+        if refresh_import_progress_from_rows and agg_total > 0:
             total = agg_total
             completed = agg_completed
             failed = agg_failed
@@ -198,6 +201,7 @@ def _serialize_call_import(
             "total_rows": total,
             "completed_rows": completed,
             "failed_rows": failed,
+            "import_rows_processing": import_rows_processing,
             "platform_agents": [
                 PlatformImportAgentRef.model_validate(ref)
                 for ref in _platform_agent_refs(call_import)

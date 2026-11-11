@@ -16,6 +16,7 @@ from app.services.usage.read_cache import (
     get_or_compute_cached_response,
     historical_cache_ttl_seconds,
     invalidate_org_usage_read_cache,
+    read_cache_version,
     set_cached_response,
 )
 from tests.test_services.test_usage.test_llm_usage import _FakeRedis
@@ -123,6 +124,22 @@ def test_usage_read_cache_invalidate_org(fake_redis, monkeypatch):
     assert get_cached_response(other_org, "summary", key) is not None
 
 
+def test_usage_read_cache_discards_write_when_epoch_changes(fake_redis):
+    org_id = uuid4()
+    access = _access()
+    key = cache_key_for(access)
+    payload = {
+        "start": "2026-08-01",
+        "end": "2026-08-07",
+        "totals": {"prompt_tokens": 10, "completion_tokens": 5, "call_count": 1},
+    }
+    version = read_cache_version(org_id)
+    invalidate_org_usage_read_cache(org_id)
+    set_cached_response(org_id, "summary", key, payload, version=version)
+    assert get_cached_response(org_id, "summary", key) is None
+    assert fake_redis.get(f"usage:read_stale:{org_id}:summary:{key}") is None
+
+
 def test_usage_read_cache_epoch_invalidation_is_a_version_bump(fake_redis):
     org_id = uuid4()
     before = fake_redis.get(f"usage:read_ver:{org_id}")
@@ -182,6 +199,13 @@ def test_context_merge_preaggregates_full_bucket_keys_without_dropping_other_dat
     assert "call_import_rows" in backfill_src
     assert "call_import_evaluation_rows" in backfill_src
 
+    from app.services.usage import rollup_maintenance as rollup_mod
+
     shard_src = inspect.getsource(repair_orphaned_row_context)
+    orphan_sql = rollup_mod._IMPORT_ORPHAN_SQL + rollup_mod._EVAL_ORPHAN_SQL
     assert "CAST(:ids AS uuid[])" in shard_src
     assert "WHERE id::text = ANY" not in shard_src
+    assert "range(20)" not in shard_src
+    assert "import_cursor" in shard_src
+    assert "ORDER BY 1" in orphan_sql
+    assert ":cursor" in orphan_sql

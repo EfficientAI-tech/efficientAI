@@ -1262,6 +1262,8 @@ export interface CallImport {
   total_rows: number
   completed_rows: number
   failed_rows: number
+  /** Import rows whose download/fetch status is currently processing. */
+  import_rows_processing?: number
   status: CallImportStatus
   error_message: string | null
   /** Status of the most recent evaluation run, when any evaluation exists. */

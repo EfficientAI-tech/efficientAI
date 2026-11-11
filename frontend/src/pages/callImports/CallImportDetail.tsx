@@ -28,7 +28,7 @@ import { ImportDeleteConfirmModals } from './components/importDetail/ImportDelet
 import { ImportRunEvaluationModal } from './components/importDetail/ImportRunEvaluationModal'
 import { useImportEvaluationsTab } from './hooks/useImportEvaluationsTab'
 import { evaluationListPollMs } from './evaluationBulkOperation'
-import { importDetailHeaderPollMs } from './importPolling'
+import { IMPORT_FETCH_POLL_MS, importDetailHeaderPollMs } from './importPolling'
 import {
   callImportEvalSurface,
   metricsForCallImportRunEvaluation,
@@ -50,9 +50,12 @@ export default function CallImportDetail() {
     activeWorkspaceId,
     id,
   ] as const
+  const [recordingRetryWatch, setRecordingRetryWatch] = useState(false)
+  const recordingRetryMarkedAt = useRef(0)
 
   const {
     data,
+    dataUpdatedAt,
     isLoading,
     isFetching: headerFetching,
     refetch: refetchHeader,
@@ -64,6 +67,7 @@ export default function CallImportDetail() {
     staleTime: 60_000,
     refetchOnWindowFocus: false,
     refetchInterval: (query) => {
+      if (recordingRetryWatch) return IMPORT_FETCH_POLL_MS
       const evalList = queryClient.getQueryData<CallImportEvaluationListResponse>(
         evaluationsQueryKey,
       )
@@ -73,6 +77,15 @@ export default function CallImportDetail() {
       )
     },
   })
+
+  useEffect(() => {
+    if (!recordingRetryWatch || dataUpdatedAt <= recordingRetryMarkedAt.current) return
+    const processing = data?.import_rows_processing ?? 0
+    const status = data?.status
+    if (processing === 0 && status !== 'pending' && status !== 'processing') {
+      setRecordingRetryWatch(false)
+    }
+  }, [recordingRetryWatch, dataUpdatedAt, data])
 
   const {
     rowOffset,
@@ -115,7 +128,9 @@ export default function CallImportDetail() {
     transcribeReadySelection,
     cancellableSelection,
     selectionSpansPages,
-  } = useImportDetailRows(id ?? '', activeWorkspaceId, data)
+  } = useImportDetailRows(id ?? '', activeWorkspaceId, data, {
+    forcePoll: recordingRetryWatch,
+  })
 
 
   const [showBulkDeleteRows, setShowBulkDeleteRows] = useState(false)
@@ -405,6 +420,10 @@ export default function CallImportDetail() {
     }) =>
       apiClient.callImports.retryFailedCallImportRows(id!, selection),
     onSuccess: (result) => {
+      if (result.requeued > 0) {
+        recordingRetryMarkedAt.current = Date.now()
+        setRecordingRetryWatch(true)
+      }
       queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
       setShowRetryFailedImportConfirm(false)

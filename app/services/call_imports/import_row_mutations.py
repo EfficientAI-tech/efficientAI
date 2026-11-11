@@ -265,6 +265,10 @@ def retry_failed_call_import_rows(
         )
 
     recompute_call_import_counters(db, call_import)
+    # Rollup leaves a finished evaluation as partial/completed while the
+    # requeued rows are still pending. Mark the batch processing so the UI
+    # keeps polling until those downloads finish.
+    call_import.status = CallImportStatus.PROCESSING
     if payload is None:
         stamp_call_import_actor(call_import, principal)
     db.commit()

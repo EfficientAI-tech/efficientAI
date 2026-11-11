@@ -424,48 +424,72 @@ def _chunks(values: Sequence[str], size: int) -> Iterable[Sequence[str]]:
         yield values[start : start + size]
 
 
-def _text_ids(db: Session, sql: str) -> list[str]:
+_IMPORT_ORPHAN_SQL = """
+SELECT DISTINCT context->>'call_import_row_id'
+FROM llm_usage_daily
+WHERE context ? 'call_import_row_id'
+  AND NOT (context ? 'call_import_id')
+  AND context->>'call_import_row_id' ~ :uuid_re
+  AND context->>'call_import_row_id' > :cursor
+ORDER BY 1
+LIMIT :limit
+"""
+
+_EVAL_ORPHAN_SQL = """
+SELECT DISTINCT context->>'evaluation_row_id'
+FROM llm_usage_daily
+WHERE context ? 'evaluation_row_id'
+  AND (
+    NOT (context ? 'evaluation_id')
+    OR NOT (context ? 'call_import_id')
+  )
+  AND context->>'evaluation_row_id' ~ :uuid_re
+  AND context->>'evaluation_row_id' > :cursor
+ORDER BY 1
+LIMIT :limit
+"""
+
+
+def _orphan_page(db: Session, sql: str, cursor: str) -> list[str]:
     rows = db.execute(
-        text(sql), {"uuid_re": _UUID_RE, "limit": _ORPHAN_BATCH_LIMIT}
+        text(sql),
+        {"uuid_re": _UUID_RE, "limit": _ORPHAN_BATCH_LIMIT, "cursor": cursor},
     ).all()
     return [str(row[0]) for row in rows if row[0]]
 
 
 def repair_orphaned_row_context(db: Session) -> None:
-    """Resolve row ids that live on shards into catalog context keys."""
+    """Resolve row ids that live on shards into catalog context keys.
+
+    Ids are walked in order. A page of deleted ids only moves the cursor
+    forward, so later live ids are still repaired.
+    """
     from app.db_sharding.pool_manager import db_pool_manager
 
     if not (db_pool_manager.sharding_enabled and db_pool_manager.router):
         return
 
-    # Loop up to 20 passes (100k distinct row ids) so large sharded histories
-    # drain cleanly while guaranteeing termination if deleted rows remain.
-    for _ in range(20):
-        import_row_ids = _text_ids(
-            db,
-            """
-            SELECT DISTINCT context->>'call_import_row_id'
-            FROM llm_usage_daily
-            WHERE context ? 'call_import_row_id'
-              AND NOT (context ? 'call_import_id')
-              AND context->>'call_import_row_id' ~ :uuid_re
-            LIMIT :limit
-            """,
-        )
-        eval_row_ids = _text_ids(
-            db,
-            """
-            SELECT DISTINCT context->>'evaluation_row_id'
-            FROM llm_usage_daily
-            WHERE context ? 'evaluation_row_id'
-              AND (
-                NOT (context ? 'evaluation_id')
-                OR NOT (context ? 'call_import_id')
-              )
-              AND context->>'evaluation_row_id' ~ :uuid_re
-            LIMIT :limit
-            """,
-        )
+    import_cursor = ""
+    eval_cursor = ""
+    import_done = False
+    eval_done = False
+    while not (import_done and eval_done):
+        import_row_ids: list[str] = []
+        eval_row_ids: list[str] = []
+        if not import_done:
+            import_row_ids = _orphan_page(db, _IMPORT_ORPHAN_SQL, import_cursor)
+            if not import_row_ids or import_row_ids[-1] <= import_cursor:
+                import_done = True
+                import_row_ids = []
+            else:
+                import_cursor = import_row_ids[-1]
+        if not eval_done:
+            eval_row_ids = _orphan_page(db, _EVAL_ORPHAN_SQL, eval_cursor)
+            if not eval_row_ids or eval_row_ids[-1] <= eval_cursor:
+                eval_done = True
+                eval_row_ids = []
+            else:
+                eval_cursor = eval_row_ids[-1]
         if not import_row_ids and not eval_row_ids:
             return
 
@@ -505,9 +529,6 @@ def repair_orphaned_row_context(db: Session) -> None:
             finally:
                 session.close()
 
-        if not import_by_row and not eval_by_row:
-            return
-
         eval_to_import: dict[str, str] = {}
         eval_ids = list({value for value in eval_by_row.values() if value})
         for batch in _chunks(eval_ids, _BATCH):
@@ -525,7 +546,6 @@ def repair_orphaned_row_context(db: Session) -> None:
                 {row[0]: row[1] for row in found if row[0] and row[1]}
             )
 
-        progressed = False
         if import_by_row:
             rows = db.execute(
                 text(
@@ -549,7 +569,6 @@ def repair_orphaned_row_context(db: Session) -> None:
                 pairs.append((str(src_id), ctx))
             if pairs:
                 stage_context_pairs(db, pairs)
-                progressed = True
 
         if eval_by_row:
             rows = db.execute(
@@ -582,10 +601,6 @@ def repair_orphaned_row_context(db: Session) -> None:
                     pairs.append((str(src_id), ctx))
             if pairs:
                 stage_context_pairs(db, pairs)
-                progressed = True
-
-        if not progressed:
-            return
 
 
 def ensure_usage_read_indexes(db: Session) -> None:

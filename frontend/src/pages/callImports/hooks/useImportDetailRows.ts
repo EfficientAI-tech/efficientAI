@@ -6,6 +6,7 @@ import type { CallImportRow } from '../../../types/api'
 import type { CallImportRowSidePanelTabId } from '../components/CallImportRowSidePanelContent'
 
 import {
+  IMPORT_FETCH_POLL_MS,
   importRowsPollMs,
 } from '../importPolling'
 
@@ -47,6 +48,7 @@ export function useImportDetailRows(
   id: string,
   activeWorkspaceId: string | null | undefined,
   headerData: HeaderData | undefined,
+  options?: { forcePoll?: boolean },
 ) {
   const queryClient = useQueryClient()
 
@@ -148,10 +150,12 @@ export function useImportDetailRows(
     staleTime: 60_000,
     placeholderData: keepPreviousData,
     refetchOnWindowFocus: false,
-    refetchInterval: () => importRowsPollMs(headerData),
+    refetchInterval: () =>
+      options?.forcePoll ? IMPORT_FETCH_POLL_MS : importRowsPollMs(headerData),
   })
 
-  const importRowsLive = importRowsPollMs(headerData) !== false
+  const importRowsLive =
+    Boolean(options?.forcePoll) || importRowsPollMs(headerData) !== false
   const importRowsWereLive = useRef(false)
   useEffect(() => {
     if (importRowsLive) {
@@ -192,7 +196,8 @@ export function useImportDetailRows(
     enabled: !!id && !!selectedRowId,
     staleTime: 60_000,
     refetchOnWindowFocus: false,
-    refetchInterval: () => importRowsPollMs(headerData),
+    refetchInterval: () =>
+      options?.forcePoll ? IMPORT_FETCH_POLL_MS : importRowsPollMs(headerData),
   })
 
   const selectedRow = selectedRowDetail ?? selectedListRow

@@ -30,6 +30,7 @@ type ImportLifecycleHeader = {
   platform_progress?: { is_active?: boolean } | null
   diarised_pending_rows?: number
   diarised_running_rows?: number
+  import_rows_processing?: number
 }
 
 const ACTIVE_DISCOVERY = new Set(['queued', 'running'])
@@ -43,7 +44,11 @@ function platformImportActive(header: ImportLifecycleHeader): boolean {
   return ACTIVE_DISCOVERY.has((header.discovery_status || '').toLowerCase())
 }
 
-/** Non-eval work: delete, diarise, platform discovery/import, or fetch before any run. */
+function recordingDownloadsInFlight(header: ImportLifecycleHeader): boolean {
+  return (header.import_rows_processing ?? 0) > 0
+}
+
+/** Non-eval work: delete, diarise, platform discovery/import, recording downloads, or fetch before any run. */
 export function importBatchStillWorking(
   header: ImportLifecycleHeader | undefined,
 ): boolean {
@@ -51,6 +56,7 @@ export function importBatchStillWorking(
   if (header.status === 'deleting') return true
   if (diariseInFlight(header) > 0) return true
   if (platformImportActive(header)) return true
+  if (recordingDownloadsInFlight(header)) return true
   const status = header.status
   return (
     (status === 'pending' || status === 'processing') &&

@@ -95,9 +95,19 @@ def _read_version(organization_id: UUID) -> str:
         return "0"
 
 
-def _redis_key(organization_id: UUID, endpoint: str, cache_key: str) -> str:
-    version = _read_version(organization_id)
-    return f"usage:read:{organization_id}:v{version}:{endpoint}:{cache_key}"
+def read_cache_version(organization_id: UUID) -> str:
+    """Epoch captured before a usage query. Writes must use this same value."""
+    return _read_version(organization_id)
+
+
+def _redis_key(
+    organization_id: UUID,
+    endpoint: str,
+    cache_key: str,
+    version: Optional[str] = None,
+) -> str:
+    current = version if version is not None else _read_version(organization_id)
+    return f"usage:read:{organization_id}:v{current}:{endpoint}:{cache_key}"
 
 
 def _stale_key(organization_id: UUID, endpoint: str, cache_key: str) -> str:
@@ -140,12 +150,15 @@ def get_cached_response(
     organization_id: UUID,
     endpoint: str,
     cache_key: str,
+    version: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     ttl = cache_ttl_seconds()
     if ttl <= 0:
         return None
     try:
-        raw = _client().get(_redis_key(organization_id, endpoint, cache_key))
+        raw = _client().get(
+            _redis_key(organization_id, endpoint, cache_key, version)
+        )
         if not raw:
             return None
         payload = json.loads(raw)
@@ -162,11 +175,13 @@ def set_cached_response(
     payload: dict[str, Any],
     *,
     historical: bool = False,
+    version: Optional[str] = None,
 ) -> None:
     """Cache a usage read. Empty ranges use a short TTL; closed history uses a longer one.
 
-    Flushes and pricing recomputes delete the org's keys, so a cached empty or
-    historical payload cannot outlive a real write.
+    ``version`` is the epoch read before the database query. A flush bumps that
+    epoch while the query is running; the stale result is then discarded instead
+    of being stored under the new epoch.
     """
     ttl = ttl_for_payload(
         historical=historical,
@@ -174,14 +189,19 @@ def set_cached_response(
     )
     if ttl <= 0:
         return
+    expected = version if version is not None else _read_version(organization_id)
     try:
-        encoded = json.dumps(payload, default=str)
         client = _client()
+        if _read_version(organization_id) != expected:
+            return
+        encoded = json.dumps(payload, default=str)
         client.set(
-            _redis_key(organization_id, endpoint, cache_key),
+            _redis_key(organization_id, endpoint, cache_key, expected),
             encoded,
             ex=ttl,
         )
+        if _read_version(organization_id) != expected:
+            return
         client.set(
             _stale_key(organization_id, endpoint, cache_key),
             encoded,
@@ -274,7 +294,8 @@ def get_or_compute_cached_response(
     """One database read per cache miss. Followers reuse the leader result or the last payload."""
     if cache_ttl_seconds() <= 0:
         return compute_fn()
-    cached = get_cached_response(organization_id, endpoint, cache_key)
+    version = read_cache_version(organization_id)
+    cached = get_cached_response(organization_id, endpoint, cache_key, version)
     if cached is not None:
         return cached
     leader = acquire_read_lock(organization_id, endpoint, cache_key)
@@ -294,6 +315,7 @@ def get_or_compute_cached_response(
             cache_key,
             payload,
             historical=historical,
+            version=version,
         )
         return payload
     finally:
