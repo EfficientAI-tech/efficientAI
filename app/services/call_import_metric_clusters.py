@@ -211,6 +211,18 @@ def _metric_is_quality(metric: Metric) -> bool:
     return not call_import_evaluation_pdf_report_service._is_user_insight_metric(metric)
 
 
+def _clusterable_metrics(
+    metrics: Sequence[Metric],
+    failure_predicate: Optional[FailurePredicate],
+) -> List[Metric]:
+    """Metrics to cluster: quality metrics, or every supplied metric when the
+    caller's ``failure_predicate`` decides which ones failed (simulation runs
+    gate on success rules that may target any metric category)."""
+    if failure_predicate is not None:
+        return list(metrics)
+    return [m for m in metrics if _metric_is_quality(m)]
+
+
 def _normalize_gap_label(raw: Any) -> MetricClusterGapLabel:
     text = str(raw or "").strip().upper().replace(" ", "_")
     if text in _GAP_LABELS:
@@ -491,6 +503,7 @@ def _call_cluster_llm(
     *,
     temperature: float,
     max_tokens: int,
+    credential_id: Optional[UUID] = None,
 ) -> str:
     """Call the cluster model. Cap reasoning so the JSON is not cut off."""
     from app.services.ai.llm_service import llm_service
@@ -520,6 +533,7 @@ def _call_cluster_llm(
                 max_tokens=token_budget,
                 llm_config=config,
                 completion_extra=extra,
+                credential_id=credential_id,
             )
 
         try:
@@ -567,6 +581,8 @@ def _run_extraction(
     model: str,
     metric_name: str,
     batch: Sequence[Dict[str, Any]],
+    *,
+    credential_id: Optional[UUID] = None,
 ) -> List[Dict[str, Any]]:
     if not batch:
         return []
@@ -592,6 +608,7 @@ def _run_extraction(
         ],
         temperature=0.3,
         max_tokens=EXTRACTION_MAX_TOKENS,
+        credential_id=credential_id,
     )
     parsed = _parse_json_object(text)
     rows_raw = parsed.get("rows")
@@ -706,6 +723,7 @@ def _synthesize_metric_clusters(
     signature_counts: Dict[str, int],
     sample_rows: Sequence[Dict[str, Any]],
     flagged_count: int,
+    credential_id: Optional[UUID] = None,
 ) -> List[MetricCluster]:
     if not signature_counts:
         return []
@@ -729,6 +747,7 @@ def _synthesize_metric_clusters(
         ],
         temperature=0.25,
         max_tokens=CLUSTER_SYNTHESIS_MAX_TOKENS,
+        credential_id=credential_id,
     )
     parsed = _parse_json_object(text)
     clusters_raw = parsed.get("clusters")
@@ -834,6 +853,7 @@ def _run_discovery(
     sample_payloads: Sequence[Dict[str, Any]],
     *,
     total_flagged: int,
+    credential_id: Optional[UUID] = None,
 ) -> List[DiscoveredProblemCluster]:
     if not sample_payloads or total_flagged <= 0:
         return []
@@ -855,6 +875,7 @@ def _run_discovery(
         ],
         temperature=0.35,
         max_tokens=DISCOVERY_MAX_TOKENS,
+        credential_id=credential_id,
     )
     parsed = _parse_json_object(text)
     discovered_raw = parsed.get("discovered")
@@ -928,7 +949,7 @@ def estimate_metric_clusters_llm_calls_for_source_rows(
     ``failure_predicate`` replaces the per-metric failure policies when given.
     """
     llm_budget = normalize_max_llm_calls(max_llm_calls)
-    quality_metrics = [m for m in metrics if _metric_is_quality(m)]
+    quality_metrics = _clusterable_metrics(metrics, failure_predicate)
     flagged_metric_count = 0
     extraction_calls = 0
 
@@ -978,6 +999,7 @@ def generate_metric_clusters_for_source_rows(
     max_llm_calls: Optional[int] = None,
     is_cancelled: Optional[CancelCheck] = None,
     failure_predicate: Optional[FailurePredicate] = None,
+    credential_id: Optional[UUID] = None,
 ) -> EvaluationMetricClustersState:
     """Run per-metric clustering + proactive discovery for internal diagnostics.
 
@@ -985,7 +1007,7 @@ def generate_metric_clusters_for_source_rows(
     (e.g. simulation runs flag metrics that missed their success rule).
     """
     llm_budget = normalize_max_llm_calls(max_llm_calls)
-    quality_metrics = [m for m in metrics if _metric_is_quality(m)]
+    quality_metrics = _clusterable_metrics(metrics, failure_predicate)
     selected_row_ids = _selected_evaluation_row_ids_from_raw(metric_clusters_raw)
     stored_policies, policy_source = policies_from_evaluation_raw(metric_clusters_raw)
     failure_policies = policies or stored_policies
@@ -1118,6 +1140,7 @@ def generate_metric_clusters_for_source_rows(
                     model,
                     metric.name,
                     batch,
+                    credential_id=credential_id,
                 )
                 extractions.extend(extracted)
             except ClusterOutputTruncated:
@@ -1162,6 +1185,7 @@ def generate_metric_clusters_for_source_rows(
                 signature_counts=signature_counts,
                 sample_rows=extractions,
                 flagged_count=flagged_count,
+                credential_id=credential_id,
             )
         except ClusterOutputTruncated:
             raise
@@ -1214,6 +1238,7 @@ def generate_metric_clusters_for_source_rows(
             model,
             all_flagged_samples,
             total_flagged=max(total_flagged, 1),
+            credential_id=credential_id,
         )
     except ClusterOutputTruncated:
         raise

@@ -46,13 +46,17 @@ def _queue_failure_analysis(db, run: SimulationRun) -> None:
     if (summary.get("n_passed") or 0) >= (summary.get("n_completed") or 0):
         return
     from app.workers.tasks.analyze_simulation_run_failures import (
+        ANALYSIS_ID_KEY,
         analyze_simulation_run_failures_task,
+        new_failure_analysis_state,
     )
 
     try:
-        run.metric_clusters = {"status": "running"}
+        run.metric_clusters = new_failure_analysis_state()
         db.commit()
-        analyze_simulation_run_failures_task.delay(str(run.id))
+        analyze_simulation_run_failures_task.delay(
+            str(run.id), analysis_id=run.metric_clusters[ANALYSIS_ID_KEY]
+        )
     except Exception as exc:
         logger.warning(f"[SimulationRun {run.run_id}] Could not queue failure analysis: {exc}")
         run.metric_clusters = {"status": "failed", "error_message": "Could not queue failure analysis"}

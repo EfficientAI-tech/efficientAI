@@ -148,9 +148,11 @@ def test_generate_clusters_only_for_trials_that_missed_the_rule(db_session, rule
     _trial(db_session, rule_run, passed=True, scores={mid: {"value": 0.9, "passed": True}})
 
     seen_batches = []
+    seen_credentials = []
 
-    def fake_extraction(db, org_id, provider, model, metric_name, batch):
+    def fake_extraction(db, org_id, provider, model, metric_name, batch, *, credential_id=None):
         seen_batches.append(list(batch))
+        seen_credentials.append(credential_id)
         return [
             {
                 "conversation_id": row["conversation_id"],
@@ -160,7 +162,11 @@ def test_generate_clusters_only_for_trials_that_missed_the_rule(db_session, rule
             for row in batch
         ]
 
-    def fake_synthesis(db, org_id, provider, model, *, metric_name, signature_counts, sample_rows, flagged_count):
+    def fake_synthesis(
+        db, org_id, provider, model, *, metric_name, signature_counts, sample_rows, flagged_count,
+        credential_id=None,
+    ):
+        seen_credentials.append(credential_id)
         return [
             MetricCluster(
                 id="c1",
@@ -174,6 +180,61 @@ def test_generate_clusters_only_for_trials_that_missed_the_rule(db_session, rule
 
     monkeypatch.setattr(clusters_module, "_run_extraction", fake_extraction)
     monkeypatch.setattr(clusters_module, "_synthesize_metric_clusters", fake_synthesis)
+    monkeypatch.setattr(
+        clusters_module,
+        "_run_discovery",
+        lambda *a, **k: seen_credentials.append(k.get("credential_id")) or [],
+    )
+    credential_id = uuid4()
+
+    state = generate_simulation_metric_clusters(
+        db_session,
+        rule_run.run,
+        provider=ModelProvider.OPENAI,
+        model="gpt-4.1-mini",
+        credential_id=credential_id,
+    )
+
+    assert state.status == "completed"
+    assert [row["evaluation_row_id"] for batch in seen_batches for row in batch] == [str(bad.id)]
+    # Extraction, synthesis and discovery all use the credential the user picked.
+    assert seen_credentials == [credential_id, credential_id, credential_id]
+    group = state.groups[0]
+    assert group.metric_id == mid
+    assert group.flagged_count == 1
+    assert group.failure_reason == "Missed success rule: score ≥ 0.8"
+    assert group.clusters[0].failure_reason.startswith("Missed success rule: score ≥ 0.8.")
+    assert str(group.clusters[0].evidence.evaluation_row_id) == str(bad.id)
+
+
+def test_generate_clusters_include_non_quality_gating_metrics(db_session, rule_run, monkeypatch):
+    """A success rule on a user-insight metric still gets its failed trials clustered."""
+    rule_run.metric.metric_category = "user_insight"
+    db_session.commit()
+    mid = str(rule_run.metric.id)
+    _trial(db_session, rule_run, passed=False, scores={mid: {"value": 0.2, "passed": False}})
+
+    monkeypatch.setattr(
+        clusters_module,
+        "_run_extraction",
+        lambda *a, **k: [
+            {
+                "conversation_id": r["conversation_id"],
+                "evaluation_row_id": r["evaluation_row_id"],
+                "signature": "s",
+            }
+            for r in a[5]
+        ],
+    )
+    monkeypatch.setattr(
+        clusters_module,
+        "_synthesize_metric_clusters",
+        lambda *a, **k: [
+            MetricCluster(
+                id="c1", label="L", gap_label="MISSING", count=k["flagged_count"], share_pct=100.0
+            )
+        ],
+    )
     monkeypatch.setattr(clusters_module, "_run_discovery", lambda *a, **k: [])
 
     state = generate_simulation_metric_clusters(
@@ -181,13 +242,7 @@ def test_generate_clusters_only_for_trials_that_missed_the_rule(db_session, rule
     )
 
     assert state.status == "completed"
-    assert [row["evaluation_row_id"] for batch in seen_batches for row in batch] == [str(bad.id)]
-    group = state.groups[0]
-    assert group.metric_id == mid
-    assert group.flagged_count == 1
-    assert group.failure_reason == "Missed success rule: score ≥ 0.8"
-    assert group.clusters[0].failure_reason.startswith("Missed success rule: score ≥ 0.8.")
-    assert str(group.clusters[0].evidence.evaluation_row_id) == str(bad.id)
+    assert [g.metric_id for g in state.groups] == [mid]
 
 
 def test_generate_clusters_reports_when_nothing_failed(db_session, rule_run):
@@ -292,6 +347,18 @@ def test_pdf_report_renders_sections(rule_run):
     assert "04 Failure Diagnostics" not in trimmed
     assert "05 Prompt Improvement Recommendations" not in trimmed
 
+    # The plain-text fallback (no WeasyPrint) honours the same section choices.
+    full_lines = service._simulation_plain_text_lines({**payload, "sections": {}})
+    assert "01 Run Summary" in full_lines
+    assert "04 Failure Diagnostics" in full_lines
+    assert "05 Prompt Improvement Recommendations" in full_lines
+    hidden = {"run_summary": False, "failure_diagnostics": False, "prompt_improvements": False}
+    plain = service._simulation_plain_text_lines({**payload, "sections": hidden})
+    assert "01 Run Summary" not in plain
+    assert "02 Success Rules & Metric Results" not in plain
+    assert "04 Failure Diagnostics" not in plain
+    assert "05 Prompt Improvement Recommendations" not in plain
+
     assert service._evaluation_call_deep_link(
         platform_base_url="https://app.example.com/",
         call_import_id="",
@@ -337,6 +404,9 @@ def test_failure_analysis_routes(authenticated_client, db_session, rule_run, mon
     assert body["metric_clusters"]["status"] == "running"
     assert queued[0][0] == (str(rule_run.run.id),)
     assert queued[0][1]["model"] == "gpt-4.1-mini"
+    db_session.refresh(rule_run.run)
+    assert queued[0][1]["analysis_id"]
+    assert queued[0][1]["analysis_id"] == rule_run.run.metric_clusters["analysis_id"]
 
     assert authenticated_client.post(f"{base}/failure-analysis").status_code == 409
     response = authenticated_client.post(f"{base}/failure-analysis/cancel")
@@ -390,3 +460,66 @@ def test_failure_analysis_routes(authenticated_client, db_session, rule_run, mon
 def test_pdf_report_waits_for_run_to_finish(authenticated_client, sim_rows):
     response = authenticated_client.post(f"/api/v1/simulation-runs/{sim_rows.run.run_id}/pdf-report")
     assert response.status_code == 409
+
+
+class _NonClosingSession:
+    def __init__(self, session):
+        self._session = session
+
+    def close(self):
+        return None
+
+    def __getattr__(self, name):
+        return getattr(self._session, name)
+
+
+def _run_task(task_module, *args, **kwargs):
+    """Call the task body whether Celery binds ``self`` or the suite stubbed Celery out."""
+    import inspect
+
+    task = task_module.analyze_simulation_run_failures_task
+    fn = getattr(task, "run", task)
+    if next(iter(inspect.signature(fn).parameters), None) == "self":
+        return fn(None, *args, **kwargs)
+    return fn(*args, **kwargs)
+
+
+def test_superseded_worker_does_not_overwrite_new_analysis(db_session, rule_run, monkeypatch):
+    """An older worker returning from an LLM call must not write over a regenerated analysis."""
+    from app.services.harbor import failure_analysis as fa_module
+    from app.workers.tasks import analyze_simulation_run_failures as task_module
+
+    run = rule_run.run
+    run.metric_clusters = task_module.new_failure_analysis_state()
+    old_id = run.metric_clusters["analysis_id"]
+    db_session.commit()
+    replacement = {"status": "running", "analysis_id": "newer"}
+
+    def fake_clusters(db, run_obj, **kwargs):
+        # The user cancels and regenerates while this worker is mid-LLM call.
+        run_obj.metric_clusters = dict(replacement)
+        db.commit()
+        assert kwargs["is_cancelled"]() is True
+        kwargs["on_progress"]({"completed_llm_calls": 1})
+        return EvaluationMetricClustersState(status="completed")
+
+    def fail_prompts(*a, **k):
+        raise AssertionError("superseded worker must not generate prompt suggestions")
+
+    monkeypatch.setattr(task_module, "SessionLocal", lambda: _NonClosingSession(db_session))
+    monkeypatch.setattr(
+        "app.services.ai.llm_resolver.get_llm_provider_and_model_for_request",
+        lambda *a, **k: (ModelProvider.OPENAI, "gpt-4.1-mini"),
+    )
+    monkeypatch.setattr(fa_module, "generate_simulation_metric_clusters", fake_clusters)
+    monkeypatch.setattr(fa_module, "generate_simulation_prompt_improvements", fail_prompts)
+
+    _run_task(task_module, str(run.id), analysis_id=old_id)
+
+    db_session.expire_all()
+    assert run.metric_clusters == replacement
+    assert run.prompt_improvements is None
+
+    # A task for an analysis that was already replaced exits before doing anything.
+    monkeypatch.setattr(fa_module, "generate_simulation_metric_clusters", fail_prompts)
+    _run_task(task_module, str(run.id), analysis_id=old_id)

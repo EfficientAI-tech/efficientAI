@@ -319,23 +319,30 @@ class SimulationRunPdfReportService(CallImportEvaluationPdfReportService):
         run: SimulationRun = payload["run"]
         agent: Agent = payload["agent"]
         summary = payload["summary"]
+        sections = payload.get("sections") or {}
         lines = [
             "SIMULATION RUN REPORT",
             self._run_title(run, agent),
             f"Agent: {agent.name}",
             f"Run: {run.run_id}",
             f"Generated: {payload['generated_at_iso']}",
-            "",
-            "01 Run Summary",
         ]
-        lines.extend(f"{label}: {html.unescape(value)}" for label, value in self._kpi_cards(summary))
-        lines.extend(["", "02 Success Rules & Metric Results"])
-        for m in summary.get("metrics") or []:
-            if isinstance(m, dict):
-                rule = payload["success_rules"].get(str(m.get("metric_id")), "-")
-                lines.append(f"{m.get('name')}: {_pct(m.get('mean'))} (rule: {rule})")
+        if sections.get("run_summary", True):
+            lines.extend(["", "01 Run Summary"])
+            lines.extend(
+                f"{label}: {html.unescape(value)}" for label, value in self._kpi_cards(summary)
+            )
+            lines.extend(["", "02 Success Rules & Metric Results"])
+            for m in summary.get("metrics") or []:
+                if isinstance(m, dict):
+                    rule = payload["success_rules"].get(str(m.get("metric_id")), "-")
+                    lines.append(f"{m.get('name')}: {_pct(m.get('mean'))} (rule: {rule})")
         clusters = payload.get("metric_clusters")
-        if isinstance(clusters, dict) and clusters.get("status") == "completed":
+        if (
+            sections.get("failure_diagnostics", True)
+            and isinstance(clusters, dict)
+            and clusters.get("status") == "completed"
+        ):
             lines.extend(["", "04 Failure Diagnostics"])
             for group in clusters.get("groups") or []:
                 if not isinstance(group, dict):
@@ -345,7 +352,11 @@ class SimulationRunPdfReportService(CallImportEvaluationPdfReportService):
                     if isinstance(cluster, dict):
                         lines.append(f"  - {cluster.get('label')} ({cluster.get('count')})")
         improvements = payload.get("prompt_improvements")
-        if isinstance(improvements, dict) and improvements.get("status") == "completed":
+        if (
+            sections.get("prompt_improvements", True)
+            and isinstance(improvements, dict)
+            and improvements.get("status") == "completed"
+        ):
             lines.extend(["", "05 Prompt Improvement Recommendations"])
             for item in improvements.get("suggestions") or []:
                 if isinstance(item, dict):

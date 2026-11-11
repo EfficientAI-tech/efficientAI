@@ -260,6 +260,7 @@ def generate_simulation_metric_clusters(
     on_progress: Optional[ProgressCallback] = None,
     max_llm_calls: Optional[int] = None,
     is_cancelled: Optional[CancelCheck] = None,
+    credential_id: Optional[UUID] = None,
 ) -> EvaluationMetricClustersState:
     agent = db.query(Agent).filter(Agent.id == run.agent_id).one()
     metrics = run_metrics_for_analysis(db, run, agent)
@@ -280,6 +281,7 @@ def generate_simulation_metric_clusters(
         max_llm_calls=max_llm_calls,
         is_cancelled=is_cancelled,
         failure_predicate=simulation_failure_predicate(run, metrics_by_id),
+        credential_id=credential_id,
     )
     if state.status == "failed" and not state.groups and state.error_message:
         if state.error_message.startswith("No flagged calls"):

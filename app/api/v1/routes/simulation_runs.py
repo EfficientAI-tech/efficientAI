@@ -571,13 +571,17 @@ def generate_simulation_failure_analysis(
         raise HTTPException(
             status_code=400, detail="No completed trial missed a success rule"
         )
-    run.metric_clusters = {"status": "running"}
+    from app.workers.tasks.analyze_simulation_run_failures import (
+        ANALYSIS_ID_KEY,
+        analyze_simulation_run_failures_task,
+        new_failure_analysis_state,
+    )
+
+    # A fresh ownership ID makes any older worker for this run drop its writes.
+    analysis_state = new_failure_analysis_state()
+    run.metric_clusters = analysis_state
     run.prompt_improvements = None
     db.commit()
-
-    from app.workers.tasks.analyze_simulation_run_failures import (
-        analyze_simulation_run_failures_task,
-    )
 
     analyze_simulation_run_failures_task.delay(
         str(run.id),
@@ -585,6 +589,7 @@ def generate_simulation_failure_analysis(
         model=body.model,
         credential_id=str(body.credential_id) if body.credential_id else None,
         max_llm_calls=body.max_llm_calls,
+        analysis_id=analysis_state[ANALYSIS_ID_KEY],
     )
     db.refresh(run)
     return _failure_analysis_response(db, run)
