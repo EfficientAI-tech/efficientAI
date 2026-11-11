@@ -11,12 +11,12 @@ allowing the API/worker to start without loading Google AI SDKs at import time.
 """
 
 import os
-import sys
 import tempfile
 import time
 
 from loguru import logger
 
+from app.core.logging import configure_logging
 from app.services.voice_agent.audio_recorder import get_audio_recorder_class
 from app.services.voice_agent.utils.audio_merge import merge_and_upload_audio
 
@@ -86,8 +86,7 @@ def _get_imports():
 
 
 
-logger.remove(0)
-logger.add(sys.stderr, level="DEBUG")
+configure_logging()
 
 # Default system instruction (used as fallback if no agent description is provided)
 DEFAULT_SYSTEM_INSTRUCTION = """

@@ -102,6 +102,14 @@ def isolate_eval_progress_buffer(monkeypatch):
         pass
     monkeypatch.setattr(buf, "_redis", client)
     monkeypatch.setattr(buf, "_scripts", {})
+    # Per-process catalog caches (eval settings, LLM credentials/gateway
+    # settings) are keyed by Redis versions that restart at 0 every test, so
+    # entries must not survive from one test to the next.
+    from app.services.ai.llm_credential_version import clear_version_memo
+    from app.workers.catalog_cache import clear_worker_catalog_cache
+
+    clear_worker_catalog_cache()
+    clear_version_memo()
     finalize_requests: list[str] = []
 
     def _record_finalize(evaluation_id):
@@ -1028,6 +1036,7 @@ def _build_session_api_app():
         results,
         scenarios,
         settings,
+        simulation_runs,
         telephony,
         test_agents,
         tool_connections,
@@ -1093,6 +1102,7 @@ def _build_session_api_app():
     app.include_router(workspace_iam.router, prefix="/api/v1")
     app.include_router(platform_admin.router, prefix="/api/v1")
     app.include_router(metric_studio.router, prefix="/api/v1")
+    app.include_router(simulation_runs.router, prefix="/api/v1")
     # Enterprise route dependencies call app.dependencies.is_feature_enabled at runtime.
     # Force-enable it for API tests so tests remain focused on route behavior.
     app_dependencies.is_feature_enabled = lambda *_args, **_kwargs: True

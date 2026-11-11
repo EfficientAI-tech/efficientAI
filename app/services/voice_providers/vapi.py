@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional, List
 import requests
 from loguru import logger
 
+from app.core.logging import redact_log_secrets
 from app.services.voice_providers.base import BaseVoiceProvider
 
 # Vapi API configuration
@@ -127,11 +128,11 @@ class VapiVoiceProvider(BaseVoiceProvider):
                 raise ValueError(f"Vapi API error: {error_msg}")
                 
         except requests.exceptions.RequestException as e:
-            logger.error(f"[VapiProvider] Request error: {e}")
-            raise ValueError(f"Failed to create Vapi web call: {str(e)}")
+            logger.error(f"[VapiProvider] Request error: {redact_log_secrets(e)}")
+            raise ValueError(f"Failed to create Vapi web call: {redact_log_secrets(e)}")
         except Exception as e:
-            logger.error(f"[VapiProvider] Unexpected error: {e}")
-            raise ValueError(f"Failed to create Vapi web call: {str(e)}")
+            logger.error(f"[VapiProvider] Unexpected error: {redact_log_secrets(e)}")
+            raise ValueError(f"Failed to create Vapi web call: {redact_log_secrets(e)}")
 
     def create_agent(
         self,

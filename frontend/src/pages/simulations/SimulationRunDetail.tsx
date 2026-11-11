@@ -1,16 +1,37 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Check, Download, Pencil, RotateCcw, Square, Trash2, X } from 'lucide-react'
+import { ArrowLeft, Check, Download, FileText, Pencil, RotateCcw, Square, Trash2, X } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import { getApiErrorDetail } from '../../lib/authSession'
 import Button from '../../components/Button'
+import ConfirmModal from '../../components/ConfirmModal'
 import { useToast } from '../../hooks/useToast'
-import type { SimulationRun, SimulationRunToolSummary, SimulationTrial } from '../../types/api'
+import type {
+  SimulationRun,
+  SimulationRunPdfReportSections,
+  SimulationRunToolSummary,
+  SimulationTrial,
+} from '../../types/api'
 import ScenarioAttemptMatrix from './ScenarioAttemptMatrix'
 import TrialTranscriptDrawer from './TrialTranscriptDrawer'
+import SimulationFailureAnalysisPanel from './SimulationFailureAnalysisPanel'
 import { PassBadge, RunStatusChip } from './simulationUi'
 import { REWARD_BAR_COLOR, formatDuration, formatPct, formatScore, isRunActive, runLlmLabel } from './simulationFormat'
+
+type RunTab = 'results' | 'analysis'
+
+const RUN_TABS: { id: RunTab; label: string }[] = [
+  { id: 'results', label: 'Results' },
+  { id: 'analysis', label: 'Failure analysis' },
+]
+
+const PDF_SECTION_OPTIONS: { key: keyof SimulationRunPdfReportSections; label: string }[] = [
+  { key: 'run_summary', label: 'Run summary, success rules and scenario results' },
+  { key: 'failure_diagnostics', label: 'Failure diagnostics (clusters)' },
+  { key: 'prompt_improvements', label: 'Prompt improvement recommendations' },
+  { key: 'methodology', label: 'Methodology' },
+]
 
 function StatTile({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
@@ -118,7 +139,25 @@ export default function SimulationRunDetail() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
-  const [selectedTrialId, setSelectedTrialId] = useState<string | null>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [selectedTrialId, setSelectedTrialIdState] = useState<string | null>(
+    () => searchParams.get('trial'),
+  )
+  const activeTab: RunTab = searchParams.get('tab') === 'analysis' ? 'analysis' : 'results'
+  const setActiveTab = (tab: RunTab) => {
+    const next = new URLSearchParams(searchParams)
+    if (tab === 'results') next.delete('tab')
+    else next.set('tab', tab)
+    setSearchParams(next, { replace: true })
+  }
+  const [pdfOpen, setPdfOpen] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [pdfSections, setPdfSections] = useState<SimulationRunPdfReportSections>({
+    run_summary: true,
+    failure_diagnostics: true,
+    prompt_improvements: true,
+    methodology: true,
+  })
   const [editingName, setEditingName] = useState(false)
   const [nameDraft, setNameDraft] = useState('')
 
@@ -130,6 +169,19 @@ export default function SimulationRunDetail() {
   useEffect(() => {
     if (!editingName) setNameDraft(run?.name ?? '')
   }, [run?.name, editingName])
+  // Cluster evidence links use ?trial=<id> to open that trial's transcript.
+  const trialParam = searchParams.get('trial')
+  useEffect(() => {
+    if (trialParam) setSelectedTrialIdState(trialParam)
+  }, [trialParam])
+  const setSelectedTrialId = (id: string | null) => {
+    setSelectedTrialIdState(id)
+    if (!id && searchParams.has('trial')) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('trial')
+      setSearchParams(next, { replace: true })
+    }
+  }
   const { data: scenarioRows = [] } = useQuery({
     queryKey: ['scenarios', 'agent', run?.agent_id],
     queryFn: () => apiClient.listScenarios(0, 500, run!.agent_id),
@@ -165,7 +217,10 @@ export default function SimulationRunDetail() {
       showToast('Simulation run deleted', 'success')
       navigate(`/agents/${run?.agent_id}?tab=simulations`)
     },
-    onError: (err) => showToast(getApiErrorDetail(err) || 'Failed to delete run', 'error'),
+    onError: (err) => {
+      setDeleteOpen(false)
+      showToast(getApiErrorDetail(err) || 'Failed to delete run', 'error')
+    },
   })
   const rerunMutation = useMutation({
     mutationFn: (onlyFailed: boolean) => apiClient.rerunSimulationRun(runId, onlyFailed),
@@ -196,6 +251,20 @@ export default function SimulationRunDetail() {
     },
     onError: (err) => showToast(getApiErrorDetail(err) || 'Download failed', 'error'),
   })
+  const pdfMutation = useMutation({
+    mutationFn: () =>
+      apiClient.downloadSimulationRunPdfReport(runId, pdfSections, window.location.origin),
+    onSuccess: (blob) => {
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `simulation-run-${run?.run_id ?? runId}-report.pdf`
+      a.click()
+      URL.revokeObjectURL(url)
+      setPdfOpen(false)
+    },
+    onError: (err) => showToast(getApiErrorDetail(err) || 'PDF report failed', 'error'),
+  })
 
   if (isLoading) return <div className="p-6 text-sm text-gray-500">Loading run…</div>
   if (!run) return <div className="p-6 text-sm text-gray-500">Simulation run not found.</div>
@@ -205,6 +274,7 @@ export default function SimulationRunDetail() {
   const done = run.completed_trials + run.failed_trials
   const progress = run.expected_trials ? Math.min(100, (done / run.expected_trials) * 100) : 0
   const hasFailures = trials.some((t) => t.status === 'failed' || t.passed === false)
+  const failedRuleTrials = trials.filter((t) => t.status === 'completed' && t.passed === false).length
 
   return (
     <div className="space-y-6 p-6">
@@ -301,13 +371,7 @@ export default function SimulationRunDetail() {
             <Button
               variant="outline"
               leftIcon={<Trash2 className="h-4 w-4" />}
-              onClick={() => {
-                const stuck = active || run.cancel_requested
-                const msg = stuck
-                  ? 'This run may still be active or stuck cancelling. Delete it from the list anyway?'
-                  : 'Delete this simulation run and all its trials?'
-                if (window.confirm(msg)) deleteMutation.mutate()
-              }}
+              onClick={() => setDeleteOpen(true)}
               isLoading={deleteMutation.isPending}
               className="text-red-700 hover:border-red-300 hover:bg-red-50"
             >
@@ -334,6 +398,15 @@ export default function SimulationRunDetail() {
                   Re-run
                 </Button>
               </>
+            ) : null}
+            {!active ? (
+              <Button
+                variant="outline"
+                leftIcon={<FileText className="h-4 w-4" />}
+                onClick={() => setPdfOpen(true)}
+              >
+                PDF report
+              </Button>
             ) : null}
             {run.has_artifacts ? (
               <Button
@@ -379,85 +452,113 @@ export default function SimulationRunDetail() {
         ) : null}
       </div>
 
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <StatTile
-          label="Pass rate"
-          value={formatPct(summary?.pass_rate)}
-          hint={summary ? `${summary.n_passed} of ${summary.n_completed} scored` : undefined}
-        />
-        <StatTile
-          label={summary?.uses_success_criteria || run.metric_success_criteria?.length ? 'Criteria met' : 'Mean score'}
-          value={formatScore(summary?.mean_reward)}
-          hint={
-            summary?.uses_success_criteria || run.metric_success_criteria?.length
-              ? 'average share of metrics passing per trial'
-              : `threshold ${run.pass_threshold.toFixed(2)}`
-          }
-        />
-        <StatTile
-          label="Golden score"
-          value={formatScore(summary?.golden_mean_reward)}
-          hint="mean of golden metrics only, per trial"
-        />
-        <StatTile
-          label="Consistency (pass^k)"
-          value={run.n_attempts > 1 ? formatPct(summary?.pass_all_rate) : '—'}
-          hint={run.n_attempts > 1 ? 'scenarios passing every attempt' : 'needs >1 attempt'}
-        />
-        <StatTile
-          label="Pass@k"
-          value={run.n_attempts > 1 ? formatPct(summary?.pass_any_rate) : '—'}
-          hint={run.n_attempts > 1 ? 'scenarios passing at least once' : 'needs >1 attempt'}
-        />
-        <StatTile label="Errored trials" value={String(summary?.n_failed ?? run.failed_trials)} hint="did not finish" />
-        <StatTile label="Avg turns" value={summary?.avg_turns != null ? summary.avg_turns.toFixed(1) : '—'} />
-        {summary?.tools ? (
-          <>
+      <nav className="-mb-px flex space-x-6 border-b border-gray-200" aria-label="Simulation run tabs">
+        {RUN_TABS.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveTab(tab.id)}
+            className={`inline-flex items-center gap-1.5 whitespace-nowrap border-b-2 px-1 py-3 text-sm font-medium transition-colors ${
+              activeTab === tab.id
+                ? 'border-primary-500 text-primary-600'
+                : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
+            }`}
+          >
+            {tab.label}
+            {tab.id === 'analysis' && !active && failedRuleTrials > 0 ? (
+              <span className="rounded-full bg-red-50 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-red-700">
+                {failedRuleTrials}
+              </span>
+            ) : null}
+          </button>
+        ))}
+      </nav>
+
+      {activeTab === 'analysis' ? (
+        <SimulationFailureAnalysisPanel runId={runId} runActive={active} onToast={showToast} />
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
             <StatTile
-              label="Tool calls succeeded"
-              value={formatPct(summary.tools.success_rate)}
-              hint={`${summary.tools.total_calls} calls in ${summary.tools.trials_with_calls} trials`}
+              label="Pass rate"
+              value={formatPct(summary?.pass_rate)}
+              hint={summary ? `${summary.n_passed} of ${summary.n_completed} scored` : undefined}
             />
             <StatTile
-              label="Tool expectations met"
-              value={formatPct(summary.tools.expectations_met_rate)}
+              label={summary?.uses_success_criteria || run.metric_success_criteria?.length ? 'Criteria met' : 'Mean score'}
+              value={formatScore(summary?.mean_reward)}
               hint={
-                summary.tools.expectations_checked
-                  ? `${summary.tools.expectations_checked} trials checked`
-                  : 'no scenario sets expected tool calls'
+                summary?.uses_success_criteria || run.metric_success_criteria?.length
+                  ? 'average share of metrics passing per trial'
+                  : `threshold ${run.pass_threshold.toFixed(2)}`
               }
             />
-          </>
-        ) : null}
-      </div>
+            <StatTile
+              label="Golden score"
+              value={formatScore(summary?.golden_mean_reward)}
+              hint="mean of golden metrics only, per trial"
+            />
+            <StatTile
+              label="Consistency (pass^k)"
+              value={run.n_attempts > 1 ? formatPct(summary?.pass_all_rate) : '—'}
+              hint={run.n_attempts > 1 ? 'scenarios passing every attempt' : 'needs >1 attempt'}
+            />
+            <StatTile
+              label="Pass@k"
+              value={run.n_attempts > 1 ? formatPct(summary?.pass_any_rate) : '—'}
+              hint={run.n_attempts > 1 ? 'scenarios passing at least once' : 'needs >1 attempt'}
+            />
+            <StatTile label="Errored trials" value={String(summary?.n_failed ?? run.failed_trials)} hint="did not finish" />
+            <StatTile label="Avg turns" value={summary?.avg_turns != null ? summary.avg_turns.toFixed(1) : '—'} />
+            {summary?.tools ? (
+              <>
+                <StatTile
+                  label="Tool calls succeeded"
+                  value={formatPct(summary.tools.success_rate)}
+                  hint={`${summary.tools.total_calls} calls in ${summary.tools.trials_with_calls} trials`}
+                />
+                <StatTile
+                  label="Tool expectations met"
+                  value={formatPct(summary.tools.expectations_met_rate)}
+                  hint={
+                    summary.tools.expectations_checked
+                      ? `${summary.tools.expectations_checked} trials checked`
+                      : 'no scenario sets expected tool calls'
+                  }
+                />
+              </>
+            ) : null}
+          </div>
 
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[2fr_1fr]">
-        <section className="rounded-lg border border-gray-200 bg-white p-4">
-          <h2 className="mb-3 text-sm font-semibold text-gray-900">Scenario × attempt</h2>
-          <ScenarioAttemptMatrix
-            trials={trials}
-            nAttempts={run.n_attempts}
-            onSelect={(t) => setSelectedTrialId(t.id)}
-            selectedTrialId={selectedTrialId}
-          />
-        </section>
-        <section className="rounded-lg border border-gray-200 bg-white p-4">
-          <h2 className="mb-3 text-sm font-semibold text-gray-900">Metric breakdown</h2>
-          <MetricBreakdown run={run} scenarioNameById={scenarioNameById} />
-        </section>
-      </div>
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-[2fr_1fr]">
+            <section className="rounded-lg border border-gray-200 bg-white p-4">
+              <h2 className="mb-3 text-sm font-semibold text-gray-900">Scenario × attempt</h2>
+              <ScenarioAttemptMatrix
+                trials={trials}
+                nAttempts={run.n_attempts}
+                onSelect={(t) => setSelectedTrialId(t.id)}
+                selectedTrialId={selectedTrialId}
+              />
+            </section>
+            <section className="rounded-lg border border-gray-200 bg-white p-4">
+              <h2 className="mb-3 text-sm font-semibold text-gray-900">Metric breakdown</h2>
+              <MetricBreakdown run={run} scenarioNameById={scenarioNameById} />
+            </section>
+          </div>
 
-      {summary?.tools?.tools.length ? (
-        <section className="rounded-lg border border-gray-200 bg-white">
-          <h2 className="border-b border-gray-200 px-4 py-3 text-sm font-semibold text-gray-900">Tool calls</h2>
-          <ToolsTable tools={summary.tools} />
-        </section>
-      ) : null}
+          {summary?.tools?.tools.length ? (
+            <section className="rounded-lg border border-gray-200 bg-white">
+              <h2 className="border-b border-gray-200 px-4 py-3 text-sm font-semibold text-gray-900">Tool calls</h2>
+              <ToolsTable tools={summary.tools} />
+            </section>
+          ) : null}
 
-      <section className="rounded-lg border border-gray-200 bg-white">
-        <h2 className="border-b border-gray-200 px-4 py-3 text-sm font-semibold text-gray-900">All trials</h2>
-        <TrialsTable trials={trials} onSelect={(t) => setSelectedTrialId(t.id)} />
-      </section>
+          <section className="rounded-lg border border-gray-200 bg-white">
+            <h2 className="border-b border-gray-200 px-4 py-3 text-sm font-semibold text-gray-900">All trials</h2>
+            <TrialsTable trials={trials} onSelect={(t) => setSelectedTrialId(t.id)} />
+          </section>
+        </>
+      )}
 
       <TrialTranscriptDrawer
         runId={runId}
@@ -465,6 +566,46 @@ export default function SimulationRunDetail() {
         fallbackLlms={run.resolved_llms}
         onClose={() => setSelectedTrialId(null)}
       />
+      <ConfirmModal
+        isOpen={deleteOpen}
+        title="Delete simulation run"
+        description={
+          active || run.cancel_requested
+            ? 'This run may still be active or stuck cancelling. Deleting it stops the run and removes it with all its trials, failure analysis and prompt suggestions. This cannot be undone.'
+            : 'This removes the run with all its trials, failure analysis and prompt suggestions. This cannot be undone.'
+        }
+        confirmLabel="Delete run"
+        variant="danger"
+        isLoading={deleteMutation.isPending}
+        onConfirm={() => deleteMutation.mutate()}
+        onCancel={() => setDeleteOpen(false)}
+      />
+      <ConfirmModal
+        isOpen={pdfOpen}
+        title="Download PDF report"
+        description="Choose the sections to include. Failure diagnostics and prompt recommendations appear once the failure analysis has finished."
+        confirmLabel="Download PDF"
+        variant="default"
+        isLoading={pdfMutation.isPending}
+        onConfirm={() => pdfMutation.mutate()}
+        onCancel={() => setPdfOpen(false)}
+      >
+        <div className="space-y-2">
+          {PDF_SECTION_OPTIONS.map(({ key, label }) => (
+            <label key={key} className="flex items-center gap-2 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                checked={pdfSections[key]}
+                onChange={(event) =>
+                  setPdfSections((prev) => ({ ...prev, [key]: event.target.checked }))
+                }
+                className="h-4 w-4 rounded border-gray-300"
+              />
+              {label}
+            </label>
+          ))}
+        </div>
+      </ConfirmModal>
       <ToastContainer />
     </div>
   )

@@ -1474,6 +1474,9 @@ class SimulationRun(Base):
     failed_trials = Column(Integer, nullable=False, default=0)
     summary = Column(JSON, nullable=True)
     error_message = Column(Text, nullable=True)
+    # Failure analysis of trials that missed their success rules; see app/services/harbor/failure_analysis.py
+    metric_clusters = Column(JSON, nullable=True)  # EvaluationMetricClustersState
+    prompt_improvements = Column(JSON, nullable=True)  # EvaluationPromptImprovementsState
 
     harbor_job_name = Column(String(255), nullable=True)
     artifacts_s3_key = Column(String, nullable=True)
@@ -3831,3 +3834,11 @@ from app.services.call_imports.eval_settings_version import (  # noqa: E402
 )
 
 _register_eval_settings_hooks()
+
+# Bump the Redis LLM-config version when an org's credentials or gateway
+# settings change, so cached call-path resolutions refresh.
+from app.services.ai.llm_credential_version import (  # noqa: E402
+    register_llm_config_version_hooks as _register_llm_config_hooks,
+)
+
+_register_llm_config_hooks()

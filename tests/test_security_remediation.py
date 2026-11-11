@@ -57,6 +57,91 @@ def test_assert_outbound_http_url_safe_blocks_metadata_ip():
         assert_outbound_http_url_safe("http://169.254.169.254/")
 
 
+def test_assert_outbound_http_url_safe_allows_trusted_cidr_private_ip():
+    assert_outbound_http_url_safe(
+        "http://10.1.2.3:8080/litellm",
+        allowed_networks=["10.0.0.0/8"],
+    )
+
+
+def test_assert_outbound_http_url_safe_blocks_private_without_allowlist():
+    with pytest.raises(ExotelInvalidContentError):
+        assert_outbound_http_url_safe("http://10.1.2.3:8080/litellm")
+
+
+def test_assert_outbound_http_url_safe_keeps_blocks_192_without_allowlist():
+    with pytest.raises(ExotelInvalidContentError):
+        assert_outbound_http_url_safe(
+            "http://192.168.1.5:4000",
+            allowed_networks=["10.0.0.0/8"],
+        )
+
+
+def test_assert_outbound_http_url_safe_never_whitelists_metadata_even_if_cidr_matches():
+    with pytest.raises(ExotelInvalidContentError):
+        assert_outbound_http_url_safe(
+            "http://169.254.169.254/",
+            allowed_networks=["169.254.0.0/16"],
+        )
+
+
+def test_assert_outbound_http_url_safe_allows_hostname_resolving_into_cidr(monkeypatch):
+    monkeypatch.setattr(
+        "socket.getaddrinfo",
+        lambda *_a, **_k: [(2, 1, 6, "", ("10.1.2.3", 0))],
+    )
+    assert_outbound_http_url_safe(
+        "http://gateway.internal.example/litellm",
+        allowed_networks=["10.0.0.0/8"],
+    )
+
+
+def test_assert_outbound_http_url_safe_rejects_if_any_resolved_ip_disallowed(monkeypatch):
+    monkeypatch.setattr(
+        "socket.getaddrinfo",
+        lambda *_a, **_k: [
+            (2, 1, 6, "", ("10.1.2.3", 0)),
+            (2, 1, 6, "", ("192.168.1.5", 0)),
+        ],
+    )
+    with pytest.raises(ExotelInvalidContentError):
+        assert_outbound_http_url_safe(
+            "http://gateway.internal.example/litellm",
+            allowed_networks=["10.0.0.0/8"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("url", "allowed_networks"),
+    [
+        ("http://[::ffff:169.254.169.254]/", None),
+        ("http://[::ffff:169.254.169.254]/", ["::/0"]),
+        ("http://[::ffff:10.0.0.5]/", None),
+        ("http://[::ffff:127.0.0.1]/", None),
+    ],
+)
+def test_assert_outbound_http_url_safe_blocks_ipv4_mapped_ipv6(url, allowed_networks):
+    with pytest.raises(ExotelInvalidContentError):
+        assert_outbound_http_url_safe(url, allowed_networks=allowed_networks)
+
+
+def test_assert_outbound_http_url_safe_ipv4_mapped_honours_allowlist():
+    assert_outbound_http_url_safe("http://[::ffff:10.0.0.5]/", allowed_networks=["10.0.0.0/8"])
+
+
+def test_assert_recording_url_safe_blocks_ipv4_mapped_metadata():
+    with pytest.raises(ExotelInvalidContentError):
+        assert_recording_url_safe("http://[::ffff:169.254.169.254]/", user_supplied=True)
+
+
+def test_assert_outbound_http_url_safe_loopback_requires_allow_loopback():
+    with pytest.raises(ExotelInvalidContentError):
+        assert_outbound_http_url_safe(
+            "http://127.0.0.1:8080",
+            allowed_networks=["127.0.0.0/8"],
+        )
+
+
 def test_session_epoch_in_access_token():
     user_id = uuid4()
     org_id = uuid4()

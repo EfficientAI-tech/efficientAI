@@ -46,6 +46,31 @@ def _agent_messages(
     return messages
 
 
+def _assistant_turn_index(transcript: list[dict[str, str]]) -> int:
+    """Position of the reply being generated, counted as ``_agent_messages`` counts."""
+    return sum(
+        1
+        for entry in transcript
+        if entry.get("speaker") == "Speaker 2" and (entry.get("text") or "").strip()
+    )
+
+
+def _store_tool_sidecar(
+    sidecars: list[list[dict[str, Any]]],
+    turn_index: int,
+    tool_message_tail: list[dict[str, Any]],
+) -> list[list[dict[str, Any]]]:
+    """Put this turn's tool messages at its own index; turns without tools hold ``[]``.
+
+    ``_agent_messages`` reads sidecars by assistant-turn position, so appending
+    only for tool-using turns would attach results to the wrong reply.
+    """
+    out = list(sidecars[:turn_index])
+    out.extend([] for _ in range(turn_index - len(out)))
+    out.append(list(tool_message_tail))
+    return out
+
+
 def normalized_chat_eval_mode(agent: Agent) -> str:
     """Use stored mode, or connection-type default (platform/API = live, internal LLM = sim)."""
     from app.services.agents.chat_preprod_scope import (
@@ -347,6 +372,8 @@ def generate_production_chat_reply(
         provider_state.extra.get(tool_sidecars_key) or []
     )
     messages = _agent_messages(agent_system, transcript, tool_sidecars=tool_sidecars)
+    turn_index = _assistant_turn_index(transcript)
+    tool_message_tail: list[dict[str, Any]] = []
     tool_records: list = []
     owns_toolset = toolset is None
     try:
@@ -370,9 +397,6 @@ def generate_production_chat_reply(
                 credential_id=main_llm.credential_id,
                 task_defaults={"temperature": 0.7, "max_tokens": 1024},
             )
-            if tool_message_tail:
-                tool_sidecars.append(tool_message_tail)
-                provider_state.extra[tool_sidecars_key] = tool_sidecars
         else:
             result = llm_service.generate_response(
                 messages=messages,
@@ -395,6 +419,12 @@ def generate_production_chat_reply(
     text = (text or "").strip()
     if not text:
         raise ValueError("Production LLM returned an empty message")
+    if tool_message_tail or len(tool_sidecars) > turn_index:
+        # Keep every turn's slot (empty when no tools ran) so later requests
+        # replay tool results next to the reply that produced them.
+        provider_state.extra[tool_sidecars_key] = _store_tool_sidecar(
+            tool_sidecars, turn_index, tool_message_tail or []
+        )
     meta["production_leg"] = "internal_llm_sim"
     meta["main_llm_source"] = main_llm.source
     # This turn's calls only; the simulation loop accumulates them across turns.

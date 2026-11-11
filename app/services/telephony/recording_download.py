@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 import socket
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from typing import Dict, List, Optional, Tuple, Union
 from urllib.parse import urlparse
 
@@ -22,6 +23,8 @@ from app.services.telephony.exotel_client import (
     ExotelTransientError,
     _parse_retry_after_header,
 )
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_ALLOWED_HOST_SUFFIXES = (
     # Telephony carriers
@@ -65,6 +68,12 @@ _BLOCKED_NETWORKS = (
     ipaddress.ip_network("fe80::/10"),
 )
 
+# Never whitelisted for outbound URL validation (cloud metadata, local scope, etc.).
+_HARD_BLOCKED_OUTBOUND_NETWORKS = (
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("fe80::/10"),
+)
+
 
 def _allowed_host_suffixes() -> List[str]:
     """Built-in provider suffixes plus any extra entries from config/env."""
@@ -88,9 +97,51 @@ def _hostname_allowed(hostname: str, allowed_suffixes: List[str]) -> bool:
     return False
 
 
+def _unmap_ipv4(ip: ipaddress._BaseAddress) -> ipaddress._BaseAddress:
+    """Treat ``::ffff:a.b.c.d`` as ``a.b.c.d``; the kernel connects to the IPv4 target."""
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return mapped if mapped is not None else ip
+
+
 def _ip_is_blocked(ip: ipaddress._BaseAddress) -> bool:
+    ip = _unmap_ipv4(ip)
     for network in _BLOCKED_NETWORKS:
         if ip in network:
+            return True
+    return False
+
+
+def _ip_is_hard_blocked_for_outbound(ip: ipaddress._BaseAddress) -> bool:
+    ip = _unmap_ipv4(ip)
+    for network in _HARD_BLOCKED_OUTBOUND_NETWORKS:
+        if ip in network:
+            return True
+    return False
+
+
+def _parse_trusted_network_entries(entries: Optional[Iterable[str]]) -> List[ipaddress._BaseNetwork]:
+    """Parse CIDR or single-IP strings; invalid entries are skipped (same idea as operational middleware)."""
+    if not entries:
+        return []
+    parsed: List[ipaddress._BaseNetwork] = []
+    for raw in entries:
+        entry = str(raw).strip()
+        if not entry:
+            continue
+        try:
+            if "/" in entry:
+                parsed.append(ipaddress.ip_network(entry, strict=False))
+            else:
+                addr = ipaddress.ip_address(entry)
+                parsed.append(ipaddress.ip_network((addr, addr.max_prefixlen), strict=False))
+        except ValueError:
+            logger.warning("Ignoring invalid trusted network entry for outbound URL check: %s", entry)
+    return parsed
+
+
+def _ip_in_networks(ip: ipaddress._BaseAddress, networks: List[ipaddress._BaseNetwork]) -> bool:
+    for net in networks:
+        if ip in net:
             return True
     return False
 
@@ -289,8 +340,20 @@ def open_provider_recording_stream(
     return status_code, response_headers, iter_chunks()
 
 
-def assert_outbound_http_url_safe(url: str, *, allow_loopback: bool = False) -> None:
-    """Block SSRF to private/metadata networks for operator-configured URLs."""
+def assert_outbound_http_url_safe(
+    url: str,
+    *,
+    allow_loopback: bool = False,
+    allowed_networks: Optional[Iterable[str]] = None,
+) -> None:
+    """Block SSRF to private/metadata networks for operator-configured URLs.
+
+    When ``allowed_networks`` is set (e.g. ``settings.LLM_GATEWAY_ALLOWED_NETWORKS``),
+    addresses that fall in those CIDRs are accepted even if they are also in
+    ``_BLOCKED_NETWORKS``. Link-local and cloud link-local (169.254/16, fe80::/10)
+    are never allowed. Loopback is only allowed when ``allow_loopback`` is true,
+    regardless of ``allowed_networks``.
+    """
     parsed = urlparse(url.strip())
     if parsed.scheme not in {"http", "https"}:
         raise ExotelInvalidContentError(
@@ -300,17 +363,45 @@ def assert_outbound_http_url_safe(url: str, *, allow_loopback: bool = False) -> 
         raise ExotelInvalidContentError("URL is missing a hostname")
 
     hostname = parsed.hostname
+    trusted_nets = _parse_trusted_network_entries(allowed_networks)
+
+    def _check_ip(ip: ipaddress._BaseAddress) -> None:
+        ip = _unmap_ipv4(ip)
+        if _ip_is_hard_blocked_for_outbound(ip):
+            raise ExotelInvalidContentError("URL targets a blocked network address")
+        if ip.is_loopback:
+            if allow_loopback:
+                return
+            raise ExotelInvalidContentError("URL targets a blocked network address")
+        if not _ip_is_blocked(ip):
+            return
+        if _ip_in_networks(ip, trusted_nets):
+            return
+        raise ExotelInvalidContentError("URL targets a blocked network address")
+
+    def _check_resolved_ip(ip: ipaddress._BaseAddress) -> None:
+        ip = _unmap_ipv4(ip)
+        if _ip_is_hard_blocked_for_outbound(ip):
+            raise ExotelInvalidContentError("URL resolves to a blocked network address")
+        if ip.is_loopback:
+            if allow_loopback:
+                return
+            raise ExotelInvalidContentError("URL resolves to a blocked network address")
+        if not _ip_is_blocked(ip):
+            return
+        if _ip_in_networks(ip, trusted_nets):
+            return
+        raise ExotelInvalidContentError("URL resolves to a blocked network address")
+
     try:
         literal_ip = ipaddress.ip_address(hostname)
-        if _ip_is_blocked(literal_ip) and not (allow_loopback and literal_ip.is_loopback):
-            raise ExotelInvalidContentError("URL targets a blocked network address")
+        _check_ip(literal_ip)
         return
     except ValueError:
         pass
 
     for resolved_ip in _resolve_host_ips(hostname):
-        if _ip_is_blocked(resolved_ip) and not (allow_loopback and resolved_ip.is_loopback):
-            raise ExotelInvalidContentError("URL resolves to a blocked network address")
+        _check_resolved_ip(resolved_ip)
 
 
 def download_recording_url(

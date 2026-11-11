@@ -17,7 +17,7 @@ def test_custom_gateway_audio_allowed_requires_gateway_model(monkeypatch):
     )
 
     monkeypatch.setattr(
-        "app.services.credentials.resolve_ai_provider",
+        "app.services.credentials.resolve_ai_provider_for_call",
         lambda *args, **kwargs: fake_row,
     )
 
@@ -37,7 +37,7 @@ def test_custom_gateway_audio_rejected_without_gateway_model(monkeypatch):
     )
 
     monkeypatch.setattr(
-        "app.services.credentials.resolve_ai_provider",
+        "app.services.credentials.resolve_ai_provider_for_call",
         lambda *args, **kwargs: fake_row,
     )
 
@@ -59,7 +59,7 @@ def test_custom_gateway_audio_allowed_with_gateway_model_even_when_direct(
     )
 
     monkeypatch.setattr(
-        "app.services.credentials.resolve_ai_provider",
+        "app.services.credentials.resolve_ai_provider_for_call",
         lambda *args, **kwargs: fake_row,
     )
 
@@ -72,7 +72,7 @@ def test_custom_gateway_audio_allowed_with_gateway_model_even_when_direct(
 
 def test_diarize_audio_rejects_custom_without_gateway(monkeypatch):
     monkeypatch.setattr(
-        "app.services.credentials.resolve_ai_provider",
+        "app.services.credentials.resolve_ai_provider_for_call",
         lambda *args, **kwargs: None,
     )
 
@@ -98,7 +98,7 @@ def test_diarize_audio_accepts_custom_gateway_provider(monkeypatch):
     )
 
     monkeypatch.setattr(
-        "app.services.credentials.resolve_ai_provider",
+        "app.services.credentials.resolve_ai_provider_for_call",
         lambda *args, **kwargs: fake_row,
     )
     monkeypatch.setattr(
@@ -151,7 +151,7 @@ def test_diarize_audio_accepts_openrouter_provider(monkeypatch):
         }
 
     monkeypatch.setattr(
-        "app.services.credentials.resolve_ai_provider",
+        "app.services.credentials.resolve_ai_provider_for_call",
         lambda *args, **kwargs: None,
     )
     monkeypatch.setattr(

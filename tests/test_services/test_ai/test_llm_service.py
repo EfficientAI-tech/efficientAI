@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from loguru import logger
 
 from app.models.enums import ModelProvider
 from app.services.ai.llm_service import LLMService
@@ -109,7 +110,7 @@ def test_litellm_model_name_maps_known_provider_prefixes():
 def test_generate_response_raises_when_provider_not_configured(monkeypatch):
     service = LLMService()
     monkeypatch.setattr(service, "_get_ai_provider", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(llm_module, "resolve_integration", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_module, "resolve_integration_for_call", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(service, "_resolve_api_key", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("AI provider sarvam not configured for this organization.")))
 
     with pytest.raises(RuntimeError, match="not configured"):
@@ -125,7 +126,7 @@ def test_generate_response_raises_when_provider_not_configured(monkeypatch):
 def test_generate_response_releases_read_session_before_http(monkeypatch):
     service = LLMService()
     monkeypatch.setattr(service, "_get_ai_provider", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(llm_module, "resolve_integration", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_module, "resolve_integration_for_call", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(service, "_resolve_api_key", lambda *_args, **_kwargs: "decrypted-key")
 
     events = []
@@ -167,7 +168,7 @@ def test_generate_response_releases_read_session_before_http(monkeypatch):
 def test_generate_response_keeps_session_with_pending_writes(monkeypatch):
     service = LLMService()
     monkeypatch.setattr(service, "_get_ai_provider", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(llm_module, "resolve_integration", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_module, "resolve_integration_for_call", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(service, "_resolve_api_key", lambda *_args, **_kwargs: "decrypted-key")
     rolled_back = []
     monkeypatch.setattr(
@@ -203,7 +204,7 @@ def test_generate_response_keeps_session_with_pending_writes(monkeypatch):
 def test_generate_response_success_with_normalized_usage(monkeypatch):
     service = LLMService()
     monkeypatch.setattr(service, "_get_ai_provider", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(llm_module, "resolve_integration", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_module, "resolve_integration_for_call", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         service,
         "_resolve_api_key",
@@ -459,7 +460,7 @@ def test_generate_response_sarvam_integration_direct_skips_gateway(monkeypatch):
     monkeypatch.setattr(service, "_get_ai_provider", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         llm_module,
-        "resolve_integration",
+        "resolve_integration_for_call",
         lambda *_args, **_kwargs: integration,
     )
     monkeypatch.setattr(
@@ -502,7 +503,7 @@ def test_generate_response_sarvam_integration_direct_skips_gateway(monkeypatch):
 def test_generate_response_wraps_litellm_errors(monkeypatch):
     service = LLMService()
     monkeypatch.setattr(service, "_get_ai_provider", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(llm_module, "resolve_integration", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_module, "resolve_integration_for_call", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         service,
         "_resolve_api_key",
@@ -523,6 +524,94 @@ def test_generate_response_wraps_litellm_errors(monkeypatch):
             organization_id=uuid4(),
             db=_mock_org_db(),
         )
+
+
+def test_generate_response_redacts_gemini_header_in_error_message(monkeypatch):
+    service = LLMService()
+    monkeypatch.setattr(service, "_get_ai_provider", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_module, "resolve_integration_for_call", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        service,
+        "_resolve_api_key",
+        lambda *_args, **_kwargs: "decrypted-key",
+    )
+    leaky = (
+        "Error: 400 - Bad Request - "
+        "{'Content-Type': 'application/json', "
+        "'x-goog-api-key': 'AIzaSyBadBadBadBadBadBadBadBadBadBa'}"
+    )
+    monkeypatch.setattr(
+        llm_module.litellm,
+        "completion",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError(leaky)),
+    )
+
+    with pytest.raises(RuntimeError, match="LLM generation failed") as exc_info:
+        service.generate_response(
+            messages=[{"role": "user", "content": "hello"}],
+            llm_provider=ModelProvider.OPENAI,
+            llm_model="gpt-4o-mini",
+            organization_id=uuid4(),
+            db=_mock_org_db(),
+        )
+
+    msg = str(exc_info.value)
+    assert "AIzaSy" not in msg
+    assert "x-goog-api-key" not in msg
+
+
+def test_generate_response_redacts_multi_provider_secrets_in_error_and_logs(monkeypatch):
+    """Neither the raised error nor the boundary log may carry raw credentials.
+
+    The log sink here does NOT redact, so this exercises log_exception_safely
+    on its own rather than relying on the configure_logging() sink.
+    """
+    service = LLMService()
+    monkeypatch.setattr(service, "_get_ai_provider", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_module, "resolve_integration_for_call", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(service, "_resolve_api_key", lambda *_args, **_kwargs: "decrypted-key")
+    google_key = "AIzaSyBadBadBadBadBadBadBadBadBadBa"
+    leaky = (
+        "litellm.APIError: request headers={'Authorization': 'Bearer sk-proj-abc123def456', "
+        f"'xi-api-key': 'el_secret_999', 'x-goog-api-key': '{google_key}'}} "
+        "kwargs api_key='sk-ant-api03-SECRETSECRET' token=dg_SECRET_TOKEN"
+    )
+    secrets = [
+        google_key,
+        "x-goog-api-key",
+        "sk-proj-abc123def456",
+        "el_secret_999",
+        "sk-ant-api03-SECRETSECRET",
+        "dg_SECRET_TOKEN",
+    ]
+    monkeypatch.setattr(
+        llm_module.litellm,
+        "completion",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError(leaky)),
+    )
+
+    records = []
+    handler_id = logger.add(records.append, format="{message}", diagnose=False, backtrace=False)
+    try:
+        with pytest.raises(RuntimeError, match="LLM generation failed") as exc_info:
+            service.generate_response(
+                messages=[{"role": "user", "content": "hello"}],
+                llm_provider=ModelProvider.OPENAI,
+                llm_model="gpt-4o-mini",
+                organization_id=uuid4(),
+                db=_mock_org_db(),
+            )
+    finally:
+        logger.remove(handler_id)
+
+    msg = str(exc_info.value)
+    logged = "".join(records)
+    assert "LiteLLM call failed" in logged
+    for secret in secrets:
+        assert secret not in msg
+        assert secret not in logged
+    # Original exception stays attached for debugging.
+    assert exc_info.value.__cause__ is not None
 
 
 def test_build_azure_litellm_kwargs_from_provider_endpoint_url():

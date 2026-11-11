@@ -628,10 +628,14 @@ def test_stream_evaluator_result_audio_proxies_elevenlabs(
 def mock_recording_hostname_dns(monkeypatch):
     import app.services.telephony.recording_download as recording_download
 
+    import ipaddress
+
+    # Patch only the downloader's resolver: patching ``socket.getaddrinfo``
+    # replaces it process-wide and breaks unrelated connects (e.g. Redis).
     monkeypatch.setattr(
-        recording_download.socket,
-        "getaddrinfo",
-        lambda *args, **kwargs: [(None, None, None, None, ("52.0.0.1", 0))],
+        recording_download,
+        "_resolve_host_ips",
+        lambda _hostname: [ipaddress.ip_address("52.0.0.1")],
     )
 
 

@@ -3,6 +3,8 @@
 from typing import Any, Dict, List, Optional, Tuple
 from loguru import logger
 
+from app.core.logging import log_exception_safely, redact_log_secrets
+
 try:
     import plivo
 except ImportError:  # pragma: no cover - environment-dependent optional dependency
@@ -119,8 +121,8 @@ class PlivoClient:
             self.client.calls.list(limit=1)
             return True
         except Exception as e:
-            logger.exception("Plivo connection test failed")
-            raise ValueError(f"Failed to connect to Plivo: {str(e)}")
+            log_exception_safely("Plivo connection test failed")
+            raise ValueError(f"Failed to connect to Plivo: {redact_log_secrets(e)}")
 
     def list_numbers(self) -> List[Dict[str, Any]]:
         """List account phone numbers."""
@@ -132,8 +134,8 @@ class PlivoClient:
                 return [self._to_dict(item) for item in objects]
             return []
         except Exception as e:
-            logger.exception("Failed to list Plivo numbers")
-            raise ValueError(f"Failed to list Plivo numbers: {str(e)}")
+            log_exception_safely("Failed to list Plivo numbers")
+            raise ValueError(f"Failed to list Plivo numbers: {redact_log_secrets(e)}")
 
     def set_number_answer_url(
         self,
@@ -184,8 +186,8 @@ class PlivoClient:
             self.client.numbers.update(plivo_number, app_id=app_id)
             return True, "Created Plivo application and attached number", app_id
         except Exception as e:
-            logger.exception("Failed to configure Plivo number webhook")
-            return False, f"Failed to configure Plivo webhook: {str(e)}", app_id
+            log_exception_safely("Failed to configure Plivo number webhook")
+            return False, f"Failed to configure Plivo webhook: {redact_log_secrets(e)}", app_id
 
     def create_outbound_call(
         self,
@@ -208,8 +210,8 @@ class PlivoClient:
             response = self.client.calls.create(**kwargs)
             return self._to_dict(response)
         except Exception as e:
-            logger.exception("Failed to create outbound call")
-            raise ValueError(f"Failed to create outbound call: {str(e)}")
+            log_exception_safely("Failed to create outbound call")
+            raise ValueError(f"Failed to create outbound call: {redact_log_secrets(e)}")
 
     def get_call_details(self, call_uuid: str) -> Dict[str, Any]:
         """Get call details by Plivo call UUID."""
@@ -217,8 +219,8 @@ class PlivoClient:
             response = self.client.calls.get(call_uuid)
             return self._to_dict(response)
         except Exception as e:
-            logger.exception("Failed to fetch call details")
-            raise ValueError(f"Failed to fetch call details: {str(e)}")
+            log_exception_safely("Failed to fetch call details")
+            raise ValueError(f"Failed to fetch call details: {redact_log_secrets(e)}")
 
     def download_recording(self, recording_url: str) -> Tuple[bytes, str]:
         """Download a recording from Plivo with HTTP Basic auth."""
@@ -246,8 +248,8 @@ class PlivoClient:
             response = self.client.verify_session.create(**kwargs)
             return self._to_dict(response)
         except Exception as e:
-            logger.exception("Failed to start voice verification")
-            raise ValueError(f"Failed to start voice verification: {str(e)}")
+            log_exception_safely("Failed to start voice verification")
+            raise ValueError(f"Failed to start voice verification: {redact_log_secrets(e)}")
 
     def check_verification(self, session_uuid: str, otp_code: str) -> Dict[str, Any]:
         """Validate submitted OTP for a verification session."""
@@ -255,8 +257,8 @@ class PlivoClient:
             response = self.client.verify_session.validate(session_uuid=session_uuid, otp=otp_code)
             return self._to_dict(response)
         except Exception as e:
-            logger.exception("Failed to check voice verification")
-            raise ValueError(f"Failed to check voice verification: {str(e)}")
+            log_exception_safely("Failed to check voice verification")
+            raise ValueError(f"Failed to check voice verification: {redact_log_secrets(e)}")
 
     def get_verify_session(self, session_uuid: str) -> Dict[str, Any]:
         """Fetch verification session details."""
@@ -264,5 +266,5 @@ class PlivoClient:
             response = self.client.verify_session.get(session_uuid)
             return self._to_dict(response)
         except Exception as e:
-            logger.exception("Failed to fetch verify session")
-            raise ValueError(f"Failed to fetch verify session: {str(e)}")
+            log_exception_safely("Failed to fetch verify session")
+            raise ValueError(f"Failed to fetch verify session: {redact_log_secrets(e)}")
