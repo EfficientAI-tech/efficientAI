@@ -102,6 +102,14 @@ def isolate_eval_progress_buffer(monkeypatch):
         pass
     monkeypatch.setattr(buf, "_redis", client)
     monkeypatch.setattr(buf, "_scripts", {})
+    # Per-process catalog caches (eval settings, LLM credentials/gateway
+    # settings) are keyed by Redis versions that restart at 0 every test, so
+    # entries must not survive from one test to the next.
+    from app.services.ai.llm_credential_version import clear_version_memo
+    from app.workers.catalog_cache import clear_worker_catalog_cache
+
+    clear_worker_catalog_cache()
+    clear_version_memo()
     finalize_requests: list[str] = []
 
     def _record_finalize(evaluation_id):

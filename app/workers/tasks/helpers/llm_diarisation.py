@@ -48,7 +48,6 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -56,6 +55,7 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.models.enums import ModelProvider
+from app.services.ai.llm_call_scope import with_llm_call_scope
 from app.services.ai.llm_service import llm_service
 from app.services.import_eval_llm_output_budgets import (
     DIARISER_COMPACT_OUTPUT_FIRST,
@@ -64,8 +64,6 @@ from app.services.import_eval_llm_output_budgets import (
 
 from .json_utils import repair_truncated_json
 
-
-_DEBUG_LOG_PATH = Path(__file__).resolve().parents[4] / "debug-bfc313.log"
 
 
 DEFAULT_DIARIZATION_PROMPT = (
@@ -937,14 +935,14 @@ def _custom_gateway_audio_allowed(
     if provider_value != "custom":
         return False
 
-    from app.services.credentials import resolve_ai_provider
+    from app.services.credentials import resolve_ai_provider_for_call
 
     try:
         provider_enum = ModelProvider(provider_value)
     except ValueError:
         return False
 
-    ai_provider_row = resolve_ai_provider(
+    ai_provider_row = resolve_ai_provider_for_call(
         provider_enum.value,
         db,
         organization_id,
@@ -1027,9 +1025,9 @@ def _resolve_provider_api_key(
     # path of a module that's also used by the lighter text-only
     # diariser.
     from app.core.encryption import decrypt_api_key
-    from app.services.credentials import resolve_ai_provider
+    from app.services.credentials import resolve_ai_provider_for_call
 
-    ai_provider = resolve_ai_provider(
+    ai_provider = resolve_ai_provider_for_call(
         provider, db, organization_id, credential_id=credential_id
     )
     if ai_provider is None:
@@ -1245,6 +1243,7 @@ def _build_audio_messages(
     ]
 
 
+@with_llm_call_scope
 def diarize_audio_with_llm(
     audio_bytes: bytes,
     *,
@@ -1344,9 +1343,9 @@ def diarize_audio_with_llm(
         resolve_effective_routing,
         routing_context_from_ai_provider,
     )
-    from app.services.credentials import resolve_ai_provider
+    from app.services.credentials import resolve_ai_provider_for_call
 
-    _ai_provider_row = resolve_ai_provider(
+    _ai_provider_row = resolve_ai_provider_for_call(
         provider_enum.value,
         db,
         organization_id,
@@ -1360,14 +1359,6 @@ def diarize_audio_with_llm(
     _, _effective_routing = resolve_effective_routing(
         organization_id, db, _cred_ctx
     )
-    # #region agent log
-    try:
-        import json as _json, time as _time
-        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as _f:
-            _f.write(_json.dumps({"sessionId": "bfc313", "hypothesisId": "B", "location": "llm_diarisation.py:diarize_audio_with_llm", "message": "audio diariser credential routing", "data": {"credential_id": str(credential_id) if credential_id else None, "provider_row_id": str(getattr(_ai_provider_row, "id", None)), "routing_mode": getattr(_ai_provider_row, "routing_mode", None), "effective_routing": _effective_routing, "audio_bytes": len(audio_bytes), "files_api_threshold": _GEMINI_FILES_API_MIN_BYTES}, "timestamp": int(_time.time() * 1000)}) + "\n")
-    except Exception:
-        pass
-    # #endregion
 
     gemini_file_id: Optional[str] = None
     # Gemini Files API uploads go directly to Google and bind the file to
@@ -1399,14 +1390,6 @@ def diarize_audio_with_llm(
                     len(audio_bytes),
                     resolved_mime,
                 )
-    # #region agent log
-    try:
-        import json as _json, time as _time
-        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as _f:
-            _f.write(_json.dumps({"sessionId": "bfc313", "runId": "post-fix", "hypothesisId": "C", "location": "llm_diarisation.py:diarize_audio_with_llm", "message": "audio transport chosen", "data": {"effective_routing": _effective_routing, "gemini_file_id_used": bool(gemini_file_id), "gemini_file_id_prefix": (gemini_file_id or "")[:80], "uses_inline_base64": gemini_file_id is None, "files_api_skipped_for_gateway": _effective_routing != "direct" and provider_value == "google" and len(audio_bytes) >= _GEMINI_FILES_API_MIN_BYTES}, "timestamp": int(_time.time() * 1000)}) + "\n")
-    except Exception:
-        pass
-    # #endregion
 
     # Only build the (expensive) base64 payload when we actually need
     # it for the wire — for the OpenAI path always, and for the Gemini

@@ -3831,3 +3831,11 @@ from app.services.call_imports.eval_settings_version import (  # noqa: E402
 )
 
 _register_eval_settings_hooks()
+
+# Bump the Redis LLM-config version when an org's credentials or gateway
+# settings change, so cached call-path resolutions refresh.
+from app.services.ai.llm_credential_version import (  # noqa: E402
+    register_llm_config_version_hooks as _register_llm_config_hooks,
+)
+
+_register_llm_config_hooks()

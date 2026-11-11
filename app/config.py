@@ -108,6 +108,11 @@ class Settings(BaseSettings):
     # EVAL_PROGRESS_RECOUNT_SECONDS for running evaluations.
     EVAL_PROGRESS_FLUSH_SECONDS: int = 30
     EVAL_PROGRESS_RECOUNT_SECONDS: int = 300
+    # LLM call path cache for org gateway settings + resolved credentials
+    # (keyed by the Redis ``llmcfg:ver:{org}`` version, bumped on any change).
+    # TTL bounds staleness only if a version bump is lost while Redis is down.
+    LLM_CONFIG_CACHE_TTL_SECONDS: int = 120
+    LLM_CONFIG_VERSION_MEMO_SECONDS: float = 1.0
     DIARIZATION_FAIR_DISPATCH_BATCH_SIZE: int = 75
     IMPORT_FAIR_DISPATCH_BATCH_SIZE: int = 75
     IMPORT_WORKSPACE_INFLIGHT_LIMIT: int = 8

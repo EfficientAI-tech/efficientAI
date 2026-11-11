@@ -48,7 +48,10 @@ from pathlib import Path
 
 from app.models.database import ModelProvider, AIProvider, Integration
 from app.core.encryption import decrypt_api_key
-from app.services.credentials import resolve_ai_provider, resolve_integration
+from app.services.credentials import (
+    resolve_ai_provider_for_call,
+    resolve_integration_for_call,
+)
 from app.services.storage.s3_service import s3_service
 from app.core.exceptions import StorageError
 from sqlalchemy.orm import Session
@@ -70,8 +73,12 @@ class TranscriptionService:
         organization_id: UUID,
         credential_id: Optional[UUID] = None,
     ) -> Optional[AIProvider]:
-        """Resolve the AIProvider row to use, honoring ``credential_id``."""
-        return resolve_ai_provider(
+        """Resolve the AIProvider row to use, honoring ``credential_id``.
+
+        Read-only cached snapshot (per-process, invalidated by the org's
+        LLM-config version) so per-row STT does not read ``aiproviders``.
+        """
+        return resolve_ai_provider_for_call(
             provider, db, organization_id, credential_id=credential_id
         )
 
@@ -107,7 +114,7 @@ class TranscriptionService:
                 credential=credential_ctx,
             )
 
-        integration = resolve_integration(
+        integration = resolve_integration_for_call(
             provider, db, organization_id, credential_id=credential_id
         )
         if integration:

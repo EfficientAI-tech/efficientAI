@@ -19,7 +19,11 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.models.database import ModelProvider, AIProvider
-from app.services.credentials import resolve_ai_provider, resolve_integration
+from app.services.ai.llm_call_scope import with_llm_call_scope
+from app.services.credentials import (
+    resolve_ai_provider_for_call,
+    resolve_integration_for_call,
+)
 from app.services.ai.llm_generation_config import build_litellm_kwargs
 from app.services.ai.openrouter_jev import (
     call_openrouter_systemone,
@@ -428,7 +432,7 @@ class LLMService:
         specific credential row when multiple keys exist for the same
         provider.
         """
-        return resolve_ai_provider(
+        return resolve_ai_provider_for_call(
             provider, db, organization_id, credential_id=credential_id
         )
 
@@ -449,7 +453,7 @@ class LLMService:
         provider_value = (
             llm_provider.value if hasattr(llm_provider, "value") else str(llm_provider)
         )
-        integration = resolve_integration(
+        integration = resolve_integration_for_call(
             provider_value, db, organization_id, credential_id=credential_id
         )
         if integration:
@@ -478,7 +482,7 @@ class LLMService:
                     f"Failed to decrypt API key for provider {provider}: {e}"
                 )
 
-        integration = resolve_integration(
+        integration = resolve_integration_for_call(
             provider, db, organization_id, credential_id=credential_id
         )
         if integration:
@@ -516,6 +520,7 @@ class LLMService:
             return f"openrouter/{normalized}"
         return f"{prefix}/{model}"
 
+    @with_llm_call_scope
     def generate_response(
         self,
         messages: List[Dict[str, str]],
@@ -797,6 +802,7 @@ class LLMService:
         )
         return result
 
+    @with_llm_call_scope
     def generate_response_with_tools(
         self,
         messages: List[Dict[str, Any]],
