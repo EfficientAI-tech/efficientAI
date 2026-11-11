@@ -25,9 +25,47 @@ export type LatestEvalSnapshot = Pick<
 type ImportLifecycleHeader = {
   status?: CallImport['status'] | string
   source_format?: string | null
+  discovery_status?: string | null
+  latest_evaluation_status?: string | null
   platform_progress?: { is_active?: boolean } | null
   diarised_pending_rows?: number
   diarised_running_rows?: number
+}
+
+const ACTIVE_DISCOVERY = new Set(['queued', 'running'])
+
+function diariseInFlight(header: ImportLifecycleHeader): number {
+  return (header.diarised_pending_rows ?? 0) + (header.diarised_running_rows ?? 0)
+}
+
+function platformImportActive(header: ImportLifecycleHeader): boolean {
+  if (header.platform_progress?.is_active) return true
+  return ACTIVE_DISCOVERY.has((header.discovery_status || '').toLowerCase())
+}
+
+/** Non-eval work: delete, diarise, platform discovery/import, or fetch before any run. */
+export function importBatchStillWorking(
+  header: ImportLifecycleHeader | undefined,
+): boolean {
+  if (!header) return false
+  if (header.status === 'deleting') return true
+  if (diariseInFlight(header) > 0) return true
+  if (platformImportActive(header)) return true
+  const status = header.status
+  return (
+    (status === 'pending' || status === 'processing') &&
+    !header.latest_evaluation_status
+  )
+}
+
+function importLifecyclePollMs(
+  header: ImportLifecycleHeader | undefined,
+): number | false {
+  if (!header || !importBatchStillWorking(header)) return false
+  if (header.status === 'deleting') return IMPORT_DELETE_POLL_MS
+  if (platformImportActive(header)) return IMPORT_PLATFORM_POLL_MS
+  if (diariseInFlight(header) > 0) return IMPORT_DIARISE_POLL_MS
+  return IMPORT_FETCH_POLL_MS
 }
 
 export function evaluationSnapshotFromLatest(
@@ -97,64 +135,16 @@ export function importHeaderPollMs(
   header: (ImportLifecycleHeader & LatestEvalSnapshot) | undefined,
 ): number | false {
   if (!header) return false
-  if (header.status === 'deleting') return IMPORT_DELETE_POLL_MS
-  const platform = (header.source_format || '').toLowerCase() === 'platform'
-  if (
-    platform &&
-    (header.status === 'pending' ||
-      header.status === 'processing' ||
-      header.platform_progress?.is_active)
-  ) {
-    return IMPORT_PLATFORM_POLL_MS
-  }
-  if (header.status === 'pending' || header.status === 'processing') {
-    return IMPORT_FETCH_POLL_MS
-  }
-  const diariseInFlight =
-    (header.diarised_pending_rows ?? 0) + (header.diarised_running_rows ?? 0)
-  if (diariseInFlight > 0) return IMPORT_DIARISE_POLL_MS
-  const evalPoll = latestEvaluationPollMs(header)
-  if (evalPoll) return evalPoll
-  if (
-    header.status === 'completed' ||
-    header.status === 'failed' ||
-    header.status === 'mapped' ||
-    header.status === 'partial'
-  ) {
-    return false
-  }
-  return false
+  const lifecycle = importLifecyclePollMs(header)
+  if (lifecycle) return lifecycle
+  return latestEvaluationPollMs(header) || false
 }
 
 /** Row table on import detail: import lifecycle only (not eval scoring). */
 export function importRowsPollMs(
   header: ImportLifecycleHeader | undefined,
 ): number | false {
-  if (!header) return false
-  if (header.status === 'deleting') return IMPORT_DELETE_POLL_MS
-  const platform = (header.source_format || '').toLowerCase() === 'platform'
-  if (
-    platform &&
-    (header.status === 'pending' ||
-      header.status === 'processing' ||
-      header.platform_progress?.is_active)
-  ) {
-    return IMPORT_PLATFORM_POLL_MS
-  }
-  if (header.status === 'pending' || header.status === 'processing') {
-    return IMPORT_FETCH_POLL_MS
-  }
-  const diariseInFlight =
-    (header.diarised_pending_rows ?? 0) + (header.diarised_running_rows ?? 0)
-  if (diariseInFlight > 0) return IMPORT_DIARISE_POLL_MS
-  if (
-    header.status === 'completed' ||
-    header.status === 'failed' ||
-    header.status === 'mapped'
-  ) {
-    return false
-  }
-  return false
+  return importLifecyclePollMs(header)
 }
 
 export function callImportListPollMs(
@@ -171,9 +161,7 @@ export function callImportListPollMs(
   if (items.some((i) => latestEvaluationShouldPoll(i))) {
     return IMPORT_LIST_ACTIVE_POLL_MS
   }
-  const activeImport = items.filter(
-    (i) => i.status === 'pending' || i.status === 'processing',
-  )
+  const activeImport = items.filter((item) => importBatchStillWorking(item))
   if (activeImport.length > 0) {
     const watched = options?.watchedPlatformImportIds
     if (watched && watched.size > 0) {
