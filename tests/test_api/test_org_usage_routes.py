@@ -15,9 +15,9 @@ from app.api.v1.routes.org_usage import (
     _evaluation_scope_filter,
     _filters_share_facet_scan,
     _grouped_resource_filter_rows,
-    _merge_call_import_breakdown_rows,
     _scoped_call_import_id_select,
     _usage_range_is_historical,
+    get_usage_summary,
 )
 
 from fastapi import FastAPI
@@ -97,26 +97,50 @@ def test_pricing_override_get_still_accepts_plain_model_id(monkeypatch):
     assert response.json()["model"] == "gpt-4o"
 
 
-def test_merge_call_import_breakdown_rows_sums_evaluation_buckets():
-    import_id = str(uuid4())
-    eval_id = str(uuid4())
-    direct = (10, 5, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 100, False)
-    via_eval = (3, 1, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 40, True)
+def test_summary_releases_single_flight_lock_when_query_raises(monkeypatch):
+    import pytest
+    from app.api.v1.routes import org_usage as usage_routes
 
-    rows = _merge_call_import_breakdown_rows(
-        [
-            (import_id, None, *direct),
-            (None, eval_id, *via_eval),
-        ],
-        {eval_id: import_id},
+    released: list[tuple] = []
+    monkeypatch.setattr(
+        usage_routes,
+        "_prepare_usage_read",
+        lambda org_id, endpoint, key, model: (None, True),
+    )
+    monkeypatch.setattr(
+        usage_routes,
+        "release_read_lock",
+        lambda org_id, endpoint, key: released.append((org_id, endpoint, key)),
     )
 
-    assert len(rows) == 1
-    assert rows[0][0] == import_id
-    assert rows[0][1] == 13
-    assert rows[0][2] == 6
-    assert rows[0][8] == 3
-    assert rows[0][-1] is True
+    def boom(*args, **kwargs):
+        raise RuntimeError("db unavailable")
+
+    monkeypatch.setattr(usage_routes, "_summary_aggregate_query", boom)
+
+    org_id = uuid4()
+    with pytest.raises(RuntimeError, match="db unavailable"):
+        get_usage_summary(
+            start=date(2026, 8, 1),
+            end=date(2026, 8, 2),
+            tz="UTC",
+            workspace_id=None,
+            product_section=None,
+            model=None,
+            resource_id=None,
+            usage_kind=None,
+            call_import_id=None,
+            evaluation_id=None,
+            evaluation_row_id=None,
+            dataset=None,
+            tag_id=None,
+            organization_id=org_id,
+            db=MagicMock(),
+        )
+
+    assert len(released) == 1
+    assert released[0][0] == org_id
+    assert released[0][1] == "summary"
 
 
 def test_evaluation_scope_filter_does_not_scan_eval_rows():

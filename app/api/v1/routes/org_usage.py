@@ -75,7 +75,6 @@ SECTION_LABELS = {
     "other": "Other",
 }
 
-_LABEL_ROW_LIMIT = 5000
 _FILTER_OPTION_LIMIT = 500
 _UUID_RE = (
     "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
@@ -92,13 +91,6 @@ def _usage_row_weight():
         + LLMUsageDaily.reasoning_tokens
         + LLMUsageDaily.audio_seconds
         + LLMUsageDaily.tts_characters
-    )
-
-
-def _label_row_order():
-    return (
-        _usage_row_weight().desc(),
-        LLMUsageDaily.call_count.desc(),
     )
 
 
@@ -661,91 +653,6 @@ def _resource_labels_for_ids(
     return labels_for_resource_buckets(buckets, resolver)
 
 
-def _resource_label_map(
-    db: Session,
-    organization_id: UUID,
-    query,
-) -> dict[str, str]:
-    """Build resource_id -> hierarchical label from usage rows in query."""
-    rows = (
-        query.with_entities(
-            _resource_id_expr(),
-            _resource_type_expr(),
-            LLMUsageDaily.context,
-        )
-        .filter(
-            or_(
-                LLMUsageDaily.context["resource_id"].astext.isnot(None),
-                LLMUsageDaily.context["agent_id"].astext.isnot(None),
-            )
-        )
-        .order_by(*_label_row_order())
-        .limit(_LABEL_ROW_LIMIT)
-        .all()
-    )
-    grouped: dict[str, tuple[Optional[str], list]] = {}
-    for raw_id, rtype, ctx in rows:
-        if not raw_id:
-            continue
-        key = str(raw_id)
-        if key not in grouped:
-            grouped[key] = (rtype, [])
-        grouped[key][1].append(ctx)
-
-    _infer_agent_types_for_label_buckets(db, organization_id, grouped)
-
-    buckets = [(rid, rtype, contexts) for rid, (rtype, contexts) in grouped.items()]
-    resolver = UsageNameResolver(db, organization_id)
-    contexts_for_preload = []
-    for rid, rtype, contexts in buckets:
-        for ctx in contexts:
-            merged = dict(ctx or {})
-            if rid:
-                merged.setdefault("resource_id", rid)
-            if rtype:
-                merged.setdefault("resource_type", rtype)
-            contexts_for_preload.append(merged)
-    resolver.preload(contexts_for_preload)
-    return labels_for_resource_buckets(buckets, resolver)
-
-
-def _resource_filter_meta_map(
-    db: Session,
-    organization_id: UUID,
-    query,
-) -> dict[str, dict[str, Optional[str]]]:
-    """Map resource id -> {type, product_section} for filter dropdowns."""
-    rows = (
-        query.with_entities(
-            _resource_id_expr(),
-            _resource_type_expr(),
-            LLMUsageDaily.product_section,
-        )
-        .filter(
-            or_(
-                LLMUsageDaily.context["resource_id"].astext.isnot(None),
-                LLMUsageDaily.context["agent_id"].astext.isnot(None),
-            )
-        )
-        .distinct()
-        .limit(_LABEL_ROW_LIMIT)
-        .all()
-    )
-    meta: dict[str, dict[str, Optional[str]]] = {}
-    for raw_id, rtype, section in rows:
-        if not raw_id:
-            continue
-        key = str(raw_id)
-        entry = meta.setdefault(key, {"type": None, "product_section": None})
-        if rtype:
-            entry["type"] = str(rtype)
-        if section:
-            entry["product_section"] = str(section)
-        if not entry["type"] and section == "agents":
-            entry["type"] = "agent"
-    return meta
-
-
 def _breakdown_resource_label(
     raw_res_id: Optional[str],
     res_type: Optional[str],
@@ -806,22 +713,6 @@ def _call_import_ids_for_usage_query(
     return import_ids
 
 
-def _call_import_label_map(
-    db: Session,
-    organization_id: UUID,
-    query,
-) -> dict[str, str]:
-    import_ids = _call_import_ids_for_usage_query(db, organization_id, query)
-
-    if not import_ids:
-        return {}
-    resolver = UsageNameResolver(db, organization_id)
-    resolver.preload(
-        [{"call_import_id": str(uid)} for uid in import_ids]
-    )
-    return labels_for_call_import_ids(list(import_ids), resolver)
-
-
 def _call_import_filter_labels(
     db: Session,
     organization_id: UUID,
@@ -860,62 +751,6 @@ def _call_import_filter_labels(
     resolver = UsageNameResolver(db, organization_id)
     resolver.preload([{"call_import_id": str(uid)} for uid in import_ids])
     return labels_for_call_import_ids(list(import_ids), resolver)
-
-
-def _evaluation_label_map(
-    db: Session,
-    organization_id: UUID,
-    query,
-) -> dict[str, str]:
-    """Evaluation id -> short label (name + id suffix) for filter dropdowns."""
-    rows = (
-        query.with_entities(
-            LLMUsageDaily.context["evaluation_id"].astext,
-            LLMUsageDaily.context["resource_id"].astext,
-            LLMUsageDaily.context["resource_type"].astext,
-            LLMUsageDaily.context,
-        )
-        .filter(
-            or_(
-                LLMUsageDaily.context["evaluation_id"].astext.isnot(None),
-                LLMUsageDaily.context["resource_type"].astext == "call_import_evaluation",
-            )
-        )
-        .order_by(*_label_row_order())
-        .limit(_LABEL_ROW_LIMIT)
-        .all()
-    )
-    grouped: dict[str, tuple[Optional[str], list]] = {}
-    for eval_raw, res_raw, rtype, ctx in rows:
-        key_raw = eval_raw
-        if not key_raw and rtype == "call_import_evaluation" and res_raw:
-            key_raw = res_raw
-        if not key_raw:
-            continue
-        key = str(key_raw)
-        if key not in grouped:
-            grouped[key] = (rtype, [])
-        grouped[key][1].append(ctx)
-
-    buckets = [(rid, rtype, contexts) for rid, (rtype, contexts) in grouped.items()]
-    resolver = UsageNameResolver(db, organization_id)
-    contexts_for_preload = []
-    for _, rtype, contexts in buckets:
-        for ctx in contexts:
-            merged = dict(ctx or {})
-            if rtype and "resource_type" not in merged:
-                merged["resource_type"] = rtype
-            contexts_for_preload.append(merged)
-    resolver.preload(contexts_for_preload)
-
-    labels: dict[str, str] = {}
-    for raw_id, rtype, contexts in buckets:
-        ctx = max([dict(c or {}) for c in contexts], key=len, default={})
-        if rtype and "resource_type" not in ctx:
-            ctx["resource_type"] = rtype
-        eval_key = ctx.get("evaluation_id") or raw_id
-        labels[str(raw_id)] = resolver.evaluation_name(str(eval_key))
-    return labels
 
 
 def _unpriced_usage_condition():
@@ -1017,38 +852,6 @@ def _breakdown_sort_exprs():
         func.sum(LLMUsageDaily.call_count).desc(),
         func.sum(LLMUsageDaily.total_cost_micro_usd).desc(),
     )
-
-
-def _merge_call_import_breakdown_rows(
-    results: list,
-    eval_to_import: dict[str, str],
-) -> list[tuple]:
-    """Fold evaluation-only buckets into their call import and sum metrics."""
-    merged: dict[Optional[str], list] = {}
-    order: list[Optional[str]] = []
-    for row in results:
-        direct_raw, eval_raw = row[0], row[1]
-        metrics = list(row[2:])
-        key = str(direct_raw) if direct_raw else eval_to_import.get(str(eval_raw or ""))
-        key = key or None
-        if key not in merged:
-            merged[key] = [0] * len(metrics)
-            order.append(key)
-        bucket = merged[key]
-        for index, value in enumerate(metrics):
-            if index == len(metrics) - 1:
-                bucket[index] = bool(bucket[index] or value)
-            else:
-                bucket[index] = int(bucket[index] or 0) + int(value or 0)
-    merged_rows = [tuple([key, *merged[key]]) for key in order]
-    merged_rows.sort(
-        key=lambda row: (
-            int(row[1] or 0) + int(row[2] or 0),
-            int(row[8] or 0) if len(row) > 8 else 0,
-        ),
-        reverse=True,
-    )
-    return merged_rows
 
 
 def _filters_share_facet_scan(
@@ -1376,41 +1179,43 @@ def get_usage_summary(
     if cached_response is not None:
         return cached_response
 
-    row = _summary_aggregate_query(
-        db,
-        organization_id=organization_id,
-        start=access.filter_start,
-        end=access.filter_end,
-        enforced_floor=access.enforced_filter_floor,
-        workspace_id=workspace_id,
-        product_section=product_section,
-        model=model,
-        resource_id=resource_id,
-        usage_kind=usage_kind,
-        call_import_id=call_import_id,
-        evaluation_id=evaluation_id,
-        evaluation_row_id=evaluation_row_id,
-        dataset=dataset,
-        tag_id=tag_id,
-    ).one()
-    totals = _usage_totals_from_row(row)
-    response = UsageSummaryResponse(
-        start=display_start,
-        end=display_end,
-        totals=UsageTotals(**totals),
-        usage_policy=_usage_policy_meta(access),
-        last_updated_at=_last_updated(db, organization_id),
-    )
-    set_cached_response(
-        organization_id,
-        "summary",
-        cache_key,
-        response.model_dump(mode="json"),
-        historical=_usage_range_is_historical(access),
-    )
-    if cache_leader:
-        release_read_lock(organization_id, "summary", cache_key)
-    return response
+    try:
+        row = _summary_aggregate_query(
+            db,
+            organization_id=organization_id,
+            start=access.filter_start,
+            end=access.filter_end,
+            enforced_floor=access.enforced_filter_floor,
+            workspace_id=workspace_id,
+            product_section=product_section,
+            model=model,
+            resource_id=resource_id,
+            usage_kind=usage_kind,
+            call_import_id=call_import_id,
+            evaluation_id=evaluation_id,
+            evaluation_row_id=evaluation_row_id,
+            dataset=dataset,
+            tag_id=tag_id,
+        ).one()
+        totals = _usage_totals_from_row(row)
+        response = UsageSummaryResponse(
+            start=display_start,
+            end=display_end,
+            totals=UsageTotals(**totals),
+            usage_policy=_usage_policy_meta(access),
+            last_updated_at=_last_updated(db, organization_id),
+        )
+        set_cached_response(
+            organization_id,
+            "summary",
+            cache_key,
+            response.model_dump(mode="json"),
+            historical=_usage_range_is_historical(access),
+        )
+        return response
+    finally:
+        if cache_leader:
+            release_read_lock(organization_id, "summary", cache_key)
 
 
 @router.get("/breakdown", response_model=UsageBreakdownResponse)
@@ -1465,113 +1270,70 @@ def get_usage_breakdown(
     if cached_response is not None:
         return cached_response
 
-    dims = {
-        "workspace": LLMUsageDaily.workspace_id,
-        "product_section": LLMUsageDaily.product_section,
-        "model": LLMUsageDaily.model,
-        "resource": cast(_resource_id_expr(), String),
-        "usage_kind": LLMUsageDaily.usage_kind,
-    }
+    try:
+        dims = {
+            "workspace": LLMUsageDaily.workspace_id,
+            "product_section": LLMUsageDaily.product_section,
+            "model": LLMUsageDaily.model,
+            "resource": cast(_resource_id_expr(), String),
+            "usage_kind": LLMUsageDaily.usage_kind,
+        }
 
-    aggregates = [
-        func.coalesce(func.sum(LLMUsageDaily.prompt_tokens), 0).label("prompt_tokens"),
-        func.coalesce(func.sum(LLMUsageDaily.completion_tokens), 0).label(
-            "completion_tokens"
-        ),
-        func.coalesce(func.sum(LLMUsageDaily.cache_read_tokens), 0).label(
-            "cache_read_tokens"
-        ),
-        func.coalesce(func.sum(LLMUsageDaily.cache_creation_tokens), 0).label(
-            "cache_creation_tokens"
-        ),
-        func.coalesce(func.sum(LLMUsageDaily.reasoning_tokens), 0).label(
-            "reasoning_tokens"
-        ),
-        func.coalesce(func.sum(LLMUsageDaily.audio_seconds), 0).label("audio_seconds"),
-        func.coalesce(func.sum(LLMUsageDaily.tts_characters), 0).label("tts_characters"),
-        func.coalesce(func.sum(LLMUsageDaily.call_count), 0).label("call_count"),
-        *_usage_cost_sum_columns(),
-        _has_unpriced_usage_column(),
-    ]
+        aggregates = [
+            func.coalesce(func.sum(LLMUsageDaily.prompt_tokens), 0).label("prompt_tokens"),
+            func.coalesce(func.sum(LLMUsageDaily.completion_tokens), 0).label(
+                "completion_tokens"
+            ),
+            func.coalesce(func.sum(LLMUsageDaily.cache_read_tokens), 0).label(
+                "cache_read_tokens"
+            ),
+            func.coalesce(func.sum(LLMUsageDaily.cache_creation_tokens), 0).label(
+                "cache_creation_tokens"
+            ),
+            func.coalesce(func.sum(LLMUsageDaily.reasoning_tokens), 0).label(
+                "reasoning_tokens"
+            ),
+            func.coalesce(func.sum(LLMUsageDaily.audio_seconds), 0).label("audio_seconds"),
+            func.coalesce(func.sum(LLMUsageDaily.tts_characters), 0).label("tts_characters"),
+            func.coalesce(func.sum(LLMUsageDaily.call_count), 0).label("call_count"),
+            *_usage_cost_sum_columns(),
+            _has_unpriced_usage_column(),
+        ]
 
-    resolved_call_import = None
-    if group_by == "call_import":
-        direct_expr = _direct_call_import_id_expr()
-        eval_expr = _evaluation_id_for_import_expr()
-        resolved_call_import = func.coalesce(
-            direct_expr, cast(CallImportEvaluation.call_import_id, String)
-        )
-        base_query = (
-            db.query(resolved_call_import, *aggregates)
-            .select_from(LLMUsageDaily)
-            .outerjoin(
-                CallImportEvaluation,
-                and_(
-                    direct_expr.is_(None),
-                    eval_expr.op("~")(_UUID_RE),
-                    CallImportEvaluation.id == cast(eval_expr, PG_UUID),
-                    CallImportEvaluation.organization_id == organization_id,
-                ),
+        resolved_call_import = None
+        if group_by == "call_import":
+            direct_expr = _direct_call_import_id_expr()
+            eval_expr = _evaluation_id_for_import_expr()
+            resolved_call_import = func.coalesce(
+                direct_expr, cast(CallImportEvaluation.call_import_id, String)
             )
-        )
-        group_cols = [resolved_call_import]
-    else:
-        dim = dims[group_by]
-        select_cols = [dim]
-        group_cols = [dim]
-        if group_by == "resource":
-            select_cols.append(cast(_resource_type_expr(), String))
-            group_cols.append(cast(_resource_type_expr(), String))
-            select_cols.append(LLMUsageDaily.product_section)
-            group_cols.append(LLMUsageDaily.product_section)
-        base_query = db.query(*select_cols, *aggregates)
-
-    query = _apply_filters(
-        base_query,
-        organization_id=organization_id,
-        start=access.filter_start,
-        end=access.filter_end,
-        enforced_floor=access.enforced_filter_floor,
-        workspace_id=workspace_id,
-        product_section=product_section,
-        model=model,
-        resource_id=resource_id,
-        usage_kind=usage_kind,
-        call_import_id=call_import_id,
-        evaluation_id=evaluation_id,
-        evaluation_row_id=evaluation_row_id,
-        dataset=dataset,
-        tag_id=tag_id,
-        db=db,
-    ).group_by(*group_cols)
-
-    results = (
-        query.order_by(*_breakdown_sort_exprs())
-        .offset(offset)
-        .limit(limit)
-        .all()
-    )
-    fetched_count = len(results)
-
-    workspace_names: dict = {}
-    if group_by == "workspace":
-        ws_ids = {r[0] for r in results if r[0] is not None}
-        if ws_ids:
-            workspace_names = {
-                w.id: w.name
-                for w in db.query(Workspace)
-                .filter(
-                    Workspace.organization_id == organization_id,
-                    Workspace.id.in_(ws_ids),
+            base_query = (
+                db.query(resolved_call_import, *aggregates)
+                .select_from(LLMUsageDaily)
+                .outerjoin(
+                    CallImportEvaluation,
+                    and_(
+                        direct_expr.is_(None),
+                        eval_expr.op("~")(_UUID_RE),
+                        CallImportEvaluation.id == cast(eval_expr, PG_UUID),
+                        CallImportEvaluation.organization_id == organization_id,
+                    ),
                 )
-                .all()
-            }
-    resource_labels: dict[str, str] = {}
-    call_import_labels: dict[str, str] = {}
-    if group_by == "resource":
-        resource_ids = [str(row[0]) for row in results if row[0]]
-        label_query = _filtered_query(
-            db,
+            )
+            group_cols = [resolved_call_import]
+        else:
+            dim = dims[group_by]
+            select_cols = [dim]
+            group_cols = [dim]
+            if group_by == "resource":
+                select_cols.append(cast(_resource_type_expr(), String))
+                group_cols.append(cast(_resource_type_expr(), String))
+                select_cols.append(LLMUsageDaily.product_section)
+                group_cols.append(LLMUsageDaily.product_section)
+            base_query = db.query(*select_cols, *aggregates)
+
+        query = _apply_filters(
+            base_query,
             organization_id=organization_id,
             start=access.filter_start,
             end=access.filter_end,
@@ -1584,133 +1346,178 @@ def get_usage_breakdown(
             call_import_id=call_import_id,
             evaluation_id=evaluation_id,
             evaluation_row_id=evaluation_row_id,
-        )
-        resource_labels = _resource_labels_for_ids(
-            db, organization_id, label_query, resource_ids
-        )
-    elif group_by == "call_import":
-        import_ids = []
-        for row in results:
-            parsed = parse_uuid(row[0])
-            if parsed:
-                import_ids.append(parsed)
-        if import_ids:
-            resolver = UsageNameResolver(db, organization_id)
-            resolver.preload(
-                [{"call_import_id": str(uid)} for uid in import_ids]
-            )
-            call_import_labels = labels_for_call_import_ids(import_ids, resolver)
+            dataset=dataset,
+            tag_id=tag_id,
+            db=db,
+        ).group_by(*group_cols)
 
-    rows: List[UsageBreakdownRow] = []
-    for result in results:
+        results = (
+            query.order_by(*_breakdown_sort_exprs())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        fetched_count = len(results)
+
+        workspace_names: dict = {}
         if group_by == "workspace":
-            ws_id = result[0]
-            metrics = result[1:]
-            rows.append(
-                UsageBreakdownRow(
-                    workspace_id=ws_id,
-                    workspace_name=workspace_names.get(ws_id) if ws_id else "Unknown",
-                    **_breakdown_metrics_from_tuple(metrics),
-                )
+            ws_ids = {r[0] for r in results if r[0] is not None}
+            if ws_ids:
+                workspace_names = {
+                    w.id: w.name
+                    for w in db.query(Workspace)
+                    .filter(
+                        Workspace.organization_id == organization_id,
+                        Workspace.id.in_(ws_ids),
+                    )
+                    .all()
+                }
+        resource_labels: dict[str, str] = {}
+        call_import_labels: dict[str, str] = {}
+        if group_by == "resource":
+            resource_ids = [str(row[0]) for row in results if row[0]]
+            label_query = _filtered_query(
+                db,
+                organization_id=organization_id,
+                start=access.filter_start,
+                end=access.filter_end,
+                enforced_floor=access.enforced_filter_floor,
+                workspace_id=workspace_id,
+                product_section=product_section,
+                model=model,
+                resource_id=resource_id,
+                usage_kind=usage_kind,
+                call_import_id=call_import_id,
+                evaluation_id=evaluation_id,
+                evaluation_row_id=evaluation_row_id,
             )
-        elif group_by == "product_section":
-            section = result[0]
-            metrics = result[1:]
-            rows.append(
-                UsageBreakdownRow(
-                    product_section=section,
-                    product_section_label=SECTION_LABELS.get(section or "", section),
-                    **_breakdown_metrics_from_tuple(metrics),
-                )
-            )
-        elif group_by == "model":
-            model_name = result[0]
-            metrics = result[1:]
-            rows.append(
-                UsageBreakdownRow(
-                    model=model_name,
-                    **_breakdown_metrics_from_tuple(metrics),
-                )
-            )
-        elif group_by == "usage_kind":
-            kind = result[0]
-            metrics = result[1:]
-            rows.append(
-                UsageBreakdownRow(
-                    usage_kind=kind,
-                    **_breakdown_metrics_from_tuple(metrics),
-                )
+            resource_labels = _resource_labels_for_ids(
+                db, organization_id, label_query, resource_ids
             )
         elif group_by == "call_import":
-            raw_cid = result[0]
-            metrics = result[1:]
-            cid = None
-            if raw_cid:
-                try:
-                    cid = UUID(str(raw_cid))
-                except (ValueError, TypeError):
-                    cid = None
-            label = (
-                call_import_labels.get(str(raw_cid), "Unscoped")
-                if raw_cid
-                else "Unscoped"
-            )
-            rows.append(
-                UsageBreakdownRow(
-                    call_import_id=cid,
-                    call_import_label=label,
-                    **_breakdown_metrics_from_tuple(metrics),
+            import_ids = []
+            for row in results:
+                parsed = parse_uuid(row[0])
+                if parsed:
+                    import_ids.append(parsed)
+            if import_ids:
+                resolver = UsageNameResolver(db, organization_id)
+                resolver.preload(
+                    [{"call_import_id": str(uid)} for uid in import_ids]
                 )
-            )
-        else:
-            raw_res_id, res_type, section = result[0], result[1], result[2]
-            metrics = result[3:]
-            res_id = None
-            if raw_res_id:
-                try:
-                    res_id = UUID(str(raw_res_id))
-                except (ValueError, TypeError):
-                    res_id = None
-            rows.append(
-                UsageBreakdownRow(
-                    resource_id=res_id,
-                    resource_type=res_type or (
-                        "agent" if section == "agents" and raw_res_id else None
-                    ),
-                    resource_label=_breakdown_resource_label(
-                        raw_res_id,
-                        res_type,
-                        section,
-                        resource_labels,
-                        db,
-                        organization_id,
-                    ),
-                    product_section=section,
-                    product_section_label=SECTION_LABELS.get(section or "", section),
-                    **_breakdown_metrics_from_tuple(metrics),
-                )
-            )
+                call_import_labels = labels_for_call_import_ids(import_ids, resolver)
 
-    response = UsageBreakdownResponse(
-        start=display_start,
-        end=display_end,
-        group_by=group_by,
-        rows=rows,
-        total_count=len(rows),
-        truncated_at_limit=fetched_count >= limit,
-        usage_policy=_usage_policy_meta(access),
-        last_updated_at=_last_updated(db, organization_id),
-    )
-    set_cached_response(
-        organization_id,
-        "breakdown",
-        cache_key,
-        response.model_dump(mode="json"),
-        historical=_usage_range_is_historical(access),
-    )
-    if cache_leader:
-        release_read_lock(organization_id, "breakdown", cache_key)
-    return response
+        rows: List[UsageBreakdownRow] = []
+        for result in results:
+            if group_by == "workspace":
+                ws_id = result[0]
+                metrics = result[1:]
+                rows.append(
+                    UsageBreakdownRow(
+                        workspace_id=ws_id,
+                        workspace_name=workspace_names.get(ws_id) if ws_id else "Unknown",
+                        **_breakdown_metrics_from_tuple(metrics),
+                    )
+                )
+            elif group_by == "product_section":
+                section = result[0]
+                metrics = result[1:]
+                rows.append(
+                    UsageBreakdownRow(
+                        product_section=section,
+                        product_section_label=SECTION_LABELS.get(section or "", section),
+                        **_breakdown_metrics_from_tuple(metrics),
+                    )
+                )
+            elif group_by == "model":
+                model_name = result[0]
+                metrics = result[1:]
+                rows.append(
+                    UsageBreakdownRow(
+                        model=model_name,
+                        **_breakdown_metrics_from_tuple(metrics),
+                    )
+                )
+            elif group_by == "usage_kind":
+                kind = result[0]
+                metrics = result[1:]
+                rows.append(
+                    UsageBreakdownRow(
+                        usage_kind=kind,
+                        **_breakdown_metrics_from_tuple(metrics),
+                    )
+                )
+            elif group_by == "call_import":
+                raw_cid = result[0]
+                metrics = result[1:]
+                cid = None
+                if raw_cid:
+                    try:
+                        cid = UUID(str(raw_cid))
+                    except (ValueError, TypeError):
+                        cid = None
+                label = (
+                    call_import_labels.get(str(raw_cid), "Unscoped")
+                    if raw_cid
+                    else "Unscoped"
+                )
+                rows.append(
+                    UsageBreakdownRow(
+                        call_import_id=cid,
+                        call_import_label=label,
+                        **_breakdown_metrics_from_tuple(metrics),
+                    )
+                )
+            else:
+                raw_res_id, res_type, section = result[0], result[1], result[2]
+                metrics = result[3:]
+                res_id = None
+                if raw_res_id:
+                    try:
+                        res_id = UUID(str(raw_res_id))
+                    except (ValueError, TypeError):
+                        res_id = None
+                rows.append(
+                    UsageBreakdownRow(
+                        resource_id=res_id,
+                        resource_type=res_type or (
+                            "agent" if section == "agents" and raw_res_id else None
+                        ),
+                        resource_label=_breakdown_resource_label(
+                            raw_res_id,
+                            res_type,
+                            section,
+                            resource_labels,
+                            db,
+                            organization_id,
+                        ),
+                        product_section=section,
+                        product_section_label=SECTION_LABELS.get(section or "", section),
+                        **_breakdown_metrics_from_tuple(metrics),
+                    )
+                )
+
+        response = UsageBreakdownResponse(
+            start=display_start,
+            end=display_end,
+            group_by=group_by,
+            rows=rows,
+            total_count=len(rows),
+            truncated_at_limit=fetched_count >= limit,
+            usage_policy=_usage_policy_meta(access),
+            last_updated_at=_last_updated(db, organization_id),
+        )
+        set_cached_response(
+            organization_id,
+            "breakdown",
+            cache_key,
+            response.model_dump(mode="json"),
+            historical=_usage_range_is_historical(access),
+        )
+        return response
+    finally:
+        if cache_leader:
+            release_read_lock(organization_id, "breakdown", cache_key)
 
 
 @router.get("/filters", response_model=UsageFiltersResponse)
@@ -1758,249 +1565,251 @@ def get_usage_filters(
     if cached_response is not None:
         return cached_response
 
-    scoped_resource_id = resource_id or evaluation_id
+    try:
+        scoped_resource_id = resource_id or evaluation_id
 
-    workspace_base = _filtered_query(
-        db,
-        organization_id=organization_id,
-        start=filter_start,
-        end=filter_end,
-        enforced_floor=enforced_floor,
-        dataset=dataset,
-        tag_id=tag_id,
-    )
-    section_base = _filtered_query(
-        db,
-        organization_id=organization_id,
-        start=filter_start,
-        end=filter_end,
-        enforced_floor=enforced_floor,
-        workspace_id=workspace_id,
-        dataset=dataset,
-        tag_id=tag_id,
-    )
-    kind_base = _filtered_query(
-        db,
-        organization_id=organization_id,
-        start=filter_start,
-        end=filter_end,
-        enforced_floor=enforced_floor,
-        workspace_id=workspace_id,
-        product_section=product_section,
-        resource_id=scoped_resource_id,
-        call_import_id=call_import_id,
-        evaluation_id=evaluation_id,
-        dataset=dataset,
-        tag_id=tag_id,
-    )
-    model_base = _filtered_query(
-        db,
-        organization_id=organization_id,
-        start=filter_start,
-        end=filter_end,
-        enforced_floor=enforced_floor,
-        workspace_id=workspace_id,
-        product_section=product_section,
-        resource_id=scoped_resource_id,
-        usage_kind=usage_kind,
-        call_import_id=call_import_id,
-        evaluation_id=evaluation_id,
-        dataset=dataset,
-        tag_id=tag_id,
-    )
-    call_import_base = _filtered_query(
-        db,
-        organization_id=organization_id,
-        start=filter_start,
-        end=filter_end,
-        enforced_floor=enforced_floor,
-        workspace_id=workspace_id,
-        product_section=product_section,
-        dataset=dataset,
-        tag_id=tag_id,
-    )
-    resource_base = _filtered_query(
-        db,
-        organization_id=organization_id,
-        start=filter_start,
-        end=filter_end,
-        enforced_floor=enforced_floor,
-        workspace_id=workspace_id,
-        product_section=product_section,
-        model=model,
-        usage_kind=usage_kind,
-        call_import_id=call_import_id,
-        dataset=dataset,
-        tag_id=tag_id,
-    )
-
-    if _filters_share_facet_scan(
-        workspace_id=workspace_id,
-        product_section=product_section,
-        model=model,
-        resource_id=scoped_resource_id,
-        usage_kind=usage_kind,
-        call_import_id=call_import_id,
-        evaluation_id=evaluation_id,
-    ):
-        workspace_ids, section_values, kind_values, model_values = _facet_sets(
-            workspace_base
+        workspace_base = _filtered_query(
+            db,
+            organization_id=organization_id,
+            start=filter_start,
+            end=filter_end,
+            enforced_floor=enforced_floor,
+            dataset=dataset,
+            tag_id=tag_id,
         )
-        sections = sorted(section_values)
-        models = sorted(model_values)
-        kinds = sorted(kind_values)
-    else:
-        workspace_ids = {
-            row[0]
-            for row in workspace_base.with_entities(LLMUsageDaily.workspace_id)
-            .distinct()
-            .all()
-            if row[0] is not None
-        }
-        sections = sorted(
-            {
+        section_base = _filtered_query(
+            db,
+            organization_id=organization_id,
+            start=filter_start,
+            end=filter_end,
+            enforced_floor=enforced_floor,
+            workspace_id=workspace_id,
+            dataset=dataset,
+            tag_id=tag_id,
+        )
+        kind_base = _filtered_query(
+            db,
+            organization_id=organization_id,
+            start=filter_start,
+            end=filter_end,
+            enforced_floor=enforced_floor,
+            workspace_id=workspace_id,
+            product_section=product_section,
+            resource_id=scoped_resource_id,
+            call_import_id=call_import_id,
+            evaluation_id=evaluation_id,
+            dataset=dataset,
+            tag_id=tag_id,
+        )
+        model_base = _filtered_query(
+            db,
+            organization_id=organization_id,
+            start=filter_start,
+            end=filter_end,
+            enforced_floor=enforced_floor,
+            workspace_id=workspace_id,
+            product_section=product_section,
+            resource_id=scoped_resource_id,
+            usage_kind=usage_kind,
+            call_import_id=call_import_id,
+            evaluation_id=evaluation_id,
+            dataset=dataset,
+            tag_id=tag_id,
+        )
+        call_import_base = _filtered_query(
+            db,
+            organization_id=organization_id,
+            start=filter_start,
+            end=filter_end,
+            enforced_floor=enforced_floor,
+            workspace_id=workspace_id,
+            product_section=product_section,
+            dataset=dataset,
+            tag_id=tag_id,
+        )
+        resource_base = _filtered_query(
+            db,
+            organization_id=organization_id,
+            start=filter_start,
+            end=filter_end,
+            enforced_floor=enforced_floor,
+            workspace_id=workspace_id,
+            product_section=product_section,
+            model=model,
+            usage_kind=usage_kind,
+            call_import_id=call_import_id,
+            dataset=dataset,
+            tag_id=tag_id,
+        )
+
+        if _filters_share_facet_scan(
+            workspace_id=workspace_id,
+            product_section=product_section,
+            model=model,
+            resource_id=scoped_resource_id,
+            usage_kind=usage_kind,
+            call_import_id=call_import_id,
+            evaluation_id=evaluation_id,
+        ):
+            workspace_ids, section_values, kind_values, model_values = _facet_sets(
+                workspace_base
+            )
+            sections = sorted(section_values)
+            models = sorted(model_values)
+            kinds = sorted(kind_values)
+        else:
+            workspace_ids = {
                 row[0]
-                for row in section_base.with_entities(LLMUsageDaily.product_section)
+                for row in workspace_base.with_entities(LLMUsageDaily.workspace_id)
                 .distinct()
                 .all()
-                if row[0]
+                if row[0] is not None
             }
-        )
-        models = sorted(
-            {
-                row[0]
-                for row in model_base.with_entities(LLMUsageDaily.model).distinct().all()
-                if row[0]
-            }
-        )
-        kinds = sorted(
-            {
-                row[0]
-                for row in kind_base.with_entities(LLMUsageDaily.usage_kind).distinct().all()
-                if row[0]
-            }
-        )
-    if (
-        workspace_id is not None
-        and workspace_id not in workspace_ids
-    ):
-        selected = (
-            db.query(Workspace)
-            .filter(
-                Workspace.id == workspace_id,
-                Workspace.organization_id == organization_id,
+            sections = sorted(
+                {
+                    row[0]
+                    for row in section_base.with_entities(LLMUsageDaily.product_section)
+                    .distinct()
+                    .all()
+                    if row[0]
+                }
             )
-            .first()
+            models = sorted(
+                {
+                    row[0]
+                    for row in model_base.with_entities(LLMUsageDaily.model).distinct().all()
+                    if row[0]
+                }
+            )
+            kinds = sorted(
+                {
+                    row[0]
+                    for row in kind_base.with_entities(LLMUsageDaily.usage_kind).distinct().all()
+                    if row[0]
+                }
+            )
+        if (
+            workspace_id is not None
+            and workspace_id not in workspace_ids
+        ):
+            selected = (
+                db.query(Workspace)
+                .filter(
+                    Workspace.id == workspace_id,
+                    Workspace.organization_id == organization_id,
+                )
+                .first()
+            )
+            if selected is not None:
+                workspace_ids.add(selected.id)
+        workspaces = [
+            {"id": str(w.id), "name": w.name}
+            for w in db.query(Workspace)
+            .filter(Workspace.id.in_(workspace_ids) if workspace_ids else False)
+            .order_by(Workspace.name)
+            .all()
+        ]
+
+        call_import_labels = _call_import_filter_labels(
+            db,
+            organization_id,
+            call_import_base,
+            workspace_id=workspace_id,
+            dataset=dataset,
+            tag_id=tag_id,
+            call_import_id=call_import_id,
         )
-        if selected is not None:
-            workspace_ids.add(selected.id)
-    workspaces = [
-        {"id": str(w.id), "name": w.name}
-        for w in db.query(Workspace)
-        .filter(Workspace.id.in_(workspace_ids) if workspace_ids else False)
-        .order_by(Workspace.name)
-        .all()
-    ]
+        call_imports = [
+            {"id": cid, "label": label}
+            for cid, label in sorted(call_import_labels.items(), key=lambda x: x[1].lower())
+        ]
 
-    call_import_labels = _call_import_filter_labels(
-        db,
-        organization_id,
-        call_import_base,
-        workspace_id=workspace_id,
-        dataset=dataset,
-        tag_id=tag_id,
-        call_import_id=call_import_id,
-    )
-    call_imports = [
-        {"id": cid, "label": label}
-        for cid, label in sorted(call_import_labels.items(), key=lambda x: x[1].lower())
-    ]
-
-    pinned_resources = [
-        str(value)
-        for value in (resource_id, evaluation_id)
-        if value is not None
-    ]
-    resource_labels, resource_meta, evaluation_labels = _resource_filter_bundle(
-        db,
-        organization_id,
-        resource_base,
-        extra_resource_ids=pinned_resources,
-    )
-    needle = (q or "").strip().lower()
-    evaluations = []
-    for rid, label in sorted(evaluation_labels.items(), key=lambda x: x[1].lower()):
-        if needle and needle not in label.lower():
-            continue
-        evaluations.append({"id": rid, "label": label})
-    resources = []
-    for rid, label in sorted(resource_labels.items(), key=lambda x: x[1].lower()):
-        if needle and needle not in label.lower():
-            continue
-        info = resource_meta.get(rid, {})
-        rtype = info.get("type")
-        if rtype == "call_import_evaluation":
-            continue
-        resources.append(
-            {
-                "id": rid,
-                "label": label,
-                "type": rtype,
-                "product_section": info.get("product_section"),
-            }
+        pinned_resources = [
+            str(value)
+            for value in (resource_id, evaluation_id)
+            if value is not None
+        ]
+        resource_labels, resource_meta, evaluation_labels = _resource_filter_bundle(
+            db,
+            organization_id,
+            resource_base,
+            extra_resource_ids=pinned_resources,
         )
+        needle = (q or "").strip().lower()
+        evaluations = []
+        for rid, label in sorted(evaluation_labels.items(), key=lambda x: x[1].lower()):
+            if needle and needle not in label.lower():
+                continue
+            evaluations.append({"id": rid, "label": label})
+        resources = []
+        for rid, label in sorted(resource_labels.items(), key=lambda x: x[1].lower()):
+            if needle and needle not in label.lower():
+                continue
+            info = resource_meta.get(rid, {})
+            rtype = info.get("type")
+            if rtype == "call_import_evaluation":
+                continue
+            resources.append(
+                {
+                    "id": rid,
+                    "label": label,
+                    "type": rtype,
+                    "product_section": info.get("product_section"),
+                }
+            )
 
-    dataset_query = db.query(CallImport.dataset).filter(
-        CallImport.organization_id == organization_id,
-        CallImport.dataset.isnot(None),
-        CallImport.dataset != "",
-    )
-    if workspace_id is not None:
-        dataset_query = dataset_query.filter(CallImport.workspace_id == workspace_id)
-    if dataset or tag_id is not None:
-        dataset_query = dataset_query.filter(
-            CallImport.id.in_(
-                _scoped_call_import_id_select(
-                    organization_id=organization_id,
-                    workspace_id=workspace_id,
-                    dataset=dataset,
-                    tag_id=tag_id,
+        dataset_query = db.query(CallImport.dataset).filter(
+            CallImport.organization_id == organization_id,
+            CallImport.dataset.isnot(None),
+            CallImport.dataset != "",
+        )
+        if workspace_id is not None:
+            dataset_query = dataset_query.filter(CallImport.workspace_id == workspace_id)
+        if dataset or tag_id is not None:
+            dataset_query = dataset_query.filter(
+                CallImport.id.in_(
+                    _scoped_call_import_id_select(
+                        organization_id=organization_id,
+                        workspace_id=workspace_id,
+                        dataset=dataset,
+                        tag_id=tag_id,
+                    )
                 )
             )
-        )
-    datasets = sorted({row[0] for row in dataset_query.distinct().all() if row[0]})
+        datasets = sorted({row[0] for row in dataset_query.distinct().all() if row[0]})
 
-    tags = [
-        {"id": str(tag.id), "label": tag.name}
-        for tag in (
-            db.query(CallImportTag)
-            .filter(CallImportTag.organization_id == organization_id)
-            .order_by(CallImportTag.name)
-            .all()
-        )
-    ]
+        tags = [
+            {"id": str(tag.id), "label": tag.name}
+            for tag in (
+                db.query(CallImportTag)
+                .filter(CallImportTag.organization_id == organization_id)
+                .order_by(CallImportTag.name)
+                .all()
+            )
+        ]
 
-    response = UsageFiltersResponse(
-        workspaces=workspaces,
-        product_sections=[
-            {"id": s, "label": SECTION_LABELS.get(s, s)} for s in sections
-        ],
-        call_imports=call_imports,
-        evaluations=evaluations,
-        models=models,
-        resources=resources,
-        usage_kinds=[{"id": k, "label": usage_kind_label(k)} for k in kinds],
-        datasets=datasets,
-        tags=tags,
-    )
-    set_cached_response(
-        organization_id,
-        "filters",
-        cache_key,
-        response.model_dump(mode="json"),
-        historical=_usage_range_is_historical(access),
-    )
-    if cache_leader:
-        release_read_lock(organization_id, "filters", cache_key)
-    return response
+        response = UsageFiltersResponse(
+            workspaces=workspaces,
+            product_sections=[
+                {"id": s, "label": SECTION_LABELS.get(s, s)} for s in sections
+            ],
+            call_imports=call_imports,
+            evaluations=evaluations,
+            models=models,
+            resources=resources,
+            usage_kinds=[{"id": k, "label": usage_kind_label(k)} for k in kinds],
+            datasets=datasets,
+            tags=tags,
+        )
+        set_cached_response(
+            organization_id,
+            "filters",
+            cache_key,
+            response.model_dump(mode="json"),
+            historical=_usage_range_is_historical(access),
+        )
+        return response
+    finally:
+        if cache_leader:
+            release_read_lock(organization_id, "filters", cache_key)
 

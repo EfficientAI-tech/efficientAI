@@ -185,7 +185,7 @@ def set_cached_response(
         client.set(
             _stale_key(organization_id, endpoint, cache_key),
             encoded,
-            ex=_STALE_TTL_SECONDS,
+            ex=ttl + _STALE_TTL_SECONDS,
         )
     except redis.RedisError as exc:
         logger.debug("usage read cache set failed org={}: {}", organization_id, exc)

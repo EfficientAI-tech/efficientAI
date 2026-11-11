@@ -61,7 +61,7 @@ function roundHalfUp(value: number, digits: number): number {
  * Above that: K keeps 2 decimals, millions 3, and billions or more stop at 4.
  */
 export function formatCompactCostMagnitude(abs: number): string | null {
-  if (!(abs >= COST_COMPACT_FROM)) return null
+  if (roundHalfUp(abs, 2) < COST_COMPACT_FROM) return null
   for (let i = 0; i < TIERS.length; i++) {
     const tier = TIERS[i]
     if (abs < tier.value) continue

@@ -83,6 +83,7 @@ def test_usage_read_cache_uses_longer_ttl_for_closed_history(fake_redis, monkeyp
     set_cached_response(org_id, "summary", key, payload, historical=True)
     assert historical_cache_ttl_seconds() in seen
     assert 900 in seen
+    assert 1020 in seen
 
 
 def test_usage_read_cache_round_trip(fake_redis, monkeypatch):
@@ -151,8 +152,13 @@ def test_follower_uses_stale_payload_instead_of_recomputing(fake_redis):
     assert calls["n"] == 0
 
 
-def test_context_merge_deletes_the_colliding_source_row():
-    from app.services.usage.rollup_maintenance import merge_staged_usage_context
+def test_context_merge_preaggregates_full_bucket_keys_without_dropping_other_dates():
+    from app.services.usage.rollup_maintenance import (
+        backfill_usage_context_keys,
+        merge_staged_usage_context,
+        repair_orphaned_row_context,
+    )
+    import inspect
 
     statements = []
 
@@ -163,6 +169,19 @@ def test_context_merge_deletes_the_colliding_source_row():
 
     merge_staged_usage_context(_DB())
     blob = "\n".join(statements)
-    assert "DELETE FROM llm_usage_daily" in blob
+    assert "GROUP BY keeper_id" in blob
+    assert "src.usage_date" in blob
+    assert "src.model" in blob
+    assert "DELETE FROM llm_usage_daily AS src" in blob
     assert "keeper.context = patch.new_context" in blob
     assert "SET context = patch.new_context" in blob
+    # Must never delete from usage_ctx_patch by new_context alone across dates/models
+    assert "WHERE drop_patch.new_context = keep_patch.new_context\n              AND drop_patch.src_id > keep_patch.src_id" not in blob
+
+    backfill_src = inspect.getsource(backfill_usage_context_keys)
+    assert "call_import_rows" in backfill_src
+    assert "call_import_evaluation_rows" in backfill_src
+
+    shard_src = inspect.getsource(repair_orphaned_row_context)
+    assert "CAST(:ids AS uuid[])" in shard_src
+    assert "WHERE id::text = ANY" not in shard_src
