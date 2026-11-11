@@ -1,5 +1,5 @@
 import { X } from 'lucide-react'
-import { formatUsageCostUsd } from '../../lib/usageCurrency'
+import { formatUsageCostExactUsd } from '../../lib/usageCurrency'
 
 type UsageCosts = {
   input_cost_usd: number
@@ -22,7 +22,7 @@ type Props = {
 }
 
 function defaultFormatCostUsd(usd?: number | null): string {
-  const formatted = formatUsageCostUsd(usd, 'USD', 1)
+  const formatted = formatUsageCostExactUsd(usd, 'USD', 1)
   return formatted === '—' ? '$0.00' : formatted
 }
 

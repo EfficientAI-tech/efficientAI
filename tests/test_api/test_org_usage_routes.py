@@ -1,7 +1,24 @@
 """Ensure org usage API routes are mounted on the v1 router."""
 
 from datetime import date
+from unittest.mock import MagicMock
 from uuid import uuid4
+
+from sqlalchemy.dialects import postgresql
+
+import inspect
+
+from app.api.v1.routes.org_usage import (
+    _breakdown_sort_exprs,
+    _call_import_ids_scope_filter,
+    _direct_call_import_id_expr,
+    _evaluation_scope_filter,
+    _filters_share_facet_scan,
+    _grouped_resource_filter_rows,
+    _merge_call_import_breakdown_rows,
+    _scoped_call_import_id_select,
+    _usage_range_is_historical,
+)
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -78,3 +95,161 @@ def test_pricing_override_get_still_accepts_plain_model_id(monkeypatch):
     assert response.status_code == 200
     assert seen == ["gpt-4o"]
     assert response.json()["model"] == "gpt-4o"
+
+
+def test_merge_call_import_breakdown_rows_sums_evaluation_buckets():
+    import_id = str(uuid4())
+    eval_id = str(uuid4())
+    direct = (10, 5, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 100, False)
+    via_eval = (3, 1, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 40, True)
+
+    rows = _merge_call_import_breakdown_rows(
+        [
+            (import_id, None, *direct),
+            (None, eval_id, *via_eval),
+        ],
+        {eval_id: import_id},
+    )
+
+    assert len(rows) == 1
+    assert rows[0][0] == import_id
+    assert rows[0][1] == 13
+    assert rows[0][2] == 6
+    assert rows[0][8] == 3
+    assert rows[0][-1] is True
+
+
+def test_evaluation_scope_filter_does_not_scan_eval_rows():
+    db = MagicMock()
+    expr = _evaluation_scope_filter(uuid4(), uuid4(), db)
+    db.query.assert_not_called()
+    sql = str(
+        expr.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "evaluation_id" in sql
+    assert "evaluation_row_id" not in sql
+    assert "call_import_evaluation_rows" not in sql
+
+
+def test_call_import_grouping_does_not_join_row_tables():
+    sql = str(
+        _direct_call_import_id_expr().compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "call_import_id" in sql
+    assert "call_import_rows" not in sql
+    assert "call_import_evaluation_rows" not in sql
+
+
+def test_breakdown_sort_weights_tokens_before_cost():
+    sql = " ".join(
+        str(expr.compile(dialect=postgresql.dialect())) for expr in _breakdown_sort_exprs()
+    )
+    assert "prompt_tokens" in sql
+    assert "completion_tokens" in sql
+    assert sql.index("prompt_tokens") < sql.index("total_cost_micro_usd")
+
+
+def test_resource_filter_bundle_labels_evaluations_from_grouped_rows(monkeypatch):
+    from app.api.v1.routes import org_usage as usage_routes
+
+    monkeypatch.setattr(
+        usage_routes,
+        "_grouped_resource_filter_rows",
+        lambda query, extra_resource_ids=None: [
+            (
+                "res-1",
+                "agent",
+                "agents",
+                "eval-1",
+                {"evaluation_id": "eval-1", "resource_id": "res-1"},
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        usage_routes, "_infer_agent_types_for_label_buckets", lambda *args, **kwargs: None
+    )
+
+    class Resolver:
+        def __init__(self, db, organization_id):
+            del db, organization_id
+
+        def preload(self, contexts):
+            del contexts
+
+        def evaluation_name(self, raw_id):
+            return f"Evaluation {raw_id}"
+
+    monkeypatch.setattr(usage_routes, "UsageNameResolver", Resolver)
+    monkeypatch.setattr(
+        usage_routes,
+        "labels_for_resource_buckets",
+        lambda buckets, resolver: {"res-1": "Agent"},
+    )
+
+    labels, meta, evaluations = usage_routes._resource_filter_bundle(
+        MagicMock(), uuid4(), MagicMock()
+    )
+
+    assert labels == {"res-1": "Agent"}
+    assert meta["res-1"]["type"] == "agent"
+    assert evaluations["eval-1"] == "Evaluation eval-1"
+
+
+def test_unscoped_usage_filters_share_one_facet_scan():
+    assert (
+        _filters_share_facet_scan(
+            workspace_id=None,
+            product_section=None,
+            model=None,
+            resource_id=None,
+            usage_kind=None,
+            call_import_id=None,
+            evaluation_id=None,
+        )
+        is True
+    )
+    assert (
+        _filters_share_facet_scan(
+            workspace_id=uuid4(),
+            product_section=None,
+            model=None,
+            resource_id=None,
+            usage_kind=None,
+            call_import_id=None,
+            evaluation_id=None,
+        )
+        is False
+    )
+
+
+def test_resource_filter_scan_does_not_aggregate_context_json():
+    source = inspect.getsource(_grouped_resource_filter_rows)
+    assert "func.array_agg" not in source
+    assert ".distinct(" in source
+
+
+def test_dataset_filter_stays_a_sql_subquery():
+    expr = _call_import_ids_scope_filter(
+        _scoped_call_import_id_select(
+            organization_id=uuid4(),
+            dataset="billing",
+            tag_id=uuid4(),
+        )
+    )
+    sql = str(expr.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": False}))
+    assert "call_imports" in sql
+    assert ".all(" not in inspect.getsource(_scoped_call_import_id_select)
+
+
+def test_closed_utc_range_is_historical_even_when_local_today_is_behind():
+    access = MagicMock()
+    access.filter_end = date(2020, 1, 1)
+    assert _usage_range_is_historical(access) is True
+    access.filter_end = date(2999, 1, 1)
+    assert _usage_range_is_historical(access) is False

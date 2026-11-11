@@ -1404,7 +1404,8 @@ def flush_usage_to_catalog(db: Session, organization_id: UUID) -> int:
             _release_flush_lock(organization_id)
 
     flushed += _flush_pending_buffer(db, organization_id, pricing_resolver=pricing_resolver)
-    invalidate_org_usage_read_cache(organization_id)
+    if flushed:
+        invalidate_org_usage_read_cache(organization_id)
     return flushed
 
 

@@ -11,11 +11,19 @@ import { defaultUsageDateRange, isRangeWithinMaxDays, rangeForDays } from './Usa
 import { getUsageTimezone } from './usageTimezone'
 import {
   formatFxRateHint,
+  formatUsageCostExactUsd,
   formatUsageCostUsd,
   getUsageDisplayCurrency,
   setUsageDisplayCurrency,
   type UsageDisplayCurrency,
 } from '../../lib/usageCurrency'
+import {
+  formatAudioDuration,
+  formatAudioExact,
+  formatCompactCount,
+  formatExactCount,
+} from '../../lib/usageFormatters'
+import UsageMetricValue from './UsageMetricValue'
 import { useLicenseStore } from '../../store/licenseStore'
 import {
   CALL_IMPORT_BATCH_HEADLINE,
@@ -172,24 +180,9 @@ function sortRows(rows: BreakdownRow[]): BreakdownRow[] {
   return [...rows].sort((a, b) => b.total_tokens - a.total_tokens)
 }
 
-function formatNumber(value: number): string {
-  return new Intl.NumberFormat().format(value || 0)
-}
-
 function rowCostUsd(row: Pick<BreakdownRow, 'costs' | 'total_cost_micro_usd'>): number {
   if (row.costs?.total_cost_usd != null) return row.costs.total_cost_usd
   return Number(row.total_cost_micro_usd || 0) / 1_000_000
-}
-
-function formatAudio(seconds: number): string {
-  const total = Math.max(0, Math.floor(seconds || 0))
-  if (total < 60) return `${total}s`
-  const mins = Math.floor(total / 60)
-  const secs = total % 60
-  if (mins < 60) return secs ? `${mins}m ${secs}s` : `${mins}m`
-  const hours = Math.floor(mins / 60)
-  const remMins = mins % 60
-  return remMins ? `${hours}h ${remMins}m` : `${hours}h`
 }
 
 function rowHasUsageForKind(row: BreakdownRow, kind: Kind): boolean {
@@ -584,6 +577,8 @@ export default function Usage() {
   const fxRateHint = formatFxRateHint(inrRate, fxRate?.as_of, fxRate?.source)
   const formatCostUsd = (usd?: number | null) =>
     formatUsageCostUsd(usd, displayCurrency, inrRate)
+  const formatCostExact = (usd?: number | null) =>
+    formatUsageCostExactUsd(usd, displayCurrency, inrRate)
 
   useEffect(() => {
     if (!licenseLoaded) {
@@ -652,9 +647,8 @@ export default function Usage() {
   }
 
   const usageQueryDefaults = {
-    staleTime: 0,
-    refetchOnMount: 'always' as const,
-    refetchOnWindowFocus: true,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   }
 
   const {
@@ -665,7 +659,7 @@ export default function Usage() {
     error: summaryQueryError,
   } = useQuery({
     queryKey: ['org-usage', 'summary', dataParams],
-    queryFn: () => apiClient.getOrgUsageSummary(dataParams),
+    queryFn: ({ signal }) => apiClient.getOrgUsageSummary(dataParams, signal),
     ...usageQueryDefaults,
     placeholderData: keepPreviousData,
   })
@@ -678,12 +672,12 @@ export default function Usage() {
     isFetching: breakdownFetching,
   } = useQuery({
     queryKey: ['org-usage', 'breakdown', groupBy, dataParams],
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       apiClient.getOrgUsageBreakdown({
         ...dataParams,
         group_by: groupBy,
         limit: 100,
-      }),
+      }, signal),
     enabled: !showWorkspaceComposite,
     ...usageQueryDefaults,
     placeholderData: (previousData, previousQuery) => {
@@ -698,12 +692,12 @@ export default function Usage() {
     isFetching: importBreakdownFetching,
   } = useQuery({
     queryKey: ['org-usage', 'breakdown', 'call_import', dataParams],
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       apiClient.getOrgUsageBreakdown({
         ...dataParams,
         group_by: 'call_import',
         limit: 100,
-      }),
+      }, signal),
     enabled: showWorkspaceComposite,
     ...usageQueryDefaults,
   })
@@ -714,19 +708,19 @@ export default function Usage() {
     isFetching: resourceBreakdownFetching,
   } = useQuery({
     queryKey: ['org-usage', 'breakdown', 'resource', dataParams],
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       apiClient.getOrgUsageBreakdown({
         ...dataParams,
         group_by: 'resource',
         limit: 100,
-      }),
+      }, signal),
     enabled: showWorkspaceComposite,
     ...usageQueryDefaults,
   })
 
   const { data: filterOptions, isFetching: filtersLoading } = useQuery({
     queryKey: ['org-usage', 'filters', scopeParams],
-    queryFn: () => apiClient.getOrgUsageFilters(scopeParams),
+    queryFn: ({ signal }) => apiClient.getOrgUsageFilters(scopeParams, signal),
     ...usageQueryDefaults,
     placeholderData: (previousData, previousQuery) => {
       if (!previousQuery) return undefined
@@ -1159,7 +1153,7 @@ export default function Usage() {
             type="button"
             onClick={() => setCostBreakdownOpen(true)}
             className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition-colors hover:border-gray-300 hover:bg-gray-50 hover:text-gray-900"
-            title={formatCostUsd(estimatedTotalCost)}
+            title={formatCostExact(estimatedTotalCost)}
           >
             <CircleDollarSign className="h-4 w-4 shrink-0 text-gray-500" />
             <span className="whitespace-nowrap">Cost breakdown</span>
@@ -1196,36 +1190,74 @@ export default function Usage() {
         className={`space-y-3 transition-opacity ${summaryFetching ? 'opacity-70' : ''}`}
       >
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          <StatCard label="Input tokens" value={totals?.prompt_tokens} loading={usageStatsLoading} />
-          <StatCard label="Output tokens" value={totals?.completion_tokens} loading={usageStatsLoading} />
-          <StatCard label="Total tokens" value={totals?.total_tokens} loading={usageStatsLoading} />
-          <StatCard label="LLM calls" value={totals?.call_count} loading={usageStatsLoading} />
+          <StatCard
+            label="Input tokens"
+            display={formatCompactCount(totals?.prompt_tokens || 0)}
+            exact={formatExactCount(totals?.prompt_tokens || 0)}
+            loading={usageStatsLoading}
+          />
+          <StatCard
+            label="Output tokens"
+            display={formatCompactCount(totals?.completion_tokens || 0)}
+            exact={formatExactCount(totals?.completion_tokens || 0)}
+            loading={usageStatsLoading}
+          />
+          <StatCard
+            label="Total tokens"
+            display={formatCompactCount(totals?.total_tokens || 0)}
+            exact={formatExactCount(totals?.total_tokens || 0)}
+            loading={usageStatsLoading}
+          />
+          <StatCard
+            label="LLM calls"
+            display={formatCompactCount(totals?.call_count || 0)}
+            exact={formatExactCount(totals?.call_count || 0)}
+            loading={usageStatsLoading}
+          />
           {showAudio ? (
             <StatCard
               label="STT audio"
-              valueLabel={formatAudio(totals?.audio_seconds || 0)}
+              display={formatAudioDuration(totals?.audio_seconds || 0)}
+              exact={formatAudioExact(totals?.audio_seconds || 0)}
               loading={usageStatsLoading}
             />
           ) : null}
           {showTts ? (
-            <StatCard label="TTS characters" value={totals?.tts_characters} loading={usageStatsLoading} />
+            <StatCard
+              label="TTS characters"
+              display={formatCompactCount(totals?.tts_characters || 0)}
+              exact={formatExactCount(totals?.tts_characters || 0)}
+              loading={usageStatsLoading}
+            />
           ) : null}
           {(totals?.cache_read_tokens || 0) > 0 ? (
-            <StatCard label="Cache read" value={totals?.cache_read_tokens} loading={usageStatsLoading} />
+            <StatCard
+              label="Cache read"
+              display={formatCompactCount(totals?.cache_read_tokens || 0)}
+              exact={formatExactCount(totals?.cache_read_tokens || 0)}
+              loading={usageStatsLoading}
+            />
           ) : null}
           {(totals?.cache_creation_tokens || 0) > 0 ? (
             <StatCard
               label="Cache write"
-              value={totals?.cache_creation_tokens}
+              display={formatCompactCount(totals?.cache_creation_tokens || 0)}
+              exact={formatExactCount(totals?.cache_creation_tokens || 0)}
               loading={usageStatsLoading}
             />
           ) : null}
           {(totals?.reasoning_tokens || 0) > 0 ? (
-            <StatCard label="Reasoning" value={totals?.reasoning_tokens} loading={usageStatsLoading} />
+            <StatCard
+              label="Reasoning"
+              display={formatCompactCount(totals?.reasoning_tokens || 0)}
+              exact={formatExactCount(totals?.reasoning_tokens || 0)}
+              loading={usageStatsLoading}
+            />
           ) : null}
           <StatCard
             label="Estimated cost"
-            valueLabel={formatCostUsd(estimatedTotalCost)}
+            display={formatCostUsd(estimatedTotalCost)}
+            exact={formatCostExact(estimatedTotalCost)}
             loading={usageStatsLoading}
             emphasize
           />
@@ -1387,29 +1419,61 @@ export default function Usage() {
                           ) : null}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-right tabular-nums">
-                        {formatNumber(row.call_count)}
+                      <td className="px-4 py-3 text-right">
+                        <UsageMetricValue
+                          display={formatCompactCount(row.call_count)}
+                          exact={formatExactCount(row.call_count)}
+                        />
                       </td>
-                      <td className="px-4 py-3 text-right tabular-nums">
-                        {formatNumber(row.prompt_tokens)}
+                      <td className="px-4 py-3 text-right">
+                        <UsageMetricValue
+                          display={formatCompactCount(row.prompt_tokens)}
+                          exact={formatExactCount(row.prompt_tokens)}
+                        />
                       </td>
-                      <td className="px-4 py-3 text-right tabular-nums">
-                        {formatNumber(row.completion_tokens)}
+                      <td className="px-4 py-3 text-right">
+                        <UsageMetricValue
+                          display={formatCompactCount(row.completion_tokens)}
+                          exact={formatExactCount(row.completion_tokens)}
+                        />
                       </td>
-                      <td className="px-4 py-3 text-right tabular-nums font-medium">
-                        {formatNumber(row.total_tokens)}
+                      <td className="px-4 py-3 text-right font-medium">
+                        <UsageMetricValue
+                          display={formatCompactCount(row.total_tokens)}
+                          exact={formatExactCount(row.total_tokens)}
+                        />
                       </td>
-                      <td className="px-4 py-3 text-right tabular-nums text-gray-700">
-                        {formatCostUsd(rowCostUsd(row))}
+                      <td className="px-4 py-3 text-right text-gray-700">
+                        <UsageMetricValue
+                          display={formatCostUsd(rowCostUsd(row))}
+                          exact={formatCostExact(rowCostUsd(row))}
+                        />
                       </td>
-                      <td className="px-4 py-3 text-right tabular-nums text-gray-500">
-                        {row.audio_seconds ? formatAudio(row.audio_seconds) : '—'}
+                      <td className="px-4 py-3 text-right text-gray-500">
+                        {row.audio_seconds ? (
+                          <UsageMetricValue
+                            display={formatAudioDuration(row.audio_seconds)}
+                            exact={formatAudioExact(row.audio_seconds)}
+                          />
+                        ) : (
+                          '—'
+                        )}
                       </td>
-                      <td className="px-4 py-3 text-right tabular-nums text-gray-500">
-                        {row.tts_characters ? formatNumber(row.tts_characters) : '—'}
+                      <td className="px-4 py-3 text-right text-gray-500">
+                        {row.tts_characters ? (
+                          <UsageMetricValue
+                            display={formatCompactCount(row.tts_characters)}
+                            exact={formatExactCount(row.tts_characters)}
+                          />
+                        ) : (
+                          '—'
+                        )}
                       </td>
-                      <td className="px-4 py-3 text-right tabular-nums text-gray-500">
-                        {formatNumber(row.cache_read_tokens)}
+                      <td className="px-4 py-3 text-right text-gray-500">
+                        <UsageMetricValue
+                          display={formatCompactCount(row.cache_read_tokens)}
+                          exact={formatExactCount(row.cache_read_tokens)}
+                        />
                       </td>
                     </tr>
                   )
@@ -1426,7 +1490,7 @@ export default function Usage() {
         onClose={() => setCostBreakdownOpen(false)}
         costs={totals?.costs}
         scopeLabel={scopeSubtitle}
-        formatCost={formatCostUsd}
+        formatCost={formatCostExact}
       />
     </div>
   )
@@ -1436,15 +1500,15 @@ const statCardClass = 'border border-gray-200 ring-1 ring-[#fde047]/25 shadow-sm
 
 function StatCard({
   label,
-  value,
-  valueLabel,
+  display,
+  exact,
   loading,
   emphasize = false,
   className = '',
 }: {
   label: string
-  value?: number
-  valueLabel?: string
+  display: string
+  exact: string
   loading?: boolean
   emphasize?: boolean
   className?: string
@@ -1457,11 +1521,11 @@ function StatCard({
       <CardBody className="p-3">
         <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{label}</p>
         <p
-          className={`mt-0.5 text-xl font-semibold tabular-nums ${
+          className={`mt-0.5 text-xl font-semibold ${
             emphasize ? 'text-[#854d0e]' : 'text-gray-900'
           }`}
         >
-          {loading ? '—' : valueLabel ?? formatNumber(value || 0)}
+          {loading ? '—' : <UsageMetricValue display={display} exact={exact} />}
         </p>
       </CardBody>
     </Card>

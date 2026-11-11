@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { createPortal } from 'react-dom'
 import { Calendar } from 'lucide-react'
 import { usageTheme } from './usageTheme'
 import { getUsageTimezone, formatUsageTimezoneLabel } from './usageTimezone'
@@ -57,7 +58,10 @@ export default function UsageDateRangePicker({
   const [draftStart, setDraftStart] = useState(start)
   const [draftEnd, setDraftEnd] = useState(end)
   const [relDays, setRelDays] = useState(1)
+  const [panelStyle, setPanelStyle] = useState<CSSProperties | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
 
   const quickRanges = useMemo(() => {
     if (!maxHistoryDays) return QUICK_RANGES
@@ -88,11 +92,73 @@ export default function UsageDateRangePicker({
 
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false)
+      const target = e.target as Node
+      if (rootRef.current?.contains(target) || panelRef.current?.contains(target)) return
+      setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
     }
     document.addEventListener('mousedown', onDoc)
-    return () => document.removeEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('keydown', onKey)
+    }
   }, [])
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setPanelStyle(null)
+      return
+    }
+
+    let frame = 0
+    const place = () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => placeNow())
+    }
+    const placeNow = () => {
+      const anchor = triggerRef.current
+      const panel = panelRef.current
+      if (!anchor || !panel) return
+      const rect = anchor.getBoundingClientRect()
+      const margin = 8
+      const width = Math.min(panel.offsetWidth || 352, window.innerWidth - margin * 2)
+      const height = panel.scrollHeight || panel.offsetHeight
+      const spaceBelow = window.innerHeight - rect.bottom - margin
+      const spaceAbove = rect.top - margin
+      const openUp = spaceBelow < height + 4 && spaceAbove > spaceBelow
+      const available = Math.max(160, openUp ? spaceAbove - 4 : spaceBelow - 4)
+      const maxHeight = Math.min(height, available)
+      let left = rect.left
+      if (left + width > window.innerWidth - margin) {
+        left = window.innerWidth - margin - width
+      }
+      left = Math.max(margin, left)
+      const top = openUp
+        ? Math.max(margin, rect.top - maxHeight - 4)
+        : Math.min(rect.bottom + 4, window.innerHeight - margin - maxHeight)
+      setPanelStyle({
+        position: 'fixed',
+        top,
+        left,
+        width,
+        maxHeight,
+        zIndex: 80,
+        overflowY: height > maxHeight ? 'auto' : 'visible',
+      })
+    }
+
+    place()
+    window.addEventListener('resize', place)
+    window.addEventListener('scroll', place, true)
+    return () => {
+      cancelAnimationFrame(frame)
+      window.removeEventListener('resize', place)
+      window.removeEventListener('scroll', place, true)
+    }
+  }, [open, mode])
 
   const applyRelativeDays = (days: number) => {
     const r = rangeForDays(days)
@@ -129,6 +195,7 @@ export default function UsageDateRangePicker({
           </button>
         ))}
         <button
+          ref={triggerRef}
           type="button"
           onClick={() => setOpen((v) => !v)}
           className={pillClass(open || !activeQuick)}
@@ -146,9 +213,22 @@ export default function UsageDateRangePicker({
         </span>
       </span>
 
-      {open ? (
-        <div className="absolute top-full left-0 z-50 mt-1 min-w-[20rem] max-w-lg rounded-xl border border-[#fde047]/60 bg-white p-4 shadow-xl ring-1 ring-[#fef9c3]">
-          <div className="flex gap-2 mb-4">
+      {open && typeof document !== 'undefined'
+        ? createPortal(
+        <div
+          ref={panelRef}
+          style={
+            panelStyle ?? {
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              width: 352,
+              visibility: 'hidden',
+            }
+          }
+          className="w-[22rem] max-w-[calc(100vw-1rem)] rounded-xl border border-[#fde047]/60 bg-white p-3.5 shadow-xl ring-1 ring-[#fef9c3]"
+        >
+          <div className="flex gap-2 mb-3">
             <button
               type="button"
               onClick={() => setMode('absolute')}
@@ -170,21 +250,20 @@ export default function UsageDateRangePicker({
           </div>
 
           {mode === 'relative' ? (
-            <div className="space-y-3">
+            <div className="space-y-2.5">
               <p className="text-xs text-gray-500">
-                Dates use your local timezone ({formatUsageTimezoneLabel(getUsageTimezone())}).
-                Usage is stored by UTC day; filters include activity that happened on each
-                selected local day.
+                Local timezone ({formatUsageTimezoneLabel(getUsageTimezone())}). Each day includes
+                usage stored on that UTC day.
               </p>
               <div>
-                <p className="text-xs font-medium text-gray-500 mb-2">Days</p>
-                <div className="flex flex-wrap gap-2">
+                <p className="text-xs font-medium text-gray-500 mb-1.5">Days</p>
+                <div className="flex flex-wrap gap-1.5">
                   {RELATIVE_DAYS.map((d) => (
                     <button
                       key={d}
                       type="button"
                       onClick={() => applyRelativeDays(d)}
-                      className="min-w-[2.5rem] rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium hover:border-[#facc15] hover:bg-[#fefce8]"
+                      className="min-w-[2.25rem] rounded-lg border border-gray-200 px-2.5 py-1.5 text-sm font-medium hover:border-[#facc15] hover:bg-[#fefce8]"
                     >
                       {d}
                     </button>
@@ -192,14 +271,14 @@ export default function UsageDateRangePicker({
                 </div>
               </div>
               <div>
-                <p className="text-xs font-medium text-gray-500 mb-2">Weeks</p>
-                <div className="flex flex-wrap gap-2">
+                <p className="text-xs font-medium text-gray-500 mb-1.5">Weeks</p>
+                <div className="flex flex-wrap gap-1.5">
                   {RELATIVE_WEEKS.map((w) => (
                     <button
                       key={w}
                       type="button"
                       onClick={() => applyRelativeDays(w * 7)}
-                      className="min-w-[2.5rem] rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium hover:border-[#facc15] hover:bg-[#fefce8]"
+                      className="min-w-[2.25rem] rounded-lg border border-gray-200 px-2.5 py-1.5 text-sm font-medium hover:border-[#facc15] hover:bg-[#fefce8]"
                     >
                       {w}
                     </button>
@@ -262,8 +341,10 @@ export default function UsageDateRangePicker({
               </div>
             </div>
           )}
-        </div>
-      ) : null}
+        </div>,
+            document.body,
+          )
+        : null}
     </div>
   )
 }

@@ -3692,7 +3692,7 @@ class ApiClient {
     evaluation_id?: string
     dataset?: string
     tag_id?: string
-  }): Promise<{
+  }, signal?: AbortSignal): Promise<{
     start: string
     end: string
     totals: {
@@ -3730,6 +3730,7 @@ class ApiClient {
   }> {
     const response = await this.client.get('/api/v1/organizations/usage/summary', {
       params,
+      signal,
     })
     return response.data
   }
@@ -3750,7 +3751,7 @@ class ApiClient {
     tag_id?: string
     limit?: number
     offset?: number
-  }): Promise<{
+  }, signal?: AbortSignal): Promise<{
     start: string
     end: string
     group_by: string
@@ -3802,6 +3803,7 @@ class ApiClient {
   }> {
     const response = await this.client.get('/api/v1/organizations/usage/breakdown', {
       params,
+      signal,
     })
     return response.data
   }
@@ -3980,7 +3982,7 @@ class ApiClient {
     q?: string
     dataset?: string
     tag_id?: string
-  }): Promise<{
+  }, signal?: AbortSignal): Promise<{
     workspaces: Array<{ id: string; name: string }>
     product_sections: Array<{ id: string; label: string }>
     call_imports: Array<{ id: string; label: string }>
@@ -3993,6 +3995,7 @@ class ApiClient {
   }> {
     const response = await this.client.get('/api/v1/organizations/usage/filters', {
       params,
+      signal,
     })
     return response.data
   }
