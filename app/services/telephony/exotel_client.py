@@ -13,6 +13,7 @@ import httpx
 from loguru import logger
 
 from app.config import settings
+from app.core.logging import log_exception_safely, redact_log_secrets
 
 
 DEFAULT_API_BASE = "https://api.exotel.com"
@@ -178,8 +179,8 @@ class ExotelClient:
         except (ExotelAuthError, ValueError):
             raise
         except httpx.HTTPError as e:
-            logger.exception("Exotel list_incoming_phone_numbers failed")
-            raise ValueError(f"Failed to list Exotel numbers: {str(e)}") from e
+            log_exception_safely("Exotel list_incoming_phone_numbers failed")
+            raise ValueError(f"Failed to list Exotel numbers: {redact_log_secrets(e)}") from e
 
     def set_number_voice_url(
         self,
@@ -210,8 +211,8 @@ class ExotelClient:
                 )
             return True, "Updated Exotel VoiceUrl", incoming_phone_number_sid
         except httpx.HTTPError as e:
-            logger.exception("Failed to update Exotel VoiceUrl")
-            return False, f"Failed to update Exotel VoiceUrl: {str(e)}", None
+            log_exception_safely("Failed to update Exotel VoiceUrl")
+            return False, f"Failed to update Exotel VoiceUrl: {redact_log_secrets(e)}", None
 
     def get_call_recording_url(self, call_sid: str) -> str:
         """Resolve the recording URL for a call via Exotel's Calls API.

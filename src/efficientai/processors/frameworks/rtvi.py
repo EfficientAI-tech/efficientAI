@@ -84,6 +84,7 @@ from efficientai.transports.base_input import BaseInputTransport
 from efficientai.transports.base_output import BaseOutputTransport
 from efficientai.transports.base_transport import BaseTransport
 from efficientai.utils.string import match_endofsentence
+from efficientai.utils.log_redaction import redacting_sink
 
 RTVI_PROTOCOL_VERSION = "1.0.0"
 
@@ -1005,7 +1006,12 @@ class RTVIObserver(BaseObserver):
         self._last_bot_audio_level = 0
 
         if self._params.system_logs_enabled:
-            self._system_logger_id = logger.add(self._logger_sink)
+            # Logs are forwarded to clients: always redact credentials.
+            self._system_logger_id = logger.add(
+                redacting_sink(self._logger_sink),
+                diagnose=False,
+                backtrace=False,
+            )
 
         if self._params.errors_enabled is not None:
             import warnings
