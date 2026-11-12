@@ -830,7 +830,22 @@ def load_evaluation_for_worker(
     )
 
 
-_SNAPSHOT_CACHE_TTL_SECONDS = 300.0
+_SNAPSHOT_CACHE_TTL_SECONDS = 600.0
+
+
+def _snapshot_cache_ttl_seconds() -> float:
+    """Backstop only: settings changes bump the version key and reload at once."""
+    from app.config import settings
+
+    try:
+        return max(
+            1.0,
+            float(
+                getattr(settings, "EVAL_SNAPSHOT_CACHE_TTL_SECONDS", _SNAPSHOT_CACHE_TTL_SECONDS)
+            ),
+        )
+    except (TypeError, ValueError):
+        return _SNAPSHOT_CACHE_TTL_SECONDS
 
 
 class EvaluationSnapshot:
@@ -890,7 +905,7 @@ def load_evaluation_snapshot(
         "evaluation_worker",
         f"{evaluation_id}:{version}",
         lambda: _query_evaluation_snapshot(db, evaluation_id),
-        ttl_seconds=_SNAPSHOT_CACHE_TTL_SECONDS,
+        ttl_seconds=_snapshot_cache_ttl_seconds(),
     )
     return copy.deepcopy(cached)
 

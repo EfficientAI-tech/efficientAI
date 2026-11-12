@@ -113,6 +113,14 @@ class Settings(BaseSettings):
     # TTL bounds staleness only if a version bump is lost while Redis is down.
     LLM_CONFIG_CACHE_TTL_SECONDS: int = 120
     LLM_CONFIG_VERSION_MEMO_SECONDS: float = 1.0
+    # Per-process worker catalog cache (app/workers/catalog_cache.py): expired
+    # entries are swept on write at most every CATALOG_CACHE_SWEEP_SECONDS, and
+    # the least recently used entry is evicted past CATALOG_CACHE_MAX_ENTRIES.
+    CATALOG_CACHE_MAX_ENTRIES: int = 2048
+    CATALOG_CACHE_SWEEP_SECONDS: float = 30.0
+    # Eval workers' cached parent-evaluation snapshot. Settings changes bump
+    # ``eval:settings_ver:{id}`` and reload at once; this TTL is a backstop.
+    EVAL_SNAPSHOT_CACHE_TTL_SECONDS: int = 600
     DIARIZATION_FAIR_DISPATCH_BATCH_SIZE: int = 75
     IMPORT_FAIR_DISPATCH_BATCH_SIZE: int = 75
     IMPORT_WORKSPACE_INFLIGHT_LIMIT: int = 8
