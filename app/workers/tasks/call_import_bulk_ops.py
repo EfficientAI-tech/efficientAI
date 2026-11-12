@@ -19,6 +19,9 @@ from app.services.call_imports.bulk_ops import (
     execute_evaluation_retry,
     materialize_and_enqueue_evaluation,
 )
+from app.workers.concurrency.fair_diarization_dispatch import (
+    drain_after_diarization_enqueue,
+)
 from app.workers.config import celery_app
 
 
@@ -57,11 +60,18 @@ def bulk_diarize_call_import_task(
             payload,
             requested_row_ids=parsed_row_ids,
         )
-        return {
+        out = {
             "queued": result.queued,
             "skipped_rows": result.skipped_rows,
             "skipped_reason_counts": result.skipped_reason_counts,
         }
+        dispatch_summary = drain_after_diarization_enqueue(
+            result.queued,
+            log_context=f"bulk_diarize_call_import import={call_import_id}",
+        )
+        if dispatch_summary is not None:
+            out["post_enqueue_dispatch"] = dispatch_summary
+        return out
     except ValueError as exc:
         logger.warning(
             "bulk_diarize_call_import_task validation failed for {}: {}",
@@ -227,6 +237,8 @@ def retry_call_import_evaluation_task(
             ),
             include_completed=bool(payload_dict.get("include_completed", False)),
             transcribe_overwrite=bool(payload_dict.get("transcribe_overwrite", False)),
+            retry_search_term=str(payload_dict.get("retry_search_term") or ""),
+            retry_status_filter=payload_dict.get("retry_status_filter"),
         )
     finally:
         db.close()
@@ -302,7 +314,8 @@ def bulk_delete_call_import_rows_task(
     self,
     call_import_id: str,
     organization_id: str,
-    row_ids: List[str],
+    row_ids: List[str] | None,
+    row_filter: dict | None = None,
 ) -> dict:
     """Delete many import rows and their blob recordings off the API thread."""
     del self
@@ -323,12 +336,33 @@ def bulk_delete_call_import_rows_task(
             )
             return {"deleted": 0}
 
-        deleted = execute_bulk_row_delete(
-            db,
-            UUID(organization_id),
-            call_import,
-            [UUID(rid) for rid in row_ids],
-        )
+        if row_filter:
+            from app.models.schemas import CallImportRowSelectionFilter
+            from app.services.call_imports.bulk_ops import (
+                execute_bulk_row_delete_by_filter,
+            )
+            from app.services.call_imports.row_selection import (
+                normalize_row_selection_filter,
+            )
+
+            parsed = CallImportRowSelectionFilter.model_validate(row_filter)
+            search_term, diarised_status = normalize_row_selection_filter(parsed)
+            deleted = execute_bulk_row_delete_by_filter(
+                db,
+                UUID(organization_id),
+                call_import,
+                search_term=search_term,
+                diarised_status_filter=diarised_status,
+            )
+        else:
+            from app.services.call_imports.bulk_ops import execute_bulk_row_delete
+
+            deleted = execute_bulk_row_delete(
+                db,
+                UUID(organization_id),
+                call_import,
+                [UUID(rid) for rid in (row_ids or [])],
+            )
         return {"deleted": deleted}
     finally:
         db.close()

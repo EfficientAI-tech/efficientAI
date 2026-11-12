@@ -6,10 +6,10 @@ import math
 import os
 import tempfile
 from datetime import datetime, timezone
-from typing import Any, List, Optional
+from typing import Any, List, NamedTuple, Optional
 from uuid import UUID
 
-from sqlalchemy import and_, case, func, or_, update
+from sqlalchemy import and_, func, or_, update
 from sqlalchemy.orm import Session, load_only
 
 from app.models.database import (
@@ -23,8 +23,18 @@ from app.workers.tasks.helpers.llm_evaluation import MetricPromptGroup
 from app.workers.tasks.helpers.score_utils import get_metric_type_value
 
 EVAL_CANCELLED_BY_USER_ERROR: str = "Evaluation cancelled by user"
+EVAL_AUTO_ABORTED_ERROR: str = "Automatically aborted after 24 hours"
+AUTO_ABORTED_STATUS: str = "auto_aborted"
 
 _BILLING_META_KEY = "_billing"
+
+
+class CategorizedMetrics(NamedTuple):
+    transcript_metrics: list[Metric]
+    audio_metrics: list[Metric]
+    comparison_metrics: list[Metric]
+    computed_metrics: list[Metric]
+    skipped_scores: dict[str, dict[str, Any]]
 
 _ALL_COLUMNS_BLOCK_MAX_CHARS = 16_000
 _ALL_COLUMNS_CELL_MAX_CHARS = 4_000
@@ -161,10 +171,9 @@ def was_cancelled_externally(db, eval_row: CallImportEvaluationRow) -> bool:
 
 def is_eval_row_user_cancelled(eval_row: CallImportEvaluationRow) -> bool:
     """True when the row was aborted by the operator."""
-    return (
-        (eval_row.status or "").lower() == "failed"
-        and (eval_row.error_message or "") == EVAL_CANCELLED_BY_USER_ERROR
-    )
+    return (eval_row.status or "").lower() == "failed" and (
+        eval_row.error_message or ""
+    ) in {EVAL_CANCELLED_BY_USER_ERROR, EVAL_AUTO_ABORTED_ERROR}
 
 
 def metric_text_references_production(
@@ -229,21 +238,81 @@ def build_all_columns_block(
     return "\n".join(lines)
 
 
+def load_call_import_eval_context(
+    catalog_db: Session,
+    call_import_id: UUID | None,
+) -> tuple[dict[str, Any], Any]:
+    """Import-level ``(custom_column_mapping, speaker_aliases)`` for scoring.
+
+    Static for the life of a run, so it is cached per worker process
+    (``cached_catalog_fetch``, 120 s) instead of read on every row. Each call
+    gets its own copy so worker threads never share mutable JSON.
+    """
+    if call_import_id is None:
+        return {}, None
+    import copy
+
+    from app.workers.catalog_cache import cached_catalog_fetch
+
+    cached = cached_catalog_fetch(
+        "call_import_eval_context",
+        str(call_import_id),
+        lambda: _query_call_import_eval_context(catalog_db, call_import_id),
+    )
+    return copy.deepcopy(cached)
+
+
+def _query_call_import_eval_context(
+    catalog_db: Session,
+    call_import_id: UUID | str,
+) -> tuple[dict[str, Any], Any]:
+    """Narrow typed select (uses the primary-key index).
+
+    Avoids an ORM lazy-load of ``CallImport``. Pre-migration-114 databases
+    have no ``speaker_aliases`` column; those still score LLM metrics and
+    computed metrics fall back to default speaker aliases.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.exc import ProgrammingError
+
+    from app.models.database import CallImport
+
+    table = CallImport.__table__
+    cid = call_import_id if isinstance(call_import_id, UUID) else UUID(str(call_import_id))
+    try:
+        row = catalog_db.execute(
+            select(table.c.custom_column_mapping, table.c.speaker_aliases).where(
+                table.c.id == cid
+            )
+        ).one_or_none()
+    except ProgrammingError:
+        catalog_db.rollback()
+        row = catalog_db.execute(
+            select(table.c.custom_column_mapping).where(table.c.id == cid)
+        ).one_or_none()
+        if row is None:
+            return {}, None
+        mapping = row[0] if isinstance(row[0], dict) else {}
+        return mapping, None
+    if row is None:
+        return {}, None
+    mapping = row[0] if isinstance(row[0], dict) else {}
+    return mapping, row[1]
+
+
 def categorize_metrics(
     metrics: list[Metric],
     has_audio: bool,
     has_production_transcript: bool = False,
     has_diarised_transcript: bool = False,
-) -> tuple[
-    list[Metric],
-    list[Metric],
-    list[Metric],
-    dict[str, dict[str, Any]],
-]:
+) -> CategorizedMetrics:
     transcript_metrics: list[Metric] = []
     audio_metrics: list[Metric] = []
     comparison_metrics: list[Metric] = []
+    computed_metrics: list[Metric] = []
     skipped_scores: dict[str, dict[str, Any]] = {}
+
+    from app.services.metrics.computed_metrics import is_computed_metric
 
     for m in metrics:
         normalized = (m.name or "").strip().lower()
@@ -259,6 +328,24 @@ def categorize_metrics(
                 }
             continue
 
+        if is_computed_metric(m):
+            missing: list[str] = []
+            if not has_production_transcript:
+                missing.append("production")
+            if not has_diarised_transcript:
+                missing.append("diarised")
+            if missing:
+                skipped_scores[str(m.id)] = {
+                    "value": None,
+                    "type": get_metric_type_value(m),
+                    "metric_name": m.name,
+                    "skipped": "comparison_missing_transcript",
+                    "missing_transcripts": missing,
+                }
+                continue
+            computed_metrics.append(m)
+            continue
+
         is_explicit_compare = bool(getattr(m, "compare_transcripts", False))
         is_standalone = not getattr(m, "parent_metric_id", None)
         is_auto_compare = (
@@ -268,7 +355,7 @@ def categorize_metrics(
             and metric_text_references_production(m)
         )
         if is_explicit_compare or is_auto_compare:
-            missing: list[str] = []
+            missing = []
             if not has_production_transcript:
                 missing.append("production")
             if not has_diarised_transcript:
@@ -287,11 +374,12 @@ def categorize_metrics(
 
         transcript_metrics.append(m)
 
-    return (
-        transcript_metrics,
-        audio_metrics,
-        comparison_metrics,
-        skipped_scores,
+    return CategorizedMetrics(
+        transcript_metrics=transcript_metrics,
+        audio_metrics=audio_metrics,
+        comparison_metrics=comparison_metrics,
+        computed_metrics=computed_metrics,
+        skipped_scores=skipped_scores,
     )
 
 
@@ -313,6 +401,11 @@ def build_parent_groups(
             .filter(Metric.id.in_(list(children_by_parent.keys())))
             .all()
         )
+        # Scoring reads name/description after this session commits and closes.
+        # Leave the parents detached with their columns already loaded; otherwise
+        # the commit expires them and the later read raises DetachedInstanceError.
+        for row in rows:
+            db.expunge(row)
         parents_by_id = {row.id: row for row in rows}
         orphaned: list[UUID] = []
         for pid in list(children_by_parent.keys()):
@@ -488,61 +581,121 @@ def counter_deltas_for_status_transition(
     return completed_delta, failed_delta
 
 
+def _count_evaluation_rows(
+    db: Session,
+    evaluation_id: UUID,
+) -> tuple[int, int, int, int]:
+    """(total, completed, failed, in_progress) from the row tables."""
+    from app.db_sharding.scatter_gather import aggregate_evaluation_row_counts_detailed
+
+    return aggregate_evaluation_row_counts_detailed(db, evaluation_id)
+
+
 def reconcile_evaluation_counters(
     db: Session,
     evaluation: CallImportEvaluation,
 ) -> None:
-    """Sync parent counters from child rows using aggregate queries."""
-    from app.db_sharding.sessions import is_sharding_enabled
+    """Sync parent counters from child rows (fenced recount).
 
-    if is_sharding_enabled():
-        from app.db_sharding.scatter_gather import aggregate_evaluation_row_counts
+    Every caller (abort, retry, row delete, finalize) discards buffered Redis
+    deltas instead of double-applying them.
+    """
+    recount_evaluation_counters(db, evaluation)
 
-        total, completed, failed = aggregate_evaluation_row_counts(db, evaluation.id)
-    else:
-        counts = (
-            db.query(
-                func.count().label("total"),
-                func.coalesce(
-                    func.sum(
-                        case(
-                            (CallImportEvaluationRow.status == "completed", 1),
-                            else_=0,
-                        )
-                    ),
-                    0,
-                ).label("completed"),
-                func.coalesce(
-                    func.sum(
-                        case(
-                            (CallImportEvaluationRow.status == "failed", 1),
-                            else_=0,
-                        )
-                    ),
-                    0,
-                ).label("failed"),
-            )
-            .filter(CallImportEvaluationRow.evaluation_id == evaluation.id)
-            .one()
-        )
-        total = int(counts.total or 0)
-        completed = int(counts.completed or 0)
-        failed = int(counts.failed or 0)
 
-    db.execute(
+def _bump_progress_counter_gen(db: Session, evaluation_id: UUID) -> tuple[int, int] | None:
+    """Increment the catalog fence gen; returns ``(new_gen, flush_seq)``.
+
+    The UPDATE takes the parent row lock until the caller commits, so a flush
+    that drained under the old gen blocks and then matches 0 rows.
+    """
+    stmt = (
         update(CallImportEvaluation)
-        .where(CallImportEvaluation.id == evaluation.id)
-        .values(
-            total_rows=total,
-            completed_rows=completed,
-            failed_rows=failed,
+        .where(CallImportEvaluation.id == evaluation_id)
+        .values(progress_counter_gen=CallImportEvaluation.progress_counter_gen + 1)
+        .returning(
+            CallImportEvaluation.progress_counter_gen,
+            CallImportEvaluation.progress_flush_seq,
         )
     )
-    db.flush()
-    db.refresh(evaluation)
-    from app.services.call_imports.progress_counters import clear_eval_progress_redis
+    row = db.execute(stmt).first()
+    if row is None:
+        return None
+    return int(row[0] or 0), int(row[1] or 0)
 
-    clear_eval_progress_redis(evaluation.id)
+
+def recount_evaluation_counters(
+    db: Session,
+    evaluation: CallImportEvaluation,
+) -> int:
+    """Fenced shard recount. Returns rows still pending or running.
+
+    Order matters:
+
+    1. Bump ``progress_counter_gen`` in the catalog (source of truth for gen,
+       survives Redis loss; holds the parent row lock until commit).
+    2. Fence Redis: adopt the new gen, drop buffered and pending deltas. They
+       describe rows already committed on the shards, so the count below
+       includes them.
+    3. Count the shards (total / completed / failed / in_progress).
+    4. Write absolute counters, guarded by the new gen so an older,
+       overlapping recount can never overwrite a newer one.
+    5. Set Redis ``remaining`` from the shard in-progress count.
+    """
+    import redis as redis_lib
+    from loguru import logger
+
+    from app.services.call_imports import eval_progress_buffer as buf
+
+    evaluation_id = evaluation.id
+    token = buf.acquire_lock(evaluation_id)
+    try:
+        bumped = _bump_progress_counter_gen(db, evaluation_id)
+        if bumped is None:
+            return 0
+        new_gen, catalog_seq = bumped
+        fenced = True
+        try:
+            buf.fence(evaluation_id, gen=new_gen, catalog_seq=catalog_seq)
+        except redis_lib.RedisError as exc:
+            fenced = False
+            logger.warning(
+                "eval counter fence failed for {} (gen guard still applies): {}",
+                evaluation_id,
+                exc,
+            )
+
+        total, completed, failed, in_progress = _count_evaluation_rows(db, evaluation_id)
+        db.execute(
+            update(CallImportEvaluation)
+            .where(
+                CallImportEvaluation.id == evaluation_id,
+                CallImportEvaluation.progress_counter_gen == new_gen,
+            )
+            .values(
+                total_rows=total,
+                completed_rows=completed,
+                failed_rows=failed,
+            )
+        )
+        db.flush()
+        db.refresh(evaluation)
+
+        if fenced:
+            try:
+                buf.set_remaining_after_count(
+                    evaluation_id, gen=new_gen, in_progress=in_progress
+                )
+            except redis_lib.RedisError as exc:
+                logger.warning(
+                    "eval counter remaining reset failed for {}: {}", evaluation_id, exc
+                )
+        from app.services.call_imports.progress_counters import clear_eval_progress_redis
+
+        clear_eval_progress_redis(evaluation_id)
+        return in_progress
+    finally:
+        buf.release_lock(evaluation_id, token)
 
 
 def _should_confirm_eval_finished(
@@ -592,8 +745,14 @@ def _apply_parent_status_from_counters(
     completed = int(evaluation.completed_rows or 0)
     failed = int(evaluation.failed_rows or 0)
     in_progress = total - completed - failed
+    status = (evaluation.status or "").strip().lower()
 
-    if (evaluation.status or "").strip().lower() == "cancelled":
+    if status == AUTO_ABORTED_STATUS:
+        if in_progress <= 0:
+            evaluation.finished_at = now_utc()
+        return
+
+    if status == "cancelled":
         if in_progress > 0:
             return
         evaluation.finished_at = now_utc()
@@ -671,6 +830,137 @@ def load_evaluation_for_worker(
     )
 
 
+_SNAPSHOT_CACHE_TTL_SECONDS = 600.0
+
+
+def _snapshot_cache_ttl_seconds() -> float:
+    """Backstop only: settings changes bump the version key and reload at once."""
+    from app.config import settings
+
+    try:
+        return max(
+            1.0,
+            float(
+                getattr(settings, "EVAL_SNAPSHOT_CACHE_TTL_SECONDS", _SNAPSHOT_CACHE_TTL_SECONDS)
+            ),
+        )
+    except (TypeError, ValueError):
+        return _SNAPSHOT_CACHE_TTL_SECONDS
+
+
+class EvaluationSnapshot:
+    """Read-only copy of the parent evaluation's worker columns.
+
+    Not an ORM instance: nothing assigned to it is ever flushed. Code that
+    must write the parent (status flip, Redis-down rollup) uses Core updates
+    or reloads an attached object instead.
+    """
+
+    __slots__ = tuple(column.key for column in _EVALUATION_WORKER_COLUMNS)
+
+    def __init__(self, **values: Any) -> None:
+        for name in self.__slots__:
+            setattr(self, name, values.get(name))
+
+    def __repr__(self) -> str:
+        return f"EvaluationSnapshot(id={getattr(self, 'id', None)!r})"
+
+
+def _query_evaluation_snapshot(
+    db: Session,
+    evaluation_id: UUID,
+) -> EvaluationSnapshot | None:
+    row = (
+        db.query(*_EVALUATION_WORKER_COLUMNS)
+        .filter(CallImportEvaluation.id == evaluation_id)
+        .first()
+    )
+    if row is None:
+        return None
+    return EvaluationSnapshot(**dict(row._mapping))
+
+
+def load_evaluation_snapshot(
+    db: Session,
+    evaluation_id: UUID,
+) -> EvaluationSnapshot | None:
+    """Parent evaluation settings for scoring, cached per worker process.
+
+    Keyed by the Redis settings version (``eval:settings_ver:{id}``), which
+    the API bumps on any settings change, so a retry with a new model or an
+    alias edit is picked up on the next row. When Redis is down the version
+    is unknown, so this reads the catalog directly instead of trusting the
+    cache. Every caller gets its own deep copy (worker threads share the
+    process cache).
+    """
+    import copy
+
+    from app.services.call_imports.eval_settings_version import read_settings_version
+    from app.workers.catalog_cache import cached_catalog_fetch
+
+    version = read_settings_version(evaluation_id)
+    if version is None:
+        return _query_evaluation_snapshot(db, evaluation_id)
+    cached = cached_catalog_fetch(
+        "evaluation_worker",
+        f"{evaluation_id}:{version}",
+        lambda: _query_evaluation_snapshot(db, evaluation_id),
+        ttl_seconds=_snapshot_cache_ttl_seconds(),
+    )
+    return copy.deepcopy(cached)
+
+
+def mark_evaluation_running_if_pending(
+    catalog_db: Session,
+    evaluation: EvaluationSnapshot | CallImportEvaluation,
+) -> None:
+    """Make sure the parent is ``running`` and has a ``started_at``.
+
+    Materialize and fair dispatch normally do both before any row runs; this
+    covers a worker that starts before those commits land, and runs created
+    before ``started_at`` was stamped there. Each guarded UPDATE is a no-op
+    when another worker got there first, and the version bump makes cached
+    snapshots elsewhere reload instead of retrying. No SQL at all when the
+    snapshot already shows a started run.
+    """
+    status = (getattr(evaluation, "status", None) or "").strip().lower()
+    needs_flip = status == "pending"
+    needs_start = getattr(evaluation, "started_at", None) is None and status == "running"
+    if not (needs_flip or needs_start):
+        return
+    from app.services.call_imports.eval_settings_version import bump_settings_version
+
+    now = now_utc()
+    if needs_flip:
+        catalog_db.execute(
+            update(CallImportEvaluation)
+            .where(
+                CallImportEvaluation.id == evaluation.id,
+                CallImportEvaluation.status == "pending",
+            )
+            .values(
+                status="running",
+                started_at=func.coalesce(CallImportEvaluation.started_at, now),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        evaluation.status = "running"
+    else:
+        catalog_db.execute(
+            update(CallImportEvaluation)
+            .where(
+                CallImportEvaluation.id == evaluation.id,
+                CallImportEvaluation.started_at.is_(None),
+            )
+            .values(started_at=now)
+            .execution_options(synchronize_session=False)
+        )
+    catalog_db.commit()
+    bump_settings_version([evaluation.id])
+    if getattr(evaluation, "started_at", None) is None:
+        evaluation.started_at = now
+
+
 def commit_terminal_row_and_rollup(
     row_db: Session,
     evaluation: CallImportEvaluation,
@@ -684,35 +974,77 @@ def commit_terminal_row_and_rollup(
     from app.db_sharding.row_ops import shard_row_write_context
 
     parent_db = catalog_db if catalog_db is not None and catalog_db is not row_db else row_db
+    replay_bill_only = False
     # Shard FK points at the catalogue evaluation; skip it for this write.
     write_ctx = (
         shard_row_write_context(row_db) if parent_db is not row_db else nullcontext()
     )
     with write_ctx:
-        transition = row_db.execute(
-            update(CallImportEvaluationRow)
-            .where(
-                CallImportEvaluationRow.id == eval_row.id,
-                CallImportEvaluationRow.status.in_(("pending", "running")),
+        target_status = eval_row.status
+        with row_db.no_autoflush:
+            transition = row_db.execute(
+                update(CallImportEvaluationRow)
+                .where(
+                    CallImportEvaluationRow.id == eval_row.id,
+                    CallImportEvaluationRow.status.in_(("pending", "running")),
+                )
+                .values(status=target_status)
             )
-            .values(status=eval_row.status)
+        current = (
+            row_db.query(CallImportEvaluationRow.status)
+            .filter(CallImportEvaluationRow.id == eval_row.id)
+            .scalar()
         )
-        if transition.rowcount != 1:
-            row_db.rollback()
-            return
-        if (eval_row.status or "").lower() == "completed":
-            source_row = (
-                row_db.query(CallImportRow)
-                .filter(CallImportRow.id == eval_row.call_import_row_id)
-                .first()
-            )
-            maybe_bill_completed_eval_row_flexprice(
-                row_db,
-                evaluation,
-                eval_row,
-                source_row=source_row,
-            )
-        row_db.commit()
+        target = (target_status or "").lower()
+        current_norm = (current or "").lower()
+        bill_after_commit = None
+        if transition.rowcount not in (1, -1):
+            if current_norm == target and target == "completed":
+                replay_bill_only = True
+                source_row = (
+                    row_db.query(CallImportRow)
+                    .filter(CallImportRow.id == eval_row.call_import_row_id)
+                    .first()
+                )
+                if source_row is not None:
+                    bill_after_commit = (evaluation, eval_row, source_row)
+            elif current_norm == target:
+                return
+            else:
+                row_db.rollback()
+                return
+        else:
+            if current_norm != target:
+                row_db.rollback()
+                return
+            bill_after_commit = None
+            if (eval_row.status or "").lower() == "completed":
+                source_row = (
+                    row_db.query(CallImportRow)
+                    .filter(CallImportRow.id == eval_row.call_import_row_id)
+                    .first()
+                )
+                if source_row is not None:
+                    bill_after_commit = (evaluation, eval_row, source_row)
+            row_db.flush()
+            row_db.commit()
+            row_db.refresh(eval_row)
+    if bill_after_commit is not None:
+        evaluation, eval_row, source_row = bill_after_commit
+        from app.services.call_imports.eval_flexprice_billing import (
+            maybe_enqueue_recording_minutes_for_completed_row,
+        )
+
+        maybe_enqueue_recording_minutes_for_completed_row(
+            row_db,
+            evaluation,
+            eval_row,
+            source_row=source_row,
+            resolve_audio_seconds=resolve_eval_row_audio_seconds,
+            billable_minutes_fn=billable_audio_minutes,
+        )
+    if replay_bill_only:
+        return
     if (eval_row.status or "").lower() == "completed":
         from app.services.call_imports.discovered_running_cache import (
             record_row_discoveries,
@@ -723,10 +1055,17 @@ def commit_terminal_row_and_rollup(
             eval_row.id,
             eval_row.metric_scores,
         )
-    if parent_db is not row_db:
-        evaluation = load_evaluation_for_worker(parent_db, evaluation.id)
-        if evaluation is None:
-            return
+    if record_buffered_transition(
+        evaluation.id,
+        previous_row_status=previous_row_status,
+        new_row_status=eval_row.status,
+    ):
+        return
+    # Redis-down fallback writes the parent directly, so it needs an attached
+    # ORM object (the worker holds a read-only snapshot).
+    evaluation = load_evaluation_for_worker(parent_db, evaluation.id)
+    if evaluation is None:
+        return
     rollup_parent(
         parent_db,
         evaluation,
@@ -734,6 +1073,126 @@ def commit_terminal_row_and_rollup(
         new_row_status=eval_row.status,
     )
     parent_db.commit()
+
+
+def record_buffered_transition(
+    evaluation_id: UUID,
+    *,
+    previous_row_status: str | None,
+    new_row_status: str | None,
+) -> bool:
+    """Buffer one row transition in Redis instead of writing the catalog.
+
+    Returns ``False`` when Redis is down; the caller then runs the direct
+    catalog rollup. Triggers finalize when ``remaining``
+    reaches 0, when this is the only task still in flight (covers a lost
+    decrement), or when the counter hash had to be recreated (``uninit``).
+    """
+    from app.services.call_imports import eval_progress_buffer as buf
+
+    if new_row_status is None:
+        return False
+    import redis as redis_lib
+    from loguru import logger
+
+    completed_delta, failed_delta = counter_deltas_for_status_transition(
+        previous_row_status, new_row_status
+    )
+    remaining_delta = buf.remaining_delta_for_transition(
+        previous_row_status, new_row_status
+    )
+    if not (completed_delta or failed_delta or remaining_delta):
+        return True
+    try:
+        result = buf.record_transition(
+            evaluation_id,
+            completed_delta=completed_delta,
+            failed_delta=failed_delta,
+            remaining_delta=remaining_delta,
+        )
+    except redis_lib.RedisError as exc:
+        logger.warning(
+            "eval counter buffer unavailable for {}, using direct catalog write: {}",
+            evaluation_id,
+            exc,
+        )
+        return False
+
+    if result.remaining <= 0 or result.created:
+        buf.request_finalize(evaluation_id)
+    elif remaining_delta < 0:
+        from app.workers.concurrency.limits import read_job_inflight
+
+        if read_job_inflight(evaluation_id) == 1:
+            buf.request_finalize(evaluation_id)
+    return True
+
+
+_TERMINAL_EVAL_STATUSES = frozenset({"completed", "failed", "partial"})
+
+
+def finalize_evaluation_progress(db: Session, evaluation_id: UUID) -> str:
+    """Fenced recount, then the terminal tail once no row is in flight.
+
+    Returns a short outcome label: ``missing``, ``in_progress`` or the final
+    evaluation status.
+    """
+    from app.services.call_imports import eval_progress_buffer as buf
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(CallImportEvaluation.id == evaluation_id)
+        .first()
+    )
+    if evaluation is None:
+        buf.delete(evaluation_id)
+        return "missing"
+
+    previous_status = (evaluation.status or "").strip().lower()
+    in_progress = recount_evaluation_counters(db, evaluation)
+    if in_progress > 0:
+        db.commit()
+        return "in_progress"
+
+    previous_finished_at = evaluation.finished_at
+    _apply_parent_status_from_counters(evaluation)
+    if (
+        previous_status in _TERMINAL_EVAL_STATUSES
+        and previous_finished_at is not None
+        and (evaluation.status or "").strip().lower() == previous_status
+    ):
+        # Re-finalizing an already closed run (late trigger, sweep): keep
+        # the original close time.
+        evaluation.finished_at = previous_finished_at
+    db.flush()
+
+    from app.services.call_imports.eval_flexprice_billing import (
+        maybe_finalize_evaluation_flexprice_billing,
+    )
+    from app.services.call_imports.metric_aggregate_cache import (
+        maybe_refresh_aggregate_cache_after_row,
+    )
+
+    maybe_finalize_evaluation_flexprice_billing(db, evaluation)
+    maybe_refresh_aggregate_cache_after_row(
+        db,
+        evaluation,
+        new_row_status="completed",
+    )
+    if (evaluation.status or "").lower() in _TERMINAL_EVAL_STATUSES:
+        from app.models.database import CallImport
+        from app.services.call_imports.bulk_ops import rollup_call_import_batch_status
+
+        call_import = (
+            db.query(CallImport)
+            .filter(CallImport.id == evaluation.call_import_id)
+            .first()
+        )
+        if call_import is not None:
+            rollup_call_import_batch_status(db, call_import)
+    db.commit()
+    buf.delete(evaluation_id)
+    return str(evaluation.status or "")
 
 
 def rollup_parent(
@@ -806,6 +1265,17 @@ def rollup_parent(
 
     _apply_parent_status_from_counters(evaluation)
 
+    if previous_row_status is not None and new_row_status is not None:
+        from app.services.call_imports.metric_aggregate_cache import (
+            maybe_refresh_aggregate_cache_after_row,
+        )
+
+        maybe_refresh_aggregate_cache_after_row(
+            db,
+            evaluation,
+            new_row_status=new_row_status,
+        )
+
     total = int(evaluation.total_rows or 0)
     completed = int(evaluation.completed_rows or 0)
     failed = int(evaluation.failed_rows or 0)
@@ -813,32 +1283,11 @@ def rollup_parent(
     if in_progress > 0:
         return
 
-    already_billed = int(getattr(evaluation, "billed_completed_rows", 0) or 0)
-    delta = completed - already_billed
-    if delta > 0:
-        evaluation = (
-            db.query(CallImportEvaluation)
-            .filter(CallImportEvaluation.id == evaluation_id)
-            .with_for_update()
-            .one()
-        )
-        from app.services.billing.flexprice_service import (
-            record_call_import_evaluation_completed,
-        )
+    from app.services.call_imports.eval_flexprice_billing import (
+        maybe_finalize_evaluation_flexprice_billing,
+    )
 
-        metric_count = len(evaluation.selected_metric_ids or [])
-        billing_accepted = record_call_import_evaluation_completed(
-            evaluation.organization_id,
-            evaluation.id,
-            workspace_id=evaluation.workspace_id,
-            call_import_id=evaluation.call_import_id,
-            rows_billed=delta,
-            completed_total=completed,
-            total_rows=int(evaluation.total_rows or 0),
-            metric_count=metric_count,
-        )
-        if billing_accepted:
-            evaluation.billed_completed_rows = completed
+    maybe_finalize_evaluation_flexprice_billing(db, evaluation)
 
 
 def parse_restricted_metric_uuids(
@@ -861,7 +1310,7 @@ def load_enabled_metrics(
     *,
     restricted_metric_ids: Optional[List[str]] = None,
 ) -> list[Metric]:
-    metric_ids_raw = evaluation.selected_metric_ids or []
+    metric_ids_raw = getattr(evaluation, "selected_metric_ids", None) or []
     metric_ids: list[UUID] = []
     for item in metric_ids_raw:
         try:
@@ -902,6 +1351,19 @@ def load_enabled_metrics(
     return list(cached_catalog_fetch("enabled_metrics", cache_key, _load))
 
 
+def evaluation_needs_diarised_reference(
+    db: Session,
+    evaluation: CallImportEvaluation,
+) -> bool:
+    from app.services.metrics.computed_metrics import (
+        metrics_require_transcript_agreement,
+    )
+
+    return metrics_require_transcript_agreement(
+        load_enabled_metrics(db, evaluation)
+    )
+
+
 def load_active_ai_providers(db: Session, organization_id: UUID) -> list:
     """Active org providers, cached so each scoring call does not re-read them."""
     from app.models.database import AIProvider
@@ -925,17 +1387,60 @@ def load_active_ai_providers(db: Session, organization_id: UUID) -> list:
     )
 
 
+def run_computed_metrics_for_row(
+    *,
+    source_row: CallImportRow,
+    computed_metrics: list[Metric],
+    metric_scores: dict[str, dict[str, Any]],
+    speaker_aliases: Any = None,
+) -> None:
+    """Score deterministic computed metrics into ``metric_scores``."""
+    if not computed_metrics:
+        return
+
+    from app.services.metrics.computed_metrics import (
+        ComputedMetricContext,
+        run_computed_scorer,
+    )
+
+    segments = (
+        source_row.diarised_segments
+        if isinstance(source_row.diarised_segments, list)
+        else None
+    )
+    ctx = ComputedMetricContext(
+        production_transcript=(source_row.transcript or "").strip(),
+        diarised_transcript=(source_row.diarised_transcript or "").strip(),
+        diarised_segments=segments,
+        diarised_speaker_swap=bool(
+            getattr(source_row, "diarised_speaker_swap", False)
+        ),
+        speaker_aliases=speaker_aliases,
+        diarised_native_transcript=(
+            getattr(source_row, "diarised_native_transcript", None) or ""
+        ).strip(),
+    )
+
+    for metric in computed_metrics:
+        mid = str(metric.id)
+        result = run_computed_scorer(metric, ctx)
+        if "skipped" in result:
+            metric_scores[mid] = {
+                "value": None,
+                "type": get_metric_type_value(metric),
+                "metric_name": metric.name,
+                "skipped": result["skipped"],
+            }
+            continue
+        metric_scores[mid] = result
+
+
 def categorize_row_metrics(
     db: Session,
     evaluation: CallImportEvaluation,
     source_row: CallImportRow,
     metrics: list[Metric],
-) -> tuple[
-    list[Metric],
-    list[Metric],
-    list[Metric],
-    dict[str, dict[str, Any]],
-]:
+) -> CategorizedMetrics:
     from app.db_sharding.scatter_gather import row_text_present
 
     production_transcript = row_text_present(
@@ -944,13 +1449,16 @@ def categorize_row_metrics(
     diarised_transcript = row_text_present(
         source_row, "diarised_transcript", "diarised_transcript_char_length"
     )
+    has_diarised_segments = isinstance(source_row.diarised_segments, list) and bool(
+        source_row.diarised_segments
+    )
     recording_s3_key = (source_row.recording_s3_key or "").strip() or None
     has_audio = recording_s3_key is not None
     return categorize_metrics(
         metrics,
         has_audio,
         has_production_transcript=bool(production_transcript),
-        has_diarised_transcript=bool(diarised_transcript),
+        has_diarised_transcript=bool(diarised_transcript) or has_diarised_segments,
     )
 
 
@@ -966,10 +1474,10 @@ def row_needs_audio_phase(
     )
     if not metrics:
         return False
-    _, audio_metrics, _, _ = categorize_row_metrics(
+    categorized = categorize_row_metrics(
         db, evaluation, source_row, metrics
     )
-    return bool(audio_metrics)
+    return bool(categorized.audio_metrics)
 
 
 def row_needs_llm_phase(
@@ -984,10 +1492,14 @@ def row_needs_llm_phase(
     )
     if not metrics:
         return False
-    transcript_metrics, _audio, comparison_metrics, _ = categorize_row_metrics(
+    categorized = categorize_row_metrics(
         db, evaluation, source_row, metrics
     )
-    return bool(transcript_metrics or comparison_metrics)
+    return bool(
+        categorized.transcript_metrics
+        or categorized.comparison_metrics
+        or categorized.computed_metrics
+    )
 
 
 def cache_eval_row_audio_seconds(
@@ -1058,50 +1570,16 @@ def resolve_eval_row_audio_seconds(
         )
     if source_row is None:
         return 0
-    recording_s3_key = (source_row.recording_s3_key or "").strip()
-    if not recording_s3_key:
-        return 0
-    seconds = probe_recording_audio_seconds(recording_s3_key)
-    if seconds > 0:
+    stored = getattr(source_row, "recording_duration_seconds", None)
+    if stored is not None and int(stored) > 0:
+        seconds = int(stored)
         cache_eval_row_audio_seconds(eval_row, seconds)
-    return seconds
+        return seconds
+    key = (getattr(source_row, "recording_s3_key", None) or "").strip()
+    if key:
+        seconds = probe_recording_audio_seconds(key)
+        if seconds > 0:
+            cache_eval_row_audio_seconds(eval_row, seconds)
+            return seconds
+    return 0
 
-
-def maybe_bill_completed_eval_row_flexprice(
-    db: Session,
-    evaluation: CallImportEvaluation,
-    eval_row: CallImportEvaluationRow,
-    *,
-    source_row: CallImportRow | None = None,
-) -> None:
-    if (eval_row.status or "").lower() != "completed":
-        return
-    from app.services.billing.flexprice_service import (
-        record_call_import_recording_minutes_billed,
-    )
-
-    if source_row is None:
-        source_row = (
-            db.query(CallImportRow)
-            .filter(CallImportRow.id == eval_row.call_import_row_id)
-            .first()
-        )
-    if source_row is None:
-        return
-    if not (source_row.recording_s3_key or "").strip():
-        return
-
-    audio_seconds = resolve_eval_row_audio_seconds(db, eval_row, source_row)
-    minutes = billable_audio_minutes(audio_seconds)
-    if minutes <= 0:
-        return
-
-    record_call_import_recording_minutes_billed(
-        evaluation.organization_id,
-        eval_row.id,
-        workspace_id=eval_row.workspace_id or evaluation.workspace_id,
-        evaluation_id=evaluation.id,
-        call_import_id=evaluation.call_import_id,
-        audio_seconds=audio_seconds,
-        billable_minutes=minutes,
-    )

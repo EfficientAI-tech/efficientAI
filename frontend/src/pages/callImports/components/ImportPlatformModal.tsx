@@ -168,7 +168,7 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
 
   const { data: agents = [], isFetching: agentsLoading, isError: agentsError } = useQuery({
     queryKey: ['platform-import-agents', integrationId],
-    queryFn: () => apiClient.listPlatformImportAgents(integrationId),
+    queryFn: () => apiClient.callImports.listPlatformImportAgents(integrationId),
     enabled: open && Boolean(integrationId),
   })
 
@@ -192,7 +192,7 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
 
   const previewMutation = useMutation({
     mutationFn: () =>
-      apiClient.previewPlatformCallImport({
+      apiClient.callImports.previewPlatformCallImport({
         voice_integration_id: integrationId,
         window_start: parseLocalDatetime(windowStart).toISOString(),
         window_end: parseLocalDatetime(windowEnd).toISOString(),
@@ -209,7 +209,7 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
 
   const createMutation = useMutation({
     mutationFn: () =>
-      apiClient.createPlatformCallImport({
+      apiClient.callImports.createPlatformCallImport({
         voice_integration_id: integrationId,
         window_start: parseLocalDatetime(windowStart).toISOString(),
         window_end: parseLocalDatetime(windowEnd).toISOString(),

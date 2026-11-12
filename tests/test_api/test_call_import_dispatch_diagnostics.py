@@ -176,7 +176,7 @@ def test_dispatch_diagnostics_api_requires_admin(
     db_session.commit()
 
     monkeypatch.setattr(
-        "app.api.v1.routes.call_imports.build_call_import_dispatch_diagnostics",
+        "app.services.call_imports.import_queries.get_call_import_dispatch_diagnostics_payload",
         lambda *_args, **_kwargs: {
             "limits": {
                 "global_limit": 128,

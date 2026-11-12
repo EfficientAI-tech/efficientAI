@@ -34,12 +34,12 @@ export default function CallImportTagsPage() {
 
   const { data: tags = [], isLoading } = useQuery({
     queryKey: ['call-import-tags'],
-    queryFn: () => apiClient.listCallImportTags(),
+    queryFn: () => apiClient.callImports.listCallImportTags(),
   })
 
   const createMutation = useMutation({
     mutationFn: () =>
-      apiClient.createCallImportTag({
+      apiClient.callImports.createCallImportTag({
         name: newName.trim(),
         color: newColor || null,
       }),
@@ -53,7 +53,7 @@ export default function CallImportTagsPage() {
 
   const updateMutation = useMutation({
     mutationFn: ({ id, name, color }: { id: string; name: string; color: string | null }) =>
-      apiClient.updateCallImportTag(id, { name, color }),
+      apiClient.callImports.updateCallImportTag(id, { name, color }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['call-import-tags'] })
       setEditingId(null)
@@ -61,7 +61,7 @@ export default function CallImportTagsPage() {
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (tagId: string) => apiClient.deleteCallImportTag(tagId),
+    mutationFn: (tagId: string) => apiClient.callImports.deleteCallImportTag(tagId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['call-import-tags'] })
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })

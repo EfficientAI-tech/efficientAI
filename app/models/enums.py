@@ -28,6 +28,20 @@ class EvaluatorResultStatus(str, enum.Enum):
     COMPLETED = "completed"
     FAILED = "failed"
 
+class SimulationRunStatus(str, enum.Enum):
+    """Harbor simulation run (job) status."""
+    QUEUED = "queued"
+    PREPARING = "preparing"  # Exporting Harbor tasks
+    RUNNING = "running"  # Harbor job executing trials
+    INGESTING = "ingesting"  # Reading job results / uploading artifacts
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+    @classmethod
+    def terminal(cls) -> frozenset[str]:
+        return frozenset({cls.COMPLETED.value, cls.FAILED.value, cls.CANCELLED.value})
+
 class RoleEnum(str, enum.Enum):
     """User role enumeration for RBAC."""
     READER = "reader"
@@ -236,6 +250,15 @@ class MetricLifecycle(str, enum.Enum):
 class MetricTrigger(str, enum.Enum):
     """Metric trigger enumeration."""
     ALWAYS = "always"
+
+
+class MetricScoringMethod(str, enum.Enum):
+    """How a metric is scored during call-import evaluation."""
+
+    LLM = "llm"
+    AUDIO = "audio"
+    USER_WER = "user_wer"
+    USER_CER = "user_cer"
 
 class CallRecordingStatus(str, enum.Enum):
     """Call recording status enumeration."""

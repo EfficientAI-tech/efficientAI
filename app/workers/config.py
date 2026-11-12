@@ -84,6 +84,7 @@ USAGE_WORKER_QUEUE = "usage"
 PLATFORM_WORKER_QUEUE = "platform"
 NOTIFICATIONS_WORKER_QUEUE = os.environ.get("NOTIFICATIONS_WORKER_QUEUE", "platform")
 TRACES_WORKER_QUEUE = "traces"
+HARBOR_WORKER_QUEUE = "harbor-sim"
 
 
 def _usage_flush_beat_seconds() -> float:
@@ -98,6 +99,13 @@ def _cron_dispatch_beat_seconds() -> float:
     raw = os.environ.get("CRON_DISPATCH_INTERVAL_SECONDS", "30")
     try:
         return max(10.0, float(raw))
+    except (TypeError, ValueError):
+        return 30.0
+
+
+def _eval_progress_flush_beat_seconds() -> float:
+    try:
+        return max(5.0, float(getattr(settings, "EVAL_PROGRESS_FLUSH_SECONDS", 30) or 30))
     except (TypeError, ValueError):
         return 30.0
 
@@ -132,6 +140,23 @@ def _platform_beat_schedule() -> dict:
         "sweep-orphan-s3-batches": {
             "task": "sweep_orphan_s3_batches",
             "schedule": 900.0,
+        },
+        # Redis-buffered eval progress counters -> catalog (one batched
+        # UPDATE per tick) plus the periodic fenced recount sweep.
+        "flush-eval-progress-counters": {
+            "task": "flush_eval_progress_counters",
+            "schedule": _eval_progress_flush_beat_seconds(),
+        },
+        "sweep-stale-running-evaluations": {
+            "task": "sweep_stale_running_evaluations",
+            "schedule": 86400.0,
+        },
+        # Fair diarisation is only triggered after bulk enqueue + chain;
+        # periodic tick clears stale locks and drains the diarisation queue.
+        "dispatch-fair-diarization-rows": {
+            "task": "dispatch_fair_diarization_rows",
+            "schedule": 30.0,
+            "kwargs": {"max_workspace_turns": 4},
         },
     }
     if not getattr(settings, "CLICKHOUSE_URL", None):
@@ -209,7 +234,8 @@ celery_app.conf.task_routes = {
     "transcribe_call_import_row": {"queue": "diarization"},
     "dispatch_evaluation_rows": {"queue": "evaluations"},
     "dispatch_fair_eval_rows": {"queue": "evaluations"},
-    "dispatch_fair_diarization_rows": {"queue": "diarization"},
+    # Scheduler-only; run on imports next to bulk_diarize (see fair_diarization_dispatch)
+    "dispatch_fair_diarization_rows": {"queue": "imports"},
     "dispatch_fair_import_rows": {"queue": "imports"},
     "generate_evaluation_tldr_insights": {"queue": "evaluations"},
     "generate_evaluation_user_insights": {"queue": "evaluations"},
@@ -217,6 +243,9 @@ celery_app.conf.task_routes = {
     "generate_evaluator_result_metric_clusters": {"queue": "evaluations"},
     "generate_evaluation_prompt_improvements": {"queue": "evaluations"},
     "evaluate_studio_run_item": {"queue": "evaluations"},
+    # Harbor jobs need Python 3.12 + the harbor extra (worker-harbor service).
+    "run_harbor_simulation": {"queue": HARBOR_WORKER_QUEUE},
+    "analyze_simulation_run_failures": {"queue": "evaluations"},
     "generate_agent_flowchart": {"queue": "celery"},
     "map_agent_flowchart_prompt_sections": {"queue": "celery"},
     "flush_usage_counters": {"queue": USAGE_WORKER_QUEUE},
@@ -225,6 +254,10 @@ celery_app.conf.task_routes = {
     "evaluate_alerts_for_org": {"queue": PLATFORM_WORKER_QUEUE},
     "send_alert_notifications": {"queue": NOTIFICATIONS_WORKER_QUEUE},
     "refresh_fx_rates": {"queue": PLATFORM_WORKER_QUEUE},
+    "sweep_stale_running_evaluations": {"queue": PLATFORM_WORKER_QUEUE},
+    "auto_abort_stale_evaluation": {"queue": EVAL_CONTROL_QUEUE},
+    "finalize_call_import_evaluation": {"queue": EVAL_CONTROL_QUEUE},
+    "flush_eval_progress_counters": {"queue": EVAL_CONTROL_QUEUE},
     "prune_oss_usage_history": {"queue": PLATFORM_WORKER_QUEUE},
     "dispatch_cron_jobs": {"queue": USAGE_WORKER_QUEUE},
     "run_cron_evaluator_job": {"queue": "celery"},

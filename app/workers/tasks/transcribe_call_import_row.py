@@ -68,6 +68,8 @@ def _now() -> datetime:
 
 def _segments_to_user_agent_turns(
     speaker_segments: Optional[List[Dict[str, Any]]],
+    *,
+    keep_native: bool = False,
 ) -> List[Dict[str, Any]]:
     """Map pyannote-labelled segments to canonical ``agent`` / ``user`` turns.
 
@@ -143,15 +145,18 @@ def _segments_to_user_agent_turns(
             end_val = float(seg.get("end") or 0.0)
         except (TypeError, ValueError):
             end_val = 0.0
-        turns.append(
-            {
-                "speaker": role_map.get(raw, raw.lower().replace(" ", "_")),
-                "text": text,
-                "start": round(start_val, 3),
-                "end": round(end_val, 3),
-                "raw_speaker": raw,
-            }
-        )
+        turn: Dict[str, Any] = {
+            "speaker": role_map.get(raw, raw.lower().replace(" ", "_")),
+            "text": text,
+            "start": round(start_val, 3),
+            "end": round(end_val, 3),
+            "raw_speaker": raw,
+        }
+        if keep_native:
+            native_text = (seg.get("text_native") or "").strip()
+            if native_text:
+                turn["text_native"] = native_text
+        turns.append(turn)
     return turns
 
 
@@ -289,6 +294,87 @@ def _summarize_exc(exc: BaseException, *, max_chars: int = 240) -> str:
     return _compact_diarisation_error(text, max_chars=max_chars)
 
 
+def _owner_task_id(task_id: str | None) -> str:
+    return (task_id or "").strip()
+
+
+def _diarisation_update_if_owned(
+    row_db,
+    row_id: str | UUID,
+    task_id: str | None,
+    values: dict,
+    *,
+    require_pending: bool = False,
+    row=None,
+) -> bool:
+    """Apply row updates only when this Celery task still owns the row.
+
+    Ownership needs a task id to compare against. Direct ``.run()`` calls
+    (tests, repair scripts) carry none, so they fall back to writing the
+    loaded ``row`` object directly — the pre-ownership behaviour — instead of
+    reporting ``superseded`` for work nobody else could own.
+
+    Terminal statuses (``completed`` / ``failed``) always clear
+    ``celery_task_id`` so fair dispatch can enqueue future work and rows
+    are never left ``pending`` with a stale lock after a successful run.
+    """
+    from sqlalchemy import update
+
+    from app.models.database import CallImportRow
+
+    cleaned = _owner_task_id(task_id)
+    values_to_apply = dict(values)
+    status_val = values_to_apply.get("diarised_transcript_status")
+    if isinstance(status_val, str) and status_val.lower() in ("completed", "failed"):
+        values_to_apply["celery_task_id"] = None
+
+    if not cleaned:
+        if row is None:
+            return False
+        # No Celery id means nobody can own the row: this is a direct
+        # ``.run()`` call (test, repair script) where the caller already holds
+        # the session and row, so write through instead of reporting
+        # ``superseded``.
+        for column, value in values_to_apply.items():
+            setattr(row, column, value)
+        row_db.commit()
+        return True
+    rid = row_id if isinstance(row_id, UUID) else UUID(str(row_id))
+    filters = [
+        CallImportRow.id == rid,
+        CallImportRow.celery_task_id == cleaned,
+    ]
+    if require_pending:
+        filters.append(CallImportRow.diarised_transcript_status == "pending")
+    result = row_db.execute(
+        update(CallImportRow).where(*filters).values(**values_to_apply)
+    )
+    row_db.commit()
+    return result.rowcount == 1
+
+
+def _claim_diarisation_running(
+    row_db,
+    row_id: str | UUID,
+    task_id: str | None,
+    values: dict,
+    *,
+    row=None,
+) -> bool:
+    return _diarisation_update_if_owned(
+        row_db,
+        row_id,
+        task_id,
+        {
+            "diarised_transcript_status": "running",
+            "diarised_transcript_error": None,
+            **values,
+        },
+        require_pending=True,
+        row=row,
+    )
+
+
 def _apply_eval_chain_transcribe_cleanup(run_eval_row_id: str) -> None:
     """Clear eval-row dispatch state after eval-chain transcribe completes."""
     from app.db_sharding.row_ops import (
@@ -343,6 +429,12 @@ def _apply_eval_chain_transcribe_cleanup(run_eval_row_id: str) -> None:
             else:
                 row_db.commit()
         else:
+            # Eval-chain transcribe stores the Celery id on the source row for
+            # ownership; clear it once this worker finishes so bulk/fair
+            # diarisation dispatch is not blocked (dispatch only considers rows
+            # with ``celery_task_id IS NULL``).
+            if (source_row.diarised_transcript_status or "").lower() == "completed":
+                source_row.celery_task_id = None
             row_db.commit()
     finally:
         close_row_sessions(row_db, catalog_db)
@@ -367,10 +459,9 @@ def _persist_diarization_failure(
     error_message: str,
     *,
     reason: str,
+    task_id: str | None = None,
 ) -> dict[str, Any]:
     """Write a terminal diarisation failure without holding a long session."""
-    from app.models.database import CallImportRow
-
     from app.db_sharding.row_ops import close_row_sessions, locate_call_import_row
 
     try:
@@ -380,6 +471,16 @@ def _persist_diarization_failure(
     try:
         if _was_cancelled_externally(row_db, row):
             return {"status": "cancelled", "reason": "cancelled_by_user"}
+        values = {
+            "diarised_transcript_status": "failed",
+            "diarised_transcript_error": error_message,
+        }
+        if task_id is not None:
+            if not _diarisation_update_if_owned(
+                row_db, row_id, task_id, values, row=row
+            ):
+                return {"status": "skipped", "reason": "superseded"}
+            return {"status": "failed", "reason": reason}
         row.diarised_transcript_status = "failed"
         row.diarised_transcript_error = error_message
         row_db.commit()
@@ -496,6 +597,7 @@ def _run_diarization_pipeline_inner(
                 row_id,
                 _summarize_exc(exc),
                 reason="transcription_error",
+                task_id=ctx.get("owner_task_id"),
             )
 
         plain_text = (result.get("transcript") or "").strip() or None
@@ -506,6 +608,7 @@ def _run_diarization_pipeline_inner(
                 row_id,
                 "Transcription returned an empty result.",
                 reason="empty_transcript",
+                task_id=ctx.get("owner_task_id"),
             )
 
         try:
@@ -517,8 +620,9 @@ def _run_diarization_pipeline_inner(
                     llm_model=llm_model_value,
                     organization_id=organization_id,
                     db=llm_db,
-                    custom_prompt=effective_prompt,
+                    custom_prompt=ctx.get("operator_prompt"),
                     credential_id=llm_credential_uuid,
+                    emit_native_text=bool(ctx.get("emit_native_text")),
                 )
             finally:
                 llm_db.close()
@@ -532,6 +636,7 @@ def _run_diarization_pipeline_inner(
                 row_id,
                 _compact_diarisation_error(str(exc)),
                 reason="llm_diarisation_error",
+                task_id=ctx.get("owner_task_id"),
             )
         except Exception as exc:  # noqa: BLE001 — same surfacing as STT
             logger.exception(
@@ -543,6 +648,7 @@ def _run_diarization_pipeline_inner(
                 row_id,
                 _summarize_exc(exc),
                 reason="llm_diarisation_error",
+                task_id=ctx.get("owner_task_id"),
             )
     else:
         from app.services.storage.s3_service import s3_service
@@ -561,6 +667,7 @@ def _run_diarization_pipeline_inner(
                 "Failed to download recording from storage: "
                 f"{_summarize_exc(exc)}",
                 reason="recording_download_error",
+                task_id=ctx.get("owner_task_id"),
             )
 
         try:
@@ -572,9 +679,10 @@ def _run_diarization_pipeline_inner(
                     llm_model=llm_model_value,
                     organization_id=organization_id,
                     db=llm_db,
-                    custom_prompt=effective_prompt,
+                    custom_prompt=ctx.get("operator_prompt"),
                     credential_id=llm_credential_uuid,
                     audio_file_key=recording_key,
+                    emit_native_text=bool(ctx.get("emit_native_text")),
                 )
             finally:
                 llm_db.close()
@@ -588,6 +696,7 @@ def _run_diarization_pipeline_inner(
                 row_id,
                 _compact_diarisation_error(str(exc)),
                 reason="llm_only_diarisation_error",
+                task_id=ctx.get("owner_task_id"),
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception(
@@ -599,6 +708,7 @@ def _run_diarization_pipeline_inner(
                 row_id,
                 _summarize_exc(exc),
                 reason="llm_only_diarisation_error",
+                task_id=ctx.get("owner_task_id"),
             )
 
         if not raw_turns:
@@ -628,6 +738,23 @@ def _run_diarization_pipeline_inner(
     }
 
 
+def _mark_diarisation_pass(pipeline_ctx: dict[str, Any], row_id: str | UUID) -> None:
+    """Record that this row finished diarisation for the current eval pass."""
+    evaluation_id = pipeline_ctx.get("evaluation_id")
+    if not evaluation_id:
+        return
+    try:
+        from app.workers.concurrency.fair_dispatch import mark_row_diarised_in_pass
+
+        mark_row_diarised_in_pass(evaluation_id, row_id)
+    except Exception:  # noqa: BLE001 — marker is advisory, never fail the row
+        logger.exception(
+            "Failed to mark row {} diarised in pass for evaluation {}",
+            row_id,
+            evaluation_id,
+        )
+
+
 def _finalize_diarization_row(
     row_id: str | UUID,
     *,
@@ -635,7 +762,6 @@ def _finalize_diarization_row(
     work_result: dict[str, Any],
 ) -> dict[str, Any]:
     """Persist diarisation results after slow I/O completes."""
-    from app.models.database import CallImportRow
     from app.models.enums import ModelProvider
 
     normalised_mode = pipeline_ctx["normalised_mode"]
@@ -643,6 +769,7 @@ def _finalize_diarization_row(
     llm_model_value = pipeline_ctx["llm_model_value"]
     effective_prompt = pipeline_ctx["effective_prompt"]
     stt_model = pipeline_ctx.get("stt_model")
+    owner_task_id = pipeline_ctx.get("owner_task_id")
     provider_enum: Optional[ModelProvider] = None
     if pipeline_ctx.get("stt_provider"):
         provider_enum = ModelProvider(pipeline_ctx["stt_provider"])
@@ -653,22 +780,38 @@ def _finalize_diarization_row(
         row_db, catalog_db, row, _ = locate_call_import_row(row_id)
     except LookupError:
         return {"status": "skipped", "reason": "row_not_found"}
+
+    def _complete_owned(values: dict[str, Any]) -> dict[str, Any] | None:
+        if not _diarisation_update_if_owned(
+            row_db, row_id, owner_task_id, values, row=row
+        ):
+            return {"status": "skipped", "reason": "superseded"}
+        _mark_diarisation_pass(pipeline_ctx, row_id)
+        return None
+
     try:
+        emit_native_text = bool(pipeline_ctx.get("emit_native_text"))
         if work_result.get("reason") == "no_speech_detected":
             if _was_cancelled_externally(row_db, row):
                 return {"status": "cancelled", "reason": "cancelled_by_user"}
-            row.diarised_transcript = ""
-            row.diarised_segments = []
-            row.diarised_speaker_swap = False
-            row.transcribe_mode = normalised_mode
-            row.diarised_transcript_status = "completed"
-            row.diarised_transcript_error = (
-                "No audible speech detected in the recording; "
-                "diariser returned no turns."
+            superseded = _complete_owned(
+                {
+                    "diarised_transcript": "",
+                    "diarised_segments": [],
+                    "diarised_native_transcript": None,
+                    "diarised_speaker_swap": False,
+                    "transcribe_mode": normalised_mode,
+                    "diarised_transcript_status": "completed",
+                    "diarised_transcript_error": (
+                        "No audible speech detected in the recording; "
+                        "diariser returned no turns."
+                    ),
+                    "diarised_prompt": effective_prompt,
+                    "diarised_at": _now(),
+                }
             )
-            row.diarised_prompt = effective_prompt
-            row.diarised_at = _now()
-            row_db.commit()
+            if superseded is not None:
+                return superseded
             return {
                 "status": "completed",
                 "row_id": str(row_id),
@@ -680,7 +823,13 @@ def _finalize_diarization_row(
 
         plain_text = work_result.get("plain_text")
         raw_turns = work_result.get("raw_turns") or []
-        turns = _segments_to_user_agent_turns(raw_turns)
+        native_transcript = None
+        if emit_native_text and normalised_mode == "stt_llm":
+            native_transcript = (plain_text or "").strip() or None
+        turns = _segments_to_user_agent_turns(
+            raw_turns,
+            keep_native=emit_native_text,
+        )
 
         distinct_roles = {turn.get("speaker") for turn in turns}
         has_real_diarisation = len(distinct_roles - {None, ""}) >= 2
@@ -705,17 +854,23 @@ def _finalize_diarization_row(
                     "status": "cancelled",
                     "reason": "cancelled_by_user",
                 }
-            row.diarised_transcript = ""
-            row.diarised_segments = turns if has_real_diarisation else None
-            row.diarised_speaker_swap = False
-            row.transcribe_mode = normalised_mode
-            row.diarised_transcript_status = "completed"
-            row.diarised_transcript_error = (
-                "Diariser returned no storable transcript text."
+            superseded = _complete_owned(
+                {
+                    "diarised_transcript": "",
+                    "diarised_segments": turns if has_real_diarisation else None,
+                    "diarised_native_transcript": None,
+                    "diarised_speaker_swap": False,
+                    "transcribe_mode": normalised_mode,
+                    "diarised_transcript_status": "completed",
+                    "diarised_transcript_error": (
+                        "Diariser returned no storable transcript text."
+                    ),
+                    "diarised_prompt": effective_prompt,
+                    "diarised_at": _now(),
+                }
             )
-            row.diarised_prompt = effective_prompt
-            row.diarised_at = _now()
-            row_db.commit()
+            if superseded is not None:
+                return superseded
             return {
                 "status": "completed",
                 "row_id": str(row_id),
@@ -733,18 +888,23 @@ def _finalize_diarization_row(
             )
             return {"status": "cancelled", "reason": "cancelled_by_user"}
 
-        row.diarised_transcript = transcript_to_store
-        row.diarised_segments = turns if has_real_diarisation else None
-        row.diarised_speaker_swap = False
+        success_values: dict[str, Any] = {
+            "diarised_transcript": transcript_to_store,
+            "diarised_segments": turns if has_real_diarisation else None,
+            "diarised_native_transcript": native_transcript,
+            "diarised_speaker_swap": False,
+            "transcribe_mode": normalised_mode,
+            "diarised_transcript_status": "completed",
+            "diarised_transcript_error": None,
+            "diarised_prompt": effective_prompt,
+            "diarised_at": _now(),
+        }
         if normalised_mode == "stt_llm" and provider_enum is not None:
-            row.diarised_transcript_provider = provider_enum.value
-            row.diarised_transcript_model = stt_model
-        row.transcribe_mode = normalised_mode
-        row.diarised_transcript_status = "completed"
-        row.diarised_transcript_error = None
-        row.diarised_prompt = effective_prompt
-        row.diarised_at = _now()
-        row_db.commit()
+            success_values["diarised_transcript_provider"] = provider_enum.value
+            success_values["diarised_transcript_model"] = stt_model
+        superseded = _complete_owned(success_values)
+        if superseded is not None:
+            return superseded
 
         return {
             "status": "completed",
@@ -784,6 +944,7 @@ def transcribe_call_import_row_task(
     mode: str = "stt_llm",
     eval_restricted_metric_ids: Optional[List[str]] = None,
     _eval_slot_task_id: Optional[str] = None,
+    emit_native_text: bool = False,
 ):
     """Diarise a single row's recording.
 
@@ -811,14 +972,17 @@ def transcribe_call_import_row_task(
     or ``diarization_llm_model`` is missing.
     """
 
-    from app.models.database import CallImportRow
     from app.models.enums import ModelProvider
     from app.workers.tasks.helpers.llm_diarisation import (
-        DEFAULT_DIARIZATION_PROMPT,
+        resolve_diarisation_system_prompt,
     )
 
     evaluation_id_for_dispatch: Optional[str] = None
-    slot_task_id = _eval_slot_task_id or self.request.id
+    # ``self.request.id`` is only present under a real Celery request. Direct
+    # ``.run()`` calls (tests, repair scripts) pass the row id as ``self``, so
+    # resolve the owning task id defensively.
+    request = getattr(self, "request", None)
+    slot_task_id: Optional[str] = _eval_slot_task_id or getattr(request, "id", None)
     pipeline_ctx: dict[str, Any] | None = None
     try:
         from app.db_sharding.row_ops import (
@@ -875,74 +1039,114 @@ def transcribe_call_import_row_task(
 
             existing_diarised = (row.diarised_transcript or "").strip()
             if existing_diarised and not overwrite_existing:
-                row.diarised_transcript_status = "completed"
-                row_db.commit()
-                return {
-                    "status": "skipped",
-                    "reason": "transcript_present",
-                    "row_id": row_id,
-                }
+                if _diarisation_update_if_owned(
+                    row_db,
+                    row_uuid,
+                    slot_task_id,
+                    {"diarised_transcript_status": "completed"},
+                    row=row,
+                ):
+                    return {
+                        "status": "skipped",
+                        "reason": "transcript_present",
+                        "row_id": row_id,
+                    }
+                return {"status": "skipped", "reason": "superseded"}
 
             recording_key = (row.recording_s3_key or "").strip()
             if not recording_key:
-                row.diarised_transcript_status = "failed"
-                row.diarised_transcript_error = (
-                    "No recording available for this row; cannot diarise."
-                )
-                row_db.commit()
+                if not _diarisation_update_if_owned(
+                    row_db,
+                    row_uuid,
+                    slot_task_id,
+                    {
+                        "diarised_transcript_status": "failed",
+                        "diarised_transcript_error": (
+                            "No recording available for this row; cannot diarise."
+                        ),
+                    },
+                    row=row,
+                ):
+                    return {"status": "skipped", "reason": "superseded"}
                 return {"status": "skipped", "reason": "no_recording"}
 
             normalised_mode = (mode or "stt_llm").strip().lower()
             if normalised_mode not in {"stt_llm", "llm_only"}:
-                row.diarised_transcript_status = "failed"
-                row.diarised_transcript_error = (
-                    f"Unknown diarisation mode '{mode}'. Expected "
-                    "'stt_llm' or 'llm_only'."
-                )
-                row_db.commit()
+                if not _diarisation_update_if_owned(
+                    row_db,
+                    row_uuid,
+                    slot_task_id,
+                    {
+                        "diarised_transcript_status": "failed",
+                        "diarised_transcript_error": (
+                            f"Unknown diarisation mode '{mode}'. Expected "
+                            "'stt_llm' or 'llm_only'."
+                        ),
+                    },
+                    row=row,
+                ):
+                    return {"status": "skipped", "reason": "superseded"}
                 return {"status": "failed", "reason": "unknown_mode"}
 
             provider_enum: Optional[ModelProvider] = None
             if normalised_mode == "stt_llm":
                 if not stt_provider or not stt_model:
-                    row.diarised_transcript_status = "failed"
-                    row.diarised_transcript_error = (
-                        "STT provider/model not configured. Pick an STT "
-                        "model in the Diarise modal."
-                    )
-                    row_db.commit()
+                    if not _diarisation_update_if_owned(
+                        row_db,
+                        row_uuid,
+                        slot_task_id,
+                        {
+                            "diarised_transcript_status": "failed",
+                            "diarised_transcript_error": (
+                                "STT provider/model not configured. Pick an STT "
+                                "model in the Diarise modal."
+                            ),
+                        },
+                        row=row,
+                    ):
+                        return {"status": "skipped", "reason": "superseded"}
                     return {"status": "failed", "reason": "missing_stt"}
                 try:
                     provider_enum = ModelProvider(stt_provider.lower())
                 except ValueError:
-                    row.diarised_transcript_status = "failed"
-                    row.diarised_transcript_error = (
-                        f"Unknown STT provider '{stt_provider}'."
-                    )
-                    row_db.commit()
+                    if not _diarisation_update_if_owned(
+                        row_db,
+                        row_uuid,
+                        slot_task_id,
+                        {
+                            "diarised_transcript_status": "failed",
+                            "diarised_transcript_error": (
+                                f"Unknown STT provider '{stt_provider}'."
+                            ),
+                        },
+                        row=row,
+                    ):
+                        return {"status": "skipped", "reason": "superseded"}
                     return {"status": "failed", "reason": "unknown_provider"}
 
             llm_provider_value = (diarization_llm_provider or "").strip()
             llm_model_value = (diarization_llm_model or "").strip()
             if not llm_provider_value or not llm_model_value:
-                row.diarised_transcript_status = "failed"
-                row.diarised_transcript_error = (
-                    "Diarisation LLM provider/model not configured. Pick "
-                    "a chat model in the Diarise modal."
-                )
-                row_db.commit()
+                if not _diarisation_update_if_owned(
+                    row_db,
+                    row_uuid,
+                    slot_task_id,
+                    {
+                        "diarised_transcript_status": "failed",
+                        "diarised_transcript_error": (
+                            "Diarisation LLM provider/model not configured. Pick "
+                            "a chat model in the Diarise modal."
+                        ),
+                    },
+                    row=row,
+                ):
+                    return {"status": "skipped", "reason": "superseded"}
                 return {"status": "failed", "reason": "missing_llm_diariser"}
 
-            row.diarised_transcript_status = "running"
-            row.diarised_transcript_error = None
-            if normalised_mode == "stt_llm" and provider_enum is not None:
-                row.diarised_transcript_provider = provider_enum.value
-                row.diarised_transcript_model = stt_model
-            else:
-                row.diarised_transcript_provider = "llm_only"
-                row.diarised_transcript_model = llm_model_value
-            row.diarised_llm_provider = llm_provider_value
-            row.diarised_llm_model = llm_model_value
+            try:
+                stt_credential_uuid = UUID(credential_id) if credential_id else None
+            except (TypeError, ValueError):
+                stt_credential_uuid = None
             try:
                 llm_credential_uuid = (
                     UUID(diarization_llm_credential_id)
@@ -951,23 +1155,34 @@ def transcribe_call_import_row_task(
                 )
             except (TypeError, ValueError):
                 llm_credential_uuid = None
-            row.diarised_llm_credential_id = llm_credential_uuid
-            row.celery_task_id = self.request.id
 
-            effective_prompt = (diarization_prompt or "").strip() or (
-                DEFAULT_DIARIZATION_PROMPT
+            operator_prompt = (diarization_prompt or "").strip() or None
+            effective_prompt = resolve_diarisation_system_prompt(
+                operator_prompt,
+                emit_native_text=bool(emit_native_text),
             )
-            row.diarised_prompt = effective_prompt
 
-            try:
-                credential_uuid = UUID(credential_id) if credential_id else None
-            except (TypeError, ValueError):
-                credential_uuid = None
+            claim_values: dict[str, Any] = {
+                "diarised_llm_provider": llm_provider_value,
+                "diarised_llm_model": llm_model_value,
+                "diarised_llm_credential_id": llm_credential_uuid,
+                "diarised_prompt": effective_prompt,
+            }
+            if normalised_mode == "stt_llm" and provider_enum is not None:
+                claim_values["diarised_transcript_provider"] = provider_enum.value
+                claim_values["diarised_transcript_model"] = stt_model
+            else:
+                claim_values["diarised_transcript_provider"] = "llm_only"
+                claim_values["diarised_transcript_model"] = llm_model_value
 
-            row_db.commit()
+            if not _claim_diarisation_running(
+                row_db, row_uuid, slot_task_id, claim_values, row=row
+            ):
+                return {"status": "skipped", "reason": "superseded"}
 
             pipeline_ctx = {
                 "row_id": row_id,
+                "owner_task_id": slot_task_id,
                 "normalised_mode": normalised_mode,
                 "recording_key": recording_key,
                 "organization_id": row.organization_id,
@@ -983,12 +1198,14 @@ def transcribe_call_import_row_task(
                 ),
                 "stt_provider": provider_enum.value if provider_enum else None,
                 "stt_model": stt_model,
-                "credential_uuid": credential_uuid,
+                "credential_uuid": stt_credential_uuid,
                 "language": language,
                 "llm_provider_value": llm_provider_value,
                 "llm_model_value": llm_model_value,
                 "llm_credential_uuid": llm_credential_uuid,
                 "effective_prompt": effective_prompt,
+                "operator_prompt": operator_prompt,
+                "emit_native_text": bool(emit_native_text),
             }
         finally:
             if row_db is not None:
@@ -1019,10 +1236,17 @@ def transcribe_call_import_row_task(
         try:
             if _was_cancelled_externally(row_db, row):
                 return {"status": "cancelled", "reason": "cancelled_by_user"}
-            if (row.diarised_transcript_status or "").lower() == "running":
-                row.diarised_transcript_status = "failed"
-                row.diarised_transcript_error = _summarize_exc(exc)
-                row_db.commit()
+            if not _diarisation_update_if_owned(
+                row_db,
+                row_id,
+                slot_task_id,
+                {
+                    "diarised_transcript_status": "failed",
+                    "diarised_transcript_error": _summarize_exc(exc),
+                },
+                row=row,
+            ):
+                return {"status": "skipped", "reason": "superseded"}
         except Exception:
             logger.exception(
                 "Failed to persist unexpected-error state for row {}",

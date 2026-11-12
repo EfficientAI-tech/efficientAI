@@ -175,5 +175,21 @@ class BlobStorageService:
             response_content_disposition=response_content_disposition,
         )
 
+    def generate_presigned_put_url_by_key(
+        self,
+        key: str,
+        *,
+        content_type: str,
+        expiration: int = 3600,
+    ) -> str:
+        return self._backend().generate_presigned_put_url_by_key(
+            key,
+            content_type=content_type,
+            expiration=expiration,
+        )
+
+    def head_object_by_key(self, key: str) -> Optional[dict]:
+        return self._backend().head_object_by_key(key)
+
 
 blob_storage_service = BlobStorageService()

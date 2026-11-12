@@ -796,6 +796,48 @@ class S3Service:
         except Exception as e:
             raise StorageError(f"Unexpected error generating presigned URL: {str(e)}")
 
+    def generate_presigned_put_url_by_key(
+        self,
+        key: str,
+        *,
+        content_type: str,
+        expiration: int = 3600,
+    ) -> str:
+        """Presigned PUT for direct browser upload to an object key."""
+        self._ensure_initialized()
+        if not self.is_enabled():
+            error_msg = self._initialization_error or "S3 is not enabled or not configured"
+            raise StorageError(error_msg)
+
+        try:
+            return self.s3_client.generate_presigned_url(
+                "put_object",
+                Params={
+                    "Bucket": self.bucket_name,
+                    "Key": key,
+                    "ContentType": content_type,
+                },
+                ExpiresIn=expiration,
+            )
+        except ClientError as e:
+            raise StorageError(f"Failed to generate presigned PUT URL: {str(e)}")
+        except Exception as e:
+            raise StorageError(f"Unexpected error generating presigned PUT URL: {str(e)}")
+
+    def head_object_by_key(self, key: str) -> Optional[dict]:
+        """Return S3 HeadObject payload or None when missing."""
+        self._ensure_initialized()
+        if not self.is_enabled():
+            return None
+        try:
+            return self.s3_client.head_object(Bucket=self.bucket_name, Key=key)
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") in {"404", "NoSuchKey", "NotFound"}:
+                return None
+            raise StorageError(f"Failed to head object {key}: {e}") from e
+        except Exception as e:
+            raise StorageError(f"Unexpected error reading object metadata: {e}") from e
+
 
 def __getattr__(name: str):
     """Lazy alias to avoid circular import with blob_storage_service."""

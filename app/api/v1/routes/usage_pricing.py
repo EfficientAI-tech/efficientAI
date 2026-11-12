@@ -164,7 +164,7 @@ def list_usage_pricing_overrides(
     )
 
 
-@router.get("/overrides/{model}", response_model=EffectivePricingResponse)
+@router.get("/overrides/{model:path}", response_model=EffectivePricingResponse)
 def get_usage_pricing_override_effective(
     model: str,
     usage_kind: str = Query("llm"),
@@ -181,7 +181,7 @@ def get_usage_pricing_override_effective(
     )
 
 
-@router.put("/overrides/{model}", response_model=PricingOverrideResponse)
+@router.put("/overrides/{model:path}", response_model=PricingOverrideResponse)
 def upsert_usage_pricing_override(
     model: str,
     body: PricingOverrideUpsertRequest,
@@ -200,7 +200,7 @@ def upsert_usage_pricing_override(
     )
 
 
-@router.delete("/overrides/{model}", response_model=PricingOverrideDeleteResponse)
+@router.delete("/overrides/{model:path}", response_model=PricingOverrideDeleteResponse)
 def delete_usage_pricing_override(
     model: str,
     usage_kind: str = Query("llm"),

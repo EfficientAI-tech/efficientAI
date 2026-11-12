@@ -637,9 +637,7 @@ def test_evaluations_unknown_import_returns_404(authenticated_client, seed_org):
 # 1. Each cancellable row flips to ``failed`` with the
 #    ``"Evaluation cancelled by user"`` sentinel + cleared ``celery_task_id``.
 # 2. The parent rollup picks the new state up (``failed``/``partial``).
-# 3. The Celery revoke was called with ``terminate=True, signal="SIGTERM"`` ΓÇö
-#    that's the contract that lets the worker actually interrupt an in-flight
-#    LLM/audio call rather than waiting up to 10 minutes for the time limit.
+# 3. Celery revoke uses terminate=False by default (worker-imports thread pool).
 
 
 def _stub_celery_revoke(monkeypatch):
@@ -749,8 +747,7 @@ def test_cancel_evaluation_flips_rows_and_revokes_tasks(
     revoked_task_ids = _revoked_task_ids_from_calls(revoke)
     assert revoked_task_ids == expected_task_ids
     for call in revoke.call_args_list:
-        assert call.kwargs.get("terminate") is True
-        assert call.kwargs.get("signal") == "SIGTERM"
+        assert call.kwargs.get("terminate") is False
 
 
 def test_cancel_evaluation_rollup_call_import_from_processing_partial(
@@ -899,10 +896,12 @@ def test_cancel_evaluation_row_flips_only_target_row(
     assert parent.status == "running"
 
     revoke.assert_called_once()
-    assert revoke.call_args.args[0] == target_original_task_id or (
+    revoked_arg = revoke.call_args.args[0]
+    revoked_task_id = revoked_arg[0] if isinstance(revoked_arg, list) else revoked_arg
+    assert revoked_task_id == target_original_task_id or (
         # ``celery_task_id`` is cleared post-revoke; cross-check via the
         # original snapshot we captured before the call.
-        revoke.call_args.args[0] in original_task_ids
+        revoked_task_id in original_task_ids
     )
 
 
@@ -1729,3 +1728,71 @@ def test_call_import_without_evaluation_has_null_latest_eval_progress(
     assert body["latest_evaluation_total_rows"] is None
     assert body["latest_evaluation_completed_rows"] is None
     assert body["latest_evaluation_failed_rows"] is None
+
+
+def test_materialized_evaluation_has_started_at(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """Materialize stamps the run start before any row is dispatched."""
+    metric = _make_metric(db_session, org_id)
+    call_import, _ = _make_call_import(db_session, org_id, rows=2)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    db_session.expire_all()
+    parent = db_session.get(CallImportEvaluation, UUID(created["id"]))
+    assert parent.status == "running"
+    assert parent.started_at is not None
+
+
+def test_retry_after_abort_dispatches_after_bulk_lock_is_released(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    """Dispatch skips evaluations holding a bulk-op lock. Retry must ask for a
+    dispatch *after* it releases its ``retry`` lock, or an aborted run (with
+    nothing else in flight to re-trigger dispatch) never resumes."""
+    import sys
+
+    from app.services.call_imports import evaluation_bulk_op
+
+    metric = _make_metric(db_session, org_id)
+    call_import, _ = _make_call_import(db_session, org_id, rows=2)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+    _stub_celery_revoke(monkeypatch)
+    _force_running(db_session, created["id"])
+    aborted = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{created['id']}/cancel"
+    )
+    assert aborted.status_code == 202, aborted.text
+
+    events: list[str] = []
+    real_clear = evaluation_bulk_op.clear_evaluation_bulk_operation
+
+    def _clear(evaluation_id):
+        events.append("release")
+        real_clear(evaluation_id)
+
+    monkeypatch.setattr(evaluation_bulk_op, "clear_evaluation_bulk_operation", _clear)
+    fair = sys.modules["app.workers.concurrency.fair_dispatch"]
+    monkeypatch.setattr(
+        fair, "schedule_fair_dispatch", lambda *_a, **_kw: events.append("dispatch")
+    )
+
+    retried = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{created['id']}/retry",
+        json={},
+    )
+    assert retried.status_code == 202, retried.text
+    assert retried.json()["requeued"] == 2
+    assert "release" in events
+    assert events[-1] == "dispatch"
+    assert events.index("release") < len(events) - 1
+
+    db_session.expire_all()
+    parent = db_session.get(CallImportEvaluation, UUID(created["id"]))
+    assert parent.status == "running"

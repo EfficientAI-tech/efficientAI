@@ -16,6 +16,17 @@ from app.dependencies import get_organization_id, get_api_key, get_workspace_id
 from app.core.oss_quotas import enforce_oss_quota
 from app.services.billing.flexprice_service import record_metrics_llm_assist
 from app.models.database import Metric, MetricCategory, MetricType, MetricTrigger, ModelProvider
+from app.models.enums import MetricScoringMethod
+from app.services.metrics.evaluation_scope import (
+    agent_ids_for_response,
+    replace_metric_agents,
+    replace_metric_scenarios,
+    scenario_ids_for_response,
+)
+from app.services.metrics.option_labels import (
+    coerce_custom_config_for_storage,
+    custom_config_for_api,
+)
 from app.models.schemas import (
     MetricCreate,
     MetricCreateWithChildren,
@@ -196,7 +207,9 @@ def _serialize_metric_tree(metric: Metric) -> Dict[str, Any]:
         "supported_surfaces": metric.supported_surfaces or [],
         "enabled_surfaces": metric.enabled_surfaces or [],
         "custom_data_type": metric.custom_data_type,
-        "custom_config": metric.custom_config,
+        "custom_config": custom_config_for_api(
+            metric.custom_data_type, metric.custom_config
+        ),
         "tags": metric.tags,
         "capture_rationale": bool(metric.capture_rationale),
         "parent_metric_id": metric.parent_metric_id,
@@ -205,10 +218,15 @@ def _serialize_metric_tree(metric: Metric) -> Dict[str, Any]:
         "compare_transcripts": bool(
             getattr(metric, "compare_transcripts", False)
         ),
+        "scoring_method": (
+            getattr(metric, "scoring_method", None) or "llm"
+        ),
         "lifecycle": getattr(metric, "lifecycle", None) or "active",
         "promoted_from_draft_at": getattr(metric, "promoted_from_draft_at", None),
         "studio_notes": getattr(metric, "studio_notes", None),
         "children": children_payload,
+        "scenario_ids": [str(sid) for sid in scenario_ids_for_response(metric)],
+        "agent_ids": [str(aid) for aid in agent_ids_for_response(metric)],
         "created_at": metric.created_at,
         "updated_at": metric.updated_at,
         "created_by": metric.created_by,
@@ -317,6 +335,16 @@ def create_metric(
     effective_metric_type = metric_data.metric_type
     if metric_data.parent_metric_id is not None:
         effective_metric_type = MetricType.BOOLEAN
+    if metric_data.parent_metric_id is not None and metric_data.scenario_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="Child metrics cannot have scenario links; set links on the parent.",
+        )
+    if metric_data.parent_metric_id is not None and metric_data.agent_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="Child metrics cannot have agent links; set links on the parent.",
+        )
 
     metric = Metric(
         organization_id=organization_id,
@@ -333,7 +361,9 @@ def create_metric(
         supported_surfaces=metric_data.supported_surfaces or ["agent"],
         enabled_surfaces=enabled_surfaces,
         custom_data_type=metric_data.custom_data_type,
-        custom_config=metric_data.custom_config,
+        custom_config=coerce_custom_config_for_storage(
+            metric_data.custom_data_type, metric_data.custom_config
+        ),
         tags=metric_data.tags,
         capture_rationale=bool(metric_data.capture_rationale),
         parent_metric_id=metric_data.parent_metric_id,
@@ -342,6 +372,28 @@ def create_metric(
         compare_transcripts=bool(metric_data.compare_transcripts),
     )
     db.add(metric)
+    db.flush()
+    if metric.parent_metric_id is None:
+        try:
+            replace_metric_scenarios(
+                db,
+                organization_id=organization_id,
+                metric=metric,
+                scenario_ids=(
+                    metric_data.scenario_ids if metric_data.scenario_ids is not None else []
+                ),
+            )
+            replace_metric_agents(
+                db,
+                organization_id=organization_id,
+                metric=metric,
+                agent_ids=(
+                    metric_data.agent_ids if metric_data.agent_ids is not None else []
+                ),
+            )
+        except ValueError as exc:
+            db.rollback()
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.commit()
     db.refresh(metric)
 
@@ -417,6 +469,16 @@ def create_metric_draft(
     effective_metric_type = metric_data.metric_type
     if metric_data.parent_metric_id is not None:
         effective_metric_type = MetricType.BOOLEAN
+    if metric_data.parent_metric_id is not None and metric_data.scenario_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="Child metrics cannot have scenario links; set links on the parent.",
+        )
+    if metric_data.parent_metric_id is not None and metric_data.agent_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="Child metrics cannot have agent links; set links on the parent.",
+        )
 
     metric = Metric(
         organization_id=organization_id,
@@ -433,7 +495,9 @@ def create_metric_draft(
         supported_surfaces=metric_data.supported_surfaces or ["agent"],
         enabled_surfaces=[],
         custom_data_type=metric_data.custom_data_type,
-        custom_config=metric_data.custom_config,
+        custom_config=coerce_custom_config_for_storage(
+            metric_data.custom_data_type, metric_data.custom_config
+        ),
         tags=metric_data.tags,
         capture_rationale=bool(metric_data.capture_rationale),
         parent_metric_id=metric_data.parent_metric_id,
@@ -444,6 +508,28 @@ def create_metric_draft(
         studio_notes=metric_data.studio_notes,
     )
     db.add(metric)
+    db.flush()
+    if metric.parent_metric_id is None:
+        try:
+            replace_metric_scenarios(
+                db,
+                organization_id=organization_id,
+                metric=metric,
+                scenario_ids=(
+                    metric_data.scenario_ids if metric_data.scenario_ids is not None else []
+                ),
+            )
+            replace_metric_agents(
+                db,
+                organization_id=organization_id,
+                metric=metric,
+                agent_ids=(
+                    metric_data.agent_ids if metric_data.agent_ids is not None else []
+                ),
+            )
+        except ValueError as exc:
+            db.rollback()
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.commit()
     db.refresh(metric)
     return _serialize_metric_tree(metric)
@@ -553,6 +639,22 @@ def _create_metric_with_children(
     )
     db.add(parent)
     db.flush()
+    try:
+        replace_metric_scenarios(
+            db,
+            organization_id=organization_id,
+            metric=parent,
+            scenario_ids=payload.scenario_ids if payload.scenario_ids is not None else [],
+        )
+        replace_metric_agents(
+            db,
+            organization_id=organization_id,
+            metric=parent,
+            agent_ids=payload.agent_ids if payload.agent_ids is not None else [],
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     for child_draft in payload.children:
         child_enabled = bool(child_draft.enabled) and len(parent_enabled_surfaces) > 0
@@ -1025,7 +1127,9 @@ def promote_discovered_metric(
         supported_surfaces=supported_surfaces,
         enabled_surfaces=enabled_surfaces,
         custom_data_type=custom_data_type,
-        custom_config=body.custom_config or None,
+        custom_config=coerce_custom_config_for_storage(
+            custom_data_type, body.custom_config or None
+        ),
         tags=None,
         # Standalone metric — rationale is per-metric (default true so
         # the LLM keeps producing rationales for promoted candidates,
@@ -1273,7 +1377,14 @@ def update_metric(
         metric.custom_data_type = metric_data.custom_data_type
 
     if metric_data.custom_config is not None:
-        metric.custom_config = metric_data.custom_config
+        effective_dtype = (
+            metric_data.custom_data_type
+            if metric_data.custom_data_type is not None
+            else metric.custom_data_type
+        )
+        metric.custom_config = coerce_custom_config_for_storage(
+            effective_dtype, metric_data.custom_config
+        )
 
     if metric_data.tags is not None:
         metric.tags = metric_data.tags
@@ -1401,6 +1512,42 @@ def update_metric(
         # Fields were already applied to the ORM row; never leave them pending.
         db.rollback()
         raise
+
+    if metric_data.scenario_ids is not None:
+        if metric.parent_metric_id is not None:
+            db.rollback()
+            raise HTTPException(
+                status_code=400,
+                detail="Child metrics cannot have scenario links; update the parent.",
+            )
+        try:
+            replace_metric_scenarios(
+                db,
+                organization_id=organization_id,
+                metric=metric,
+                scenario_ids=metric_data.scenario_ids,
+            )
+        except ValueError as exc:
+            db.rollback()
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if metric_data.agent_ids is not None:
+        if metric.parent_metric_id is not None:
+            db.rollback()
+            raise HTTPException(
+                status_code=400,
+                detail="Child metrics cannot have agent links; update the parent.",
+            )
+        try:
+            replace_metric_agents(
+                db,
+                organization_id=organization_id,
+                metric=metric,
+                agent_ids=metric_data.agent_ids,
+            )
+        except ValueError as exc:
+            db.rollback()
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     db.commit()
     db.refresh(metric)
@@ -1606,6 +1753,41 @@ def seed_default_metrics(
             "supported_surfaces": ["voice_playground"],
             "enabled_surfaces": ["voice_playground"],
         },
+        # =========================================================================
+        # Transcript agreement (deterministic — no LLM cost)
+        # =========================================================================
+        {
+            "name": "User WER",
+            "description": (
+                "Word error rate of diarised user turns (hypothesis) against "
+                "production user turns (reference). Agent turns are ignored. "
+                "Secondary to User CER. Lower is better."
+            ),
+            "metric_type": MetricType.NUMBER,
+            "trigger": MetricTrigger.ALWAYS,
+            "enabled": True,
+            "metric_origin": "default",
+            "supported_surfaces": ["agent"],
+            "enabled_surfaces": ["agent"],
+            "tags": ["transcript_accuracy"],
+            "scoring_method": MetricScoringMethod.USER_WER.value,
+        },
+        {
+            "name": "User CER",
+            "description": (
+                "Character error rate of diarised user turns (hypothesis) "
+                "against production user turns (reference). Agent turns are "
+                "ignored. Headline transcript-agreement metric. Lower is better."
+            ),
+            "metric_type": MetricType.NUMBER,
+            "trigger": MetricTrigger.ALWAYS,
+            "enabled": True,
+            "metric_origin": "default",
+            "supported_surfaces": ["agent"],
+            "enabled_surfaces": ["agent"],
+            "tags": ["transcript_accuracy"],
+            "scoring_method": MetricScoringMethod.USER_CER.value,
+        },
     ]
 
     # Names of default voice metrics that must always be enabled on the
@@ -1648,6 +1830,10 @@ def seed_default_metrics(
                 metric_origin=metric_data.get("metric_origin", "default"),
                 supported_surfaces=metric_data.get("supported_surfaces", ["agent"]),
                 enabled_surfaces=metric_data.get("enabled_surfaces", ["agent"]),
+                tags=metric_data.get("tags"),
+                scoring_method=metric_data.get(
+                    "scoring_method", MetricScoringMethod.LLM.value
+                ),
             )
             db.add(metric)
             created_metrics.append(metric)
@@ -1655,6 +1841,14 @@ def seed_default_metrics(
             # Keep default acoustic metric toggles aligned with product defaults.
             if existing.enabled != metric_data["enabled"]:
                 existing.enabled = metric_data["enabled"]
+            if metric_data.get("scoring_method"):
+                existing.scoring_method = metric_data["scoring_method"]
+            if metric_data["name"] in {"User WER", "User CER"} and metric_data.get(
+                "description"
+            ):
+                existing.description = metric_data["description"]
+            if metric_data.get("tags") and not existing.tags:
+                existing.tags = metric_data["tags"]
             # Re-assert voice_playground surface enrollment for the four required
             # voice metrics so existing orgs pick up the new default behavior.
             if metric_data["name"] in voice_playground_required_defaults:
@@ -1919,6 +2113,8 @@ def generate_metric(
             }
         if custom_data_type == "boolean":
             custom_config = {}
+
+        custom_config = coerce_custom_config_for_storage(custom_data_type, custom_config)
 
     name = (parsed.get("name") or "Custom Metric").strip()[:60]
     existing = db.query(Metric).filter(

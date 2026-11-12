@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import { Card, CardBody, Spinner } from '@heroui/react'
-import { ChevronRight, CircleDollarSign } from 'lucide-react'
+import { ChevronLeft, ChevronRight, CircleDollarSign } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import UsageFiltersBar from './UsageFiltersBar'
 import UsageDrillPath from './UsageDrillPath'
@@ -11,11 +11,19 @@ import { defaultUsageDateRange, isRangeWithinMaxDays, rangeForDays } from './Usa
 import { getUsageTimezone } from './usageTimezone'
 import {
   formatFxRateHint,
+  formatUsageCostExactUsd,
   formatUsageCostUsd,
   getUsageDisplayCurrency,
   setUsageDisplayCurrency,
   type UsageDisplayCurrency,
 } from '../../lib/usageCurrency'
+import {
+  formatAudioDuration,
+  formatAudioExact,
+  formatCompactCount,
+  formatExactCount,
+} from '../../lib/usageFormatters'
+import UsageMetricValue from './UsageMetricValue'
 import { useLicenseStore } from '../../store/licenseStore'
 import {
   CALL_IMPORT_BATCH_HEADLINE,
@@ -105,6 +113,32 @@ const NON_COMPOSITE_RESOURCE_TYPES = new Set([
 
 type TableRow = BreakdownRow | WorkspaceSourceRow
 
+const USAGE_TABLE_PAGE_SIZE = 100
+
+async function fetchUsageGroupRows(
+  params: Parameters<typeof apiClient.getOrgUsageBreakdown>[0],
+  rowsNeeded: number,
+  signal?: AbortSignal,
+) {
+  const rows: BreakdownRow[] = []
+  let offset = 0
+  let truncated = false
+  let groupBy = params.group_by || ''
+  while (rows.length < rowsNeeded) {
+    const limit = Math.min(USAGE_TABLE_PAGE_SIZE, rowsNeeded - rows.length)
+    const response = await apiClient.getOrgUsageBreakdown(
+      { ...params, limit, offset },
+      signal,
+    )
+    groupBy = response.group_by
+    rows.push(...response.rows)
+    truncated = Boolean(response.truncated_at_limit)
+    if (!truncated || response.rows.length === 0) break
+    offset += response.rows.length
+  }
+  return { rows, group_by: groupBy, truncated_at_limit: truncated }
+}
+
 const EMPTY_METRICS = {
   prompt_tokens: 0,
   completion_tokens: 0,
@@ -172,24 +206,9 @@ function sortRows(rows: BreakdownRow[]): BreakdownRow[] {
   return [...rows].sort((a, b) => b.total_tokens - a.total_tokens)
 }
 
-function formatNumber(value: number): string {
-  return new Intl.NumberFormat().format(value || 0)
-}
-
 function rowCostUsd(row: Pick<BreakdownRow, 'costs' | 'total_cost_micro_usd'>): number {
   if (row.costs?.total_cost_usd != null) return row.costs.total_cost_usd
   return Number(row.total_cost_micro_usd || 0) / 1_000_000
-}
-
-function formatAudio(seconds: number): string {
-  const total = Math.max(0, Math.floor(seconds || 0))
-  if (total < 60) return `${total}s`
-  const mins = Math.floor(total / 60)
-  const secs = total % 60
-  if (mins < 60) return secs ? `${mins}m ${secs}s` : `${mins}m`
-  const hours = Math.floor(mins / 60)
-  const remMins = mins % 60
-  return remMins ? `${hours}h ${remMins}m` : `${hours}h`
 }
 
 function rowHasUsageForKind(row: BreakdownRow, kind: Kind): boolean {
@@ -232,13 +251,13 @@ function isUsageScopeActive(
 ): boolean {
   return Boolean(
     workspaceId ||
-      callImportId ||
-      evaluationId ||
-      dataset ||
-      tagId ||
-      usageKind ||
-      model ||
-      productSection,
+    callImportId ||
+    evaluationId ||
+    dataset ||
+    tagId ||
+    usageKind ||
+    model ||
+    productSection,
   )
 }
 
@@ -584,6 +603,8 @@ export default function Usage() {
   const fxRateHint = formatFxRateHint(inrRate, fxRate?.as_of, fxRate?.source)
   const formatCostUsd = (usd?: number | null) =>
     formatUsageCostUsd(usd, displayCurrency, inrRate)
+  const formatCostExact = (usd?: number | null) =>
+    formatUsageCostExactUsd(usd, displayCurrency, inrRate)
 
   useEffect(() => {
     if (!licenseLoaded) {
@@ -651,10 +672,35 @@ export default function Usage() {
     evaluation_id: callImportId ? evaluationId || undefined : undefined,
   }
 
+  const [tablePage, setTablePage] = useState(1)
+  const tableScrollRef = useRef<HTMLDivElement>(null)
+  const tableScopeKey = [
+    start,
+    end,
+    workspaceId,
+    callImportId,
+    dataset,
+    tagId,
+    evaluationId,
+    model,
+    usageKind,
+    productSection,
+    groupBy,
+    showWorkspaceComposite ? '1' : '0',
+  ].join('|')
+  const tableScopeRef = useRef(tableScopeKey)
+  if (tableScopeRef.current !== tableScopeKey) {
+    tableScopeRef.current = tableScopeKey
+    if (tablePage !== 1) setTablePage(1)
+  }
+
+  useEffect(() => {
+    tableScrollRef.current?.scrollTo({ top: 0 })
+  }, [tablePage])
+
   const usageQueryDefaults = {
-    staleTime: 0,
-    refetchOnMount: 'always' as const,
-    refetchOnWindowFocus: true,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   }
 
   const {
@@ -665,7 +711,7 @@ export default function Usage() {
     error: summaryQueryError,
   } = useQuery({
     queryKey: ['org-usage', 'summary', dataParams],
-    queryFn: () => apiClient.getOrgUsageSummary(dataParams),
+    queryFn: ({ signal }) => apiClient.getOrgUsageSummary(dataParams, signal),
     ...usageQueryDefaults,
     placeholderData: keepPreviousData,
   })
@@ -677,13 +723,14 @@ export default function Usage() {
     isLoading: breakdownLoading,
     isFetching: breakdownFetching,
   } = useQuery({
-    queryKey: ['org-usage', 'breakdown', groupBy, dataParams],
-    queryFn: () =>
+    queryKey: ['org-usage', 'breakdown', groupBy, dataParams, 'page', 1],
+    queryFn: ({ signal }) =>
       apiClient.getOrgUsageBreakdown({
         ...dataParams,
         group_by: groupBy,
-        limit: 100,
-      }),
+        limit: USAGE_TABLE_PAGE_SIZE,
+        offset: 0,
+      }, signal),
     enabled: !showWorkspaceComposite,
     ...usageQueryDefaults,
     placeholderData: (previousData, previousQuery) => {
@@ -692,18 +739,37 @@ export default function Usage() {
     },
   })
 
+  const firstPageFits = Boolean(breakdown) && !breakdown?.truncated_at_limit
+  const {
+    data: laterBreakdown,
+    isLoading: laterBreakdownLoading,
+    isFetching: laterBreakdownFetching,
+  } = useQuery({
+    queryKey: ['org-usage', 'breakdown', groupBy, dataParams, 'page', tablePage],
+    queryFn: ({ signal }) =>
+      apiClient.getOrgUsageBreakdown({
+        ...dataParams,
+        group_by: groupBy,
+        limit: USAGE_TABLE_PAGE_SIZE,
+        offset: (tablePage - 1) * USAGE_TABLE_PAGE_SIZE,
+      }, signal),
+    enabled: !showWorkspaceComposite && tablePage > 1 && !firstPageFits,
+    ...usageQueryDefaults,
+  })
+
+  const compositeDepth = tablePage * USAGE_TABLE_PAGE_SIZE
   const {
     data: importBreakdown,
     isLoading: importBreakdownLoading,
     isFetching: importBreakdownFetching,
   } = useQuery({
-    queryKey: ['org-usage', 'breakdown', 'call_import', dataParams],
-    queryFn: () =>
-      apiClient.getOrgUsageBreakdown({
-        ...dataParams,
-        group_by: 'call_import',
-        limit: 100,
-      }),
+    queryKey: ['org-usage', 'breakdown', 'call_import', dataParams, compositeDepth],
+    queryFn: ({ signal }) =>
+      fetchUsageGroupRows(
+        { ...dataParams, group_by: 'call_import' },
+        compositeDepth,
+        signal,
+      ),
     enabled: showWorkspaceComposite,
     ...usageQueryDefaults,
   })
@@ -713,20 +779,24 @@ export default function Usage() {
     isLoading: resourceBreakdownLoading,
     isFetching: resourceBreakdownFetching,
   } = useQuery({
-    queryKey: ['org-usage', 'breakdown', 'resource', dataParams],
-    queryFn: () =>
-      apiClient.getOrgUsageBreakdown({
-        ...dataParams,
-        group_by: 'resource',
-        limit: 100,
-      }),
+    queryKey: ['org-usage', 'breakdown', 'resource', dataParams, compositeDepth],
+    queryFn: ({ signal }) =>
+      fetchUsageGroupRows(
+        {
+          ...dataParams,
+          group_by: 'resource',
+          omit_call_import_sources: true,
+        },
+        compositeDepth,
+        signal,
+      ),
     enabled: showWorkspaceComposite,
     ...usageQueryDefaults,
   })
 
   const { data: filterOptions, isFetching: filtersLoading } = useQuery({
     queryKey: ['org-usage', 'filters', scopeParams],
-    queryFn: () => apiClient.getOrgUsageFilters(scopeParams),
+    queryFn: ({ signal }) => apiClient.getOrgUsageFilters(scopeParams, signal),
     ...usageQueryDefaults,
     placeholderData: (previousData, previousQuery) => {
       if (!previousQuery) return undefined
@@ -798,11 +868,15 @@ export default function Usage() {
     productSection,
   ])
 
-  const breakdownMatchesLevel = breakdown?.group_by === groupBy
+  const activeBreakdown =
+    !showWorkspaceComposite && tablePage > 1 && !firstPageFits
+      ? laterBreakdown
+      : breakdown
+  const breakdownMatchesLevel = activeBreakdown?.group_by === groupBy
   const rawRows = useMemo((): BreakdownRow[] => {
-    if (!breakdown || !breakdownMatchesLevel) return []
-    return breakdown.rows as BreakdownRow[]
-  }, [breakdown, breakdownMatchesLevel])
+    if (!activeBreakdown || !breakdownMatchesLevel) return []
+    return activeBreakdown.rows as BreakdownRow[]
+  }, [activeBreakdown, breakdownMatchesLevel])
 
   const mergeOptions = filterOptions
   const scopeActive = isUsageScopeActive(
@@ -820,12 +894,17 @@ export default function Usage() {
     () => filterTableRows(rawRows, usageKind, scopeActive),
     [rawRows, usageKind, scopeActive],
   )
-  const rows: TableRow[] = useMemo(() => {
+  const { rows, hasNextPage } = useMemo(() => {
     if (showWorkspaceComposite) {
       const importReady = importBreakdown?.group_by === 'call_import'
       const resourceReady = resourceBreakdown?.group_by === 'resource'
-      if (!importReady && !resourceReady) return []
-      return buildWorkspaceCompositeRows(
+      if (!importReady && !resourceReady) {
+        return { rows: [] as TableRow[], hasNextPage: false }
+      }
+      const streamsTruncated = Boolean(
+        importBreakdown?.truncated_at_limit || resourceBreakdown?.truncated_at_limit,
+      )
+      const merged = buildWorkspaceCompositeRows(
         importReady
           ? filterTableRows(importBreakdown.rows as BreakdownRow[], usageKind, scopeActive)
           : [],
@@ -833,10 +912,32 @@ export default function Usage() {
           ? filterTableRows(resourceBreakdown.rows as BreakdownRow[], usageKind, scopeActive)
           : [],
         mergeOptions,
-        padMissingRows,
+        padMissingRows && !streamsTruncated,
       )
+      const start = (tablePage - 1) * USAGE_TABLE_PAGE_SIZE
+      return {
+        rows: merged.slice(start, start + USAGE_TABLE_PAGE_SIZE),
+        hasNextPage:
+          merged.length > start + USAGE_TABLE_PAGE_SIZE || streamsTruncated,
+      }
     }
-    return mergeDrillRows(groupBy, filteredRawRows, mergeOptions, padMissingRows)
+    const decorated = mergeDrillRows(
+      groupBy,
+      filteredRawRows,
+      mergeOptions,
+      padMissingRows && firstPageFits,
+    )
+    if (firstPageFits) {
+      const start = (tablePage - 1) * USAGE_TABLE_PAGE_SIZE
+      return {
+        rows: decorated.slice(start, start + USAGE_TABLE_PAGE_SIZE),
+        hasNextPage: decorated.length > start + USAGE_TABLE_PAGE_SIZE,
+      }
+    }
+    return {
+      rows: decorated.slice(0, USAGE_TABLE_PAGE_SIZE),
+      hasNextPage: Boolean(activeBreakdown?.truncated_at_limit),
+    }
   }, [
     showWorkspaceComposite,
     importBreakdown,
@@ -847,18 +948,25 @@ export default function Usage() {
     padMissingRows,
     usageKind,
     scopeActive,
+    tablePage,
+    firstPageFits,
+    activeBreakdown,
   ])
 
   const breakdownStale =
     !showWorkspaceComposite && breakdownFetching && !breakdownMatchesLevel
   const tableLoading = showWorkspaceComposite
     ? (importBreakdownLoading || resourceBreakdownLoading) &&
-      !importBreakdown &&
-      !resourceBreakdown
-    : breakdownLoading && !breakdown
+    !importBreakdown &&
+    !resourceBreakdown
+    : tablePage > 1 && !firstPageFits
+      ? laterBreakdownLoading && !laterBreakdown
+      : breakdownLoading && !breakdown
   const tableFetching = showWorkspaceComposite
     ? importBreakdownFetching || resourceBreakdownFetching
-    : breakdownFetching
+    : tablePage > 1 && !firstPageFits
+      ? laterBreakdownFetching
+      : breakdownFetching
   const totals = summary?.totals
   const estimatedTotalCost =
     totals?.costs?.total_cost_usd ?? (totals?.total_cost_micro_usd || 0) / 1_000_000
@@ -868,15 +976,6 @@ export default function Usage() {
   const showTts =
     Boolean(totals?.tts_characters) ||
     rows.some((r) => Boolean(r.tts_characters))
-
-  const showTruncation =
-    (!showWorkspaceComposite &&
-      breakdownMatchesLevel &&
-      Boolean(breakdown?.truncated_at_limit)) ||
-    (showWorkspaceComposite &&
-      Boolean(
-        importBreakdown?.truncated_at_limit || resourceBreakdown?.truncated_at_limit,
-      ))
 
   const workspaceLabel =
     filterOptions?.workspaces?.find((w) => idKey(w.id) === idKey(workspaceId))?.name
@@ -931,76 +1030,76 @@ export default function Usage() {
       label: 'Organization',
       onClick:
         workspaceId ||
-        callImportId ||
-        evaluationId ||
-        model ||
-        productSection
+          callImportId ||
+          evaluationId ||
+          model ||
+          productSection
           ? () =>
-              setParams({
-                workspace_id: null,
-                call_import_id: null,
-                resource_id: null,
-                model: null,
-                usage_kind: null,
-                product_section: null,
-              })
+            setParams({
+              workspace_id: null,
+              call_import_id: null,
+              resource_id: null,
+              model: null,
+              usage_kind: null,
+              product_section: null,
+            })
           : undefined,
     },
     ...(workspaceId
       ? [
-          {
-            label: workspaceLabel || 'Workspace',
-            onClick:
-              callImportId || evaluationId || model || productSection
-                ? () =>
-                    setParams({
-                      call_import_id: null,
-                      resource_id: null,
-                      model: null,
-                      usage_kind: null,
-                      product_section: null,
-                    })
-                : undefined,
-          },
-        ]
+        {
+          label: workspaceLabel || 'Workspace',
+          onClick:
+            callImportId || evaluationId || model || productSection
+              ? () =>
+                setParams({
+                  call_import_id: null,
+                  resource_id: null,
+                  model: null,
+                  usage_kind: null,
+                  product_section: null,
+                })
+              : undefined,
+        },
+      ]
       : []),
     ...(productSection
       ? [
-          {
-            label: productSectionLabel || 'Product area',
-            onClick:
-              model
-                ? () => setParams({ model: null, usage_kind: null })
-                : undefined,
-          },
-        ]
+        {
+          label: productSectionLabel || 'Product area',
+          onClick:
+            model
+              ? () => setParams({ model: null, usage_kind: null })
+              : undefined,
+        },
+      ]
       : []),
     ...(callImportId
       ? [
-          {
-            label: callImportLabel || 'Call import',
-            onClick:
-              evaluationId || model
-                ? () =>
-                    setParams({
-                      resource_id: null,
-                      model: null,
-                      usage_kind: null,
-                      product_section: null,
-                    })
-                : undefined,
-          },
-        ]
+        {
+          label: callImportLabel || 'Call import',
+          onClick:
+            evaluationId || model
+              ? () =>
+                setParams({
+                  resource_id: null,
+                  model: null,
+                  usage_kind: null,
+                  product_section: null,
+                })
+              : undefined,
+        },
+      ]
       : []),
     ...(evaluationId
       ? [
-          {
-            label: evaluationLabel || 'Evaluation',
-            onClick: model
-              ? () => setParams({ model: null, usage_kind: null })
-              : undefined,
-          },
-        ]
+        {
+          label: evaluationLabel || 'Evaluation',
+          onClick: model
+            ? () => setParams({ model: null, usage_kind: null })
+            : undefined,
+        },
+      ]
       : []),
     ...(model ? [{ label: modelDisplayLabel }] : []),
   ]
@@ -1144,11 +1243,10 @@ export default function Usage() {
                 setDisplayCurrency(currency)
                 setUsageDisplayCurrency(currency)
               }}
-              className={`rounded-md px-2.5 py-1 transition-colors ${
-                displayCurrency === currency
+              className={`rounded-md px-2.5 py-1 transition-colors ${displayCurrency === currency
                   ? 'bg-gray-900 text-white'
                   : 'text-gray-600 hover:bg-gray-50'
-              }`}
+                }`}
             >
               {currency}
             </button>
@@ -1159,7 +1257,7 @@ export default function Usage() {
             type="button"
             onClick={() => setCostBreakdownOpen(true)}
             className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition-colors hover:border-gray-300 hover:bg-gray-50 hover:text-gray-900"
-            title={formatCostUsd(estimatedTotalCost)}
+            title={formatCostExact(estimatedTotalCost)}
           >
             <CircleDollarSign className="h-4 w-4 shrink-0 text-gray-500" />
             <span className="whitespace-nowrap">Cost breakdown</span>
@@ -1196,36 +1294,74 @@ export default function Usage() {
         className={`space-y-3 transition-opacity ${summaryFetching ? 'opacity-70' : ''}`}
       >
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          <StatCard label="Input tokens" value={totals?.prompt_tokens} loading={usageStatsLoading} />
-          <StatCard label="Output tokens" value={totals?.completion_tokens} loading={usageStatsLoading} />
-          <StatCard label="Total tokens" value={totals?.total_tokens} loading={usageStatsLoading} />
-          <StatCard label="LLM calls" value={totals?.call_count} loading={usageStatsLoading} />
+          <StatCard
+            label="Input tokens"
+            display={formatCompactCount(totals?.prompt_tokens || 0)}
+            exact={formatExactCount(totals?.prompt_tokens || 0)}
+            loading={usageStatsLoading}
+          />
+          <StatCard
+            label="Output tokens"
+            display={formatCompactCount(totals?.completion_tokens || 0)}
+            exact={formatExactCount(totals?.completion_tokens || 0)}
+            loading={usageStatsLoading}
+          />
+          <StatCard
+            label="Total tokens"
+            display={formatCompactCount(totals?.total_tokens || 0)}
+            exact={formatExactCount(totals?.total_tokens || 0)}
+            loading={usageStatsLoading}
+          />
+          <StatCard
+            label="LLM calls"
+            display={formatCompactCount(totals?.call_count || 0)}
+            exact={formatExactCount(totals?.call_count || 0)}
+            loading={usageStatsLoading}
+          />
           {showAudio ? (
             <StatCard
               label="STT audio"
-              valueLabel={formatAudio(totals?.audio_seconds || 0)}
+              display={formatAudioDuration(totals?.audio_seconds || 0)}
+              exact={formatAudioExact(totals?.audio_seconds || 0)}
               loading={usageStatsLoading}
             />
           ) : null}
           {showTts ? (
-            <StatCard label="TTS characters" value={totals?.tts_characters} loading={usageStatsLoading} />
+            <StatCard
+              label="TTS characters"
+              display={formatCompactCount(totals?.tts_characters || 0)}
+              exact={formatExactCount(totals?.tts_characters || 0)}
+              loading={usageStatsLoading}
+            />
           ) : null}
           {(totals?.cache_read_tokens || 0) > 0 ? (
-            <StatCard label="Cache read" value={totals?.cache_read_tokens} loading={usageStatsLoading} />
+            <StatCard
+              label="Cache read"
+              display={formatCompactCount(totals?.cache_read_tokens || 0)}
+              exact={formatExactCount(totals?.cache_read_tokens || 0)}
+              loading={usageStatsLoading}
+            />
           ) : null}
           {(totals?.cache_creation_tokens || 0) > 0 ? (
             <StatCard
               label="Cache write"
-              value={totals?.cache_creation_tokens}
+              display={formatCompactCount(totals?.cache_creation_tokens || 0)}
+              exact={formatExactCount(totals?.cache_creation_tokens || 0)}
               loading={usageStatsLoading}
             />
           ) : null}
           {(totals?.reasoning_tokens || 0) > 0 ? (
-            <StatCard label="Reasoning" value={totals?.reasoning_tokens} loading={usageStatsLoading} />
+            <StatCard
+              label="Reasoning"
+              display={formatCompactCount(totals?.reasoning_tokens || 0)}
+              exact={formatExactCount(totals?.reasoning_tokens || 0)}
+              loading={usageStatsLoading}
+            />
           ) : null}
           <StatCard
             label="Estimated cost"
-            valueLabel={formatCostUsd(estimatedTotalCost)}
+            display={formatCostUsd(estimatedTotalCost)}
+            exact={formatCostExact(estimatedTotalCost)}
             loading={usageStatsLoading}
             emphasize
           />
@@ -1291,133 +1427,170 @@ export default function Usage() {
       />
 
       <Card shadow="sm" className="border border-gray-200 ring-1 ring-[#fde047]/25">
-        <div className="border-b border-gray-100 px-4 py-3 space-y-2">
+        <div className="border-b border-gray-100 px-4 py-3">
           <UsageDrillPath crumbs={drillCrumbs} levelLabel={levelHint} />
-          {showTruncation ? (
-            <p className="text-xs text-amber-700">
-              Showing the first 100 rows for this level. Narrow the date range or drill
-              further for complete detail.
-            </p>
-          ) : null}
         </div>
-        <CardBody className="p-0 overflow-x-auto max-h-[min(70vh,640px)] overflow-y-auto custom-scrollbar">
-          {tableLoading || breakdownStale ? (
-            <div className="flex justify-center py-12">
-              <Spinner />
-            </div>
-          ) : rows.length === 0 ? (
-            <div className="py-12 text-center text-sm text-gray-500">
-              No usage in this period for the current scope. Try 7d or 30d, or go back up a
-              level.
-            </div>
-          ) : (
-            <div
-              className={`relative transition-opacity ${
-                tableFetching ? 'opacity-60 pointer-events-none' : ''
-              }`}
-            >
-              {tableFetching ? (
-                <div className="absolute top-2 right-3 z-20">
-                  <Spinner size="sm" />
-                </div>
-              ) : null}
-            <table className="min-w-full text-sm">
-              <thead className="bg-gray-50 text-left text-xs uppercase text-gray-500 sticky top-0 z-10">
-                <tr>
-                  <th className="px-4 py-3 font-semibold">
-                    {drillColumnLabel(groupBy, showWorkspaceComposite)}
-                  </th>
-                  <th className="px-4 py-3 font-semibold text-right">LLM calls</th>
-                  <th className="px-4 py-3 font-semibold text-right">Input tokens</th>
-                  <th className="px-4 py-3 font-semibold text-right">Output tokens</th>
-                  <th className="px-4 py-3 font-semibold text-right">Total tokens</th>
-                  <th className="px-4 py-3 font-semibold text-right">Est. cost</th>
-                  <th className="px-4 py-3 font-semibold text-right">STT audio</th>
-                  <th className="px-4 py-3 font-semibold text-right">TTS chars</th>
-                  <th className="px-4 py-3 font-semibold text-right">Cache read</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {rows.map((row, idx) => {
-                  const drillable = isRowDrillable(row)
-                  const compositeHeadline =
-                    'rowKind' in row ? compositeRowHeadline(row) : null
-                  const rowTitle = tableRowLabel(groupBy, row, filterOptions)
-                  const showRowTitle =
-                    'rowKind' in row
-                      ? row.rowKind === 'workspace_resource' ||
-                        (compositeHeadline &&
-                          rowTitle.toLowerCase() !== compositeHeadline.toLowerCase())
-                      : true
-                  return (
-                    <tr
-                      key={idx}
-                      className={
-                        drillable
-                          ? 'hover:bg-[#fefce8]/60 cursor-pointer group'
-                          : 'hover:bg-gray-50'
-                      }
-                      onClick={() => drillable && handleRowDrill(row)}
-                    >
-                      <td className="px-4 py-3 text-gray-900 max-w-md">
-                        <span className="flex items-center gap-1 min-w-0">
-                          <span className="min-w-0">
-                            {'rowKind' in row ? (
-                              <span className="block text-[10px] font-semibold uppercase tracking-wide text-primary-600 mb-0.5">
-                                {compositeHeadline}
-                              </span>
-                            ) : null}
-                            {showRowTitle ? (
-                              <span className="truncate block font-medium">
-                                {rowTitle}
-                              </span>
-                            ) : !('rowKind' in row) ? (
-                              <span className="truncate block">{rowTitle}</span>
-                            ) : null}
-                            {'hint' in row && row.hint ? (
-                              <span className="text-xs text-gray-400 truncate block">
-                                {row.hint}
-                              </span>
-                            ) : null}
-                          </span>
-                          {drillable ? (
-                            <ChevronRight
-                              className="h-4 w-4 shrink-0 text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                            />
-                          ) : null}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-right tabular-nums">
-                        {formatNumber(row.call_count)}
-                      </td>
-                      <td className="px-4 py-3 text-right tabular-nums">
-                        {formatNumber(row.prompt_tokens)}
-                      </td>
-                      <td className="px-4 py-3 text-right tabular-nums">
-                        {formatNumber(row.completion_tokens)}
-                      </td>
-                      <td className="px-4 py-3 text-right tabular-nums font-medium">
-                        {formatNumber(row.total_tokens)}
-                      </td>
-                      <td className="px-4 py-3 text-right tabular-nums text-gray-700">
-                        {formatCostUsd(rowCostUsd(row))}
-                      </td>
-                      <td className="px-4 py-3 text-right tabular-nums text-gray-500">
-                        {row.audio_seconds ? formatAudio(row.audio_seconds) : '—'}
-                      </td>
-                      <td className="px-4 py-3 text-right tabular-nums text-gray-500">
-                        {row.tts_characters ? formatNumber(row.tts_characters) : '—'}
-                      </td>
-                      <td className="px-4 py-3 text-right tabular-nums text-gray-500">
-                        {formatNumber(row.cache_read_tokens)}
-                      </td>
+        <CardBody className="p-0">
+          <div
+            ref={tableScrollRef}
+            className="overflow-x-auto max-h-[min(70vh,640px)] overflow-y-auto custom-scrollbar"
+          >
+            {tableLoading || breakdownStale ? (
+              <div className="flex justify-center py-12">
+                <Spinner />
+              </div>
+            ) : rows.length === 0 && tablePage === 1 ? (
+              <div className="py-12 text-center text-sm text-gray-500">
+                No usage in this period for the current scope. Try 7d or 30d, or go back up a
+                level.
+              </div>
+            ) : (
+              <div
+                className={`relative transition-opacity ${tableFetching ? 'opacity-60 pointer-events-none' : ''
+                  }`}
+              >
+                {tableFetching ? (
+                  <div className="absolute top-2 right-3 z-20">
+                    <Spinner size="sm" />
+                  </div>
+                ) : null}
+                <table className="min-w-full text-sm">
+                  <thead className="bg-gray-50 text-left text-xs uppercase text-gray-500 sticky top-0 z-10">
+                    <tr>
+                      <th className="px-4 py-3 font-semibold">
+                        {drillColumnLabel(groupBy, showWorkspaceComposite)}
+                      </th>
+                      <th className="px-4 py-3 font-semibold text-right">LLM calls</th>
+                      <th className="px-4 py-3 font-semibold text-right">Input tokens</th>
+                      <th className="px-4 py-3 font-semibold text-right">Output tokens</th>
+                      <th className="px-4 py-3 font-semibold text-right">Total tokens</th>
+                      <th className="px-4 py-3 font-semibold text-right">Est. cost</th>
+                      <th className="px-4 py-3 font-semibold text-right">STT audio</th>
+                      <th className="px-4 py-3 font-semibold text-right">TTS chars</th>
+                      <th className="px-4 py-3 font-semibold text-right">Cache read</th>
                     </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-            </div>
-          )}
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {rows.map((row, idx) => {
+                      const drillable = isRowDrillable(row)
+                      const compositeHeadline =
+                        'rowKind' in row ? compositeRowHeadline(row) : null
+                      const rowTitle = tableRowLabel(groupBy, row, filterOptions)
+                      const showRowTitle =
+                        'rowKind' in row
+                          ? row.rowKind === 'workspace_resource' ||
+                          (compositeHeadline &&
+                            rowTitle.toLowerCase() !== compositeHeadline.toLowerCase())
+                          : true
+                      return (
+                        <tr
+                          key={idx}
+                          className={
+                            drillable
+                              ? 'hover:bg-[#fefce8]/60 cursor-pointer group'
+                              : 'hover:bg-gray-50'
+                          }
+                          onClick={() => drillable && handleRowDrill(row)}
+                        >
+                          <td className="px-4 py-3 text-gray-900 max-w-md">
+                            <span className="flex items-center gap-1 min-w-0">
+                              <span className="min-w-0">
+                                {'rowKind' in row ? (
+                                  <span className="block text-[10px] font-semibold uppercase tracking-wide text-primary-600 mb-0.5">
+                                    {compositeHeadline}
+                                  </span>
+                                ) : null}
+                                {showRowTitle ? (
+                                  <span className="truncate block font-medium">
+                                    {rowTitle}
+                                  </span>
+                                ) : !('rowKind' in row) ? (
+                                  <span className="truncate block">{rowTitle}</span>
+                                ) : null}
+                                {'hint' in row && row.hint ? (
+                                  <span className="text-xs text-gray-400 truncate block">
+                                    {row.hint}
+                                  </span>
+                                ) : null}
+                              </span>
+                              {drillable ? (
+                                <ChevronRight
+                                  className="h-4 w-4 shrink-0 text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                                />
+                              ) : null}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <UsageMetricValue
+                              display={formatCompactCount(row.call_count)}
+                              exact={formatExactCount(row.call_count)}
+                            />
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <UsageMetricValue
+                              display={formatCompactCount(row.prompt_tokens)}
+                              exact={formatExactCount(row.prompt_tokens)}
+                            />
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <UsageMetricValue
+                              display={formatCompactCount(row.completion_tokens)}
+                              exact={formatExactCount(row.completion_tokens)}
+                            />
+                          </td>
+                          <td className="px-4 py-3 text-right font-medium">
+                            <UsageMetricValue
+                              display={formatCompactCount(row.total_tokens)}
+                              exact={formatExactCount(row.total_tokens)}
+                            />
+                          </td>
+                          <td className="px-4 py-3 text-right text-gray-700">
+                            <UsageMetricValue
+                              display={formatCostUsd(rowCostUsd(row))}
+                              exact={formatCostExact(rowCostUsd(row))}
+                            />
+                          </td>
+                          <td className="px-4 py-3 text-right text-gray-500">
+                            {row.audio_seconds ? (
+                              <UsageMetricValue
+                                display={formatAudioDuration(row.audio_seconds)}
+                                exact={formatAudioExact(row.audio_seconds)}
+                              />
+                            ) : (
+                              '—'
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right text-gray-500">
+                            {row.tts_characters ? (
+                              <UsageMetricValue
+                                display={formatCompactCount(row.tts_characters)}
+                                exact={formatExactCount(row.tts_characters)}
+                              />
+                            ) : (
+                              '—'
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right text-gray-500">
+                            <UsageMetricValue
+                              display={formatCompactCount(row.cache_read_tokens)}
+                              exact={formatExactCount(row.cache_read_tokens)}
+                            />
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+                <UsageTablePager
+                  page={tablePage}
+                  hasNext={hasNextPage}
+                  disabled={tableFetching}
+                  onPrev={() => setTablePage((page) => Math.max(1, page - 1))}
+                  onNext={() => setTablePage((page) => page + 1)}
+                />
+              </div>
+            )}
+          </div>
         </CardBody>
       </Card>
 
@@ -1426,7 +1599,7 @@ export default function Usage() {
         onClose={() => setCostBreakdownOpen(false)}
         costs={totals?.costs}
         scopeLabel={scopeSubtitle}
-        formatCost={formatCostUsd}
+        formatCost={formatCostExact}
       />
     </div>
   )
@@ -1436,15 +1609,15 @@ const statCardClass = 'border border-gray-200 ring-1 ring-[#fde047]/25 shadow-sm
 
 function StatCard({
   label,
-  value,
-  valueLabel,
+  display,
+  exact,
   loading,
   emphasize = false,
   className = '',
 }: {
   label: string
-  value?: number
-  valueLabel?: string
+  display: string
+  exact: string
   loading?: boolean
   emphasize?: boolean
   className?: string
@@ -1457,13 +1630,53 @@ function StatCard({
       <CardBody className="p-3">
         <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{label}</p>
         <p
-          className={`mt-0.5 text-xl font-semibold tabular-nums ${
-            emphasize ? 'text-[#854d0e]' : 'text-gray-900'
-          }`}
+          className={`mt-0.5 text-xl font-semibold ${emphasize ? 'text-[#854d0e]' : 'text-gray-900'
+            }`}
         >
-          {loading ? '—' : valueLabel ?? formatNumber(value || 0)}
+          {loading ? '—' : <UsageMetricValue display={display} exact={exact} />}
         </p>
       </CardBody>
     </Card>
+  )
+}
+
+function UsageTablePager({
+  page,
+  hasNext,
+  disabled,
+  onPrev,
+  onNext,
+}: {
+  page: number
+  hasNext: boolean
+  disabled?: boolean
+  onPrev: () => void
+  onNext: () => void
+}) {
+  if (page <= 1 && !hasNext) return null
+  const buttonClass =
+    'inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40'
+  return (
+    <div className="flex items-center justify-between gap-3 border-t border-gray-100 px-4 py-3">
+      <button
+        type="button"
+        className={buttonClass}
+        disabled={disabled || page <= 1}
+        onClick={onPrev}
+      >
+        <ChevronLeft className="h-4 w-4" />
+        Previous
+      </button>
+      <span className="text-sm font-medium text-gray-500">Page {page}</span>
+      <button
+        type="button"
+        className={buttonClass}
+        disabled={disabled || !hasNext}
+        onClick={onNext}
+      >
+        Next
+        <ChevronRight className="h-4 w-4" />
+      </button>
+    </div>
   )
 }

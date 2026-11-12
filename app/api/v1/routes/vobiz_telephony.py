@@ -772,6 +772,7 @@ async def carrier_media_websocket(websocket: WebSocket):
                     caller_speaks_first=run_params.caller_speaks_first,
                     caller_opening_text=run_params.caller_opening_text,
                     persona_speaks_via_tts=run_params.persona_speaks_via_tts,
+                    enable_knowledge_base_tools=True,
                 )
             else:
                 if not context.google_api_key:

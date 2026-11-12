@@ -65,6 +65,10 @@ class _FakePipeline:
         self._ops.append(("exists", key))
         return self
 
+    def incr(self, key: str):
+        self._ops.append(("incr", key))
+        return self
+
     def execute(self):
         results = []
         for op in self._ops:
@@ -77,6 +81,10 @@ class _FakePipeline:
                 results.append(self._client.expire(op[1], op[2]))
             elif kind == "exists":
                 results.append(self._client.exists(op[1]))
+            elif kind == "incr":
+                results.append(self._client.incr(op[1]))
+            elif kind == "expire":
+                results.append(self._client.expire(op[1], op[2]))
         self._ops.clear()
         return results
 
@@ -154,6 +162,11 @@ class _FakeRedis:
 
     def expire(self, key: str, ttl: int) -> bool:
         return self.exists(key) == 1
+
+    def incr(self, key: str) -> int:
+        current = int(self.kv.get(key, "0") or 0) + 1
+        self.kv[key] = str(current)
+        return current
 
     def pipeline(self):
         return _FakePipeline(self)

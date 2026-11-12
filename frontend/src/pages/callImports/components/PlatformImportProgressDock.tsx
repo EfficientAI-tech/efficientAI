@@ -168,7 +168,7 @@ function ImportProgressCard({
             type="button"
             className="text-xs font-medium text-gray-700 hover:text-gray-900"
             onClick={() => {
-              void apiClient.pausePlatformImport(progress.call_import_id).then(refresh)
+              void apiClient.callImports.pausePlatformImport(progress.call_import_id).then(refresh)
             }}
           >
             Pause
@@ -179,7 +179,7 @@ function ImportProgressCard({
             type="button"
             className="text-xs font-medium text-primary-700 hover:text-primary-800"
             onClick={() => {
-              void apiClient.resumePlatformImport(progress.call_import_id).then(refresh)
+              void apiClient.callImports.resumePlatformImport(progress.call_import_id).then(refresh)
             }}
           >
             Resume
@@ -190,7 +190,7 @@ function ImportProgressCard({
             type="button"
             className="text-xs font-medium text-amber-700 hover:text-amber-800"
             onClick={() => {
-              void apiClient.retryPlatformDiscovery(progress.call_import_id).then(refresh)
+              void apiClient.callImports.retryPlatformDiscovery(progress.call_import_id).then(refresh)
             }}
           >
             Retry discovery
@@ -231,12 +231,15 @@ export default function PlatformImportProgressDock() {
   const progressQueries = useQueries({
     queries: watches.map((w) => ({
       queryKey: ['platform-import-progress', activeWorkspaceId, w.id],
-      queryFn: () => apiClient.getPlatformImportProgress(w.id),
+      queryFn: () => apiClient.callImports.getPlatformImportProgress(w.id),
       refetchInterval: (query: { state: { data?: PlatformImportProgress } }) => {
         if (typeof document !== 'undefined' && document.hidden) return false
         if (location.pathname === `/call-imports/${w.id}`) return false
-        return query.state.data?.is_active === false ? false : STATUS_POLL_MS
+        const progress = query.state.data
+        if (progress?.is_active !== true) return false
+        return STATUS_POLL_MS
       },
+      refetchOnWindowFocus: false,
       enabled: Boolean(w.id && activeWorkspaceId) && location.pathname !== `/call-imports/${w.id}`,
     })),
   })
@@ -315,7 +318,7 @@ export default function PlatformImportProgressDock() {
     })
   }, [watches, progressQueries, unpin])
 
-  const activeCount = items.filter((x) => x.progress?.is_active !== false).length
+  const activeCount = items.filter((x) => x.progress?.is_active === true).length
   const headlinePercent =
     items.length === 1 && items[0].progress
       ? items[0].progress.overall_percent

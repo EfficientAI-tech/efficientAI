@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 
 import redis
@@ -13,12 +13,13 @@ from app.config import settings
 from app.database import SessionLocal
 from app.models.database import CallImport, CallImportRow
 from app.workers.concurrency.diarization_dispatch import (
-    _try_dispatch_single_diarization_row,
     _MISSING_PARAMS_ERROR,
+    _persist_diarization_row_fields,
+    _try_dispatch_single_diarization_row,
     get_row_diarization_params,
     pop_row_diarization_params,
 )
-from app.workers.concurrency.eval_dispatch import DIARIZATION_QUEUE
+from app.workers.concurrency.eval_dispatch import IMPORTS_QUEUE
 from app.workers.config import celery_app
 from app.db_sharding.import_dispatch import (
     call_imports_with_pending_diarization as sharded_call_imports_diarize,
@@ -165,9 +166,15 @@ def _dispatch_batch_for_workspace(
         row, call_import = pending
         params = get_row_diarization_params(row.id)
         if not params:
-            row.diarised_transcript_status = "failed"
-            row.diarised_transcript_error = _MISSING_PARAMS_ERROR
-            db.commit()
+            _persist_diarization_row_fields(
+                db,
+                call_import,
+                row,
+                {
+                    "diarised_transcript_status": "failed",
+                    "diarised_transcript_error": _MISSING_PARAMS_ERROR,
+                },
+            )
             skips += 1
             cursor = (cursor + 1) % len(call_imports)
             continue
@@ -200,22 +207,42 @@ def schedule_fair_diarization_dispatch(
     countdown: int = 0,
 ) -> None:
     try:
+        # Lightweight scheduler: run on ``imports`` alongside
+        # ``bulk_diarize_call_import`` so environments that only attach a
+        # worker to ``imports`` (and not ``diarization``) still drain pending
+        # rows. Heavy work stays on ``diarization`` via
+        # ``transcribe_call_import_row``.
         dispatch_fair_diarization_rows_task.apply_async(
             kwargs={"max_workspace_turns": max_workspace_turns},
-            queue=DIARIZATION_QUEUE,
+            queue=IMPORTS_QUEUE,
             countdown=countdown,
         )
     except Exception as exc:
         logger.warning("Failed to schedule fair diarization dispatch: {}", exc)
 
 
-@celery_app.task(name="dispatch_fair_diarization_rows", queue=DIARIZATION_QUEUE)
+@celery_app.task(name="dispatch_fair_diarization_rows", queue=IMPORTS_QUEUE)
 def dispatch_fair_diarization_rows_task(max_workspace_turns: int = 1) -> dict:
     """Round-robin pending diarization rows across workspaces (batch K per turn)."""
     db = SessionLocal()
     try:
+        from app.workers.concurrency.dispatch_reconcile import (
+            reconcile_orphaned_diarization_dispatch_locks,
+        )
+
+        reconciled = reconcile_orphaned_diarization_dispatch_locks(db)
+        if reconciled:
+            logger.info(
+                "Reconciled {} orphaned diarisation dispatch lock(s)",
+                reconciled,
+            )
         workspaces = _workspaces_with_pending_diarization(db)
         if not workspaces:
+            logger.debug(
+                "dispatch_fair_diarization_rows: no pending diarisation rows "
+                "(pending+no task id) visible after reconcile={}",
+                reconciled,
+            )
             return {"status": "ok", "dispatched": 0, "workspaces": 0}
 
         batch_size = max(1, int(settings.DIARIZATION_FAIR_DISPATCH_BATCH_SIZE))
@@ -255,6 +282,42 @@ def dispatch_fair_diarization_rows_task(max_workspace_turns: int = 1) -> dict:
         raise
     finally:
         db.close()
+
+
+def drain_after_diarization_enqueue(
+    queued: int,
+    *,
+    log_context: str = "",
+) -> Optional[dict]:
+    """Run fair dispatch in-process right after rows are marked pending.
+
+    Beat may tick ``dispatch_fair_diarization_rows`` before bulk enqueue
+    commits; draining here makes Redis params and pending rows visible before
+    transcribe tasks are enqueued. ``schedule_fair_diarization_dispatch`` still
+    schedules an async backup tick.
+    """
+    if queued <= 0:
+        return None
+    turns = min(999, max(4, (queued + 74) // 75))
+    label = log_context or "diarization enqueue"
+    try:
+        async_result = dispatch_fair_diarization_rows_task.apply(
+            kwargs={"max_workspace_turns": turns}
+        )
+        if async_result.successful():
+            return async_result.result
+        logger.warning(
+            "{}: in-process dispatch drain failed: {}",
+            label,
+            async_result.result,
+        )
+    except Exception as exc:
+        logger.warning(
+            "{}: in-process dispatch drain crashed: {}",
+            label,
+            exc,
+        )
+    return None
 
 
 def finish_diarization_work_and_redispatch(celery_task_id: str) -> None:

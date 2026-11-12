@@ -10,6 +10,7 @@ from sqlalchemy import (
     Enum,
     event,
     Float,
+    Index,
     ForeignKey,
     Integer,
     JSON,
@@ -31,7 +32,7 @@ from app.models.enums import (
     IntegrationPlatform, ModelProvider, VoiceBundleType, TestAgentConversationStatus,
     MetricType, MetricCategory, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
     AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus, CronJobStatus,
-    PromptOptimizationStatus, CallImportStatus, CallImportRowStatus,
+    PromptOptimizationStatus, CallImportStatus, CallImportRowStatus, SimulationRunStatus,
 )
 
 def get_enum_values(enum_class):
@@ -266,6 +267,18 @@ class User(Base):
     api_keys = relationship("APIKey", back_populates="user")
     invitations = relationship("Invitation", back_populates="invited_user", foreign_keys="Invitation.invited_user_id")
     refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
+
+
+class UserAgentFavorite(Base):
+    """An agent's star, stored for one user. Other people in the workspace do not see it."""
+
+    __tablename__ = "user_agent_favorites"
+
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), primary_key=True)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    workspace_id = Column(UUID(as_uuid=True), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class PlatformAdmin(Base):
@@ -669,10 +682,195 @@ class Scenario(Base):
     name = Column(String, nullable=False)
     description = Column(String)
     required_info = Column(JSON)
+    # Tool-use expectations checked on simulation trials; see app/services/harbor/tool_checks.py
+    expected_tool_calls = Column(JSON, nullable=True)
     
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     created_by = Column(String)
+
+
+class MetricScenarioAssignment(Base):
+    """Many-to-many: metric scored only on linked scenarios (empty = golden / all)."""
+
+    __tablename__ = "metric_scenarios"
+
+    metric_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("metrics.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    scenario_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("scenarios.id", ondelete="CASCADE"),
+        primary_key=True,
+        index=True,
+    )
+
+
+class MetricAgentAssignment(Base):
+    """Many-to-many: metric scored only on linked agents (empty = golden / all)."""
+
+    __tablename__ = "metric_agents"
+
+    metric_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("metrics.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    agent_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        primary_key=True,
+        index=True,
+    )
+
+
+class KnowledgeBase(Base):
+    """Workspace document library for agent retrieval in simulation."""
+    __tablename__ = "knowledge_bases"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    embedding_provider = Column(String(64), nullable=False, default="openai")
+    embedding_model = Column(String(512), nullable=False, default="text-embedding-3-small")
+    embedding_credential_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("aiproviders.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    status = Column(String(32), nullable=False, default="active")
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_by = Column(String)
+
+
+class KnowledgeDocument(Base):
+    __tablename__ = "knowledge_documents"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    knowledge_base_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_bases.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    source_type = Column(String(32), nullable=False, default="file")
+    original_filename = Column(String(512), nullable=True)
+    blob_key = Column(String(1024), nullable=False)
+    content_type = Column(String(255), nullable=True)
+    byte_size = Column(BigInteger, nullable=True)
+    status = Column(String(32), nullable=False, default="pending")
+    error_text = Column(Text, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class KnowledgeChunk(Base):
+    __tablename__ = "knowledge_chunks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_documents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    chunk_index = Column(Integer, nullable=False)
+    text = Column(Text, nullable=False)
+    page_number = Column(Integer, nullable=True)
+    embedding_model = Column(String(512), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class ToolConnection(Base):
+    """An external tool source an agent can call: MCP server, HTTP tools or Postgres.
+
+    ``secrets`` is a Fernet-encrypted JSON object (headers, env vars, DSN); it is
+    never returned by the API. ``cached_tools`` is the tool list from the last
+    successful test, so building an agent's toolset needs no network round-trip.
+    """
+
+    __tablename__ = "tool_connections"
+    __table_args__ = (UniqueConstraint("workspace_id", "slug", name="uq_tool_connections_workspace_slug"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    name = Column(String(255), nullable=False)
+    # Prefix for this connection's tool names (``slack__search_messages``).
+    slug = Column(String(64), nullable=False)
+    connection_type = Column(String(32), nullable=False)  # mcp | http | postgres
+    preset = Column(String(64), nullable=True)  # slack | notion | gdrive | postgres | ...
+    config = Column(JSON, nullable=False, default=dict)
+    secrets = Column(Text, nullable=True)
+    # live | mock_writes | mock_all — how calls behave inside simulations.
+    simulation_mode = Column(String(16), nullable=False, default="mock_writes")
+    cached_tools = Column(JSON, nullable=True)
+    last_tested_at = Column(DateTime(timezone=True), nullable=True)
+    last_error = Column(Text, nullable=True)
+    created_by = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AgentToolConnection(Base):
+    """Tool connections attached to a production agent; ``enabled_tools`` NULL = all."""
+
+    __tablename__ = "agent_tool_connections"
+
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), primary_key=True)
+    tool_connection_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("tool_connections.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    workspace_id = Column(UUID(as_uuid=True), ForeignKey("workspaces.id", ondelete="RESTRICT"), nullable=False)
+    enabled_tools = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class AgentKnowledgeBase(Base):
+    __tablename__ = "agent_knowledge_bases"
+
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), primary_key=True)
+    knowledge_base_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_bases.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    # "production" = the agent under test; "test" = the simulated customer.
+    role = Column(String(16), primary_key=True, nullable=False, default="production")
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    created_at = Column(DateTime, server_default=func.now())
 
 
 # Enums moved to enums.py
@@ -1107,10 +1305,30 @@ class Metric(Base):
         Boolean, nullable=False, default=False, server_default="false"
     )
 
+    # How call-import evaluation scores this metric. ``llm`` is the default
+    # LLM judge; ``user_wer`` / ``user_cer`` are deterministic transcript
+    # agreement metrics (diarized reference vs production hypothesis).
+    scoring_method = Column(
+        String(32),
+        nullable=False,
+        default="llm",
+        server_default="llm",
+    )
+
     parent = relationship(
         "Metric",
         remote_side=[id],
         backref="children",
+    )
+    scoped_scenarios = relationship(
+        "Scenario",
+        secondary="metric_scenarios",
+        lazy="selectin",
+    )
+    scoped_agents = relationship(
+        "Agent",
+        secondary="metric_agents",
+        lazy="selectin",
     )
 
     # When true, the LLM-judge is asked to also return a short free-form
@@ -1196,8 +1414,77 @@ class EvaluatorResult(Base):
         nullable=True,
         index=True,
     )
-    
+
+    # Harbor simulation run trial (NULL for regular evaluator runs).
+    simulation_run_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("simulation_runs.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    harbor_trial_name = Column(String(255), nullable=True)
+    attempt_index = Column(Integer, nullable=True)
+    # Aggregate normalized [0, 1] reward reported to Harbor and pass/fail vs run threshold.
+    reward = Column(Float, nullable=True)
+    passed = Column(Boolean, nullable=True)
+
     # Metadata
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_by = Column(String, nullable=True)
+
+
+class SimulationRun(Base):
+    """Harbor job: every scenario × persona × attempt simulated against one production agent."""
+
+    __tablename__ = "simulation_runs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    run_id = Column(String(6), unique=True, nullable=False, index=True)  # 6-digit ID
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String, nullable=True)
+
+    scenario_ids = Column(JSON, nullable=False, default=list)
+    persona_ids = Column(JSON, nullable=False, default=list)
+    metric_ids = Column(JSON, nullable=True)  # NULL = all enabled agent metrics
+    metric_success_criteria = Column(JSON, nullable=True)  # per-metric pass rules for this run
+
+    n_attempts = Column(Integer, nullable=False, default=1)
+    n_concurrent = Column(Integer, nullable=False, default=4)
+    pass_threshold = Column(Float, nullable=False, default=0.7)
+
+    # Optional LLM overrides; NULL = agent's main / test LLM.
+    production_llm_provider = Column(String(64), nullable=True)
+    production_llm_model = Column(String(255), nullable=True)
+    test_llm_provider = Column(String(64), nullable=True)
+    test_llm_model = Column(String(255), nullable=True)
+    # {"production": {...}, "test": {...}} resolved at creation; see app/services/testing/simulation_llms.py
+    resolved_llms = Column(JSON, nullable=True)
+
+    status = Column(String(20), nullable=False, default=SimulationRunStatus.QUEUED.value, index=True)
+    expected_trials = Column(Integer, nullable=False, default=0)
+    completed_trials = Column(Integer, nullable=False, default=0)
+    failed_trials = Column(Integer, nullable=False, default=0)
+    summary = Column(JSON, nullable=True)
+    error_message = Column(Text, nullable=True)
+    # Failure analysis of trials that missed their success rules; see app/services/harbor/failure_analysis.py
+    metric_clusters = Column(JSON, nullable=True)  # EvaluationMetricClustersState
+    prompt_improvements = Column(JSON, nullable=True)  # EvaluationPromptImprovementsState
+
+    harbor_job_name = Column(String(255), nullable=True)
+    artifacts_s3_key = Column(String, nullable=True)
+    celery_task_id = Column(String, nullable=True)
+    cancel_requested = Column(Boolean, nullable=False, default=False, server_default="false")
+
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     created_by = Column(String, nullable=True)
@@ -2329,6 +2616,9 @@ class CallImport(Base):
     # preserved per row (keyed by the CSV header in ``raw_columns``) and
     # surface in the evaluation export under the uploader-chosen name.
     custom_column_mapping = Column(JSON, nullable=False, default=dict)
+    # Optional per-import overrides for speaker labels in production
+    # transcripts (e.g. ``{"user": ["Member"], "agent": ["IVR"]}``).
+    speaker_aliases = Column(JSON, nullable=True)
 
     total_rows = Column(Integer, nullable=False, default=0)
     completed_rows = Column(Integer, nullable=False, default=0)
@@ -2536,6 +2826,10 @@ class CallImportRow(Base):
     # Evaluations can be configured to score against either column
     # (see ``CallImportEvaluation.transcript_source``).
     diarised_transcript = Column(Text, nullable=True)
+    # Raw STT text in the spoken script. Set only when an evaluation that
+    # selected User WER / User CER ran ``stt_llm`` diarisation. Standalone
+    # diarisation leaves this null.
+    diarised_native_transcript = Column(Text, nullable=True)
     transcript_char_length = query_expression()
     diarised_transcript_char_length = query_expression()
     # Provider/model the diarisation worker used. Surfaced in the UI
@@ -2615,6 +2909,7 @@ class CallImportRow(Base):
     recording_s3_key = Column(String(1024), nullable=True)
     recording_content_type = Column(String(128), nullable=True)
     recording_size_bytes = Column(Integer, nullable=True)
+    recording_duration_seconds = Column(Integer, nullable=True)
 
     error_message = Column(Text, nullable=True)
     attempts = Column(Integer, nullable=False, default=0)
@@ -2871,6 +3166,24 @@ class CallImportEvaluation(Base):
     # baseline evaluation id + completed row counts.
     period_delta_explanations = Column(JSON, nullable=True)
 
+    cached_metric_aggregates = Column(JSON, nullable=True)
+    cached_metric_aggregates_at_count = Column(Integer, nullable=True)
+
+    # ISO-week period derived from completed rows' recording_date on the
+    # parent import. Refreshed whenever ``report_period_at_count`` !=
+    # ``completed_rows`` (same watermark as aggregate cache).
+    report_period_start = Column(Date, nullable=True, index=True)
+    report_period_end = Column(Date, nullable=True)
+    report_period_label = Column(String(64), nullable=True)
+    report_period_display = Column(String(128), nullable=True)
+    report_period_at_count = Column(Integer, nullable=True)
+
+    # Numeric ``period_deltas`` keyed by baseline id, row-count watermark,
+    # and failure-policy version (same key shape as
+    # ``period_delta_explanations``). Avoids rescanning rows on every
+    # Visualizations tab load.
+    cached_period_deltas = Column(JSON, nullable=True)
+
     status = Column(String(20), nullable=False, default="pending", index=True)
 
     total_rows = Column(Integer, nullable=False, default=0)
@@ -2880,6 +3193,16 @@ class CallImportEvaluation(Base):
     # on ``call_import.evaluation_completed`` for this evaluation run.
     billed_completed_rows = Column(
         Integer, nullable=False, default=0, server_default="0"
+    )
+    # Redis-buffered progress counters (``eval_progress_buffer``). ``gen`` is
+    # bumped by every fenced shard recount; flushes carrying an older gen are
+    # ignored. ``flush_seq`` is the last applied flush, so re-sending the same
+    # pending batch is a no-op.
+    progress_counter_gen = Column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    progress_flush_seq = Column(
+        BigInteger, nullable=False, default=0, server_default="0"
     )
     error_message = Column(Text, nullable=True)
     celery_group_id = Column(String(255), nullable=True)
@@ -2906,6 +3229,11 @@ class CallImportEvaluationRow(Base):
     __table_args__ = (
         UniqueConstraint(
             "evaluation_id", "call_import_row_id", name="uq_call_import_evaluation_row"
+        ),
+        Index(
+            "ix_call_import_evaluation_rows_evaluation_status",
+            "evaluation_id",
+            "status",
         ),
     )
 
@@ -3147,6 +3475,41 @@ class CallImportEvaluationPdfReport(Base):
     created_by = Column(String, nullable=True)
     created_by_user_id = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class EvaluationAnalysisBatch(Base):
+    """Durable checkpoint row for paged evaluation analysis (insights / clusters / prompts)."""
+
+    __tablename__ = "evaluation_analysis_batches"
+    __table_args__ = (
+        UniqueConstraint(
+            "evaluation_id",
+            "job_kind",
+            "job_run_id",
+            "batch_index",
+            name="uq_evaluation_analysis_batch",
+        ),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    evaluation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_import_evaluations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    job_kind = Column(String(32), nullable=False)
+    job_run_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    batch_index = Column(Integer, nullable=False)
+    cursor_row_index = Column(Integer, nullable=True)
+    cursor_evaluation_row_id = Column(UUID(as_uuid=True), nullable=True)
+    transcript_source = Column(String(16), nullable=True)
+    status = Column(String(32), nullable=False, default="completed")
+    payload = Column(JSONB, nullable=False, default=dict, server_default="{}")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class CallImportEvaluationExport(Base):
@@ -3462,3 +3825,20 @@ class LLMUsageDaily(Base):
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+# Bump the Redis settings version when an evaluation's worker-visible settings
+# change, so eval workers drop their cached copy (see eval_settings_version).
+from app.services.call_imports.eval_settings_version import (  # noqa: E402
+    register_settings_version_hooks as _register_eval_settings_hooks,
+)
+
+_register_eval_settings_hooks()
+
+# Bump the Redis LLM-config version when an org's credentials or gateway
+# settings change, so cached call-path resolutions refresh.
+from app.services.ai.llm_credential_version import (  # noqa: E402
+    register_llm_config_version_hooks as _register_llm_config_hooks,
+)
+
+_register_llm_config_hooks()

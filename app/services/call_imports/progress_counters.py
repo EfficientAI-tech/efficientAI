@@ -164,14 +164,60 @@ def clear_eval_progress_redis(evaluation_id: UUID | str) -> None:
         logger.debug("eval progress redis clear skipped: {}", exc)
 
 
+_TERMINAL_EVAL_STATUSES = frozenset({"completed", "failed", "partial"})
+
+
+def _catalog_fence(evaluation) -> tuple[int, int]:
+    try:
+        gen = int(getattr(evaluation, "progress_counter_gen", 0) or 0)
+        seq = int(getattr(evaluation, "progress_flush_seq", 0) or 0)
+    except Exception:  # noqa: BLE001 - detached/deferred column
+        return 0, 0
+    return gen, seq
+
+
 def merge_eval_counters_for_ui(
     evaluation,
 ) -> tuple[int, int]:
-    """Catalog counters plus unflushed Redis deltas for progress display."""
+    """Catalog counters plus unflushed Redis deltas for progress display.
+
+    Adds the legacy ``eval:progress`` deltas and the buffered
+    ``eval:ctr:{id}`` deltas that the catalog has not applied yet (the pending
+    slot only while its seq is ahead of the catalog). Clamped to
+    ``[0, total_rows]``.
+    """
     completed = int(getattr(evaluation, "completed_rows", 0) or 0)
     failed = int(getattr(evaluation, "failed_rows", 0) or 0)
     rc, rf = read_eval_progress(evaluation.id)
-    return completed + rc, failed + rf
+    completed += rc
+    failed += rf
+
+    status = str(getattr(evaluation, "status", "") or "").strip().lower()
+    if status not in _TERMINAL_EVAL_STATUSES:
+        from app.services.call_imports.eval_progress_buffer import (
+            read_buffered,
+            unapplied_deltas,
+        )
+
+        catalog_gen, catalog_seq = _catalog_fence(evaluation)
+        bc, bf = unapplied_deltas(
+            read_buffered(evaluation.id),
+            catalog_gen=catalog_gen,
+            catalog_seq=catalog_seq,
+        )
+        completed += bc
+        failed += bf
+
+    completed = max(0, completed)
+    failed = max(0, failed)
+    try:
+        total = int(getattr(evaluation, "total_rows", 0) or 0)
+    except (TypeError, ValueError):
+        total = 0
+    if total > 0:
+        completed = min(completed, total)
+        failed = min(failed, total)
+    return completed, failed
 
 
 def read_import_progress(call_import_id: UUID | str) -> tuple[int, int]:
@@ -195,11 +241,37 @@ def merge_import_counters_for_ui(call_import) -> tuple[int, int]:
     return completed + rc, failed + rf
 
 
+def apply_import_counter_deltas_to_catalog(
+    db: Session,
+    call_import_id: UUID | str,
+    *,
+    completed_delta: int = 0,
+    failed_delta: int = 0,
+) -> None:
+    if not completed_delta and not failed_delta:
+        return
+    from sqlalchemy import update
+
+    from app.models.database import CallImport
+
+    cid = call_import_id if isinstance(call_import_id, UUID) else UUID(str(call_import_id))
+    db.execute(
+        update(CallImport)
+        .where(CallImport.id == cid)
+        .values(
+            completed_rows=CallImport.completed_rows + completed_delta,
+            failed_rows=CallImport.failed_rows + failed_delta,
+        )
+    )
+    db.flush()
+
+
 def record_import_row_status_transition(
     call_import_id: UUID | str,
     *,
     previous_status: str,
     new_status: str,
+    db: Session | None = None,
 ) -> None:
     from app.workers.tasks.evaluate_call_import_row_core import (
         counter_deltas_for_status_transition,
@@ -213,12 +285,31 @@ def record_import_row_status_transition(
         _norm(previous_status),
         _norm(new_status),
     )
-    if completed_delta or failed_delta:
-        record_import_row_terminal(
-            call_import_id,
-            completed_delta=completed_delta,
-            failed_delta=failed_delta,
-        )
+    if not completed_delta and not failed_delta:
+        return
+    try:
+        client = _client()
+        if completed_delta:
+            client.hincrby(
+                "import:progress",
+                _import_completed_key(call_import_id),
+                completed_delta,
+            )
+        if failed_delta:
+            client.hincrby(
+                "import:progress",
+                _import_failed_key(call_import_id),
+                failed_delta,
+            )
+    except redis.RedisError as exc:
+        logger.debug("import progress counter skipped: {}", exc)
+        if db is not None:
+            apply_import_counter_deltas_to_catalog(
+                db,
+                call_import_id,
+                completed_delta=completed_delta,
+                failed_delta=failed_delta,
+            )
 
 
 def flush_import_progress_to_catalog(db: Session, call_import_id: UUID) -> None:

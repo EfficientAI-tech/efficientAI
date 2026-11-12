@@ -46,6 +46,80 @@ _TASKS_PACKAGE_DIR = str(
 )
 
 
+_EVAL_BUFFER_TEST_REDIS_URL = os.getenv(
+    "EVAL_BUFFER_TEST_REDIS_URL", "redis://localhost:6379/15"
+)
+_eval_buffer_test_client_cache: list = []
+
+
+def _eval_buffer_test_client():
+    """Redis db 15 when reachable, else a client that fails fast.
+
+    The unreachable client makes the worker hot path take its Redis-down
+    fallback (direct catalog write), which is a supported production path.
+    """
+    if _eval_buffer_test_client_cache:
+        return _eval_buffer_test_client_cache[0]
+    import redis
+
+    client = redis.from_url(
+        _EVAL_BUFFER_TEST_REDIS_URL,
+        decode_responses=True,
+        socket_connect_timeout=0.2,
+    )
+    try:
+        client.ping()
+    except redis.RedisError:
+        from redis.retry import Retry
+        from redis.backoff import NoBackoff
+
+        client = redis.Redis(
+            host="127.0.0.1",
+            port=1,
+            decode_responses=True,
+            socket_connect_timeout=0.05,
+            retry=Retry(NoBackoff(), 0),
+        )
+    _eval_buffer_test_client_cache.append(client)
+    return client
+
+
+@pytest.fixture(autouse=True)
+def isolate_eval_progress_buffer(monkeypatch):
+    """Keep buffered eval counters off the dev Redis and the Celery broker.
+
+    Yields the evaluation ids the code asked to finalize; tests settle the
+    parent by calling ``finalize_evaluation_progress`` themselves.
+    """
+    import redis
+
+    from app.services.call_imports import eval_progress_buffer as buf
+
+    client = _eval_buffer_test_client()
+    try:
+        client.flushdb()
+    except redis.RedisError:
+        pass
+    monkeypatch.setattr(buf, "_redis", client)
+    monkeypatch.setattr(buf, "_scripts", {})
+    # Per-process catalog caches (eval settings, LLM credentials/gateway
+    # settings) are keyed by Redis versions that restart at 0 every test, so
+    # entries must not survive from one test to the next.
+    from app.services.ai.llm_credential_version import clear_version_memo
+    from app.workers.catalog_cache import clear_worker_catalog_cache
+
+    clear_worker_catalog_cache()
+    clear_version_memo()
+    finalize_requests: list[str] = []
+
+    def _record_finalize(evaluation_id):
+        finalize_requests.append(str(evaluation_id))
+        return True
+
+    monkeypatch.setattr(buf, "request_finalize", _record_finalize)
+    yield finalize_requests
+
+
 @pytest.fixture(autouse=True)
 def mock_flexprice_locally(monkeypatch, request):
     """Stub all Flexprice billing I/O; only test_flexprice_service.py uses a mocked SDK."""
@@ -767,7 +841,9 @@ def _wire_bulk_ops_stubs(db_session):
         types.SimpleNamespace(delay=_sync_mapped_materialize_delay)
     )
 
-    def _sync_import_materialize_delay(call_import_id, organization_id, workspace_id):
+    def _sync_import_materialize_delay(
+        call_import_id, organization_id, workspace_id, **_kwargs
+    ):
         from uuid import UUID
 
         from app.services.call_imports.bulk_ops import execute_call_import_materialization
@@ -807,6 +883,8 @@ def _wire_bulk_ops_stubs(db_session):
             ),
             include_completed=bool(payload_dict.get("include_completed", False)),
             transcribe_overwrite=bool(payload_dict.get("transcribe_overwrite", False)),
+            retry_search_term=str(payload_dict.get("retry_search_term") or ""),
+            retry_status_filter=payload_dict.get("retry_status_filter"),
         )
         return types.SimpleNamespace(id="fake-sync-retry-task")
 
@@ -947,6 +1025,7 @@ def _build_session_api_app():
         integrations,
         manual_evaluations,
         metrics,
+        scenario_metrics,
         model_config,
         observability,
         personas,
@@ -957,8 +1036,10 @@ def _build_session_api_app():
         results,
         scenarios,
         settings,
+        simulation_runs,
         telephony,
         test_agents,
+        tool_connections,
         voice_agent,
         voice_playground,
         voicebundles,
@@ -983,12 +1064,14 @@ def _build_session_api_app():
     app.include_router(evaluator_suites.router, prefix="/api/v1")
     app.include_router(personas.router, prefix="/api/v1")
     app.include_router(scenarios.router, prefix="/api/v1")
+    app.include_router(tool_connections.router, prefix="/api/v1")
     app.include_router(settings.router, prefix="/api/v1")
     app.include_router(iam.router, prefix="/api/v1")
     app.include_router(audio.router, prefix="/api/v1")
     app.include_router(integrations.router, prefix="/api/v1")
     app.include_router(aiproviders.router, prefix="/api/v1")
     app.include_router(llm_gateway.router, prefix="/api/v1")
+    app.include_router(scenario_metrics.router, prefix="/api/v1")
     app.include_router(metrics.router, prefix="/api/v1")
     app.include_router(evaluator_result_metric_clusters.router, prefix="/api/v1")
     app.include_router(evaluator_results.router, prefix="/api/v1")
@@ -1019,6 +1102,7 @@ def _build_session_api_app():
     app.include_router(workspace_iam.router, prefix="/api/v1")
     app.include_router(platform_admin.router, prefix="/api/v1")
     app.include_router(metric_studio.router, prefix="/api/v1")
+    app.include_router(simulation_runs.router, prefix="/api/v1")
     # Enterprise route dependencies call app.dependencies.is_feature_enabled at runtime.
     # Force-enable it for API tests so tests remain focused on route behavior.
     app_dependencies.is_feature_enabled = lambda *_args, **_kwargs: True

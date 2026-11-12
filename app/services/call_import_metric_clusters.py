@@ -37,6 +37,7 @@ from app.services.metric_clusters_rca_summary import (
     compute_rca_summary,
     enrich_metric_cluster_groups,
 )
+from app.services.evaluation_analysis_checkpoints import job_heartbeat_is_stale
 from app.services.metric_cluster_rows import (
     MetricClusterSourceRow,
     call_import_pair_to_cluster_row,
@@ -58,6 +59,10 @@ from app.services.call_import_user_insights import (
 from app.services.reporting.call_import_evaluation_pdf_report import (
     call_import_evaluation_pdf_report_service,
 )
+from app.services.import_eval_llm_output_budgets import (
+    IMPORT_EVAL_LLM_OUTPUT_FIRST,
+    IMPORT_EVAL_LLM_OUTPUT_RETRY,
+)
 
 MAX_LLM_CALLS_DEFAULT = 200
 DISCOVERY_CALLS = 1
@@ -66,10 +71,10 @@ METRIC_CLUSTERS_CANCELLED_BY_USER_ERROR = (
 )
 ROW_TRANSCRIPT_CHAR_CAP = 3000
 RATIONALE_CHAR_CAP = 600
-EXTRACTION_MAX_TOKENS = 8000
-CLUSTER_SYNTHESIS_MAX_TOKENS = 8000
-DISCOVERY_MAX_TOKENS = 6000
-CLUSTER_TOKEN_CEILING = 16000
+EXTRACTION_MAX_TOKENS = IMPORT_EVAL_LLM_OUTPUT_FIRST
+CLUSTER_SYNTHESIS_MAX_TOKENS = IMPORT_EVAL_LLM_OUTPUT_FIRST
+DISCOVERY_MAX_TOKENS = IMPORT_EVAL_LLM_OUTPUT_FIRST
+CLUSTER_TOKEN_CEILING = IMPORT_EVAL_LLM_OUTPUT_RETRY
 CLUSTER_CALL_TIMEOUT_SECONDS = 180
 # GLM-5.3 rejects reasoning_effort="none". A small thinking budget leaves
 # the rest of max_tokens for the JSON answer.
@@ -104,6 +109,7 @@ def build_metric_cluster_progress(
         payload["current_metric_name"] = current_metric_name
     return payload
 CancelCheck = Callable[[], bool]
+FailurePredicate = Callable[[MetricClusterSourceRow, Metric], bool]
 
 
 def metric_clusters_raw_is_cancelled(raw: Any) -> bool:
@@ -203,6 +209,18 @@ def _metric_is_quality(metric: Metric) -> bool:
     if (getattr(metric, "metric_category", "quality") or "quality") == "user_insight":
         return False
     return not call_import_evaluation_pdf_report_service._is_user_insight_metric(metric)
+
+
+def _clusterable_metrics(
+    metrics: Sequence[Metric],
+    failure_predicate: Optional[FailurePredicate],
+) -> List[Metric]:
+    """Metrics to cluster: quality metrics, or every supplied metric when the
+    caller's ``failure_predicate`` decides which ones failed (simulation runs
+    gate on success rules that may target any metric category)."""
+    if failure_predicate is not None:
+        return list(metrics)
+    return [m for m in metrics if _metric_is_quality(m)]
 
 
 def _normalize_gap_label(raw: Any) -> MetricClusterGapLabel:
@@ -349,7 +367,9 @@ def _build_flagged_row_payload(
 def _build_flagged_row_payload_from_source(
     source_row: MetricClusterSourceRow,
     metric: Metric,
-    policy: MetricFailurePolicy,
+    policy: Optional[MetricFailurePolicy],
+    *,
+    failure_predicate: Optional[FailurePredicate] = None,
 ) -> Optional[Dict[str, Any]]:
     scores = source_row.metric_scores if isinstance(source_row.metric_scores, dict) else {}
     entry = scores.get(str(metric.id))
@@ -360,7 +380,10 @@ def _build_flagged_row_payload_from_source(
     if isinstance(entry, dict) and (entry.get("skipped") or entry.get("error")):
         return None
 
-    if not is_metric_failure_from_scores(scores, metric, policy):
+    if failure_predicate is not None:
+        if not failure_predicate(source_row, metric):
+            return None
+    elif policy is None or not is_metric_failure_from_scores(scores, metric, policy):
         return None
 
     value = _score_value(entry, metric) if isinstance(entry, dict) else None
@@ -449,11 +472,10 @@ def _cluster_llm_attempts(model: str, max_tokens: int) -> List[Dict[str, Any]]:
             min(2048, max(CLUSTER_THINKING_BUDGET_TOKENS, max_tokens // 4)),
         )
         attempts: List[Dict[str, Any]] = []
-        for idx, thinking_budget in enumerate(thinking_budgets):
-            token_budget = min(max_tokens, 4096) if idx == 0 else max_tokens
+        for thinking_budget in thinking_budgets:
             attempts.append(
                 {
-                    "max_tokens": token_budget,
+                    "max_tokens": max_tokens,
                     "llm_config": {"timeout": timeout},
                     "completion_extra": {
                         "thinking": {
@@ -464,7 +486,7 @@ def _cluster_llm_attempts(model: str, max_tokens: int) -> List[Dict[str, Any]]:
                 }
             )
         return attempts
-    retry_budget = min(CLUSTER_TOKEN_CEILING, max(max_tokens * 2, 8000))
+    retry_budget = min(CLUSTER_TOKEN_CEILING, max_tokens * 2)
     budgets = [max_tokens] if retry_budget <= max_tokens else [max_tokens, retry_budget]
     return [
         {"max_tokens": budget, "llm_config": {"timeout": timeout}}
@@ -481,6 +503,7 @@ def _call_cluster_llm(
     *,
     temperature: float,
     max_tokens: int,
+    credential_id: Optional[UUID] = None,
 ) -> str:
     """Call the cluster model. Cap reasoning so the JSON is not cut off."""
     from app.services.ai.llm_service import llm_service
@@ -510,6 +533,7 @@ def _call_cluster_llm(
                 max_tokens=token_budget,
                 llm_config=config,
                 completion_extra=extra,
+                credential_id=credential_id,
             )
 
         try:
@@ -557,6 +581,8 @@ def _run_extraction(
     model: str,
     metric_name: str,
     batch: Sequence[Dict[str, Any]],
+    *,
+    credential_id: Optional[UUID] = None,
 ) -> List[Dict[str, Any]]:
     if not batch:
         return []
@@ -582,6 +608,7 @@ def _run_extraction(
         ],
         temperature=0.3,
         max_tokens=EXTRACTION_MAX_TOKENS,
+        credential_id=credential_id,
     )
     parsed = _parse_json_object(text)
     rows_raw = parsed.get("rows")
@@ -696,6 +723,7 @@ def _synthesize_metric_clusters(
     signature_counts: Dict[str, int],
     sample_rows: Sequence[Dict[str, Any]],
     flagged_count: int,
+    credential_id: Optional[UUID] = None,
 ) -> List[MetricCluster]:
     if not signature_counts:
         return []
@@ -719,6 +747,7 @@ def _synthesize_metric_clusters(
         ],
         temperature=0.25,
         max_tokens=CLUSTER_SYNTHESIS_MAX_TOKENS,
+        credential_id=credential_id,
     )
     parsed = _parse_json_object(text)
     clusters_raw = parsed.get("clusters")
@@ -824,6 +853,7 @@ def _run_discovery(
     sample_payloads: Sequence[Dict[str, Any]],
     *,
     total_flagged: int,
+    credential_id: Optional[UUID] = None,
 ) -> List[DiscoveredProblemCluster]:
     if not sample_payloads or total_flagged <= 0:
         return []
@@ -845,6 +875,7 @@ def _run_discovery(
         ],
         temperature=0.35,
         max_tokens=DISCOVERY_MAX_TOKENS,
+        credential_id=credential_id,
     )
     parsed = _parse_json_object(text)
     discovered_raw = parsed.get("discovered")
@@ -911,10 +942,14 @@ def estimate_metric_clusters_llm_calls_for_source_rows(
     policies: Dict[str, MetricFailurePolicy],
     *,
     max_llm_calls: Optional[int] = None,
+    failure_predicate: Optional[FailurePredicate] = None,
 ) -> Tuple[int, int]:
-    """Return ``(flagged_metric_count, total_estimated_llm_calls)``."""
+    """Return ``(flagged_metric_count, total_estimated_llm_calls)``.
+
+    ``failure_predicate`` replaces the per-metric failure policies when given.
+    """
     llm_budget = normalize_max_llm_calls(max_llm_calls)
-    quality_metrics = [m for m in metrics if _metric_is_quality(m)]
+    quality_metrics = _clusterable_metrics(metrics, failure_predicate)
     flagged_metric_count = 0
     extraction_calls = 0
 
@@ -922,13 +957,17 @@ def estimate_metric_clusters_llm_calls_for_source_rows(
 
     for metric in quality_metrics:
         policy = policies.get(str(metric.id))
-        if policy is None or not policy_has_failure_criteria(policy, metric):
+        if failure_predicate is None and (
+            policy is None or not policy_has_failure_criteria(policy, metric)
+        ):
             continue
         flagged_count = 0
         for source_row in source_rows:
             if source_row.status != "completed":
                 continue
-            if _build_flagged_row_payload_from_source(source_row, metric, policy):
+            if _build_flagged_row_payload_from_source(
+                source_row, metric, policy, failure_predicate=failure_predicate
+            ):
                 flagged_count += 1
         if flagged_count <= 0:
             continue
@@ -959,10 +998,16 @@ def generate_metric_clusters_for_source_rows(
     on_progress: Optional[ProgressCallback] = None,
     max_llm_calls: Optional[int] = None,
     is_cancelled: Optional[CancelCheck] = None,
+    failure_predicate: Optional[FailurePredicate] = None,
+    credential_id: Optional[UUID] = None,
 ) -> EvaluationMetricClustersState:
-    """Run per-metric clustering + proactive discovery for internal diagnostics."""
+    """Run per-metric clustering + proactive discovery for internal diagnostics.
+
+    ``failure_predicate`` replaces the per-metric failure policies when given
+    (e.g. simulation runs flag metrics that missed their success rule).
+    """
     llm_budget = normalize_max_llm_calls(max_llm_calls)
-    quality_metrics = [m for m in metrics if _metric_is_quality(m)]
+    quality_metrics = _clusterable_metrics(metrics, failure_predicate)
     selected_row_ids = _selected_evaluation_row_ids_from_raw(metric_clusters_raw)
     stored_policies, policy_source = policies_from_evaluation_raw(metric_clusters_raw)
     failure_policies = policies or stored_policies
@@ -990,6 +1035,7 @@ def generate_metric_clusters_for_source_rows(
         source_rows,
         policies,
         max_llm_calls=llm_budget,
+        failure_predicate=failure_predicate,
     )
     if flagged_metric_count <= 0:
         return EvaluationMetricClustersState(
@@ -1037,13 +1083,17 @@ def generate_metric_clusters_for_source_rows(
         if cancelled_state is not None:
             return cancelled_state
         policy = policies.get(str(metric.id))
-        if policy is None or not policy_has_failure_criteria(policy, metric):
+        if failure_predicate is None and (
+            policy is None or not policy_has_failure_criteria(policy, metric)
+        ):
             continue
         flagged_payloads: List[Dict[str, Any]] = []
         for source_row in source_rows:
             if source_row.status != "completed":
                 continue
-            payload = _build_flagged_row_payload_from_source(source_row, metric, policy)
+            payload = _build_flagged_row_payload_from_source(
+                source_row, metric, policy, failure_predicate=failure_predicate
+            )
             if payload:
                 flagged_payloads.append(payload)
                 all_flagged_samples.append(payload)
@@ -1090,6 +1140,7 @@ def generate_metric_clusters_for_source_rows(
                     model,
                     metric.name,
                     batch,
+                    credential_id=credential_id,
                 )
                 extractions.extend(extracted)
             except ClusterOutputTruncated:
@@ -1134,6 +1185,7 @@ def generate_metric_clusters_for_source_rows(
                 signature_counts=signature_counts,
                 sample_rows=extractions,
                 flagged_count=flagged_count,
+                credential_id=credential_id,
             )
         except ClusterOutputTruncated:
             raise
@@ -1186,6 +1238,7 @@ def generate_metric_clusters_for_source_rows(
             model,
             all_flagged_samples,
             total_flagged=max(total_flagged, 1),
+            credential_id=credential_id,
         )
     except ClusterOutputTruncated:
         raise
@@ -1338,16 +1391,12 @@ def metric_clusters_state_from_raw(
     if isinstance(progress_raw, dict):
         progress = {}
         for key, value in progress_raw.items():
-            if key == "current_metric_name" and isinstance(value, str):
-                progress[key] = value
-            elif isinstance(value, (int, float)):
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
                 progress[key] = int(value)
-            elif isinstance(value, str) and key not in progress:
+            elif isinstance(value, str):
                 progress[key] = value
-        if "completed_llm_calls" not in progress:
-            progress["completed_llm_calls"] = 0
-        if "total_llm_calls" not in progress:
-            progress["total_llm_calls"] = 0
+        progress.setdefault("completed_llm_calls", 0)
+        progress.setdefault("total_llm_calls", 0)
 
     rca_summary = None
     rca_raw = raw.get("rca_summary")
@@ -1390,6 +1439,7 @@ def metric_clusters_state_from_raw(
             raw.get("error_message") if isinstance(raw.get("error_message"), str) else None
         ),
         is_stale=completed_rows > snapshot_int and status == "completed",
+        heartbeat_stale=job_heartbeat_is_stale(raw),
         selected_evaluation_row_ids=[
             str(rid)
             for rid in (raw.get("selected_evaluation_row_ids") or [])

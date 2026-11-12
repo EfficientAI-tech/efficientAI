@@ -14,6 +14,8 @@ interface Props {
   llmModel: string
   onProviderChange: (provider: ModelProvider | null) => void
   onModelChange: (model: string) => void
+  title?: string
+  description?: string
 }
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -40,6 +42,8 @@ export default function EvaluatorLlmPicker({
   llmModel,
   onProviderChange,
   onModelChange,
+  title = 'Evaluation LLM',
+  description = 'Required — select the provider and model used for post-call transcript evaluation.',
 }: Props) {
   const { data: aiProviders = [], isLoading: aiLoading } = useQuery<AIProvider[]>({
     queryKey: ['ai-providers'],
@@ -125,11 +129,9 @@ export default function EvaluatorLlmPicker({
     <div className="space-y-3 p-4 bg-purple-50 rounded-lg border border-purple-200">
       <div className="flex items-center gap-2">
         <Brain className="h-4 w-4 text-purple-600" />
-        <h4 className="text-sm font-semibold text-gray-900">Evaluation LLM</h4>
+        <h4 className="text-sm font-semibold text-gray-900">{title}</h4>
       </div>
-      <p className="text-xs text-gray-500">
-        Required — select the provider and model used for post-call transcript evaluation.
-      </p>
+      <p className="text-xs text-gray-500">{description}</p>
 
       {credentialsLoading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4" aria-busy="true">

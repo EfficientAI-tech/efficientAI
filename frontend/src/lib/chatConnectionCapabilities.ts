@@ -22,8 +22,8 @@ export type ChatConnectionCapability = {
 export const CHAT_CONNECTION_CAPABILITIES: ChatConnectionCapability[] = [
   {
     id: 'internal_llm',
-    label: 'LLM',
-    description: 'LLM plays production; test agent is the customer.',
+    label: 'Hosted agent',
+    description: 'Your prompt and model answer as production.',
     pattern: 'llm_to_llm',
     offeredInCreateWizard: false,
   },

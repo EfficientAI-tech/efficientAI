@@ -144,3 +144,18 @@ def test_direct_provider_without_model_raises(db_session, org):
             model=None,
         )
     assert exc.value.status_code == 400
+
+
+def test_credential_id_wins_over_a_different_provider_string(db_session, org):
+    row = _make_provider(db_session, org, provider="openrouter", gateway_model=None)
+
+    provider_enum, model_str = get_llm_provider_and_model(
+        org.id,
+        db_session,
+        provider="google",
+        model="google/gemini-3.5-flash",
+        credential_id=row.id,
+    )
+
+    assert provider_enum == ModelProvider.OPENROUTER
+    assert model_str == "google/gemini-3.5-flash"

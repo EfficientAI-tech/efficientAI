@@ -340,6 +340,38 @@ def _get_org_raw_settings(organization_id: UUID, db: Session) -> Dict[str, Any]:
     return dict(raw) if isinstance(raw, dict) else {}
 
 
+def org_gateway_settings_for_call(organization_id: UUID, db: Session) -> Dict[str, Any]:
+    """``llm_gateway_settings`` for the LLM call path, without a DB read per call.
+
+    Read once per LLM call (``llm_call_scope``) and cached per process across
+    calls, keyed by the org's LLM-config version (bumped on any committed
+    gateway-settings change). Secrets stay encrypted in the cached dict.
+    Redis down: version unknown, read the database (once per call).
+    Each caller gets its own copy.
+    """
+    import copy
+
+    from app.services.ai.llm_call_scope import scoped
+    from app.services.ai.llm_credential_version import (
+        cache_ttl_seconds,
+        read_llm_config_version,
+    )
+    from app.workers.catalog_cache import cached_catalog_fetch
+
+    def _cached() -> Dict[str, Any]:
+        version = read_llm_config_version(organization_id)
+        if version is None:
+            return _get_org_raw_settings(organization_id, db)
+        return cached_catalog_fetch(
+            "llmcfg_org",
+            f"{organization_id}:{version}",
+            lambda: _get_org_raw_settings(organization_id, db),
+            ttl_seconds=cache_ttl_seconds(),
+        )
+
+    return copy.deepcopy(scoped(("org", str(organization_id)), _cached))
+
+
 def _decrypt_org_secret(raw: Dict[str, Any], field: str) -> Optional[str]:
     encrypted = raw.get(field)
     if not encrypted:
@@ -562,7 +594,7 @@ def resolve_effective_routing(
 ) -> Tuple[Optional[LLMGatewayConfig], EffectiveRouting]:
     """Merge org/platform gateway config with per-credential override."""
     platform = _platform_config()
-    org = _get_org_raw_settings(organization_id, db)
+    org = org_gateway_settings_for_call(organization_id, db)
     credential_mode = credential.routing_mode if credential else "inherit"
 
     if credential_mode == "direct":

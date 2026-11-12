@@ -389,6 +389,9 @@ def upsert_override(
     db.commit()
 
     invalidate_org_pricing_cache(organization_id)
+    from app.services.usage.read_cache import invalidate_org_usage_read_cache
+
+    invalidate_org_usage_read_cache(organization_id)
 
     recompute_job_id = None
     recompute_enqueued = False
@@ -493,6 +496,9 @@ def delete_override(
         db.commit()
 
     invalidate_org_pricing_cache(organization_id)
+    from app.services.usage.read_cache import invalidate_org_usage_read_cache
+
+    invalidate_org_usage_read_cache(organization_id)
 
     recompute_job_id = None
     recompute_enqueued = False

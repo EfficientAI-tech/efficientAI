@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     MAX_FILE_SIZE_MB: int = 500
     ALLOWED_AUDIO_FORMATS: Annotated[List[str], NoDecode] = ["wav", "mp3", "flac", "m4a"]
     BLOB_STORAGE_PROVIDER: str = "s3"  # "s3", "gcs", or "azure"
+    # Harbor simulation runs: exported tasks + job dirs (one subdir per run)
+    HARBOR_WORK_DIR: str = "./.data/harbor"
+    # Tool connections: stdio MCP servers run a command on the worker, so they are
+    # off unless the deployment is single-tenant / self-hosted.
+    TOOL_CONNECTIONS_ALLOW_STDIO: bool = False
+    TOOL_CALL_TIMEOUT_SECONDS: float = 30.0
 
     # S3 Configuration
     S3_ENABLED: bool = False
@@ -86,6 +92,8 @@ class Settings(BaseSettings):
     # Celery
     CELERY_BROKER_URL: Optional[str] = None
     CELERY_RESULT_BACKEND: Optional[str] = None
+    # worker-imports uses --pool=threads; terminate=True raises NotImplementedError there.
+    CELERY_REVOKE_USE_TERMINATE: bool = False
 
     # Call-import worker concurrency limits (Redis fair-share for evaluations)
     EVAL_WORKSPACE_INFLIGHT_LIMIT: int = 100
@@ -93,6 +101,26 @@ class Settings(BaseSettings):
     EVAL_GLOBAL_INFLIGHT_LIMIT: int = 128
     EVAL_JOB_INFLIGHT_LIMIT: int = 75
     EVAL_FAIR_DISPATCH_BATCH_SIZE: int = 75
+    # Redis-buffered evaluation progress counters. Eval workers add
+    # completed/failed deltas to Redis instead of updating the catalog parent
+    # row per scored row; a beat task flushes them every
+    # EVAL_PROGRESS_FLUSH_SECONDS and fenced shard recounts run at most every
+    # EVAL_PROGRESS_RECOUNT_SECONDS for running evaluations.
+    EVAL_PROGRESS_FLUSH_SECONDS: int = 30
+    EVAL_PROGRESS_RECOUNT_SECONDS: int = 300
+    # LLM call path cache for org gateway settings + resolved credentials
+    # (keyed by the Redis ``llmcfg:ver:{org}`` version, bumped on any change).
+    # TTL bounds staleness only if a version bump is lost while Redis is down.
+    LLM_CONFIG_CACHE_TTL_SECONDS: int = 120
+    LLM_CONFIG_VERSION_MEMO_SECONDS: float = 1.0
+    # Per-process worker catalog cache (app/workers/catalog_cache.py): expired
+    # entries are swept on write at most every CATALOG_CACHE_SWEEP_SECONDS, and
+    # the least recently used entry is evicted past CATALOG_CACHE_MAX_ENTRIES.
+    CATALOG_CACHE_MAX_ENTRIES: int = 2048
+    CATALOG_CACHE_SWEEP_SECONDS: float = 30.0
+    # Eval workers' cached parent-evaluation snapshot. Settings changes bump
+    # ``eval:settings_ver:{id}`` and reload at once; this TTL is a backstop.
+    EVAL_SNAPSHOT_CACHE_TTL_SECONDS: int = 600
     DIARIZATION_FAIR_DISPATCH_BATCH_SIZE: int = 75
     IMPORT_FAIR_DISPATCH_BATCH_SIZE: int = 75
     IMPORT_WORKSPACE_INFLIGHT_LIMIT: int = 8
@@ -126,7 +154,10 @@ class Settings(BaseSettings):
     PLATFORM_IMPORT_FEATURE_ENABLED: bool = True
 
     # CORS
-    CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000"]
+    CORS_ORIGINS: List[str] = [
+        "http://localhost:8000",
+        "https://sandbox.efficientai.cloud",
+    ]
 
     # API Settings
     API_KEY_HEADER: str = "X-API-Key"
@@ -420,16 +451,16 @@ class Settings(BaseSettings):
         """Parse CORS_ORIGINS from various formats."""
         # Handle None or empty values
         if v is None:
-            return ["http://localhost:3000", "http://localhost:8000"]
+            return ["http://localhost:8000", "https://sandbox.efficientai.cloud"]
         
         if isinstance(v, list):
-            return v if v else ["http://localhost:3000", "http://localhost:8000"]
+            return v if v else ["http://localhost:8000", "https://sandbox.efficientai.cloud"]
         
         if isinstance(v, str):
             # Handle empty or whitespace-only strings
             v = v.strip()
             if not v:
-                return ["http://localhost:3000", "http://localhost:8000"]
+                return ["http://localhost:8000", "https://sandbox.efficientai.cloud"]
             
             # Try JSON first
             if v.startswith("["):
@@ -442,9 +473,9 @@ class Settings(BaseSettings):
             
             # Fall back to comma-separated
             origins = [origin.strip() for origin in v.split(",") if origin.strip()]
-            return origins if origins else ["http://localhost:3000", "http://localhost:8000"]
+            return origins if origins else ["http://localhost:8000", "https://sandbox.efficientai.cloud"]
         
-        return ["http://localhost:3000", "http://localhost:8000"]  # Default
+        return ["http://localhost:8000", "https://sandbox.efficientai.cloud"]  # Default
 
     @field_validator("AUTH_PROVIDERS", mode="before")
     @classmethod
@@ -709,6 +740,10 @@ def load_config_from_file(config_path: str) -> None:
             settings.CELERY_BROKER_URL = celery_config["broker_url"]
         if "result_backend" in celery_config:
             settings.CELERY_RESULT_BACKEND = celery_config["result_backend"]
+        if "revoke_use_terminate" in celery_config:
+            settings.CELERY_REVOKE_USE_TERMINATE = bool(
+                celery_config["revoke_use_terminate"]
+            )
 
     if "workers" in config_data:
         workers_config = config_data["workers"]
@@ -731,6 +766,14 @@ def load_config_from_file(config_path: str) -> None:
         if "eval_job_inflight_limit" in workers_config:
             settings.EVAL_JOB_INFLIGHT_LIMIT = int(
                 workers_config["eval_job_inflight_limit"]
+            )
+        if "eval_progress_flush_seconds" in workers_config:
+            settings.EVAL_PROGRESS_FLUSH_SECONDS = max(
+                5, int(workers_config["eval_progress_flush_seconds"])
+            )
+        if "eval_progress_recount_seconds" in workers_config:
+            settings.EVAL_PROGRESS_RECOUNT_SECONDS = max(
+                30, int(workers_config["eval_progress_recount_seconds"])
             )
         if "diarization_fair_dispatch_batch_size" in workers_config:
             settings.DIARIZATION_FAIR_DISPATCH_BATCH_SIZE = int(
@@ -1279,7 +1322,7 @@ except Exception as e:
             # Create with explicit defaults - manually construct with default values
             settings = Settings(
                 ALLOWED_AUDIO_FORMATS=["wav", "mp3", "flac", "m4a"],
-                CORS_ORIGINS=["http://localhost:3000", "http://localhost:8000"],
+                CORS_ORIGINS=["http://localhost:8000", "https://sandbox.efficientai.cloud"],
                 _env_file=None,  # Don't load .env
             )
     else:

@@ -13,6 +13,70 @@ export type CallImportEvaluationRowSidePanelTabId =
   | 'flow'
   | 'metadata'
 
+function isTranscriptAgreementMetricName(name: string): boolean {
+  const key = name.trim().toLowerCase()
+  return key === 'user wer' || key === 'user cer'
+}
+
+function formatPercentFraction(value: unknown): string {
+  if (typeof value !== 'number' || Number.isNaN(value)) return '—'
+  return `${(value * 100).toFixed(1)}%`
+}
+
+function modeBadge(mode: unknown): string | null {
+  if (mode === 'native') return 'native'
+  if (mode === 'romanised_fallback') return 'romanised (approx.)'
+  return null
+}
+
+function TranscriptAgreementScoreDetail({
+  score,
+  metricName,
+}: {
+  score: Record<string, unknown>
+  metricName: string
+}) {
+  const details =
+    score.details && typeof score.details === 'object'
+      ? (score.details as Record<string, unknown>)
+      : null
+  const isCer = metricName.trim().toLowerCase() === 'user cer'
+  const badge = modeBadge(details?.mode)
+  const secondary = isCer ? details?.wer : details?.cer
+  const secondaryLabel = isCer ? 'WER' : 'CER'
+  return (
+    <div className="mt-2 space-y-1 text-[11px] text-gray-600">
+      <p>
+        {formatPercentFraction(score.value)}{' '}
+        <span className="text-gray-400">(lower is better)</span>
+        {badge ? (
+          <span className="ml-2 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">
+            {badge}
+          </span>
+        ) : null}
+      </p>
+      {typeof secondary === 'number' ? (
+        <p className="text-gray-500">
+          {secondaryLabel} {formatPercentFraction(secondary)}
+        </p>
+      ) : null}
+      {details ? (
+        <p className="font-mono text-[10px] text-gray-500">
+          production user {String(details.ref_words ?? details.ref_word_count ?? 0)} w · diarised user{' '}
+          {String(details.hyp_words ?? details.hyp_word_count ?? 0)} w
+          {details.ref_chars != null ? ` · ${String(details.ref_chars)} chars` : ''}
+        </p>
+      ) : null}
+      {details?.script_mismatch === true ? (
+        <p className="text-amber-700">Production and diarised text use different scripts.</p>
+      ) : null}
+      <p className="text-gray-400">
+        {metricName}: production user turns are the reference. Agent turns are ignored.
+      </p>
+    </div>
+  )
+}
+
 function formatScoreValue(value: unknown): string {
   if (value === null || value === undefined || value === '') return '—'
   if (typeof value === 'boolean') return value ? 'Yes' : 'No'
@@ -119,11 +183,15 @@ export function CallImportEvaluationRowSidePanelContent({
                 <p className="text-sm font-medium text-gray-700 truncate">{metric.name}</p>
                 {isClassification && scoreObj ? (
                   <ClassificationScoreDetail score={scoreObj as ClassificationScoreView} />
+                ) : isTranscriptAgreementMetricName(metric.name) && scoreObj ? (
+                  <TranscriptAgreementScoreDetail
+                    score={scoreObj}
+                    metricName={metric.name}
+                  />
                 ) : (
                   <span
-                    className={`text-sm font-semibold ${
-                      hasScore ? 'text-gray-900' : 'text-gray-400'
-                    }`}
+                    className={`text-sm font-semibold ${hasScore ? 'text-gray-900' : 'text-gray-400'
+                      }`}
                   >
                     {hasScore ? formatScoreValue(value) : '—'}
                   </span>
@@ -161,7 +229,7 @@ export function CallImportEvaluationRowSidePanelContent({
         }
         const discovered = Array.isArray((score as { discovered_labels?: unknown }).discovered_labels)
           ? ((score as { discovered_labels: Array<{ key?: string; name?: string }> })
-              .discovered_labels).filter(
+            .discovered_labels).filter(
               (d): d is { key: string; name?: string } =>
                 typeof d?.key === 'string' && d.key.length > 0,
             )

@@ -47,12 +47,19 @@ def test_platform_beat_schedule_includes_platform_and_trace_tasks():
         "prune-oss-usage-history",
         "sweep-idle-traces",
         "sweep-orphan-s3-batches",
+        "flush-eval-progress-counters",
+        "sweep-stale-running-evaluations",
         "bootstrap-platform-import-discovery",
+        "dispatch-fair-diarization-rows",
         "dispatch-fair-platform-import-rows",
     }
     if not getattr(settings, "CLICKHOUSE_URL", None):
         expected.add("sweep-staging-ingest")
     assert set(schedule.keys()) == expected
+    assert schedule["sweep-stale-running-evaluations"] == {
+        "task": "sweep_stale_running_evaluations",
+        "schedule": 86400.0,
+    }
 
 
 def test_flush_schedule_uses_env_interval(monkeypatch):

@@ -27,6 +27,12 @@ def test_dispatch_fair_eval_rows_routes_to_evaluations_queue():
     assert routes["dispatch_fair_eval_rows"]["queue"] == "evaluations"
 
 
+def test_dispatch_fair_diarization_rows_routes_to_imports_queue():
+    """Fair diarisation dispatch is scheduler-only; must run where bulk_diarize runs."""
+    routes = celery_app.conf.task_routes
+    assert routes["dispatch_fair_diarization_rows"]["queue"] == IMPORTS_QUEUE
+
+
 def test_generate_agent_flowchart_routes_to_celery_queue():
     routes = celery_app.conf.task_routes
     assert routes["generate_agent_flowchart"]["queue"] == "celery"

@@ -2,23 +2,9 @@ import type { AIProvider } from '../types/api'
 import type { LLMGenerationConfig } from '../config/llmGenerationParams'
 import { resolveActiveAIProvider, routesViaGateway, usesGatewayDirectModel } from './gatewayRouting'
 
-/** Substring fingerprints for chat models that accept audio input. */
-export const AUDIO_CAPABLE_MODEL_MATCHERS: Record<string, RegExp[]> = {
-  openai: [/audio/i, /realtime/i],
-  google: [/^gemini-(1\.5|[2-9])/i],
-}
-
-export const AUDIO_CAPABLE_PROVIDERS = Object.keys(AUDIO_CAPABLE_MODEL_MATCHERS)
-
 export type LLMModelResolution =
   | { mode: 'gateway_direct'; model: string }
   | { mode: 'catalog'; models: string[] }
-
-export function isAudioCapableModel(provider: string, model: string): boolean {
-  const matchers = AUDIO_CAPABLE_MODEL_MATCHERS[provider.toLowerCase()]
-  if (!matchers) return false
-  return matchers.some((re) => re.test(model))
-}
 
 /**
  * System 1 (Jev) models score classification metrics. Mirrors backend
@@ -161,44 +147,8 @@ export function resolveLLMModelsForCredential(
   return { mode: 'catalog', models: catalogModels }
 }
 
-/** Gateway-routed custom credentials are allowed for multimodal diariser. */
-export function isGatewayAudioCapableCredential(
-  credential: AIProvider,
-): boolean {
-  const gatewayModel = credential.gateway_model?.trim()
-  const provider = credential.provider?.toLowerCase() ?? ''
-
-  // Custom Bifrost integrations: any configured gateway model may be
-  // used for LLM-only diarisation — audio support is operator-owned.
-  if (provider === 'custom') {
-    return Boolean(gatewayModel)
-  }
-
-  if (!gatewayModel) return false
-  if (!['openai', 'google'].includes(provider)) return false
-
-  if (routesViaGateway(credential)) return true
-  return isAudioCapableModel(provider, gatewayModel)
-}
-
-export function isAudioCapableSelection(
-  provider: string,
-  model: string | null,
-  credential?: AIProvider | null,
-): boolean {
-  if (credential && usesGatewayDirectModel(credential)) {
-    return isGatewayAudioCapableCredential(credential)
-  }
-  if (credential && isGatewayAudioCapableCredential(credential)) {
-    return true
-  }
-  if (!model) return false
-  return isAudioCapableModel(provider, model)
-}
-
 export interface LLMProviderFilterOptions {
   providerAllowList?: string[]
-  audioCapableOnly?: boolean
 }
 
 export function buildLLMProviderKeys(
@@ -221,16 +171,6 @@ export function buildLLMProviderKeys(
   const allowSet = filters?.providerAllowList
     ? new Set(filters.providerAllowList.map((p) => p.toLowerCase()))
     : null
-
-  if (filters?.audioCapableOnly) {
-    const audioKeys = new Set(AUDIO_CAPABLE_PROVIDERS)
-    for (const p of aiProviders) {
-      if (p.is_active && isGatewayAudioCapableCredential(p)) {
-        audioKeys.add(p.provider.toLowerCase())
-      }
-    }
-    keys = keys.filter((k) => audioKeys.has(k))
-  }
 
   if (allowSet) {
     keys = keys.filter((k) => allowSet.has(k))

@@ -61,6 +61,7 @@ export default function SearchableSelect({
     if (!q) return options
     return options.filter((o) => o.label.toLowerCase().includes(q))
   }, [options, search])
+  const visible = filtered.slice(0, 150)
 
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
@@ -114,57 +115,61 @@ export default function SearchableSelect({
 
       {open && !disabled && coords && typeof document !== 'undefined'
         ? createPortal(
-            <div
-              ref={panelRef}
-              className="rounded-lg border border-[#fde047]/60 bg-white shadow-lg ring-1 ring-[#fef9c3]/50"
-              style={{
-                position: 'fixed',
-                top: coords.top,
-                left: coords.left,
-                width: coords.width,
-                zIndex: 60,
-              }}
-            >
-              <div className="flex items-center gap-2 border-b border-gray-100 px-3 py-2">
-                <Search className="h-4 w-4 shrink-0 text-gray-400" />
-                <input
-                  type="text"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search…"
-                  className="min-w-0 flex-1 text-sm outline-none"
-                  autoFocus
-                />
-              </div>
-              <ul className="max-h-56 overflow-y-auto overscroll-contain py-1">
-                {filtered.length === 0 ? (
-                  <li className="px-3 py-2 text-sm text-gray-500">{emptyMessage}</li>
-                ) : (
-                  filtered.map((opt) => (
-                    <li key={opt.id}>
-                      <button
-                        type="button"
-                        className={`w-full px-3 py-2 text-left text-sm hover:bg-[#fefce8] ${
-                          opt.id === value ||
+          <div
+            ref={panelRef}
+            className="rounded-lg border border-[#fde047]/60 bg-white shadow-lg ring-1 ring-[#fef9c3]/50"
+            style={{
+              position: 'fixed',
+              top: coords.top,
+              left: coords.left,
+              width: coords.width,
+              zIndex: 60,
+            }}
+          >
+            <div className="flex items-center gap-2 border-b border-gray-100 px-3 py-2">
+              <Search className="h-4 w-4 shrink-0 text-gray-400" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search…"
+                className="min-w-0 flex-1 text-sm outline-none"
+                autoFocus
+              />
+            </div>
+            <ul className="max-h-56 overflow-y-auto overscroll-contain py-1">
+              {filtered.length === 0 ? (
+                <li className="px-3 py-2 text-sm text-gray-500">{emptyMessage}</li>
+              ) : (
+                visible.map((opt) => (
+                  <li key={opt.id}>
+                    <button
+                      type="button"
+                      className={`w-full px-3 py-2 text-left text-sm hover:bg-[#fefce8] ${opt.id === value ||
                           opt.id.toLowerCase() === value.toLowerCase()
-                            ? usageTheme.selectHighlight
-                            : 'text-gray-800'
+                          ? usageTheme.selectHighlight
+                          : 'text-gray-800'
                         }`}
-                        onClick={() => {
-                          onChange(opt.id)
-                          setOpen(false)
-                          setSearch('')
-                        }}
-                      >
-                        <span className="block break-all leading-snug">{opt.label}</span>
-                      </button>
-                    </li>
-                  ))
-                )}
-              </ul>
-            </div>,
-            document.body,
-          )
+                      onClick={() => {
+                        onChange(opt.id)
+                        setOpen(false)
+                        setSearch('')
+                      }}
+                    >
+                      <span className="block break-all leading-snug">{opt.label}</span>
+                    </button>
+                  </li>
+                ))
+              )}
+              {filtered.length > visible.length ? (
+                <li className="px-3 py-2 text-xs text-gray-400">
+                  Showing first 150 — type to narrow
+                </li>
+              ) : null}
+            </ul>
+          </div>,
+          document.body,
+        )
         : null}    </div>
   )
 }

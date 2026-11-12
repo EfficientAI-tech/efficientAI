@@ -36,6 +36,7 @@ import {
   Github,
   Sparkles,
   Upload,
+  Wrench,
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { Info, X } from 'lucide-react'
@@ -65,6 +66,7 @@ const navigationSections: NavSection[] = [
       { name: 'Agents', href: '/agents', icon: Bot },
       { name: 'Personas', href: '/personas', icon: Users },
       { name: 'Scenarios', href: '/scenarios', icon: FileText },
+      { name: 'Tools', href: '/tools', icon: Wrench },
     ],
   },
   {
@@ -156,6 +158,10 @@ function getFlattenedNavItems(): NavItem[] {
 }
 
 function isNavItemActive(href: string, pathname: string): boolean {
+  if (href === '/tools') {
+    // Knowledge bases live under Tools; their detail pages keep the Tools item lit.
+    return pathname === href || pathname.startsWith('/knowledge-bases')
+  }
   if (href === '/metrics-management') {
     return (
       pathname === href || pathname.startsWith('/metrics-management/')
@@ -242,9 +248,8 @@ export default function Layout() {
 
       {/* Desktop sidebar */}
       <div
-        className={`hidden lg:fixed lg:inset-y-0 lg:z-40 lg:flex lg:flex-col transition-[width] duration-300 ease-in-out ${
-          desktopSidebarCollapsed ? 'lg:w-16' : 'lg:w-64'
-        }`}
+        className={`hidden lg:fixed lg:inset-y-0 lg:z-40 lg:flex lg:flex-col transition-[width] duration-300 ease-in-out ${desktopSidebarCollapsed ? 'lg:w-16' : 'lg:w-64'
+          }`}
       >
         <div className="flex flex-col h-full w-full bg-white border-r border-gray-200 shadow-sm overflow-hidden">
           <SidebarContent
@@ -258,15 +263,13 @@ export default function Layout() {
 
       {/* Main content */}
       <div
-        className={`flex flex-col flex-1 transition-[padding] duration-300 ease-in-out ${
-          desktopSidebarCollapsed ? 'lg:pl-16' : 'lg:pl-64'
-        }`}
+        className={`flex flex-col flex-1 transition-[padding] duration-300 ease-in-out ${desktopSidebarCollapsed ? 'lg:pl-16' : 'lg:pl-64'
+          }`}
       >
         {/* Top bar */}
         <div
-          className={`fixed top-0 left-0 right-0 z-30 flex-shrink-0 flex h-16 bg-white shadow-sm border-b border-gray-200 transition-[left] duration-300 ease-in-out ${
-            desktopSidebarCollapsed ? 'lg:left-16' : 'lg:left-64'
-          }`}
+          className={`fixed top-0 left-0 right-0 z-30 flex-shrink-0 flex h-16 bg-white shadow-sm border-b border-gray-200 transition-[left] duration-300 ease-in-out ${desktopSidebarCollapsed ? 'lg:left-16' : 'lg:left-64'
+            }`}
         >
           <button
             type="button"
@@ -486,14 +489,16 @@ function SidebarContent({
   }
 
   const isSectionActive = (section: NavSection) => {
-    return section.items.some(item => location.pathname === item.href)
+    return section.items.some(item => isNavItemActive(item.href, location.pathname))
   }
 
   if (collapsed) {
     return (
       <div className="flex flex-col h-full">
         <div className="flex flex-col items-center flex-shrink-0 py-3 border-b border-gray-200 gap-2">
-          <Logo showText={false} />
+          <Link to="/" aria-label="EfficientAI home" className="rounded-md">
+            <Logo showText={false} />
+          </Link>
           {onToggleCollapse && (
             <button
               type="button"
@@ -534,7 +539,9 @@ function SidebarContent({
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between flex-shrink-0 px-4 h-16 border-b border-gray-200">
-        <Logo />
+        <Link to="/" aria-label="EfficientAI home" className="rounded-md">
+          <Logo />
+        </Link>
         {onToggleCollapse && (
           <button
             type="button"
@@ -688,16 +695,14 @@ function SidebarIconLink({
     <Link
       to={item.href}
       title={item.name}
-      className={`group relative flex items-center justify-center p-2 rounded-md transition-colors ${
-        isActive
+      className={`group relative flex items-center justify-center p-2 rounded-md transition-colors ${isActive
           ? 'bg-gradient-to-r from-gray-900 via-gray-700 to-gray-400 text-white'
           : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'
-      }`}
+        }`}
     >
       <item.icon
-        className={`h-5 w-5 flex-shrink-0 ${
-          isActive ? 'text-white' : 'text-gray-400 group-hover:text-gray-500'
-        }`}
+        className={`h-5 w-5 flex-shrink-0 ${isActive ? 'text-white' : 'text-gray-400 group-hover:text-gray-500'
+          }`}
       />
     </Link>
   )

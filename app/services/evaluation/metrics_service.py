@@ -29,30 +29,9 @@ class MetricsService:
         if not ref_words:
             return 0.0 if not hyp_words else float("inf")
 
-        # Simple Levenshtein distance for WER calculation
-        # For production, consider using jiwer library for more accurate calculation
-        n = len(ref_words)
-        m = len(hyp_words)
+        from rapidfuzz.distance import Levenshtein
 
-        # Create DP table
-        dp = [[0] * (m + 1) for _ in range(n + 1)]
-
-        # Initialize
-        for i in range(n + 1):
-            dp[i][0] = i
-        for j in range(m + 1):
-            dp[0][j] = j
-
-        # Fill DP table
-        for i in range(1, n + 1):
-            for j in range(1, m + 1):
-                if ref_words[i - 1] == hyp_words[j - 1]:
-                    dp[i][j] = dp[i - 1][j - 1]
-                else:
-                    dp[i][j] = 1 + min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
-
-        errors = dp[n][m]
-        return errors / n
+        return Levenshtein.distance(ref_words, hyp_words) / len(ref_words)
 
     @staticmethod
     def calculate_cer(reference: str, hypothesis: str) -> float:
@@ -75,26 +54,9 @@ class MetricsService:
         if not ref_chars:
             return 0.0 if not hyp_chars else float("inf")
 
-        # Character-level Levenshtein distance
-        n = len(ref_chars)
-        m = len(hyp_chars)
+        from rapidfuzz.distance import Levenshtein
 
-        dp = [[0] * (m + 1) for _ in range(n + 1)]
-
-        for i in range(n + 1):
-            dp[i][0] = i
-        for j in range(m + 1):
-            dp[0][j] = j
-
-        for i in range(1, n + 1):
-            for j in range(1, m + 1):
-                if ref_chars[i - 1] == hyp_chars[j - 1]:
-                    dp[i][j] = dp[i - 1][j - 1]
-                else:
-                    dp[i][j] = 1 + min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
-
-        errors = dp[n][m]
-        return errors / n
+        return Levenshtein.distance(ref_chars, hyp_chars) / len(ref_chars)
 
     @staticmethod
     def calculate_latency(start_time: float, end_time: float) -> Dict[str, float]:

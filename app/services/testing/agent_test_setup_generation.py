@@ -75,6 +75,101 @@ GENERATE_TEST_PROMPT_SYSTEM = (
 AgentTestPromptSection = TestAgentPromptSection
 
 
+GENERATE_PRODUCTION_PROMPT_SYSTEM = (
+    "You are an expert at writing system prompts for customer-facing AI agents.\n\n"
+    "The user will describe the agent they want to build. Write a complete production system prompt "
+    "for a text-chat agent that will be evaluated in automated simulations.\n\n"
+    "The prompt should:\n"
+    "- Define role, goals, tone, and boundaries clearly\n"
+    "- Include how to greet and how to handle common user intents\n"
+    "- Stay realistic for SMS/web chat (concise replies, no stage directions)\n"
+    "- Avoid mentioning tests, QA, evaluators, or that this is synthetic\n\n"
+    "Return ONLY the system prompt text. No markdown fences, no title, no explanation."
+)
+
+
+@dataclass
+class ProductionPromptGenerationResult:
+    production_prompt: str
+    provider: str
+    model: str
+
+
+def build_production_prompt_user_message(
+    *,
+    agent_name: str,
+    brief: str,
+    language: Optional[str] = None,
+    call_type: Optional[str] = None,
+    additional_context: Optional[str] = None,
+) -> str:
+    parts = [f"Agent name: {agent_name}", "", f"Agent brief:\n{brief.strip()}"]
+    if language:
+        parts.append(f"\nLanguage: {language}")
+    if call_type:
+        parts.append(f"Interaction type: {call_type}")
+    if additional_context and additional_context.strip():
+        parts.append(f"\nAdditional context:\n{additional_context.strip()}")
+    parts.append("\nWrite the production system prompt.")
+    return "\n".join(parts)
+
+
+def generate_production_prompt_from_brief(
+    brief: str,
+    *,
+    agent_name: str,
+    language: Optional[str],
+    call_type: Optional[str],
+    additional_context: Optional[str],
+    llm_provider: ModelProvider,
+    llm_model: str,
+    organization_id: UUID,
+    db: Session,
+    llm_config: Optional[Dict[str, Any]] = None,
+    credential_id: Optional[UUID] = None,
+) -> ProductionPromptGenerationResult:
+    """Generate a production system prompt from a short agent brief."""
+    if not brief.strip():
+        raise ValueError("Agent brief is required")
+    if not agent_name.strip():
+        raise ValueError("Agent name is required")
+
+    messages = [
+        {"role": "system", "content": GENERATE_PRODUCTION_PROMPT_SYSTEM},
+        {
+            "role": "user",
+            "content": build_production_prompt_user_message(
+                agent_name=agent_name,
+                brief=brief,
+                language=language,
+                call_type=call_type,
+                additional_context=additional_context,
+            ),
+        },
+    ]
+
+    result = llm_service.generate_response(
+        messages=messages,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        organization_id=organization_id,
+        db=db,
+        llm_config=llm_config,
+        task_defaults={"temperature": 0.5, "max_tokens": 4000},
+        credential_id=credential_id,
+    )
+
+    production_prompt = _strip_llm_text_wrapper(result["text"])
+    if len(production_prompt.split()) < 10:
+        raise ValueError("Generated production prompt was too short")
+
+    return ProductionPromptGenerationResult(
+        production_prompt=production_prompt,
+        provider=llm_provider.value,
+        model=llm_model,
+    )
+
+
 @dataclass
 class TestPromptGenerationResult:
     sections: List[TestAgentPromptSection]

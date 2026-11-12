@@ -19,6 +19,12 @@ import { useOrgTelephony } from '../../../hooks/useOrgTelephony'
 import { TelephonyProvider } from '../../../types/api'
 import type { AgentDetailTab } from './AgentInfoView'
 import TestAgentSubTabNav, { type TestAgentSubTab } from './TestAgentSubTabNav'
+import ProductionAgentSubTabNav, {
+  type ProductionAgentSubTab,
+} from './ProductionAgentSubTabNav'
+import AgentKnowledgeBasesPanel from './AgentKnowledgeBasesPanel'
+import ProductionAgentToolsSection from './ProductionAgentToolsSection'
+import type { KnowledgeBaseSummary } from '../../knowledgeBases/knowledgeBaseTypes'
 import VoiceBundleDetailCard from './VoiceBundleDetailCard'
 import { resolveLLMModelsForCredential } from '../../../lib/llmModelOptions'
 import { useAgentPhoneAssignmentCheck } from './useAgentPhoneAssignmentCheck'
@@ -51,6 +57,8 @@ interface FormData {
   voice_ai_integration_id: string
   voice_ai_agent_id: string
   provider_prompt: string
+  knowledge_base_ids: string[]
+  test_knowledge_base_ids: string[]
 }
 
 interface AgentEditFormProps {
@@ -71,6 +79,7 @@ interface AgentEditFormProps {
   onChatConnectionConfigChange?: (patch: Partial<ChatConnectionConfigForm>) => void
   chatEditPlatform?: IntegrationPlatform | null
   onChatEditPlatformChange?: (p: IntegrationPlatform | null) => void
+  knowledgeBases?: KnowledgeBaseSummary[]
 }
 
 const SUPPORTED_VOICE_AI_PLATFORMS: IntegrationPlatform[] = [
@@ -98,6 +107,7 @@ export default function AgentEditForm({
   onChatConnectionConfigChange,
   chatEditPlatform = null,
   onChatEditPlatformChange,
+  knowledgeBases = [],
 }: AgentEditFormProps) {
   const navigate = useNavigate()
   const [providerPromptEditorMode, setProviderPromptEditorMode] = useState<'write' | 'preview'>('write')
@@ -107,6 +117,8 @@ export default function AgentEditForm({
   const [aiModel, setAiModel] = useState('')
   const [phoneNumberInputMode, setPhoneNumberInputMode] = useState<'provider' | 'custom'>('provider')
   const [testAgentSubTab, setTestAgentSubTab] = useState<TestAgentSubTab>('prompt')
+  const [productionAgentSubTab, setProductionAgentSubTab] =
+    useState<ProductionAgentSubTab>('prompt')
 
   const { data: aiProviders = [] } = useQuery<AIProvider[]>({
     queryKey: ['ai-providers'],
@@ -755,15 +767,41 @@ export default function AgentEditForm({
               generateMutation={generateFromProductionMutation}
             />
           )}
+
+          {testAgentSubTab === 'knowledge_bases' && (
+            <AgentKnowledgeBasesPanel
+              mode="edit"
+              side="test"
+              attachedIds={formData.test_knowledge_base_ids}
+              knowledgeBases={knowledgeBases}
+              onChange={(ids) => onChange({ ...formData, test_knowledge_base_ids: ids })}
+            />
+          )}
         </div>
       )}
 
-      {activeTab === 'voice_ai_agent' &&
-        isChatAgent &&
+      {activeTab === 'voice_ai_agent' && (
+        <div className="w-full space-y-4">
+          <ProductionAgentSubTabNav
+            value={productionAgentSubTab}
+            onChange={setProductionAgentSubTab}
+          />
+
+          {productionAgentSubTab === 'tools' && (
+            <ProductionAgentToolsSection
+              mode="edit"
+              agentId={agentId}
+              attachedKnowledgeBaseIds={formData.knowledge_base_ids}
+              knowledgeBases={knowledgeBases}
+              onKnowledgeBaseIdsChange={(ids) => onChange({ ...formData, knowledge_base_ids: ids })}
+            />
+          )}
+
+          {productionAgentSubTab === 'prompt' && isChatAgent &&
         chatConnection &&
         onChatConnectionChange &&
         onChatConnectionConfigChange &&
-        onChatEditPlatformChange && (
+        onChatEditPlatformChange ? (
           <ChatAgentEditSection
             mode="production"
             connectionType={chatConnectionType}
@@ -781,9 +819,9 @@ export default function AgentEditForm({
             showToast={showToast}
             agentId={agentId}
           />
-        )}
+        ) : null}
 
-      {activeTab === 'voice_ai_agent' && !isChatAgent && hasPlatformLink && (
+          {productionAgentSubTab === 'prompt' && !isChatAgent && hasPlatformLink ? (
         <div className="w-full space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Integration Provider</label>
@@ -833,9 +871,9 @@ export default function AgentEditForm({
             />
           </div>
         </div>
-      )}
+          ) : null}
 
-      {activeTab === 'voice_ai_agent' && !isChatAgent && !hasPlatformLink && (
+          {productionAgentSubTab === 'prompt' && !isChatAgent && !hasPlatformLink ? (
         <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
           <div className="flex items-center justify-between mb-3">
             <label className="block text-sm font-medium text-gray-700">Production Agent Prompt</label>
@@ -885,6 +923,8 @@ export default function AgentEditForm({
               )}
             </div>
           )}
+        </div>
+          ) : null}
         </div>
       )}
     </form>

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import List, Optional
 from uuid import UUID
 
@@ -39,6 +40,10 @@ _DISPATCH_LOCK_TTL_SECONDS = 90
 _WS_EVAL_RR_CURSOR_KEY_PREFIX = "eval:fair:rr_cursor:ws:"
 _RESTRICTED_ROW_KEY_PREFIX = "eval:restricted:row:"
 _TRANSCRIBE_OVERWRITE_KEY_PREFIX = "eval:transcribe_overwrite:"
+# Source rows that finished diarisation in the evaluation's current pass. An
+# overwrite run resets transcripts up front, so ``completed`` on its own does
+# not prove the text belongs to this pass — this set does.
+_DIA_PASS_KEY_PREFIX = "eval:dia_pass:"
 # A 400k metric retry is dispatched 75 rows at a time. The last row can sit
 # for more than a day, so the marker has to outlive that queue.
 _RESTRICTED_ROW_TTL_SECONDS = 72 * 60 * 60
@@ -94,16 +99,79 @@ def store_rows_restricted_metrics(
     return True
 
 
+def _dia_pass_key(evaluation_id: UUID | str) -> str:
+    return f"{_DIA_PASS_KEY_PREFIX}{evaluation_id}"
+
+
+def reset_diarisation_pass(evaluation_id: UUID | str) -> None:
+    """Forget which rows were diarised in earlier passes for this evaluation."""
+    try:
+        _get_redis().delete(_dia_pass_key(evaluation_id))
+    except redis.RedisError as exc:
+        logger.warning(
+            "Failed to reset diarisation pass for evaluation {}: {}",
+            evaluation_id,
+            exc,
+        )
+
+
+def mark_row_diarised_in_pass(
+    evaluation_id: UUID | str,
+    source_row_id: UUID | str,
+) -> None:
+    """Record that ``source_row_id`` finished diarisation in this pass."""
+    key = _dia_pass_key(evaluation_id)
+    try:
+        pipe = _get_redis().pipeline(transaction=False)
+        pipe.sadd(key, str(source_row_id))
+        pipe.expire(key, _RESTRICTED_ROW_TTL_SECONDS)
+        pipe.execute()
+    except redis.RedisError as exc:
+        logger.warning(
+            "Failed to mark row {} diarised for evaluation {}: {}",
+            source_row_id,
+            evaluation_id,
+            exc,
+        )
+
+
+def row_diarised_in_pass(
+    evaluation_id: UUID | str,
+    source_row_id: UUID | str,
+) -> Optional[bool]:
+    """True/False when Redis answers, ``None`` when the marker store is down."""
+    try:
+        return bool(
+            _get_redis().sismember(_dia_pass_key(evaluation_id), str(source_row_id))
+        )
+    except redis.RedisError as exc:
+        logger.warning(
+            "Failed to read diarisation pass for evaluation {}: {}",
+            evaluation_id,
+            exc,
+        )
+        return None
+
+
 def store_evaluation_transcribe_overwrite(
     evaluation_id: UUID | str,
     *,
     overwrite: bool,
 ) -> None:
-    if not overwrite:
-        return
+    """Persist the evaluation's overwrite intent and reset its diarisation pass.
+
+    The flag is rewritten on every run/retry start: a retry that does *not*
+    ask for overwrite must clear a flag left behind by an earlier overwrite
+    run, otherwise dispatch would re-diarise rows nobody asked to redo.
+    """
     key = f"{_TRANSCRIBE_OVERWRITE_KEY_PREFIX}{evaluation_id}"
     try:
-        _get_redis().setex(key, _RESTRICTED_ROW_TTL_SECONDS, "1")
+        client = _get_redis()
+        if not overwrite:
+            client.delete(key)
+            return
+        reset_diarisation_pass(evaluation_id)
+        client.setex(key, _RESTRICTED_ROW_TTL_SECONDS, "1")
     except redis.RedisError as exc:
         logger.warning(
             "Failed to store transcribe_overwrite for evaluation {}: {}",
@@ -407,8 +475,14 @@ def _dispatch_batch_for_workspace(
                 dispatched += 1
                 evaluation_dispatched = True
                 skips = 0
-                if evaluation.status == "pending":
-                    evaluation.status = "running"
+                # ``started_at`` is the run start shown in the UI and the
+                # freshness cutoff for overwrite re-diarisation.
+                missing_start = getattr(evaluation, "started_at", False) is None
+                if evaluation.status == "pending" or missing_start:
+                    if evaluation.status == "pending":
+                        evaluation.status = "running"
+                    if missing_start:
+                        evaluation.started_at = datetime.now(timezone.utc)
                     db.commit()
                 break
             if outcome.result in ("at_capacity", "credential_throttled"):

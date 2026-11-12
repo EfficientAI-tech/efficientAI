@@ -30,16 +30,25 @@ def stub_user_insights_worker(monkeypatch):
 
     class _Task:
         @staticmethod
-        def delay(evaluation_id, *, provider=None, model=None, max_llm_calls=None):
+        def _record(kwargs: dict):
             calls.append(
                 {
-                    "evaluation_id": evaluation_id,
-                    "provider": provider,
-                    "model": model,
-                    "max_llm_calls": max_llm_calls,
+                    "evaluation_id": kwargs.get("evaluation_id"),
+                    "provider": kwargs.get("provider"),
+                    "model": kwargs.get("model"),
+                    "max_llm_calls": kwargs.get("max_llm_calls"),
                 }
             )
             return types.SimpleNamespace(id="user-insights-task")
+
+        @classmethod
+        def apply_async(cls, args=None, kwargs=None, **_options):
+            return cls._record(dict(kwargs or {}))
+
+        @classmethod
+        def delay(cls, evaluation_id, **kwargs):
+            kwargs["evaluation_id"] = evaluation_id
+            return cls._record(kwargs)
 
     fake_module.generate_evaluation_user_insights_task = _Task()
     monkeypatch.setitem(
@@ -187,8 +196,13 @@ def test_post_user_insights_enqueues_task(
     assert response.status_code == 200
     assert len(stub_user_insights_worker) == 1
     assert stub_user_insights_worker[0]["evaluation_id"] == str(evaluation.id)
-    assert stub_user_insights_worker[0]["max_llm_calls"] == 100
-    assert response.json()["max_llm_calls"] == 100
+    # User insights analyses the full completed corpus in durable batches,
+    # so no per-run LLM sampling budget is forwarded to the worker.
+    assert stub_user_insights_worker[0]["max_llm_calls"] is None
+    body = response.json()
+    assert body["status"] == "running"
+    assert body["progress"]["total_rows"] == 1
+    assert body["progress"]["total_batches"] == 1
 
 
 def test_post_user_insights_stamps_last_updated_by_email(

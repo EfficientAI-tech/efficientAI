@@ -27,8 +27,10 @@ import {
   ChevronDown,
   Layers,
   AlertTriangle,
+  Search,
 } from 'lucide-react'
 import { copyTextToClipboard, readTextFromClipboard } from '../../lib/clipboard'
+import { enumOptionsToCsv } from '../../lib/metricOptionLabels'
 import {
   categoryFormFromMetricClipboard,
   parseMetricClipboardPayload,
@@ -63,6 +65,8 @@ import {
   type MetricSurface,
 } from '../../lib/metricSurfaces'
 import MetricSurfacesField from './MetricSurfacesField'
+import MetricAgentScopeField from './components/MetricAgentScopeField'
+import MetricScenarioScopeField from './components/MetricScenarioScopeField'
 
 interface Metric {
   id: string
@@ -106,6 +110,8 @@ interface Metric {
    * (server enforces).
    */
   compare_transcripts?: boolean
+  scenario_ids?: string[]
+  agent_ids?: string[]
   children?: Metric[]
 }
 
@@ -141,6 +147,41 @@ const isAIVoiceMetric = (metricName: string): boolean => AI_VOICE_METRICS.has(me
 // Quantitative = raw physical measurements (acoustic signal analysis)
 // Qualitative = quality assessments (human perception, emotion, LLM evaluation)
 const isQuantitativeMetric = (metricName: string): boolean => ACOUSTIC_METRICS.has(metricName)
+
+function collectMetricTags(metric: Metric): string[] {
+  const out = new Set<string>()
+  for (const t of metric.tags ?? []) {
+    const trimmed = t.trim()
+    if (trimmed) out.add(trimmed)
+  }
+  for (const child of metric.children ?? []) {
+    for (const t of child.tags ?? []) {
+      const trimmed = t.trim()
+      if (trimmed) out.add(trimmed)
+    }
+  }
+  return Array.from(out)
+}
+
+function metricMatchesTagFilter(metric: Metric, tagFilter: string): boolean {
+  if (tagFilter === 'all') return true
+  const want = tagFilter.toLowerCase()
+  return collectMetricTags(metric).some((t) => t.toLowerCase() === want)
+}
+
+function metricSearchHaystack(metric: Metric): string {
+  const parts: string[] = [metric.name, metric.description ?? '', ...(metric.tags ?? [])]
+  for (const child of metric.children ?? []) {
+    parts.push(child.name, child.description ?? '', ...(child.tags ?? []))
+  }
+  return parts.join(' ').toLowerCase()
+}
+
+function metricMatchesSearchQuery(metric: Metric, query: string): boolean {
+  const q = query.trim().toLowerCase()
+  if (!q) return true
+  return metricSearchHaystack(metric).includes(q)
+}
 
 // Shared "modernized" form-control styling used across the Create /
 // Edit Metric modal. Lighter border, larger padding, smooth focus
@@ -247,6 +288,10 @@ export default function MetricsManagement({
     // CREATE-time visibility scope (same semantics as ``formData.scope``).
     // Inherited by every child of the new category.
     scope: 'workspace' | 'organization'
+    scenario_scope_mode: 'all' | 'selected'
+    scenario_link_ids: string[]
+    agent_scope_mode: 'all' | 'selected'
+    agent_link_ids: string[]
     children: Array<{
       local_id: string
       name: string
@@ -260,6 +305,10 @@ export default function MetricsManagement({
     capture_rationale: false,
     selection_mode: 'single_choice',
     scope: 'workspace',
+    scenario_scope_mode: 'all',
+    scenario_link_ids: [],
+    agent_scope_mode: 'all',
+    agent_link_ids: [],
     children: [
       { local_id: 'c1', name: '', description: '', example: '' },
     ],
@@ -324,6 +373,10 @@ export default function MetricsManagement({
     capture_rationale: boolean
     children: EditCategoryChild[]
     deleted_child_ids: string[]
+    scenario_scope_mode: 'all' | 'selected'
+    scenario_link_ids: string[]
+    agent_scope_mode: 'all' | 'selected'
+    agent_link_ids: string[]
   }>({
     name: '',
     description: '',
@@ -332,6 +385,10 @@ export default function MetricsManagement({
     capture_rationale: false,
     children: [],
     deleted_child_ids: [],
+    scenario_scope_mode: 'all',
+    scenario_link_ids: [],
+    agent_scope_mode: 'all',
+    agent_link_ids: [],
   })
   // Distinguishes the "edit parent category" flow from the legacy
   // single-row edit flow inside the same modal. When this is true the
@@ -349,6 +406,8 @@ export default function MetricsManagement({
   const [aiCredentialId, setAICredentialId] = useState('')
   const [aiLlmConfig, setAILlmConfig] = useState<LLMGenerationConfig | null>(null)
   const [surfaceFilter, setSurfaceFilter] = useState<'all' | MetricSurface>('all')
+  const [tagFilter, setTagFilter] = useState<string>('all')
+  const [metricSearchQuery, setMetricSearchQuery] = useState('')
   const [editingMetric, setEditingMetric] = useState<Metric | null>(null)
   const [sortField, setSortField] = useState<'type' | 'method'>('type')
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc')
@@ -392,6 +451,10 @@ export default function MetricsManagement({
     // post-creation would break uniqueness invariants and so is not
     // supported in this iteration).
     scope: 'workspace' as 'workspace' | 'organization',
+    scenario_scope_mode: 'all' as 'all' | 'selected',
+    scenario_link_ids: [] as string[],
+    agent_scope_mode: 'all' as 'all' | 'selected',
+    agent_link_ids: [] as string[],
   })
 
   const singleMetricValuePayloadJson = useMemo(() => {
@@ -839,6 +902,8 @@ export default function MetricsManagement({
       // parent + every child with workspace_id=NULL so the whole
       // category subtree appears in every workspace.
       scope?: 'workspace' | 'organization'
+      scenario_ids?: string[]
+      agent_ids?: string[]
     }) =>
       draftMode
         ? apiClient.createMetricDraftWithChildren(payload)
@@ -889,6 +954,8 @@ export default function MetricsManagement({
         capture_rationale: boolean
         supported_surfaces: string[]
         enabled_surfaces: string[]
+        scenario_ids?: string[]
+        agent_ids?: string[]
       }
       childrenToUpdate: Array<{
         id: string
@@ -1004,7 +1071,7 @@ export default function MetricsManagement({
           (suggestion.enabled_surfaces as MetricSurface[]) || [fallbackSurface],
         custom_data_type: inferredCustomDataType,
         enum_options_csv:
-          !isText && Array.isArray(cfg.options) ? cfg.options.join(', ') : prev.enum_options_csv,
+          !isText && Array.isArray(cfg.options) ? enumOptionsToCsv(cfg.options) : prev.enum_options_csv,
         number_min: !isText ? Number(cfg.min ?? prev.number_min) : prev.number_min,
         number_max: !isText ? Number(cfg.max ?? prev.number_max) : prev.number_max,
         number_step: !isText ? Number(cfg.step ?? prev.number_step) : prev.number_step,
@@ -1032,6 +1099,10 @@ export default function MetricsManagement({
       capture_rationale: false,
       selection_mode: 'single_choice',
       scope: 'workspace',
+      scenario_scope_mode: 'all',
+      scenario_link_ids: [],
+      agent_scope_mode: 'all',
+      agent_link_ids: [],
       children: [
         { local_id: 'c1', name: '', description: '', example: '' },
       ],
@@ -1131,6 +1202,10 @@ export default function MetricsManagement({
       allow_discovery: false,
       compare_transcripts: false,
       scope: 'workspace',
+      scenario_scope_mode: 'all',
+      scenario_link_ids: [],
+      agent_scope_mode: 'all',
+      agent_link_ids: [],
     })
   }
 
@@ -1197,12 +1272,34 @@ export default function MetricsManagement({
       // does not accept ``scope``, so we omit it when editing to keep
       // the body honest.
       ...(!editingMetric ? { scope: formData.scope } : {}),
+      ...(editingMetric?.parent_metric_id
+        ? {}
+        : {
+            ...(formData.scenario_scope_mode === 'selected'
+              ? { scenario_ids: formData.scenario_link_ids }
+              : editingMetric
+                ? { scenario_ids: [] as string[] }
+                : { scenario_ids: [] as string[] }),
+            ...(formData.agent_scope_mode === 'selected'
+              ? { agent_ids: formData.agent_link_ids }
+              : editingMetric
+                ? { agent_ids: [] as string[] }
+                : { agent_ids: [] as string[] }),
+          }),
     }
   }
 
   const handleCreate = () => {
     if (!formData.name.trim()) {
       showToast('Please enter a metric name', 'error')
+      return
+    }
+    if (formData.scenario_scope_mode === 'selected' && formData.scenario_link_ids.length === 0) {
+      showToast('Select at least one scenario for scenario-scoped metrics', 'error')
+      return
+    }
+    if (formData.agent_scope_mode === 'selected' && formData.agent_link_ids.length === 0) {
+      showToast('Select at least one agent for agent-scoped metrics', 'error')
       return
     }
     createMutation.mutate(buildPayload() as any)
@@ -1319,7 +1416,7 @@ export default function MetricsManagement({
           : metric.metric_type === 'number'
             ? 'number_range'
             : 'boolean')) as CustomDataType,
-      enum_options_csv: Array.isArray(metric.custom_config?.options) ? metric.custom_config.options.join(', ') : '',
+      enum_options_csv: enumOptionsToCsv(metric.custom_config?.options),
       number_min: Number(metric.custom_config?.min ?? 0),
       number_max: Number(metric.custom_config?.max ?? 10),
       number_step: Number(metric.custom_config?.step ?? 1),
@@ -1334,6 +1431,10 @@ export default function MetricsManagement({
       scope:
         metric.scope ||
         (metric.workspace_id == null ? 'organization' : 'workspace'),
+      scenario_scope_mode: metric.scenario_ids?.length ? 'selected' : 'all',
+      scenario_link_ids: metric.scenario_ids || [],
+      agent_scope_mode: metric.agent_ids?.length ? 'selected' : 'all',
+      agent_link_ids: metric.agent_ids || [],
     })
     setIsCustomMetricMode(metric.metric_origin === 'custom')
     setShowCreateModal(true)
@@ -1378,6 +1479,10 @@ export default function MetricsManagement({
       capture_rationale: inheritedRationale,
       children: existingChildren,
       deleted_child_ids: [],
+      scenario_scope_mode: parent.scenario_ids?.length ? 'selected' : 'all',
+      scenario_link_ids: parent.scenario_ids || [],
+      agent_scope_mode: parent.agent_ids?.length ? 'selected' : 'all',
+      agent_link_ids: parent.agent_ids || [],
     })
     setShowCreateModal(true)
   }
@@ -1386,6 +1491,14 @@ export default function MetricsManagement({
     if (!editingMetric) return
     if (!formData.name.trim()) {
       showToast('Please enter a metric name', 'error')
+      return
+    }
+    if (formData.scenario_scope_mode === 'selected' && formData.scenario_link_ids.length === 0) {
+      showToast('Select at least one scenario for scenario-scoped metrics', 'error')
+      return
+    }
+    if (formData.agent_scope_mode === 'selected' && formData.agent_link_ids.length === 0) {
+      showToast('Select at least one agent for agent-scoped metrics', 'error')
       return
     }
     updateMutation.mutate({ id: editingMetric.id, data: buildPayload() as any })
@@ -1407,6 +1520,20 @@ export default function MetricsManagement({
     )
     if (namedChildren.length < 1) {
       alert('Please add at least one named label')
+      return
+    }
+    if (
+      editCategoryForm.scenario_scope_mode === 'selected' &&
+      editCategoryForm.scenario_link_ids.length === 0
+    ) {
+      alert('Select at least one scenario for scenario-scoped metrics')
+      return
+    }
+    if (
+      editCategoryForm.agent_scope_mode === 'selected' &&
+      editCategoryForm.agent_link_ids.length === 0
+    ) {
+      alert('Select at least one agent for agent-scoped metrics')
       return
     }
     // Parent-level rationale toggle goes on the parent payload only.
@@ -1444,6 +1571,14 @@ export default function MetricsManagement({
         capture_rationale: editCategoryForm.capture_rationale,
         supported_surfaces: editCategoryForm.surfaces,
         enabled_surfaces: editCategoryForm.surfaces,
+        scenario_ids:
+          editCategoryForm.scenario_scope_mode === 'selected'
+            ? editCategoryForm.scenario_link_ids
+            : [],
+        agent_ids:
+          editCategoryForm.agent_scope_mode === 'selected'
+            ? editCategoryForm.agent_link_ids
+            : [],
       },
       childrenToUpdate,
       childrenToCreate,
@@ -1524,9 +1659,33 @@ export default function MetricsManagement({
     setSortDirection('asc')
   }
 
+  const availableTags = useMemo(() => {
+    const tags = new Set<string>()
+    for (const metric of metrics as Metric[]) {
+      for (const t of collectMetricTags(metric)) {
+        tags.add(t)
+      }
+    }
+    return Array.from(tags).sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: 'base' }),
+    )
+  }, [metrics])
+
+  useEffect(() => {
+    if (tagFilter !== 'all' && !availableTags.includes(tagFilter)) {
+      setTagFilter('all')
+    }
+  }, [availableTags, tagFilter])
+
   const disabledMetrics = useMemo(
-    () => metrics.filter((metric: Metric) => !metric.enabled),
-    [metrics]
+    () =>
+      (metrics as Metric[]).filter(
+        (metric) =>
+          !metric.enabled &&
+          metricMatchesTagFilter(metric, tagFilter) &&
+          metricMatchesSearchQuery(metric, metricSearchQuery),
+      ),
+    [metrics, tagFilter, metricSearchQuery],
   )
 
   const toggleDisabledMetricSelection = (metricId: string) => {
@@ -1564,7 +1723,11 @@ export default function MetricsManagement({
 
     return metrics
       .filter(
-        (metric: Metric) => metric.enabled && !metric.parent_metric_id,
+        (metric: Metric) =>
+          metric.enabled &&
+          !metric.parent_metric_id &&
+          metricMatchesTagFilter(metric, tagFilter) &&
+          metricMatchesSearchQuery(metric, metricSearchQuery),
       )
       .sort((a: Metric, b: Metric) => {
         const aValue =
@@ -1580,7 +1743,16 @@ export default function MetricsManagement({
         // Stable secondary sort for predictable ordering within groups.
         return a.name.localeCompare(b.name)
       })
-  }, [metrics, sortField, sortDirection])
+  }, [metrics, sortField, sortDirection, tagFilter, metricSearchQuery])
+
+  const enabledTopLevelCount = useMemo(
+    () =>
+      (metrics as Metric[]).filter((m) => m.enabled && !m.parent_metric_id).length,
+    [metrics],
+  )
+
+  const metricsListFiltersActive =
+    tagFilter !== 'all' || metricSearchQuery.trim().length > 0
 
   return (
     <div className="space-y-6">
@@ -1614,26 +1786,7 @@ export default function MetricsManagement({
               setIsCustomMetricMode(true)
               setEditingMetric(null)
               setCreateMode('single')
-              setFormData({
-                name: '',
-                description: '',
-                metric_origin: 'custom',
-                metric_type: 'rating',
-                custom_data_type: 'enum',
-                enum_options_csv: '',
-                number_min: 0,
-                number_max: 10,
-                number_step: 1,
-                tags_csv: '',
-                supported_surfaces: ['agent'],
-                enabled_surfaces: ['agent'],
-                trigger: 'always',
-                enabled: true,
-                capture_rationale: false,
-                allow_discovery: false,
-                compare_transcripts: false,
-                scope: 'workspace',
-              })
+              resetForm()
               resetCategoryForm()
               tryOpenCreateModal()
             }}
@@ -1660,34 +1813,109 @@ export default function MetricsManagement({
 
       {/* Metrics Table */}
       <div className="bg-white shadow rounded-lg overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-200">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="text-lg font-semibold text-gray-900">Metrics</h2>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500">Surface:</span>
-              <select
-                value={surfaceFilter}
-                onChange={(e) => setSurfaceFilter(e.target.value as 'all' | MetricSurface)}
-                className="text-sm border border-gray-300 rounded-md px-2 py-1"
-              >
-                <option value="all">All</option>
-                {ALL_SURFACES.map((surface) => (
-                  <option key={surface} value={surface}>
-                    {metricSurfaceLabel(surface)}
-                  </option>
-                ))}
-              </select>
+        <div className="px-6 py-4 border-b border-gray-200 space-y-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <h2 className="text-lg font-semibold text-gray-900 shrink-0">Metrics</h2>
+            <div className="relative w-full sm:flex-1 sm:max-w-md">
+              <Search
+                className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
+                aria-hidden
+              />
+              <input
+                type="search"
+                value={metricSearchQuery}
+                onChange={(e) => setMetricSearchQuery(e.target.value)}
+                placeholder="Search name, description, tags, labels…"
+                className="w-full rounded-lg border border-gray-300 py-2 pl-9 pr-9 text-sm text-gray-900 placeholder:text-gray-400 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
+                aria-label="Search metrics"
+              />
+              {metricSearchQuery ? (
+                <button
+                  type="button"
+                  onClick={() => setMetricSearchQuery('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-gray-400 hover:text-gray-600"
+                  aria-label="Clear search"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              ) : null}
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-3 shrink-0">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-500">Surface:</span>
+                <select
+                  value={surfaceFilter}
+                  onChange={(e) => setSurfaceFilter(e.target.value as 'all' | MetricSurface)}
+                  className="text-sm border border-gray-300 rounded-md px-2 py-1"
+                >
+                  <option value="all">All</option>
+                  {ALL_SURFACES.map((surface) => (
+                    <option key={surface} value={surface}>
+                      {metricSurfaceLabel(surface)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-500">Tag:</span>
+                <select
+                  value={tagFilter}
+                  onChange={(e) => setTagFilter(e.target.value)}
+                  className="text-sm border border-gray-300 rounded-md px-2 py-1 max-w-[14rem]"
+                  disabled={availableTags.length === 0}
+                  title={
+                    availableTags.length === 0
+                      ? 'No metrics have tags yet'
+                      : 'Show metrics with this tag (includes category children)'
+                  }
+                >
+                  <option value="all">All tags</option>
+                  {availableTags.map((tag) => (
+                    <option key={tag} value={tag}>
+                      {tag}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
           </div>
+          {!isLoading && enabledTopLevelCount > 0 && metricsListFiltersActive ? (
+            <p className="text-xs text-gray-500">
+              Showing {sortedTopLevelMetrics.length} of {enabledTopLevelCount} enabled metrics
+            </p>
+          ) : null}
         </div>
         {isLoading ? (
           <div className="p-6 text-center text-gray-500">Loading...</div>
         ) : sortedTopLevelMetrics.length === 0 ? (
           <div className="p-12 text-center">
-            <p className="text-gray-500 mb-2">No enabled metrics.</p>
-            <p className="text-sm text-gray-500">
-              Use <span className="font-medium">Add Metric</span> above to enable one from the disabled list.
-            </p>
+            {enabledTopLevelCount > 0 && metricsListFiltersActive ? (
+              <>
+                <p className="text-gray-500 mb-2">No enabled metrics match your filters.</p>
+                <p className="text-sm text-gray-500">
+                  Try a different search or{' '}
+                  <button
+                    type="button"
+                    className="font-medium text-primary-600 hover:text-primary-700"
+                    onClick={() => {
+                      setMetricSearchQuery('')
+                      setTagFilter('all')
+                    }}
+                  >
+                    clear filters
+                  </button>
+                  .
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-gray-500 mb-2">No enabled metrics.</p>
+                <p className="text-sm text-gray-500">
+                  Use <span className="font-medium">Add Metric</span> above to enable one from the
+                  disabled list.
+                </p>
+              </>
+            )}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -1815,6 +2043,34 @@ export default function MetricsManagement({
                               >
                                 Shared
                               </span>
+                            )}
+                            {metric.agent_ids?.length ? (
+                              <span
+                                className="px-2 py-0.5 text-[11px] font-medium bg-sky-50 text-sky-900 rounded border border-sky-200"
+                                title="Agent-scoped metric"
+                              >
+                                Agent-specific
+                              </span>
+                            ) : (
+                              !isParent && (
+                                <span className="px-2 py-0.5 text-[11px] text-gray-500 rounded bg-gray-100">
+                                  All agents
+                                </span>
+                              )
+                            )}
+                            {metric.scenario_ids?.length ? (
+                              <span
+                                className="px-2 py-0.5 text-[11px] font-medium bg-amber-50 text-amber-900 rounded border border-amber-200"
+                                title="Scenario-scoped metric"
+                              >
+                                Scenario-specific
+                              </span>
+                            ) : (
+                              !isParent && (
+                                <span className="px-2 py-0.5 text-[11px] text-gray-500 rounded bg-gray-100">
+                                  All scenarios
+                                </span>
+                              )
                             )}
                             {isParent && (
                               <span
@@ -2645,6 +2901,40 @@ export default function MetricsManagement({
                       <option value="always">Always</option>
                     </select>
                   </div>
+                  {!isEditingCategory &&
+                  !(editingMetric?.parent_metric_id || editingMetric?.selection_mode) &&
+                  createMode !== 'category' ? (
+                    <>
+                      <MetricAgentScopeField
+                        mode={formData.agent_scope_mode}
+                        agentIds={formData.agent_link_ids}
+                        onModeChange={(mode) =>
+                          setFormData((s) => ({
+                            ...s,
+                            agent_scope_mode: mode,
+                            agent_link_ids: mode === 'all' ? [] : s.agent_link_ids,
+                          }))
+                        }
+                        onAgentIdsChange={(agent_link_ids) =>
+                          setFormData((s) => ({ ...s, agent_link_ids }))
+                        }
+                      />
+                      <MetricScenarioScopeField
+                        mode={formData.scenario_scope_mode}
+                        scenarioIds={formData.scenario_link_ids}
+                        onModeChange={(mode) =>
+                          setFormData((s) => ({
+                            ...s,
+                            scenario_scope_mode: mode,
+                            scenario_link_ids: mode === 'all' ? [] : s.scenario_link_ids,
+                          }))
+                        }
+                        onScenarioIdsChange={(scenario_link_ids) =>
+                          setFormData((s) => ({ ...s, scenario_link_ids }))
+                        }
+                      />
+                    </>
+                  ) : null}
                   {/* Visibility scope picker. Only meaningful at
                       CREATE time — the metrics API does not support
                       flipping a row between workspace and org scope
@@ -2821,6 +3111,35 @@ export default function MetricsManagement({
                         className={MODERN_INPUT_CLASS}
                       />
                     </div>
+
+                    <MetricAgentScopeField
+                      mode={categoryForm.agent_scope_mode}
+                      agentIds={categoryForm.agent_link_ids}
+                      onModeChange={(mode) =>
+                        setCategoryForm((s) => ({
+                          ...s,
+                          agent_scope_mode: mode,
+                          agent_link_ids: mode === 'all' ? [] : s.agent_link_ids,
+                        }))
+                      }
+                      onAgentIdsChange={(agent_link_ids) =>
+                        setCategoryForm((s) => ({ ...s, agent_link_ids }))
+                      }
+                    />
+                    <MetricScenarioScopeField
+                      mode={categoryForm.scenario_scope_mode}
+                      scenarioIds={categoryForm.scenario_link_ids}
+                      onModeChange={(mode) =>
+                        setCategoryForm((s) => ({
+                          ...s,
+                          scenario_scope_mode: mode,
+                          scenario_link_ids: mode === 'all' ? [] : s.scenario_link_ids,
+                        }))
+                      }
+                      onScenarioIdsChange={(scenario_link_ids) =>
+                        setCategoryForm((s) => ({ ...s, scenario_link_ids }))
+                      }
+                    />
 
                     {/* Enable LLM Rationale toggle. The flag is stored
                         on every child (via MetricChildDraft.capture_rationale)
@@ -3076,6 +3395,20 @@ export default function MetricsManagement({
                         categoryForm.children.filter((c) => c.name.trim()).length < 1
                       }
                       onClick={() => {
+                        if (
+                          categoryForm.scenario_scope_mode === 'selected' &&
+                          categoryForm.scenario_link_ids.length === 0
+                        ) {
+                          showToast('Select at least one scenario for scenario-scoped metrics', 'error')
+                          return
+                        }
+                        if (
+                          categoryForm.agent_scope_mode === 'selected' &&
+                          categoryForm.agent_link_ids.length === 0
+                        ) {
+                          showToast('Select at least one agent for agent-scoped metrics', 'error')
+                          return
+                        }
                         // Parent-level capture_rationale is now sent on
                         // the PARENT payload (the LLM emits one
                         // rationale per category, never per child). The
@@ -3105,6 +3438,14 @@ export default function MetricsManagement({
                           enabled_surfaces: categoryForm.surfaces,
                           children: cleanedChildren,
                           scope: categoryForm.scope,
+                          scenario_ids:
+                            categoryForm.scenario_scope_mode === 'selected'
+                              ? categoryForm.scenario_link_ids
+                              : [],
+                          agent_ids:
+                            categoryForm.agent_scope_mode === 'selected'
+                              ? categoryForm.agent_link_ids
+                              : [],
                         })
                       }}
                     >
@@ -3173,6 +3514,35 @@ export default function MetricsManagement({
                         className={MODERN_INPUT_CLASS}
                       />
                     </div>
+
+                    <MetricAgentScopeField
+                      mode={editCategoryForm.agent_scope_mode}
+                      agentIds={editCategoryForm.agent_link_ids}
+                      onModeChange={(mode) =>
+                        setEditCategoryForm((s) => ({
+                          ...s,
+                          agent_scope_mode: mode,
+                          agent_link_ids: mode === 'all' ? [] : s.agent_link_ids,
+                        }))
+                      }
+                      onAgentIdsChange={(agent_link_ids) =>
+                        setEditCategoryForm((s) => ({ ...s, agent_link_ids }))
+                      }
+                    />
+                    <MetricScenarioScopeField
+                      mode={editCategoryForm.scenario_scope_mode}
+                      scenarioIds={editCategoryForm.scenario_link_ids}
+                      onModeChange={(mode) =>
+                        setEditCategoryForm((s) => ({
+                          ...s,
+                          scenario_scope_mode: mode,
+                          scenario_link_ids: mode === 'all' ? [] : s.scenario_link_ids,
+                        }))
+                      }
+                      onScenarioIdsChange={(scenario_link_ids) =>
+                        setEditCategoryForm((s) => ({ ...s, scenario_link_ids }))
+                      }
+                    />
 
                     <div className="md:col-span-2 rounded-xl border border-gray-200 bg-gray-50/70 p-3.5">
                       <label className="flex items-start gap-2.5 cursor-pointer">

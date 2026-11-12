@@ -16,13 +16,14 @@ from loguru import logger
 from app.dependencies import get_db, get_organization_id, get_workspace_id, get_api_key
 from app.core.api_rate_limit import enforce_resource_create_rate_limit
 from app.core.oss_quotas import enforce_oss_quota
-from app.core.auth import Principal
+from app.core.auth import Principal, get_principal
 from app.services.billing.flexprice_service import record_agent_test_setup_generated
 from app.models.database import (
     Agent, ConversationEvaluation, TestAgentConversation, VoiceBundle,
     AIProvider, Integration, IntegrationPlatform, CallMediumEnum,
     Evaluator, EvaluatorResult, EvaluatorSuite, CallRecording, Scenario,
 )
+from app.services.agents.favorites import apply_favorite, favorite_agent_ids, set_favorite
 from sqlalchemy import and_
 from app.models.schemas import (
     AgentCreate,
@@ -31,6 +32,8 @@ from app.models.schemas import (
     AgentPhoneAssignmentCheckResponse,
     AgentPhoneAssignmentConflict,
     CallMediumEnum as CallMediumEnumSchema,
+    GenerateProductionPromptRequest,
+    GenerateProductionPromptResponse,
     GenerateTestPromptRequest,
     GenerateTestPromptResponse,
     GenerateScenariosFromPromptRequest,
@@ -335,6 +338,73 @@ def _scenario_draft_responses(scenarios) -> list[GeneratedScenarioDraftResponse]
         GeneratedScenarioDraftResponse(name=s.name, description=s.description, goal=s.goal)
         for s in scenarios
     ]
+
+
+@router.post("/generate-production-prompt", response_model=GenerateProductionPromptResponse)
+async def generate_production_prompt(
+    data: GenerateProductionPromptRequest,
+    background_tasks: BackgroundTasks,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Generate a production system prompt from an agent brief (hosted agents)."""
+    from app.services.testing.agent_test_setup_generation import (
+        generate_production_prompt_from_brief,
+    )
+    from app.services.usage.context import (
+        LLMUsageContext,
+        LLMUsageProductSection,
+        llm_usage_context,
+    )
+
+    if not data.brief.strip():
+        raise HTTPException(400, "Agent brief is required")
+
+    provider_enum, model_str = _get_llm_provider_and_model(
+        organization_id, db, data.provider, data.model, data.credential_id
+    )
+
+    try:
+        with llm_usage_context(
+            LLMUsageContext(
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                product_section=LLMUsageProductSection.AGENTS,
+            )
+        ):
+            result = generate_production_prompt_from_brief(
+                data.brief,
+                agent_name=data.agent_name,
+                language=data.language,
+                call_type=data.call_type,
+                additional_context=data.additional_context,
+                llm_provider=provider_enum,
+                llm_model=model_str,
+                organization_id=organization_id,
+                db=db,
+                llm_config=data.llm_config,
+                credential_id=data.credential_id,
+            )
+        background_tasks.add_task(
+            record_agent_test_setup_generated,
+            organization_id,
+            uuid4(),
+            workspace_id=workspace_id,
+            purpose="production_prompt",
+            model=model_str,
+        )
+        return GenerateProductionPromptResponse(
+            production_prompt=result.production_prompt,
+            provider=result.provider,
+            model=result.model,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as e:
+        logger.error(f"[Agents] Production prompt generation failed: {repr(e)}")
+        raise HTTPException(500, f"AI generation failed: {str(e)}") from e
 
 
 @router.post("/generate-test-prompt", response_model=GenerateTestPromptResponse)
@@ -842,7 +912,50 @@ async def create_agent(
         except Exception as e:
             logger.warning(f"[Agents] Best-effort provider prompt sync failed on create: {e}")
 
-    return db_agent
+    if agent.knowledge_base_ids or agent.test_knowledge_base_ids:
+        from app.services.knowledge_bases.agent_links import (
+            KB_ROLE_PRODUCTION,
+            KB_ROLE_TEST,
+            replace_agent_knowledge_bases,
+        )
+
+        try:
+            for role, kb_ids in (
+                (KB_ROLE_PRODUCTION, agent.knowledge_base_ids),
+                (KB_ROLE_TEST, agent.test_knowledge_base_ids),
+            ):
+                if kb_ids:
+                    replace_agent_knowledge_bases(
+                        db,
+                        agent=db_agent,
+                        organization_id=organization_id,
+                        workspace_id=workspace_id,
+                        knowledge_base_ids=kb_ids,
+                        role=role,
+                    )
+            db.commit()
+            db.refresh(db_agent)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    from app.services.agents.agent_serializers import agent_to_response
+
+    return agent_to_response(db, db_agent)
+
+
+class AgentFavoriteUpdate(BaseModel):
+    favorite: bool
+
+
+def _with_favorites(db: Session, agents: list, user_id: Optional[UUID]) -> list:
+    from app.services.agents.agent_serializers import agents_to_responses
+
+    responses = agents_to_responses(db, agents)
+    starred = favorite_agent_ids(db, user_id=user_id, agent_ids=[agent.id for agent in agents])
+    return [
+        apply_favorite(response, is_favorite=agent.id in starred)
+        for agent, response in zip(agents, responses)
+    ]
 
 
 @router.get("", response_model=List[AgentResponse])
@@ -851,6 +964,7 @@ async def list_agents(
     limit: int = 100,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db)
 ):
     """Get list of all agents for the active workspace.
@@ -862,7 +976,7 @@ async def list_agents(
         Agent.organization_id == organization_id,
         Agent.workspace_id == workspace_id,
     ).offset(skip).limit(limit).all()
-    return agents
+    return _with_favorites(db, agents, principal.user_id)
 
 
 @router.get("/check-phone-assignment", response_model=AgentPhoneAssignmentCheckResponse)
@@ -924,6 +1038,7 @@ async def get_agent(
     agent_id: str,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db)
 ):
     """Get a specific agent by ID (UUID) or agent_id (6-digit) within the active workspace."""
@@ -949,7 +1064,45 @@ async def get_agent(
     
     if not agent:
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
-    return agent
+    return _with_favorites(db, [agent], principal.user_id)[0]
+
+
+@router.put("/{agent_id}/favorite", response_model=AgentResponse)
+def update_agent_favorite(
+    agent_id: str,
+    body: AgentFavoriteUpdate,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    """Star or unstar an agent for the signed-in user only."""
+    if principal.user_id is None:
+        raise HTTPException(status_code=400, detail="Sign in to save favorites")
+    try:
+        agent_uuid = UUID(agent_id)
+        agent = db.query(Agent).filter(
+            Agent.id == agent_uuid,
+            Agent.organization_id == organization_id,
+            Agent.workspace_id == workspace_id,
+        ).first()
+    except ValueError:
+        agent = db.query(Agent).filter(
+            Agent.agent_id == agent_id,
+            Agent.organization_id == organization_id,
+            Agent.workspace_id == workspace_id,
+        ).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+    set_favorite(
+        db,
+        user_id=principal.user_id,
+        agent_id=agent.id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        favorite=body.favorite,
+    )
+    return _with_favorites(db, [agent], principal.user_id)[0]
 
 
 @router.put("/{agent_id}", response_model=AgentResponse)
@@ -1040,6 +1193,8 @@ async def update_agent(
             )
 
     update_data = agent_update.model_dump(exclude_unset=True, exclude_none=False)
+    kb_ids_update = update_data.pop("knowledge_base_ids", None)
+    test_kb_ids_update = update_data.pop("test_knowledge_base_ids", None)
 
     if "chat_connection_config" in update_data:
         conn_for_storage = update_data.get("chat_connection_type") or db_agent.chat_connection_type
@@ -1151,6 +1306,30 @@ async def update_agent(
         if chat_err:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=chat_err)
     
+    if kb_ids_update is not None or test_kb_ids_update is not None:
+        from app.services.knowledge_bases.agent_links import (
+            KB_ROLE_PRODUCTION,
+            KB_ROLE_TEST,
+            replace_agent_knowledge_bases,
+        )
+
+        try:
+            for role, kb_ids in (
+                (KB_ROLE_PRODUCTION, kb_ids_update),
+                (KB_ROLE_TEST, test_kb_ids_update),
+            ):
+                if kb_ids is not None:
+                    replace_agent_knowledge_bases(
+                        db,
+                        agent=db_agent,
+                        organization_id=organization_id,
+                        workspace_id=workspace_id,
+                        knowledge_base_ids=kb_ids,
+                        role=role,
+                    )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     db.commit()
     db.refresh(db_agent)
 
@@ -1173,7 +1352,9 @@ async def update_agent(
             except Exception as e:
                 logger.warning(f"[Agents] Best-effort provider prompt sync failed on update: {e}")
 
-    return db_agent
+    from app.services.agents.agent_serializers import agent_to_response
+
+    return agent_to_response(db, db_agent)
 
 
 @router.post("/{agent_id}/sync-provider-prompt")

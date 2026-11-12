@@ -5,18 +5,17 @@ import { Link } from 'react-router-dom'
 import {
   AlertTriangle,
   ArrowRight,
-  Check,
   CheckCircle2,
   ExternalLink,
   GitBranch,
   Info,
   Loader2,
-  Pencil,
   Sparkles,
   X,
 } from 'lucide-react'
 
 import Button from '../../../components/Button'
+import ConfirmModal from '../../../components/ConfirmModal'
 import AIProviderModelPicker from '../../../components/AIProviderModelPicker'
 import { getIntegrationPlatformLogo } from '../../../config/providers'
 import type { LLMGenerationConfig } from '../../../config/llmGenerationParams'
@@ -24,6 +23,9 @@ import { apiClient } from '../../../lib/api'
 import { getApiErrorMessage } from '../../../lib/apiErrors'
 import AgentFlowChart from '../../promptPartials/components/AgentFlowChart'
 import PromptLineDiff, { PromptDiffViewToggle, type PromptDiffView } from './PromptLineDiff'
+import { EvaluationBackgroundJobCard } from './evalDetail/EvaluationBackgroundJobCard'
+import { getPromptImprovementsJobProgress } from './evalDetail/evaluationJobProgress'
+import PromptSuggestionList from './PromptSuggestionList'
 import type {
   AgentFlowGraph,
   EvaluationMetricClustersState,
@@ -33,24 +35,6 @@ import type {
   PromptImprovementSuggestion,
   PromptPushPreview,
 } from '../../../types/api'
-
-const GAP_LABEL_STYLES: Record<string, string> = {
-  LOGIC_GAP: 'bg-rose-50 text-rose-700 border-rose-200',
-  UNDERSPEC: 'bg-amber-50 text-amber-700 border-amber-200',
-  EXISTS_NO_TRIGGER: 'bg-sky-50 text-sky-700 border-sky-200',
-  MISSING: 'bg-violet-50 text-violet-700 border-violet-200',
-}
-
-const PRIORITY_STYLES: Record<string, string> = {
-  high: 'text-rose-700',
-  medium: 'text-amber-700',
-  low: 'text-gray-600',
-}
-
-const CHANGE_TYPE_STYLES: Record<string, string> = {
-  edit: 'bg-blue-50 text-blue-700 border-blue-200',
-  add: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-}
 
 function PromptPushMetaPill({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -92,18 +76,17 @@ export default function MetricPromptImprovementsPanel({
   const [pickerModel, setPickerModel] = useState('')
   const [pickerCredentialId, setPickerCredentialId] = useState('')
   const [pickerLlmConfig, setPickerLlmConfig] = useState<LLMGenerationConfig | null>(null)
-  const [llmPickerTouched, setLlmPickerTouched] = useState(false)
   const [agentPickerTouched, setAgentPickerTouched] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [replaceConfirmOpen, setReplaceConfirmOpen] = useState(false)
   const [activeSuggestionId, setActiveSuggestionId] = useState<string | null>(null)
-  const [editingId, setEditingId] = useState<string | null>(null)
-  const [draftText, setDraftText] = useState('')
   const [pushPreview, setPushPreview] = useState<PromptPushPreview | null>(null)
   const [pushConfirmOpen, setPushConfirmOpen] = useState(false)
   const [pushModalStep, setPushModalStep] = useState<'review' | 'confirm'>('review')
   const [confirmText, setConfirmText] = useState('')
   const [pushError, setPushError] = useState<string | null>(null)
   const [diffView, setDiffView] = useState<PromptDiffView>('split')
+  const [cancellingImprovements, setCancellingImprovements] = useState(false)
 
   useEffect(() => {
     if (!pushConfirmOpen) return
@@ -164,20 +147,6 @@ export default function MetricPromptImprovementsPanel({
     agentPickerTouched,
   ])
 
-  useEffect(() => {
-    if (llmPickerTouched) return
-    if (improvementsState?.provider) {
-      setPickerProvider(improvementsState.provider)
-    }
-    if (improvementsState?.model) {
-      setPickerModel(improvementsState.model)
-    }
-  }, [
-    improvementsState?.provider,
-    improvementsState?.model,
-    llmPickerTouched,
-  ])
-
   const generateMutation = useMutation({
     mutationFn: () => {
       const payload: {
@@ -197,7 +166,7 @@ export default function MetricPromptImprovementsPanel({
       if (!linkedImportedAgentPartialId && effectiveAgentId) {
         payload.imported_agent_id = effectiveAgentId
       }
-      return apiClient.generateCallImportEvaluationPromptImprovements(
+      return apiClient.callImports.generateCallImportEvaluationPromptImprovements(
         callImportId,
         evaluationId,
         payload,
@@ -235,9 +204,8 @@ export default function MetricPromptImprovementsPanel({
       suggestion_id: string
       review_status: 'pending' | 'accepted' | 'rejected'
       edited_text?: string | null
-    }) => apiClient.reviewCallImportEvaluationPromptImprovement(callImportId, evaluationId, data),
+    }) => apiClient.callImports.reviewCallImportEvaluationPromptImprovement(callImportId, evaluationId, data),
     onSuccess: () => {
-      setEditingId(null)
       setPushPreview(null)
       setConfirmText('')
       onGenerated()
@@ -246,7 +214,7 @@ export default function MetricPromptImprovementsPanel({
   })
 
   const previewMutation = useMutation({
-    mutationFn: () => apiClient.previewCallImportEvaluationPromptPush(callImportId, evaluationId),
+    mutationFn: () => apiClient.callImports.previewCallImportEvaluationPromptPush(callImportId, evaluationId),
     onSuccess: (preview) => {
       setPushError(null)
       setConfirmText('')
@@ -269,7 +237,7 @@ export default function MetricPromptImprovementsPanel({
 
   const pushMutation = useMutation({
     mutationFn: (pushToLive: boolean) =>
-      apiClient.pushCallImportEvaluationPrompt(callImportId, evaluationId, 'confirm', {
+      apiClient.callImports.pushCallImportEvaluationPrompt(callImportId, evaluationId, 'confirm', {
         pushToLive,
       }),
     onSuccess: (_data, pushToLive) => {
@@ -334,17 +302,156 @@ export default function MetricPromptImprovementsPanel({
     )
   }
 
-  if (improvementsState?.status === 'running') {
+  const handleStopImprovements = async () => {
+    setCancellingImprovements(true)
+    try {
+      await apiClient.callImports.cancelCallImportEvaluationPromptImprovements(
+        callImportId,
+        evaluationId,
+      )
+      onGenerated()
+    } finally {
+      setCancellingImprovements(false)
+    }
+  }
+
+  const handleResumeImprovements = async () => {
+    setCancellingImprovements(true)
+    setError(null)
+    try {
+      await apiClient.callImports.generateCallImportEvaluationPromptImprovements(
+        callImportId,
+        evaluationId,
+        {
+          resume: true,
+          provider: pickerProvider || undefined,
+          model: pickerModel || undefined,
+          credential_id: pickerCredentialId || undefined,
+          imported_agent_id:
+            improvementsState?.imported_agent_id || effectiveAgentId || undefined,
+        },
+      )
+      onGenerated()
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail
+      setError(
+        typeof detail === 'string'
+          ? detail
+          : 'Failed to resume prompt improvements.',
+      )
+    } finally {
+      setCancellingImprovements(false)
+    }
+  }
+
+  const llmReady = Boolean(pickerProvider.trim() && pickerModel.trim())
+  const llmPickerBlock = (
+    <div className="rounded-md border border-gray-200 bg-white p-2.5">
+      <p className="text-xs font-medium text-gray-800 mb-0.5">
+        LLM for prompt improvements
+      </p>
+      <p className="text-[11px] text-gray-500 mb-2">
+        Select a provider and model. Generate and resume stay off until both
+        are chosen.
+      </p>
+      <AIProviderModelPicker
+        provider={pickerProvider}
+        model={pickerModel}
+        credentialId={pickerCredentialId}
+        onProviderChange={setPickerProvider}
+        onCredentialIdChange={setPickerCredentialId}
+        onModelChange={setPickerModel}
+        llm_config={pickerLlmConfig}
+        onLLMConfigChange={setPickerLlmConfig}
+        disabled={
+          generateMutation.isPending ||
+          cancellingImprovements ||
+          improvementsState?.status === 'running'
+        }
+        size="sm"
+      />
+    </div>
+  )
+
+  if (
+    improvementsState?.status === 'cancelled' ||
+    improvementsState?.status === 'failed'
+  ) {
+    const isCancelled = improvementsState.status === 'cancelled'
+    const progress = improvementsState.progress
     return (
-      <section className="rounded-lg border border-amber-200 bg-amber-50/60 px-4 py-3">
-        <p className="text-sm font-semibold text-gray-900 inline-flex items-center gap-2">
-          <Loader2 className="h-4 w-4 animate-spin text-amber-600" />
-          Generating prompt improvement suggestions…
+      <section
+        className={`rounded-lg border px-3 py-2.5 ${isCancelled
+          ? 'border-gray-200 bg-gray-50/80'
+          : 'border-red-200 bg-red-50/50'
+          }`}
+      >
+        <p className="text-xs font-semibold text-gray-900">
+          {isCancelled
+            ? 'Prompt / agent improvements stopped'
+            : 'Prompt / agent improvements failed'}
         </p>
-        <p className="text-xs text-amber-800 mt-2">
-          Mapping clusters from this evaluation against the selected imported agent prompt.
+        <p
+          className={`text-[11px] mt-1 ${isCancelled ? 'text-gray-600' : 'text-red-700'
+            }`}
+        >
+          {improvementsState.error_message ||
+            (isCancelled
+              ? 'Progress was saved; you can resume from the completed metric groups.'
+              : 'Generation failed.')}
         </p>
+        {progress?.total_groups ? (
+          <p className="text-[10px] text-gray-500 mt-1">
+            Saved progress: {progress.completed_groups ?? 0} / {progress.total_groups}{' '}
+            metric groups
+          </p>
+        ) : null}
+        <div className="mt-3">{llmPickerBlock}</div>
+        {error ? <p className="mt-2 text-xs text-red-600">{error}</p> : null}
+        <div className="mt-2 flex justify-end gap-2">
+          <Button
+            size="sm"
+            variant="primary"
+            onClick={handleResumeImprovements}
+            isLoading={cancellingImprovements}
+            disabled={cancellingImprovements || !clustersReady || !llmReady}
+          >
+            Resume
+          </Button>
+        </div>
       </section>
+    )
+  }
+
+  if (improvementsState?.status === 'running') {
+    const groupCount = clustersState?.groups?.length ?? 0
+    const progressView = getPromptImprovementsJobProgress(
+      improvementsState,
+      groupCount,
+    )
+    return (
+      <EvaluationBackgroundJobCard
+        title="Prompt / agent improvements"
+        progress={
+          improvementsState.heartbeat_stale
+            ? {
+              ...progressView,
+              phaseLabel:
+                'No worker has updated this job for a while. Resume picks up from the saved groups.',
+            }
+            : progressView
+        }
+        onStop={() => {
+          void handleStopImprovements()
+        }}
+        stopLoading={cancellingImprovements}
+        onResume={
+          improvementsState.heartbeat_stale
+            ? handleResumeImprovements
+            : undefined
+        }
+        resumeLoading={cancellingImprovements}
+      />
     )
   }
 
@@ -384,6 +491,7 @@ export default function MetricPromptImprovementsPanel({
         </div>
       ) : (
         <div className="space-y-3">
+          {llmPickerBlock}
           {linkedImportedAgentPartialId ? (
             <div className="rounded-md border border-amber-200 bg-amber-50/70 px-3 py-2.5 text-sm text-gray-800">
               <p>
@@ -427,8 +535,14 @@ export default function MetricPromptImprovementsPanel({
           <div className="flex flex-wrap items-end gap-3">
             <button
               type="button"
-              disabled={!effectiveAgentId || generateMutation.isPending}
-              onClick={() => generateMutation.mutate()}
+              disabled={!effectiveAgentId || !llmReady || generateMutation.isPending}
+              onClick={() => {
+                if (improvementsState?.status === 'completed') {
+                  setReplaceConfirmOpen(true)
+                  return
+                }
+                generateMutation.mutate()
+              }}
               className="inline-flex items-center gap-2 rounded-md bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-50"
             >
               {generateMutation.isPending ? (
@@ -436,36 +550,8 @@ export default function MetricPromptImprovementsPanel({
               ) : (
                 <Sparkles className="h-4 w-4" />
               )}
-              Generate suggestions
+              {improvementsState?.status === 'completed' ? 'Regenerate' : 'Generate suggestions'}
             </button>
-          </div>
-
-          <div className="rounded-md border border-gray-200 bg-gray-50 p-2.5">
-            <p className="text-[11px] text-gray-500 mb-2">
-              Choose the LLM used to generate improvement suggestions. Leave unset to
-              select a provider and model explicitly.
-            </p>
-            <AIProviderModelPicker
-              provider={pickerProvider}
-              model={pickerModel}
-              credentialId={pickerCredentialId}
-              onProviderChange={(next) => {
-                setLlmPickerTouched(true)
-                setPickerProvider(next)
-              }}
-              onCredentialIdChange={(next) => {
-                setLlmPickerTouched(true)
-                setPickerCredentialId(next)
-              }}
-              onModelChange={(next) => {
-                setLlmPickerTouched(true)
-                setPickerModel(next)
-              }}
-              llm_config={pickerLlmConfig}
-              onLLMConfigChange={setPickerLlmConfig}
-              disabled={generateMutation.isPending}
-              size="sm"
-            />
           </div>
         </div>
       )}
@@ -480,6 +566,7 @@ export default function MetricPromptImprovementsPanel({
           <button
             type="button"
             disabled={
+              !llmReady ||
               generateFlowchartMutation.isPending ||
               flowchartStatus === 'generating' ||
               flowchartStatus === 'mapping'
@@ -500,13 +587,6 @@ export default function MetricPromptImprovementsPanel({
       ) : null}
 
       {error ? <p className="text-xs text-red-600">{error}</p> : null}
-
-      {improvementsState?.status === 'failed' ? (
-        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 inline-flex items-start gap-2">
-          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
-          <span>{improvementsState.error_message || 'Generation failed.'}</span>
-        </div>
-      ) : null}
 
       {improvementsState?.overview ? (
         <div className="rounded-md border border-gray-100 bg-gray-50 px-3 py-2 text-sm text-gray-700">
@@ -546,233 +626,17 @@ export default function MetricPromptImprovementsPanel({
       ) : null}
 
       {improvementsState?.suggestions?.length ? (
-        <div className="space-y-3 min-w-0">
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
-            <span className="text-xs font-medium text-gray-600">Suggestion diffs</span>
-            <PromptDiffViewToggle view={diffView} onChange={setDiffView} />
-          </div>
-          {improvementsState.suggestions.map((suggestion, index) => {
-            const isActive = activeSuggestionId === suggestion.id
-            const changeType = suggestion.change_type || 'add'
-            const changeLabel = changeType === 'edit' ? 'Edit existing' : 'New addition'
-            const reviewStatus = suggestion.review_status || 'pending'
-            const isAccepted = reviewStatus === 'accepted'
-            const isRejected = reviewStatus === 'rejected'
-            const isApplied = reviewStatus === 'applied'
-            const isPending = reviewStatus === 'pending' || reviewStatus === undefined
-
-            const cardSurfaceClass = isApplied
-              ? 'border-sky-300 bg-sky-50/50 ring-1 ring-sky-200/80'
-              : isAccepted
-              ? 'border-emerald-300 bg-emerald-50/50 ring-1 ring-emerald-200/80'
-              : isRejected
-                ? 'border-rose-200 bg-rose-50/35 ring-1 ring-rose-100'
-                : isActive
-                  ? 'border-primary-300 bg-primary-50/30'
-                  : 'border-gray-200 bg-gray-50/60'
-
-            return (
-              <article
-                key={suggestion.id}
-                className={`rounded-md border p-3 space-y-2 min-w-0 overflow-hidden transition-all duration-200 ${cardSurfaceClass}`}
-              >
-                <div className="flex flex-wrap items-center gap-2 min-w-0">
-                  <button
-                    type="button"
-                    onClick={() => handleSuggestionFocus(suggestion)}
-                    className="text-sm font-semibold text-gray-900 break-words min-w-0 flex-1 text-left hover:text-primary-700"
-                  >
-                    {index + 1}. {suggestion.metric_name} · {suggestion.cluster_label}
-                  </button>
-                  <span
-                    className={`text-[10px] uppercase tracking-wide font-semibold rounded border px-1.5 py-0.5 ${
-                      CHANGE_TYPE_STYLES[changeType] || 'bg-gray-100 text-gray-700 border-gray-200'
-                    }`}
-                  >
-                    {changeLabel}
-                  </span>
-                  <span
-                    className={`text-[10px] uppercase tracking-wide font-semibold rounded border px-1.5 py-0.5 ${
-                      GAP_LABEL_STYLES[suggestion.gap_label] || 'bg-gray-100 text-gray-700 border-gray-200'
-                    }`}
-                  >
-                    {suggestion.gap_label}
-                  </span>
-                  <span
-                    className={`text-xs font-medium ${
-                      PRIORITY_STYLES[suggestion.priority] || 'text-gray-600'
-                    }`}
-                  >
-                    {suggestion.priority} priority
-                  </span>
-                  <span className="text-xs text-gray-500 tabular-nums">
-                    {suggestion.share_pct.toFixed(1)}% cluster share
-                  </span>
-                </div>
-
-                {suggestion.target_section ? (
-                  <p className="text-xs text-gray-600 break-words">
-                    <span className="font-medium">Target section:</span>{' '}
-                    {suggestion.target_section}
-                  </p>
-                ) : null}
-
-                {suggestion.flow_node_label ? (
-                  <p className="text-xs text-gray-600 break-words">
-                    <span className="font-medium">Agent logic node:</span>{' '}
-                    <button
-                      type="button"
-                      onClick={() => handleSuggestionFocus(suggestion)}
-                      className="text-primary-700 hover:text-primary-800 underline-offset-2 hover:underline"
-                    >
-                      {suggestion.flow_node_label}
-                    </button>
-                  </p>
-                ) : null}
-
-                {suggestion.current_gap ? (
-                  <p className="text-xs text-gray-600 break-words">
-                    <span className="font-medium">Current gap:</span> {suggestion.current_gap}
-                  </p>
-                ) : null}
-
-                {suggestion.rationale ? (
-                  <p className="text-xs text-gray-500 break-words">{suggestion.rationale}</p>
-                ) : null}
-
-                <PromptLineDiff
-                  view={diffView}
-                  leftLabel={changeType === 'edit' ? 'Current excerpt' : '—'}
-                  rightLabel={changeType === 'edit' ? 'Suggested text' : 'New section'}
-                  before={changeType === 'edit' ? suggestion.anchor_excerpt || '' : ''}
-                  after={
-                    suggestion.edited_text?.trim()
-                      ? suggestion.edited_text
-                      : suggestion.suggested_text
-                  }
-                  maxHeightClass="max-h-64"
-                />
-
-                {editingId === suggestion.id ? (
-                  <div className="space-y-2">
-                    <textarea
-                      value={draftText}
-                      onChange={(event) => setDraftText(event.target.value)}
-                      rows={6}
-                      className="w-full rounded border border-gray-300 px-2 py-1.5 text-xs font-mono text-gray-800"
-                    />
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        disabled={reviewMutation.isPending || !draftText.trim()}
-                        onClick={() =>
-                          reviewMutation.mutate({
-                            suggestion_id: suggestion.id,
-                            review_status: 'accepted',
-                            edited_text: draftText,
-                          })
-                        }
-                        className="rounded border border-emerald-300 bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-800 disabled:opacity-50"
-                      >
-                        Accept edited text
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setEditingId(null)}
-                        className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {isApplied ? (
-                      <p className="inline-flex items-center gap-1.5 rounded-md border border-sky-300 bg-sky-100 px-2.5 py-1.5 text-xs font-medium text-sky-900">
-                        <Check className="h-3.5 w-3.5 shrink-0" />
-                        Applied — saved to the prompt partial
-                      </p>
-                    ) : null}
-                    {isAccepted ? (
-                      <p className="inline-flex items-center gap-1.5 rounded-md border border-emerald-300 bg-emerald-100 px-2.5 py-1.5 text-xs font-medium text-emerald-900">
-                        <Check className="h-3.5 w-3.5 shrink-0" />
-                        Accepted — included when you push the live prompt
-                      </p>
-                    ) : null}
-                    {isRejected ? (
-                      <p className="inline-flex items-center gap-1.5 rounded-md border border-rose-200 bg-rose-100/80 px-2.5 py-1.5 text-xs font-medium text-rose-900">
-                        <X className="h-3.5 w-3.5 shrink-0" />
-                        Rejected — excluded from the composed prompt
-                      </p>
-                    ) : null}
-                    <div className="flex flex-wrap items-center gap-2">
-                      {isPending ? (
-                        <span
-                          className="text-[10px] uppercase tracking-wide font-semibold rounded border px-1.5 py-0.5 bg-gray-100 text-gray-600 border-gray-200"
-                        >
-                          pending
-                        </span>
-                      ) : null}
-                      <button
-                        type="button"
-                        disabled={reviewMutation.isPending || isAccepted || isApplied}
-                        onClick={() =>
-                          reviewMutation.mutate({
-                            suggestion_id: suggestion.id,
-                            review_status: 'accepted',
-                          })
-                        }
-                        className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition ${
-                          isAccepted
-                            ? 'border border-emerald-500 bg-emerald-600 text-white cursor-default shadow-sm'
-                            : 'border border-emerald-300 bg-white text-emerald-800 hover:bg-emerald-50'
-                        }`}
-                      >
-                        <Check className="h-3 w-3" />
-                        {isAccepted ? 'Accepted' : 'Accept this change'}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={reviewMutation.isPending || isRejected || isApplied}
-                        onClick={() =>
-                          reviewMutation.mutate({
-                            suggestion_id: suggestion.id,
-                            review_status: 'rejected',
-                          })
-                        }
-                        className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition ${
-                          isRejected
-                            ? 'border border-rose-400 bg-rose-600 text-white cursor-default shadow-sm'
-                            : 'border border-rose-300 bg-white text-rose-800 hover:bg-rose-50'
-                        }`}
-                      >
-                        <X className="h-3 w-3" />
-                        {isRejected ? 'Rejected' : 'Reject this change'}
-                      </button>
-                      {!isRejected ? (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setEditingId(suggestion.id)
-                            setDraftText(
-                              suggestion.edited_text?.trim()
-                                ? suggestion.edited_text
-                                : suggestion.suggested_text,
-                            )
-                          }}
-                          className="inline-flex items-center gap-1 rounded border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50"
-                        >
-                          <Pencil className="h-3 w-3" />
-                          Edit manually
-                        </button>
-                      ) : null}
-                    </div>
-                  </div>
-                )}
-              </article>
-            )
-          })}
-        </div>
+        <PromptSuggestionList
+          suggestions={improvementsState.suggestions}
+          onReview={(data) => reviewMutation.mutateAsync(data)}
+          isReviewing={reviewMutation.isPending}
+          diffView={diffView}
+          onDiffViewChange={setDiffView}
+          activeSuggestionId={activeSuggestionId}
+          onFocus={handleSuggestionFocus}
+          acceptedNote="Accepted — included when you push the live prompt"
+          appliedNote="Applied — saved to the prompt partial"
+        />
       ) : improvementsState?.status === 'completed' ? (
         <p className="text-sm text-gray-500">No suggestions were produced for this run.</p>
       ) : null}
@@ -797,11 +661,11 @@ export default function MetricPromptImprovementsPanel({
 
       {pushConfirmOpen && pushPreview && typeof document !== 'undefined'
         ? (() => {
-            const providerKey = (pushPreview.provider || '').toLowerCase() as IntegrationPlatform
-            const providerLogo = pushPreview.provider
-              ? getIntegrationPlatformLogo(providerKey)
-              : null
-            return createPortal(
+          const providerKey = (pushPreview.provider || '').toLowerCase() as IntegrationPlatform
+          const providerLogo = pushPreview.provider
+            ? getIntegrationPlatformLogo(providerKey)
+            : null
+          return createPortal(
             <div className="fixed inset-0 z-[9999] overflow-y-auto">
               <div className="flex min-h-full items-center justify-center p-4 sm:p-6">
                 <div
@@ -855,13 +719,12 @@ export default function MetricPromptImprovementsPanel({
                       return (
                         <div key={s.id} className="flex items-center gap-2 flex-1 min-w-0">
                           <span
-                            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${
-                              done
-                                ? 'bg-primary-600 text-white'
-                                : active
-                                  ? 'bg-primary-100 text-primary-700 ring-2 ring-primary-500'
-                                  : 'bg-white text-gray-400 border border-gray-200'
-                            }`}
+                            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${done
+                              ? 'bg-primary-600 text-white'
+                              : active
+                                ? 'bg-primary-100 text-primary-700 ring-2 ring-primary-500'
+                                : 'bg-white text-gray-400 border border-gray-200'
+                              }`}
                           >
                             {done ? <CheckCircle2 className="h-3.5 w-3.5" /> : i + 1}
                           </span>
@@ -885,7 +748,7 @@ export default function MetricPromptImprovementsPanel({
                     <PromptPushMetaPill label="Version">
                       v{pushPreview.partial_current_version ?? 1}
                       {(pushPreview.partial_next_version ?? 1) >
-                      (pushPreview.partial_current_version ?? 1)
+                        (pushPreview.partial_current_version ?? 1)
                         ? ` → v${pushPreview.partial_next_version}`
                         : ''}
                     </PromptPushMetaPill>
@@ -1075,8 +938,21 @@ export default function MetricPromptImprovementsPanel({
             </div>,
             document.body,
           )
-          })()
+        })()
         : null}
+      <ConfirmModal
+        isOpen={replaceConfirmOpen}
+        variant="warning"
+        title="Replace the current suggestions?"
+        description="The prompt suggestions already generated for this evaluation will be removed, and a new set will be generated."
+        confirmLabel="Regenerate"
+        isLoading={generateMutation.isPending}
+        onCancel={() => setReplaceConfirmOpen(false)}
+        onConfirm={() => {
+          setReplaceConfirmOpen(false)
+          generateMutation.mutate()
+        }}
+      />
     </section>
   )
 }

@@ -473,3 +473,125 @@ def test_rollup_legacy_import_failure_stays_partial_when_some_rows_failed(db_ses
 
     rollup_call_import_batch_status(db_session, call_import)
     assert call_import.status == CallImportStatus.PARTIAL
+
+
+def test_pending_source_row_indices_keeps_holes_below_the_max():
+    from app.services.call_imports.bulk_ops import pending_source_row_indices
+
+    existing = set(range(0, 250)) | set(range(500, 750))
+    missing = pending_source_row_indices(existing, 1000)
+    assert missing[0] == 250
+    assert 499 in missing
+    assert 500 not in missing
+    assert 749 not in missing
+    assert missing[-1] == 999
+
+
+def test_bulk_materialize_writes_explicit_missing_indices(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from app.services.call_imports.bulk_ops import bulk_materialize_call_import_rows
+
+    captured: dict = {}
+
+    def fake_insert(_db, _call_import_id, mappings, **_kwargs):
+        captured["indices"] = [row["row_index"] for row in mappings]
+        return len(mappings), []
+
+    monkeypatch.setattr(
+        "app.db_sharding.row_ops.bulk_insert_mappings_on_shards",
+        fake_insert,
+    )
+    call_import = SimpleNamespace(id=uuid4(), workspace_id=uuid4())
+    rows = [
+        {
+            "transcript": "a",
+            "conversation_id": "c1",
+            "recording_url": "https://example.test/a",
+            "parameter_values": {},
+        },
+        {
+            "transcript": "b",
+            "conversation_id": "c2",
+            "recording_url": "https://example.test/b",
+            "parameter_values": {},
+        },
+    ]
+    inserted, _pending = bulk_materialize_call_import_rows(
+        MagicMock(),
+        call_import,
+        rows,
+        uuid4(),
+        row_indices=[250, 499],
+    )
+    assert inserted == 2
+    assert captured["indices"] == [250, 499]
+
+
+def _seed_failed_diarisation_rows(db_session, count):
+    call_import, rows = _seed_import_with_rows(db_session, completed=count, pending=0)
+    for i, row in enumerate(rows):
+        row.recording_s3_key = f"recordings/conv-{i}.mp3"
+        row.diarised_transcript_status = "failed"
+    db_session.commit()
+    return call_import, rows
+
+
+def test_bulk_diarization_retry_by_status_covers_every_page(monkeypatch, db_session):
+    """Queued rows leave the ``failed`` filter; paging must not skip the rest."""
+    import app.services.call_imports.bulk_ops as bulk_ops
+
+    monkeypatch.setattr(bulk_ops, "is_sharding_enabled", lambda: False)
+    monkeypatch.setattr(bulk_ops, "_IMPORT_ROW_FILTER_PAGE_SIZE", 2)
+    monkeypatch.setattr(
+        "app.workers.concurrency.diarization_dispatch.store_row_diarization_params_batch",
+        lambda row_ids, _params: (list(row_ids), []),
+    )
+    monkeypatch.setattr(
+        "app.workers.concurrency.fair_diarization_dispatch.schedule_fair_diarization_dispatch",
+        lambda **_kw: None,
+    )
+    call_import, rows = _seed_failed_diarisation_rows(db_session, 5)
+
+    payload = CallImportTranscribeRequest(
+        stt_provider="deepgram",
+        stt_model="nova-2",
+        diarization_llm_provider="openai",
+        diarization_llm_model="gpt-4o-mini",
+        overwrite_existing=True,
+        row_filter={"diarised_status": "failed"},
+    )
+    result = execute_bulk_diarization(db_session, call_import, payload)
+
+    assert result.queued == 5
+    for row in rows:
+        db_session.refresh(row)
+        assert row.diarised_transcript_status == "pending"
+
+
+def test_bulk_delete_by_filter_covers_every_page(monkeypatch, db_session):
+    """Each delete shrinks the filtered results; paging must not skip the rest."""
+    import app.services.call_imports.bulk_ops as bulk_ops
+    from app.models.database import CallImportRow
+
+    monkeypatch.setattr(bulk_ops, "_IMPORT_ROW_FILTER_PAGE_SIZE", 2)
+    monkeypatch.setattr(
+        "app.api.v1.routes.call_imports._delete_s3_objects", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "app.api.v1.routes.call_imports._revoke_pending_tasks", lambda *a, **k: None
+    )
+    call_import, _rows = _seed_import_with_rows(db_session, completed=5, pending=0)
+
+    deleted = bulk_ops.execute_bulk_row_delete_by_filter(
+        db_session, call_import.organization_id, call_import
+    )
+
+    assert deleted == 5
+    assert (
+        db_session.query(CallImportRow)
+        .filter(CallImportRow.call_import_id == call_import.id)
+        .count()
+        == 0
+    )

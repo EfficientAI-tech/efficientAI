@@ -90,16 +90,25 @@ def stub_workers(db_session):
 
     class _UserInsightsTask:
         @staticmethod
-        def delay(evaluation_id, *, provider=None, model=None, max_llm_calls=None):
+        def _record(kwargs: Dict[str, Any]) -> types.SimpleNamespace:
             user_insights_calls.append(
                 {
-                    "evaluation_id": evaluation_id,
-                    "provider": provider,
-                    "model": model,
-                    "max_llm_calls": max_llm_calls,
+                    "evaluation_id": kwargs.get("evaluation_id"),
+                    "provider": kwargs.get("provider"),
+                    "model": kwargs.get("model"),
+                    "max_llm_calls": kwargs.get("max_llm_calls"),
                 }
             )
             return types.SimpleNamespace(id="user-insights-task-id")
+
+        @classmethod
+        def apply_async(cls, args=None, kwargs=None, **_options):
+            return cls._record(dict(kwargs or {}))
+
+        @classmethod
+        def delay(cls, evaluation_id, **kwargs):
+            kwargs["evaluation_id"] = evaluation_id
+            return cls._record(kwargs)
 
     fake_user_insights_module.generate_evaluation_user_insights_task = _UserInsightsTask()
 
@@ -604,3 +613,49 @@ def test_404_for_unknown_evaluation(
 # so future patches stay aware of it.
 def test_route_module_exports_summary_helper():
     assert hasattr(routes_module, "_tldr_summary_payload")
+
+
+def test_summary_stamped_with_count_at_input_time(
+    authenticated_client, db_session, org_id, seed_org, make_ai_provider, llm_stub
+):
+    """Rows that finish while the LLM runs are not in the summary, so the
+    stamp must be taken before generation and the summary must read stale."""
+    import redis
+
+    from app.services.call_imports import eval_progress_buffer as buf
+
+    try:
+        buf._client().ping()
+    except redis.RedisError:
+        pytest.skip("redis not reachable")
+
+    make_ai_provider(provider="openai", is_active=True)
+    call_import, evaluation, _ = _seed_eval_with_data(db_session, org_id)
+    evaluation.status = "running"
+    evaluation.total_rows = 10
+    db_session.commit()
+    eval_id = evaluation.id
+
+    real_generate = llm_stub.generate_response
+
+    def _generate_while_rows_finish(**kwargs):
+        # Three more calls finish (buffered in Redis) during generation.
+        buf.record_transition(
+            eval_id, completed_delta=3, failed_delta=0, remaining_delta=-3
+        )
+        return real_generate(**kwargs)
+
+    llm_stub.generate_response = _generate_while_rows_finish
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{eval_id}/insights",
+        json={},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["generated_at_completed_rows"] == 2
+
+    cached = authenticated_client.get(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{eval_id}/insights"
+    ).json()
+    assert cached["generated_at_completed_rows"] == 2
+    assert cached["is_stale"] is True

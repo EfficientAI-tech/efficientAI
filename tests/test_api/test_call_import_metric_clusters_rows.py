@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import types
 
+from app.models.database import CallImportEvaluationRow
 from tests.test_api.test_call_import_evaluation_insights import _seed_eval_with_data
 from tests.test_api.test_call_import_evaluation_rows_sorting import _seed_eval_with_rows
 from tests.test_api.test_call_import_evaluations import _stub_celery_revoke
@@ -145,6 +146,67 @@ def test_generate_metric_clusters_row_limit(
     assert body["status"] == "running"
     assert len(body["selected_evaluation_row_ids"]) == 2
     assert len(captured["evaluation_row_ids"]) == 2
+
+
+def test_resume_metric_clusters_keeps_saved_row_selection(
+    authenticated_client,
+    db_session,
+    org_id,
+    seed_org,
+    make_ai_provider,
+    monkeypatch,
+):
+    make_ai_provider(provider="openai", is_active=True)
+    call_import, evaluation, _ = _seed_eval_with_rows(
+        db_session,
+        org_id,
+        rows=[
+            {"conversation_id": f"c{i}", "status": "completed", "score_value": 0.2}
+            for i in range(5)
+        ],
+    )
+    saved_row = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == evaluation.id)
+        .order_by(CallImportEvaluationRow.created_at.asc())
+        .first()
+    )
+    saved_id = str(saved_row.id)
+    evaluation.metric_clusters = {
+        "status": "cancelled",
+        "job_run_id": "11111111-1111-1111-1111-111111111111",
+        "selected_evaluation_row_ids": [saved_id],
+        "progress": {
+            "phase": "synthesis",
+            "completed_batches": 1,
+            "total_batches": 1,
+            "completed_rows": 1,
+            "total_rows": 1,
+        },
+    }
+    db_session.commit()
+
+    captured: dict = {}
+
+    def fake_apply_async(*, kwargs=None, **_kw):
+        captured.update(kwargs or {})
+        return types.SimpleNamespace(id="cluster-task-resume")
+
+    monkeypatch.setattr(
+        "app.workers.tasks.generate_evaluation_metric_clusters.generate_evaluation_metric_clusters_task.apply_async",
+        fake_apply_async,
+    )
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/metric-clusters",
+        json={"resume": True},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["selected_evaluation_row_ids"] == [saved_id]
+    assert body["progress"]["completed_batches"] == 1
+    assert captured["evaluation_row_ids"] == [saved_id]
+    assert captured["job_run_id"] == "11111111-1111-1111-1111-111111111111"
 
 
 def test_generate_metric_clusters_stamps_last_updated_by_email(

@@ -43,7 +43,7 @@ export default function ClusterHierarchyExplorer({
   client,
 }: {
   state: EvaluationMetricClustersState
-  client: MetricClustersClient
+  client: Pick<MetricClustersClient, 'buildEvidenceHref'>
 }) {
   const [search, setSearch] = useState('')
   const [expandedMetrics, setExpandedMetrics] = useState<Set<string>>(() => new Set())
@@ -271,7 +271,7 @@ function ClusterHierarchyDetail({
 }: {
   selection: TreeSelection | null
   state: EvaluationMetricClustersState
-  client: MetricClustersClient
+  client: Pick<MetricClustersClient, 'buildEvidenceHref'>
 }) {
   if (!selection) {
     return <p className="text-sm text-gray-500">Select a node in the tree.</p>

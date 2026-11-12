@@ -55,11 +55,24 @@ def _schedule_trailing_import_rollup(call_import_id: UUID) -> None:
         logger.debug("import trailing rollup enqueue failed: {}", exc)
 
 
-def platform_discovery_blocks_terminal_status(call_import) -> bool:
+def platform_discovery_blocks_terminal_status(
+    call_import,
+    db: Session | None = None,
+) -> bool:
     if (getattr(call_import, "source_format", None) or "").lower() != "platform":
         return False
     discovery = (getattr(call_import, "discovery_status", None) or "").strip().lower()
-    return discovery in {"queued", "running"}
+    if discovery not in {"queued", "running"}:
+        return False
+    if db is not None:
+        from app.services.call_imports.bulk_ops import _aggregate_import_row_status_counts
+
+        total, _completed, _failed, pending, processing = (
+            _aggregate_import_row_status_counts(db, call_import.id)
+        )
+        if total > 0 and pending == 0 and processing == 0:
+            return False
+    return True
 
 
 def maybe_record_import_row_transition(
@@ -67,6 +80,7 @@ def maybe_record_import_row_transition(
     *,
     previous_status: Optional[str],
     new_status: Optional[str],
+    db: Session | None = None,
 ) -> None:
     if previous_status is None or new_status is None:
         return
@@ -82,6 +96,28 @@ def maybe_record_import_row_transition(
         call_import_id,
         previous_status=prev,
         new_status=new,
+        db=db,
+    )
+
+
+def record_import_progress_before_row_commit(
+    call_import_id: UUID,
+    *,
+    previous_status,
+    new_status,
+    db: Session | None = None,
+) -> None:
+    """Record Redis progress delta before the row terminal status is committed.
+
+    Debounced rollup recounts only see committed rows. Recording after commit
+    lets another worker rollup (SQL includes the row, then clear Redis) race
+    ahead of this worker's +1 and inflate ``merge_import_counters_for_ui``.
+    """
+    maybe_record_import_row_transition(
+        call_import_id,
+        previous_status=previous_status,
+        new_status=new_status,
+        db=db,
     )
 
 
@@ -91,22 +127,30 @@ def schedule_debounced_import_rollup(
     *,
     force: bool = False,
 ) -> None:
-    """Flush Redis deltas and optionally run full status aggregate."""
+    """Run debounced full status aggregate (Redis deltas flush on recount only)."""
     from app.models.database import CallImport
     from app.services.call_imports.bulk_ops import rollup_call_import_batch_status
-    from app.services.call_imports.progress_counters import flush_import_progress_to_catalog
 
     cid = call_import.id if hasattr(call_import, "id") else call_import
     if not isinstance(cid, UUID):
         cid = UUID(str(cid))
 
-    flush_import_progress_to_catalog(db, cid)
+    parent = db.query(CallImport).filter(CallImport.id == cid).first()
+    if parent is None:
+        return
 
-    if platform_discovery_blocks_terminal_status(call_import):
+    from app.services.call_imports.platform_discovery_sync import (
+        sync_platform_discovery_when_import_rows_idle,
+    )
+
+    sync_platform_discovery_when_import_rows_idle(db, parent)
+    db.refresh(parent)
+
+    if platform_discovery_blocks_terminal_status(parent, db=db):
         from app.models.enums import CallImportStatus
 
-        if call_import.status != CallImportStatus.DELETING:
-            call_import.status = CallImportStatus.PROCESSING
+        if parent.status != CallImportStatus.DELETING:
+            parent.status = CallImportStatus.PROCESSING
         return
 
     should_aggregate = force
@@ -128,7 +172,4 @@ def schedule_debounced_import_rollup(
         _schedule_trailing_import_rollup(cid)
         return
 
-    parent = db.query(CallImport).filter(CallImport.id == cid).first()
-    if parent is None:
-        return
     rollup_call_import_batch_status(db, parent)

@@ -621,6 +621,63 @@ class AzureBlobService:
         except Exception as e:
             raise StorageError(f"Failed to generate SAS URL: {str(e)}")
 
+    def generate_presigned_put_url_by_key(
+        self,
+        key: str,
+        *,
+        content_type: str,
+        expiration: int = 3600,
+    ) -> str:
+        """SAS PUT URL for direct browser upload to a blob key."""
+        self._ensure_initialized()
+        if not self.is_enabled():
+            error_msg = (
+                self._initialization_error
+                or "Azure Blob Storage is not enabled or not configured"
+            )
+            raise StorageError(error_msg)
+
+        _, _, generate_blob_sas, BlobSasPermissions, _ = _get_azure_libs()
+        account_key = self._get_account_key_for_sas()
+        account_name = self._resolved_account_name or self._resolve_credentials()[0]
+        if not account_key or not account_name:
+            raise StorageError(
+                "Azure Blob Storage SAS URLs require an account key. "
+                "Set azure.connection_string or azure.account_key."
+            )
+        try:
+            sas_token = generate_blob_sas(
+                account_name=account_name,
+                container_name=self.bucket_name,
+                blob_name=key,
+                account_key=account_key,
+                permission=BlobSasPermissions(write=True, create=True),
+                expiry=datetime.now(UTC) + timedelta(seconds=expiration),
+            )
+            blob_client = self.container_client.get_blob_client(key)
+            return f"{blob_client.url}?{sas_token}"
+        except Exception as e:
+            raise StorageError(f"Failed to generate SAS PUT URL: {str(e)}")
+
+    def head_object_by_key(self, key: str) -> Optional[dict]:
+        """Return blob metadata or None when missing."""
+        self._ensure_initialized()
+        if not self.is_enabled():
+            return None
+        _, ResourceNotFoundError, _, _, _ = _get_azure_libs()
+        try:
+            props = self.container_client.get_blob_client(key).get_blob_properties()
+            return {
+                "ContentLength": int(props.size or 0),
+                "ContentType": props.content_settings.content_type
+                if props.content_settings
+                else None,
+            }
+        except ResourceNotFoundError:
+            return None
+        except Exception as e:
+            raise StorageError(f"Failed to head object {key}: {e}") from e
+
 
 # Singleton instance
 azure_blob_service = AzureBlobService()

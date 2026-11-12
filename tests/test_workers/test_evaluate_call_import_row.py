@@ -19,6 +19,31 @@ from app.models.database import (
 from app.models.enums import CallImportRowStatus, CallImportStatus
 
 
+@pytest.fixture(autouse=True)
+def _isolate_eval_worker_tests(monkeypatch):
+    import importlib
+    import sys
+
+    for mod_name in (
+        "app.workers.concurrency.limits",
+        "app.workers.concurrency.eval_dispatch",
+        "app.workers.concurrency.fair_dispatch",
+    ):
+        cached = sys.modules.get(mod_name)
+        if cached is not None and not getattr(cached, "__file__", None):
+            sys.modules.pop(mod_name, None)
+            importlib.import_module(mod_name)
+
+    monkeypatch.setattr(
+        "app.db_sharding.sessions.is_sharding_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "app.services.call_imports.metric_aggregate_cache.maybe_refresh_aggregate_cache_after_row",
+        lambda *_a, **_k: None,
+    )
+
+
 class _NonClosingSession:
     """Session proxy that ignores .close() so the test can still inspect rows
     after the Celery task wraps everything in a try/finally that closes the DB.
@@ -178,6 +203,21 @@ def _patch_eval_row_storage(monkeypatch):
     return fake
 
 
+
+def _settle_parent(db_session, evaluation):
+    """Bring the catalog parent up to date the way production does.
+
+    Workers only buffer progress in Redis; the finalize task (fenced shard
+    recount + terminal status) is what moves the catalog parent.
+    """
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        finalize_evaluation_progress,
+    )
+
+    finalize_evaluation_progress(db_session, evaluation.id)
+    db_session.refresh(evaluation)
+
+
 def _patch_row_location(monkeypatch, db_session):
     """Route shard-aware row lookup to the pytest session."""
 
@@ -289,7 +329,7 @@ def test_evaluate_call_import_row_happy_path(db_session, monkeypatch):
     assert result["status"] == "completed"
 
     db_session.refresh(eval_row)
-    db_session.refresh(evaluation)
+    _settle_parent(db_session, evaluation)
 
     assert eval_row.status == "completed"
     assert eval_row.error_message is None
@@ -352,7 +392,7 @@ def test_evaluate_call_import_row_marks_failed_on_empty_transcript(
     assert result["reason"] == "missing_transcript"
 
     db_session.refresh(eval_rows[0])
-    db_session.refresh(evaluation)
+    _settle_parent(db_session, evaluation)
     assert eval_rows[0].status == "failed"
     # Normal metrics always require a diarised transcript.
     err = (eval_rows[0].error_message or "").lower()
@@ -376,7 +416,7 @@ def test_evaluate_call_import_row_partial_when_mixed_outcomes(db_session, monkey
     task_module = _patch_dependencies(monkeypatch, db_session)
     task_module.evaluate_call_import_row_task.run(str(eval_rows[0].id))
 
-    db_session.refresh(evaluation)
+    _settle_parent(db_session, evaluation)
     assert evaluation.completed_rows == 1
     assert evaluation.failed_rows == 1
     assert evaluation.status == "partial"
@@ -395,7 +435,7 @@ def test_evaluate_call_import_row_handles_llm_exception(db_session, monkeypatch)
     assert result["status"] == "failed"
 
     db_session.refresh(eval_rows[0])
-    db_session.refresh(evaluation)
+    _settle_parent(db_session, evaluation)
     assert eval_rows[0].status == "failed"
     assert "LLM blew up" in (eval_rows[0].error_message or "")
     assert evaluation.status == "failed"
@@ -612,6 +652,7 @@ def _make_categorize_metric(
     name: str,
     *,
     compare_transcripts: bool = False,
+    scoring_method: str = "llm",
     description: str | None = None,
     parent_metric_id=None,
 ):
@@ -625,6 +666,7 @@ def _make_categorize_metric(
         name=name,
         metric_type="rating",
         compare_transcripts=compare_transcripts,
+        scoring_method=scoring_method,
         description=description,
         parent_metric_id=parent_metric_id,
     )
@@ -642,6 +684,7 @@ def test_categorize_metrics_buckets_comparison_metric_when_both_transcripts_pres
         transcript_metrics,
         audio_metrics,
         comparison_metrics,
+        computed_metrics,
         skipped,
     ) = _categorize_metrics(
         [cmp_metric, regular],
@@ -653,6 +696,7 @@ def test_categorize_metrics_buckets_comparison_metric_when_both_transcripts_pres
     assert [m.id for m in comparison_metrics] == [cmp_metric.id]
     assert [m.id for m in transcript_metrics] == [regular.id]
     assert audio_metrics == []
+    assert computed_metrics == []
     assert skipped == {}
 
 
@@ -666,6 +710,7 @@ def test_categorize_metrics_skips_comparison_metric_when_production_missing():
         transcript_metrics,
         _audio,
         comparison_metrics,
+        _computed,
         skipped,
     ) = _categorize_metrics(
         [cmp_metric],
@@ -693,6 +738,7 @@ def test_categorize_metrics_skips_comparison_metric_when_both_transcripts_missin
         _transcript_metrics,
         _audio,
         comparison_metrics,
+        _computed,
         skipped,
     ) = _categorize_metrics(
         [cmp_metric],
@@ -727,6 +773,7 @@ def test_categorize_metrics_auto_promotes_standalone_when_description_references
         transcript_metrics,
         _audio,
         comparison_metrics,
+        _computed,
         skipped,
     ) = _categorize_metrics(
         [auto_compare, plain],
@@ -738,6 +785,59 @@ def test_categorize_metrics_auto_promotes_standalone_when_description_references
     assert [m.id for m in comparison_metrics] == [auto_compare.id]
     assert [m.id for m in transcript_metrics] == [plain.id]
     assert skipped == {}
+
+
+def test_categorize_metrics_buckets_user_wer_as_computed():
+    from app.workers.tasks.evaluate_call_import_row import _categorize_metrics
+
+    wer = _make_categorize_metric("User WER", scoring_method="user_wer")
+    (
+        transcript_metrics,
+        _audio,
+        comparison_metrics,
+        computed_metrics,
+        skipped,
+    ) = _categorize_metrics(
+        [wer],
+        has_audio=False,
+        has_production_transcript=True,
+        has_diarised_transcript=True,
+    )
+    assert transcript_metrics == []
+    assert comparison_metrics == []
+    assert [m.id for m in computed_metrics] == [wer.id]
+    assert skipped == {}
+
+
+def test_row_needs_audio_phase_accepts_five_field_categorized_metrics(monkeypatch):
+    """Regression for dispatch_fair_eval_rows: do not 4-tuple-unpack categorize results."""
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        CategorizedMetrics,
+        row_needs_audio_phase,
+    )
+
+    wer = SimpleNamespace(id=uuid4(), name="User WER", scoring_method="user_wer")
+
+    monkeypatch.setattr(
+        "app.workers.tasks.evaluate_call_import_row_core.load_enabled_metrics",
+        lambda *_a, **_kw: [wer],
+    )
+    monkeypatch.setattr(
+        "app.workers.tasks.evaluate_call_import_row_core.categorize_row_metrics",
+        lambda *_a, **_kw: CategorizedMetrics([], [], [], [wer], {}),
+    )
+
+    assert (
+        row_needs_audio_phase(
+            db=None,
+            evaluation=SimpleNamespace(),
+            source_row=SimpleNamespace(),
+        )
+        is False
+    )
 
 
 def test_evaluate_call_import_row_scores_comparison_metric_with_both_transcripts(
@@ -1024,8 +1124,10 @@ def test_evaluate_call_import_row_skips_terminal_write_when_cancelled(
     assert refreshed.error_message == "Evaluation cancelled by user"
     assert refreshed.metric_scores in (None, {}, {} or None)
 
-    # Parent rollup still ran, so its counters reflect the cancelled row.
+    # The worker must not count the cancelled row itself; the cancel path's
+    # fenced recount (finalize here) is what reflects it on the parent.
     refreshed_eval = db_session.get(CallImportEvaluation, evaluation.id)
+    _settle_parent(db_session, refreshed_eval)
     assert refreshed_eval.failed_rows == 1
     assert refreshed_eval.completed_rows == 0
 
@@ -1041,7 +1143,7 @@ def test_rollup_parent_emits_pass_delta_when_leaving_running(db_session, monkeyp
         return True
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _capture,
     )
 
@@ -1070,7 +1172,7 @@ def test_rollup_parent_bills_only_retry_delta(db_session, monkeypatch):
         return True
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _capture,
     )
 
@@ -1109,7 +1211,7 @@ def test_rollup_parent_repeat_call_does_not_double_bill(db_session, monkeypatch)
         return True
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _capture,
     )
 
@@ -1143,7 +1245,7 @@ def test_rollup_parent_skips_billing_when_metric_rerun_unchanged(
         return True
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _capture,
     )
 
@@ -1172,7 +1274,7 @@ def test_rollup_parent_does_not_advance_watermark_when_billing_fails(
         return False
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _billing_fails,
     )
 
@@ -1202,7 +1304,7 @@ def test_rollup_parent_retries_billing_after_failed_ingest(db_session, monkeypat
         return attempts["count"] >= 2
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _billing_succeeds_on_retry,
     )
 
@@ -1236,7 +1338,7 @@ def test_rollup_parent_does_not_decrease_watermark_when_completed_rows_drop(
         return True
 
     monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        "app.services.billing.flexprice_service.buffer_call_import_evaluation_completed",
         _capture,
     )
 
@@ -1433,7 +1535,7 @@ def test_evaluate_call_import_row_audio_chain_enqueue_failure_marks_failed(
     assert redispatched["called"] is True
 
     db_session.refresh(eval_rows[0])
-    db_session.refresh(evaluation)
+    _settle_parent(db_session, evaluation)
     assert eval_rows[0].status == "failed"
     assert eval_rows[0].error_message == "Failed to enqueue LLM evaluation phase"
     assert eval_rows[0].finished_at is not None
@@ -2087,7 +2189,7 @@ def test_duplicate_task_scores_and_bills_the_row_once(db_session, monkeypatch):
     assert llm_calls == [1]
     assert usage_calls == [1]
     db_session.refresh(eval_row)
-    db_session.refresh(evaluation)
+    _settle_parent(db_session, evaluation)
     assert eval_row.status == "completed"
     assert evaluation.completed_rows == 1
 
@@ -2099,7 +2201,7 @@ def test_duplicate_task_scores_and_bills_the_row_once(db_session, monkeypatch):
     assert again == {"status": "skipped", "reason": "already_claimed"}
     assert llm_calls == [1]
     assert usage_calls == [1]
-    db_session.refresh(evaluation)
+    _settle_parent(db_session, evaluation)
     assert evaluation.completed_rows == 1
 
 
@@ -2171,6 +2273,7 @@ def test_second_terminal_write_does_not_advance_progress(db_session):
     eval_row.status = "running"
     db_session.commit()
 
+    eval_row_id = eval_row.id
     eval_row.status = "completed"
     eval_row.finished_at = datetime.now(timezone.utc)
     commit_terminal_row_and_rollup(
@@ -2179,9 +2282,10 @@ def test_second_terminal_write_does_not_advance_progress(db_session):
         eval_row,
         previous_row_status="running",
     )
-    db_session.refresh(evaluation)
+    _settle_parent(db_session, evaluation)
     assert evaluation.completed_rows == 1
 
+    eval_row = db_session.get(CallImportEvaluationRow, eval_row_id)
     eval_row.status = "completed"
     commit_terminal_row_and_rollup(
         db_session,
@@ -2189,7 +2293,7 @@ def test_second_terminal_write_does_not_advance_progress(db_session):
         eval_row,
         previous_row_status="running",
     )
-    db_session.refresh(evaluation)
+    _settle_parent(db_session, evaluation)
     db_session.refresh(eval_row)
     assert evaluation.completed_rows == 1
     assert eval_row.status == "completed"

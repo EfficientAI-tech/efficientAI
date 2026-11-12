@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
 import AnchoredSelect from './shared/AnchoredSelect'
@@ -178,6 +178,11 @@ export default function AIProviderModelPicker({
 
   const gatewayDirectModel =
     modelResolution.mode === 'gateway_direct' ? modelResolution.model : null
+
+  useEffect(() => {
+    if (!gatewayDirectModel || model === gatewayDirectModel) return
+    onModelChange(gatewayDirectModel)
+  }, [gatewayDirectModel, model, onModelChange])
 
   const catalogModels =
     modelResolution.mode === 'catalog' ? modelResolution.models : []

@@ -31,6 +31,11 @@ from app.models.schemas import (
     UserInsightEvidenceTurn,
 )
 from app.services.ai.llm_service import llm_service
+from app.services.evaluation_analysis_checkpoints import job_heartbeat_is_stale
+from app.services.import_eval_llm_output_budgets import (
+    IMPORT_EVAL_LLM_OUTPUT_FIRST,
+    IMPORT_EVAL_LLM_OUTPUT_RETRY,
+)
 
 MAX_LLM_CALLS_DEFAULT = 200
 MAX_LLM_CALLS_MIN = 20
@@ -38,8 +43,8 @@ MAX_LLM_CALLS_MAX = 500
 SYNTHESIS_CALLS = 1
 ROW_TRANSCRIPT_CHAR_CAP = 3000
 RATIONALE_CHAR_CAP = 600
-EXTRACTION_MAX_TOKENS = 1800
-SYNTHESIS_MAX_TOKENS = 2400
+EXTRACTION_MAX_TOKENS = IMPORT_EVAL_LLM_OUTPUT_FIRST
+SYNTHESIS_MAX_TOKENS = IMPORT_EVAL_LLM_OUTPUT_FIRST
 
 ProgressCallback = Callable[[int, int], None]
 
@@ -226,21 +231,40 @@ def _call_llm(
     max_tokens: int,
     usage_ctx: Optional[LLMUsageContext] = None,
 ) -> str:
+    """Two-step output budget: ``max_tokens`` then double on truncation."""
     from app.services.usage.context import get_usage_context, llm_usage_context
 
     effective_ctx = usage_ctx or get_usage_context()
+    retry_tokens = min(IMPORT_EVAL_LLM_OUTPUT_RETRY, max_tokens * 2)
+    budgets = [max_tokens] if retry_tokens <= max_tokens else [max_tokens, retry_tokens]
 
     def _run() -> str:
-        result = llm_service.generate_response(
-            messages=messages,
-            llm_provider=provider,
-            llm_model=model,
-            organization_id=organization_id,
-            db=db,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        return str(result.get("text") or "")
+        last_text = ""
+        for attempt_idx, token_budget in enumerate(budgets):
+            result = llm_service.generate_response(
+                messages=messages,
+                llm_provider=provider,
+                llm_model=model,
+                organization_id=organization_id,
+                db=db,
+                temperature=temperature,
+                max_tokens=token_budget,
+            )
+            last_text = str(result.get("text") or "")
+            if not result.get("truncated"):
+                return last_text
+            if attempt_idx < len(budgets) - 1:
+                logger.warning(
+                    "User insights LLM output truncated at max_tokens={} (model={}); retrying at {}.",
+                    token_budget,
+                    model,
+                    budgets[attempt_idx + 1],
+                )
+                continue
+            raise RuntimeError(
+                f"User insights LLM still truncated after max_tokens={token_budget} (model={model})."
+            )
+        return last_text
 
     if effective_ctx is not None:
         with llm_usage_context(effective_ctx):
@@ -590,7 +614,7 @@ def user_insights_state_from_raw(
     if not isinstance(raw, dict):
         return None
     status = raw.get("status")
-    if status not in {"idle", "running", "completed", "failed"}:
+    if status not in {"idle", "running", "completed", "failed", "cancelled"}:
         status = "idle"
 
     insights: List[EvaluationUserInsightItem] = []
@@ -615,12 +639,47 @@ def user_insights_state_from_raw(
     snapshot = raw.get("generated_at_completed_rows")
     snapshot_int = int(snapshot) if isinstance(snapshot, (int, float)) else 0
     progress_raw = raw.get("progress")
-    progress = (
-        {
-            "completed_llm_calls": int(progress_raw.get("completed_llm_calls") or 0),
-            "total_llm_calls": int(progress_raw.get("total_llm_calls") or 0),
-        }
-        if isinstance(progress_raw, dict)
+    progress: Optional[Dict[str, Any]] = None
+    if isinstance(progress_raw, dict):
+        progress = {}
+        for key, value in progress_raw.items():
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                progress[key] = int(value)
+            elif isinstance(value, str):
+                progress[key] = value
+        if progress:
+            if "completed_llm_calls" not in progress:
+                progress["completed_llm_calls"] = 0
+            if "total_llm_calls" not in progress:
+                progress["total_llm_calls"] = 0
+            from app.services.evaluation_analysis_checkpoints import batch_count_for_rows
+            from app.services.call_import_user_insights_wave import (
+                estimate_user_insights_total_llm_calls,
+            )
+
+            effective_total_rows = int(progress.get("total_rows") or 0) or completed_rows
+            if effective_total_rows > 0:
+                progress["total_rows"] = effective_total_rows
+                if not progress.get("total_batches"):
+                    progress["total_batches"] = batch_count_for_rows(
+                        effective_total_rows
+                    )
+                progress["total_llm_calls"] = estimate_user_insights_total_llm_calls(
+                    effective_total_rows
+                )
+                llm_used = max(
+                    int(raw.get("llm_calls_used") or 0),
+                    int(progress.get("completed_llm_calls") or 0),
+                )
+                progress["completed_llm_calls"] = llm_used
+
+    transcript_source_raw = raw.get("transcript_source")
+    transcript_source = (
+        str(transcript_source_raw).strip().lower()
+        if isinstance(transcript_source_raw, str)
+        and str(transcript_source_raw).strip().lower() in {"diarised", "production"}
         else None
     )
 
@@ -643,12 +702,14 @@ def user_insights_state_from_raw(
             raw.get("error_message") if isinstance(raw.get("error_message"), str) else None
         ),
         is_stale=completed_rows > snapshot_int and status == "completed",
+        heartbeat_stale=job_heartbeat_is_stale(raw),
+        transcript_source=transcript_source,
     )
 
 
 def user_insights_state_to_db(state: EvaluationUserInsightsState) -> Dict[str, Any]:
     """Serialize state for the JSON column."""
-    return {
+    payload: Dict[str, Any] = {
         "status": state.status,
         "insights": [item.model_dump(mode="json") for item in state.insights],
         "generated_at": (
@@ -663,3 +724,6 @@ def user_insights_state_to_db(state: EvaluationUserInsightsState) -> Dict[str, A
         "overview": state.overview,
         "error_message": state.error_message,
     }
+    if state.transcript_source:
+        payload["transcript_source"] = state.transcript_source
+    return payload

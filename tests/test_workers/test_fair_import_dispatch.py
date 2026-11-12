@@ -166,6 +166,41 @@ def test_dispatch_batch_persists_cursor_on_at_capacity(
 
 
 @patch(
+    "app.workers.concurrency.fair_import_dispatch._schedule_import_dispatch_deduped",
+)
+@patch(
+    "app.workers.concurrency.fair_import_dispatch._bump_dispatch_backoff_level",
+    return_value=3,
+)
+@patch(
+    "app.workers.concurrency.fair_import_dispatch._dispatch_batch_for_workspace",
+    return_value=(0, True, 0),
+)
+@patch("app.workers.concurrency.fair_import_dispatch._get_rr_cursor", return_value=0)
+def test_dispatch_at_capacity_uses_exponential_backoff(
+    _mock_cursor,
+    _mock_batch,
+    _mock_bump,
+    mock_schedule_deduped,
+    db_session,
+):
+    from app.workers.concurrency.fair_import_dispatch import (
+        dispatch_fair_import_rows_task,
+    )
+
+    _seed_pending_rows(db_session, workspace_count=1, jobs_per_ws=1)
+
+    with patch(
+        "app.workers.concurrency.fair_import_dispatch.SessionLocal",
+        return_value=db_session,
+    ):
+        dispatch_fair_import_rows_task.run(max_workspace_turns=1)
+
+    mock_schedule_deduped.assert_called_once()
+    assert mock_schedule_deduped.call_args.kwargs["countdown"] == 60
+
+
+@patch(
     "app.workers.concurrency.fair_import_dispatch.schedule_fair_import_dispatch",
 )
 @patch(
