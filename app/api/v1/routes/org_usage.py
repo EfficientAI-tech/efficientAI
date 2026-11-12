@@ -1358,13 +1358,16 @@ def get_usage_breakdown(
             db=db,
         ).group_by(*group_cols)
 
-        results = (
+        # Read one extra row so a full page of exactly `limit` rows is not
+        # reported as truncated when nothing follows it.
+        window = (
             query.order_by(*_breakdown_sort_exprs())
             .offset(offset)
-            .limit(limit)
+            .limit(limit + 1)
             .all()
         )
-        fetched_count = len(results)
+        truncated_at_limit = len(window) > limit
+        results = window[:limit]
 
         workspace_names: dict = {}
         if group_by == "workspace":
@@ -1510,7 +1513,7 @@ def get_usage_breakdown(
             group_by=group_by,
             rows=rows,
             total_count=len(rows),
-            truncated_at_limit=fetched_count >= limit,
+            truncated_at_limit=truncated_at_limit,
             usage_policy=_usage_policy_meta(access),
             last_updated_at=_last_updated(db, organization_id),
         )

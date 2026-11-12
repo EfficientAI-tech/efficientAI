@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import { Card, CardBody, Spinner } from '@heroui/react'
-import { ChevronRight, CircleDollarSign } from 'lucide-react'
+import { ChevronLeft, ChevronRight, CircleDollarSign } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import UsageFiltersBar from './UsageFiltersBar'
 import UsageDrillPath from './UsageDrillPath'
@@ -112,6 +112,32 @@ const NON_COMPOSITE_RESOURCE_TYPES = new Set([
 ])
 
 type TableRow = BreakdownRow | WorkspaceSourceRow
+
+const USAGE_TABLE_PAGE_SIZE = 100
+
+async function fetchUsageGroupRows(
+  params: Parameters<typeof apiClient.getOrgUsageBreakdown>[0],
+  rowsNeeded: number,
+  signal?: AbortSignal,
+) {
+  const rows: BreakdownRow[] = []
+  let offset = 0
+  let truncated = false
+  let groupBy = params.group_by || ''
+  while (rows.length < rowsNeeded) {
+    const limit = Math.min(USAGE_TABLE_PAGE_SIZE, rowsNeeded - rows.length)
+    const response = await apiClient.getOrgUsageBreakdown(
+      { ...params, limit, offset },
+      signal,
+    )
+    groupBy = response.group_by
+    rows.push(...response.rows)
+    truncated = Boolean(response.truncated_at_limit)
+    if (!truncated || response.rows.length === 0) break
+    offset += response.rows.length
+  }
+  return { rows, group_by: groupBy, truncated_at_limit: truncated }
+}
 
 const EMPTY_METRICS = {
   prompt_tokens: 0,
@@ -646,6 +672,32 @@ export default function Usage() {
     evaluation_id: callImportId ? evaluationId || undefined : undefined,
   }
 
+  const [tablePage, setTablePage] = useState(1)
+  const tableScrollRef = useRef<HTMLDivElement>(null)
+  const tableScopeKey = [
+    start,
+    end,
+    workspaceId,
+    callImportId,
+    dataset,
+    tagId,
+    evaluationId,
+    model,
+    usageKind,
+    productSection,
+    groupBy,
+    showWorkspaceComposite ? '1' : '0',
+  ].join('|')
+  const tableScopeRef = useRef(tableScopeKey)
+  if (tableScopeRef.current !== tableScopeKey) {
+    tableScopeRef.current = tableScopeKey
+    if (tablePage !== 1) setTablePage(1)
+  }
+
+  useEffect(() => {
+    tableScrollRef.current?.scrollTo({ top: 0 })
+  }, [tablePage])
+
   const usageQueryDefaults = {
     staleTime: 60_000,
     refetchOnWindowFocus: false,
@@ -671,12 +723,13 @@ export default function Usage() {
     isLoading: breakdownLoading,
     isFetching: breakdownFetching,
   } = useQuery({
-    queryKey: ['org-usage', 'breakdown', groupBy, dataParams],
+    queryKey: ['org-usage', 'breakdown', groupBy, dataParams, 'page', 1],
     queryFn: ({ signal }) =>
       apiClient.getOrgUsageBreakdown({
         ...dataParams,
         group_by: groupBy,
-        limit: 100,
+        limit: USAGE_TABLE_PAGE_SIZE,
+        offset: 0,
       }, signal),
     enabled: !showWorkspaceComposite,
     ...usageQueryDefaults,
@@ -686,18 +739,37 @@ export default function Usage() {
     },
   })
 
+  const firstPageFits = Boolean(breakdown) && !breakdown?.truncated_at_limit
+  const {
+    data: laterBreakdown,
+    isLoading: laterBreakdownLoading,
+    isFetching: laterBreakdownFetching,
+  } = useQuery({
+    queryKey: ['org-usage', 'breakdown', groupBy, dataParams, 'page', tablePage],
+    queryFn: ({ signal }) =>
+      apiClient.getOrgUsageBreakdown({
+        ...dataParams,
+        group_by: groupBy,
+        limit: USAGE_TABLE_PAGE_SIZE,
+        offset: (tablePage - 1) * USAGE_TABLE_PAGE_SIZE,
+      }, signal),
+    enabled: !showWorkspaceComposite && tablePage > 1 && !firstPageFits,
+    ...usageQueryDefaults,
+  })
+
+  const compositeDepth = tablePage * USAGE_TABLE_PAGE_SIZE
   const {
     data: importBreakdown,
     isLoading: importBreakdownLoading,
     isFetching: importBreakdownFetching,
   } = useQuery({
-    queryKey: ['org-usage', 'breakdown', 'call_import', dataParams],
+    queryKey: ['org-usage', 'breakdown', 'call_import', dataParams, compositeDepth],
     queryFn: ({ signal }) =>
-      apiClient.getOrgUsageBreakdown({
-        ...dataParams,
-        group_by: 'call_import',
-        limit: 100,
-      }, signal),
+      fetchUsageGroupRows(
+        { ...dataParams, group_by: 'call_import' },
+        compositeDepth,
+        signal,
+      ),
     enabled: showWorkspaceComposite,
     ...usageQueryDefaults,
   })
@@ -707,13 +779,13 @@ export default function Usage() {
     isLoading: resourceBreakdownLoading,
     isFetching: resourceBreakdownFetching,
   } = useQuery({
-    queryKey: ['org-usage', 'breakdown', 'resource', dataParams],
+    queryKey: ['org-usage', 'breakdown', 'resource', dataParams, compositeDepth],
     queryFn: ({ signal }) =>
-      apiClient.getOrgUsageBreakdown({
-        ...dataParams,
-        group_by: 'resource',
-        limit: 100,
-      }, signal),
+      fetchUsageGroupRows(
+        { ...dataParams, group_by: 'resource' },
+        compositeDepth,
+        signal,
+      ),
     enabled: showWorkspaceComposite,
     ...usageQueryDefaults,
   })
@@ -792,11 +864,15 @@ export default function Usage() {
     productSection,
   ])
 
-  const breakdownMatchesLevel = breakdown?.group_by === groupBy
+  const activeBreakdown =
+    !showWorkspaceComposite && tablePage > 1 && !firstPageFits
+      ? laterBreakdown
+      : breakdown
+  const breakdownMatchesLevel = activeBreakdown?.group_by === groupBy
   const rawRows = useMemo((): BreakdownRow[] => {
-    if (!breakdown || !breakdownMatchesLevel) return []
-    return breakdown.rows as BreakdownRow[]
-  }, [breakdown, breakdownMatchesLevel])
+    if (!activeBreakdown || !breakdownMatchesLevel) return []
+    return activeBreakdown.rows as BreakdownRow[]
+  }, [activeBreakdown, breakdownMatchesLevel])
 
   const mergeOptions = filterOptions
   const scopeActive = isUsageScopeActive(
@@ -814,12 +890,17 @@ export default function Usage() {
     () => filterTableRows(rawRows, usageKind, scopeActive),
     [rawRows, usageKind, scopeActive],
   )
-  const rows: TableRow[] = useMemo(() => {
+  const { rows, hasNextPage } = useMemo(() => {
     if (showWorkspaceComposite) {
       const importReady = importBreakdown?.group_by === 'call_import'
       const resourceReady = resourceBreakdown?.group_by === 'resource'
-      if (!importReady && !resourceReady) return []
-      return buildWorkspaceCompositeRows(
+      if (!importReady && !resourceReady) {
+        return { rows: [] as TableRow[], hasNextPage: false }
+      }
+      const streamsTruncated = Boolean(
+        importBreakdown?.truncated_at_limit || resourceBreakdown?.truncated_at_limit,
+      )
+      const merged = buildWorkspaceCompositeRows(
         importReady
           ? filterTableRows(importBreakdown.rows as BreakdownRow[], usageKind, scopeActive)
           : [],
@@ -827,10 +908,32 @@ export default function Usage() {
           ? filterTableRows(resourceBreakdown.rows as BreakdownRow[], usageKind, scopeActive)
           : [],
         mergeOptions,
-        padMissingRows,
+        padMissingRows && !streamsTruncated,
       )
+      const start = (tablePage - 1) * USAGE_TABLE_PAGE_SIZE
+      return {
+        rows: merged.slice(start, start + USAGE_TABLE_PAGE_SIZE),
+        hasNextPage:
+          merged.length > start + USAGE_TABLE_PAGE_SIZE || streamsTruncated,
+      }
     }
-    return mergeDrillRows(groupBy, filteredRawRows, mergeOptions, padMissingRows)
+    const decorated = mergeDrillRows(
+      groupBy,
+      filteredRawRows,
+      mergeOptions,
+      padMissingRows && firstPageFits,
+    )
+    if (firstPageFits) {
+      const start = (tablePage - 1) * USAGE_TABLE_PAGE_SIZE
+      return {
+        rows: decorated.slice(start, start + USAGE_TABLE_PAGE_SIZE),
+        hasNextPage: decorated.length > start + USAGE_TABLE_PAGE_SIZE,
+      }
+    }
+    return {
+      rows: decorated.slice(0, USAGE_TABLE_PAGE_SIZE),
+      hasNextPage: Boolean(activeBreakdown?.truncated_at_limit),
+    }
   }, [
     showWorkspaceComposite,
     importBreakdown,
@@ -841,6 +944,9 @@ export default function Usage() {
     padMissingRows,
     usageKind,
     scopeActive,
+    tablePage,
+    firstPageFits,
+    activeBreakdown,
   ])
 
   const breakdownStale =
@@ -849,10 +955,14 @@ export default function Usage() {
     ? (importBreakdownLoading || resourceBreakdownLoading) &&
       !importBreakdown &&
       !resourceBreakdown
-    : breakdownLoading && !breakdown
+    : tablePage > 1 && !firstPageFits
+      ? laterBreakdownLoading && !laterBreakdown
+      : breakdownLoading && !breakdown
   const tableFetching = showWorkspaceComposite
     ? importBreakdownFetching || resourceBreakdownFetching
-    : breakdownFetching
+    : tablePage > 1 && !firstPageFits
+      ? laterBreakdownFetching
+      : breakdownFetching
   const totals = summary?.totals
   const estimatedTotalCost =
     totals?.costs?.total_cost_usd ?? (totals?.total_cost_micro_usd || 0) / 1_000_000
@@ -862,15 +972,6 @@ export default function Usage() {
   const showTts =
     Boolean(totals?.tts_characters) ||
     rows.some((r) => Boolean(r.tts_characters))
-
-  const showTruncation =
-    (!showWorkspaceComposite &&
-      breakdownMatchesLevel &&
-      Boolean(breakdown?.truncated_at_limit)) ||
-    (showWorkspaceComposite &&
-      Boolean(
-        importBreakdown?.truncated_at_limit || resourceBreakdown?.truncated_at_limit,
-      ))
 
   const workspaceLabel =
     filterOptions?.workspaces?.find((w) => idKey(w.id) === idKey(workspaceId))?.name
@@ -1323,21 +1424,19 @@ export default function Usage() {
       />
 
       <Card shadow="sm" className="border border-gray-200 ring-1 ring-[#fde047]/25">
-        <div className="border-b border-gray-100 px-4 py-3 space-y-2">
+        <div className="border-b border-gray-100 px-4 py-3">
           <UsageDrillPath crumbs={drillCrumbs} levelLabel={levelHint} />
-          {showTruncation ? (
-            <p className="text-xs text-amber-700">
-              Showing the first 100 rows for this level. Narrow the date range or drill
-              further for complete detail.
-            </p>
-          ) : null}
         </div>
-        <CardBody className="p-0 overflow-x-auto max-h-[min(70vh,640px)] overflow-y-auto custom-scrollbar">
+        <CardBody className="p-0">
+          <div
+            ref={tableScrollRef}
+            className="overflow-x-auto max-h-[min(70vh,640px)] overflow-y-auto custom-scrollbar"
+          >
           {tableLoading || breakdownStale ? (
             <div className="flex justify-center py-12">
               <Spinner />
             </div>
-          ) : rows.length === 0 ? (
+          ) : rows.length === 0 && tablePage === 1 ? (
             <div className="py-12 text-center text-sm text-gray-500">
               No usage in this period for the current scope. Try 7d or 30d, or go back up a
               level.
@@ -1480,8 +1579,16 @@ export default function Usage() {
                 })}
               </tbody>
             </table>
+            <UsageTablePager
+              page={tablePage}
+              hasNext={hasNextPage}
+              disabled={tableFetching}
+              onPrev={() => setTablePage((page) => Math.max(1, page - 1))}
+              onNext={() => setTablePage((page) => page + 1)}
+            />
             </div>
           )}
+          </div>
         </CardBody>
       </Card>
 
@@ -1529,5 +1636,46 @@ function StatCard({
         </p>
       </CardBody>
     </Card>
+  )
+}
+
+function UsageTablePager({
+  page,
+  hasNext,
+  disabled,
+  onPrev,
+  onNext,
+}: {
+  page: number
+  hasNext: boolean
+  disabled?: boolean
+  onPrev: () => void
+  onNext: () => void
+}) {
+  if (page <= 1 && !hasNext) return null
+  const buttonClass =
+    'inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40'
+  return (
+    <div className="flex items-center justify-between gap-3 border-t border-gray-100 px-4 py-3">
+      <button
+        type="button"
+        className={buttonClass}
+        disabled={disabled || page <= 1}
+        onClick={onPrev}
+      >
+        <ChevronLeft className="h-4 w-4" />
+        Previous
+      </button>
+      <span className="text-sm font-medium text-gray-500">Page {page}</span>
+      <button
+        type="button"
+        className={buttonClass}
+        disabled={disabled || !hasNext}
+        onClick={onNext}
+      >
+        Next
+        <ChevronRight className="h-4 w-4" />
+      </button>
+    </div>
   )
 }

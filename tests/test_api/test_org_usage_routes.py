@@ -105,7 +105,7 @@ def test_summary_releases_single_flight_lock_when_query_raises(monkeypatch):
     monkeypatch.setattr(
         usage_routes,
         "_prepare_usage_read",
-        lambda org_id, endpoint, key, model: (None, True),
+        lambda org_id, endpoint, key, model: (None, True, 1),
     )
     monkeypatch.setattr(
         usage_routes,
