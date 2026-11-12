@@ -251,13 +251,13 @@ function isUsageScopeActive(
 ): boolean {
   return Boolean(
     workspaceId ||
-      callImportId ||
-      evaluationId ||
-      dataset ||
-      tagId ||
-      usageKind ||
-      model ||
-      productSection,
+    callImportId ||
+    evaluationId ||
+    dataset ||
+    tagId ||
+    usageKind ||
+    model ||
+    productSection,
   )
 }
 
@@ -782,7 +782,11 @@ export default function Usage() {
     queryKey: ['org-usage', 'breakdown', 'resource', dataParams, compositeDepth],
     queryFn: ({ signal }) =>
       fetchUsageGroupRows(
-        { ...dataParams, group_by: 'resource' },
+        {
+          ...dataParams,
+          group_by: 'resource',
+          omit_call_import_sources: true,
+        },
         compositeDepth,
         signal,
       ),
@@ -953,8 +957,8 @@ export default function Usage() {
     !showWorkspaceComposite && breakdownFetching && !breakdownMatchesLevel
   const tableLoading = showWorkspaceComposite
     ? (importBreakdownLoading || resourceBreakdownLoading) &&
-      !importBreakdown &&
-      !resourceBreakdown
+    !importBreakdown &&
+    !resourceBreakdown
     : tablePage > 1 && !firstPageFits
       ? laterBreakdownLoading && !laterBreakdown
       : breakdownLoading && !breakdown
@@ -1026,76 +1030,76 @@ export default function Usage() {
       label: 'Organization',
       onClick:
         workspaceId ||
-        callImportId ||
-        evaluationId ||
-        model ||
-        productSection
+          callImportId ||
+          evaluationId ||
+          model ||
+          productSection
           ? () =>
-              setParams({
-                workspace_id: null,
-                call_import_id: null,
-                resource_id: null,
-                model: null,
-                usage_kind: null,
-                product_section: null,
-              })
+            setParams({
+              workspace_id: null,
+              call_import_id: null,
+              resource_id: null,
+              model: null,
+              usage_kind: null,
+              product_section: null,
+            })
           : undefined,
     },
     ...(workspaceId
       ? [
-          {
-            label: workspaceLabel || 'Workspace',
-            onClick:
-              callImportId || evaluationId || model || productSection
-                ? () =>
-                    setParams({
-                      call_import_id: null,
-                      resource_id: null,
-                      model: null,
-                      usage_kind: null,
-                      product_section: null,
-                    })
-                : undefined,
-          },
-        ]
+        {
+          label: workspaceLabel || 'Workspace',
+          onClick:
+            callImportId || evaluationId || model || productSection
+              ? () =>
+                setParams({
+                  call_import_id: null,
+                  resource_id: null,
+                  model: null,
+                  usage_kind: null,
+                  product_section: null,
+                })
+              : undefined,
+        },
+      ]
       : []),
     ...(productSection
       ? [
-          {
-            label: productSectionLabel || 'Product area',
-            onClick:
-              model
-                ? () => setParams({ model: null, usage_kind: null })
-                : undefined,
-          },
-        ]
+        {
+          label: productSectionLabel || 'Product area',
+          onClick:
+            model
+              ? () => setParams({ model: null, usage_kind: null })
+              : undefined,
+        },
+      ]
       : []),
     ...(callImportId
       ? [
-          {
-            label: callImportLabel || 'Call import',
-            onClick:
-              evaluationId || model
-                ? () =>
-                    setParams({
-                      resource_id: null,
-                      model: null,
-                      usage_kind: null,
-                      product_section: null,
-                    })
-                : undefined,
-          },
-        ]
+        {
+          label: callImportLabel || 'Call import',
+          onClick:
+            evaluationId || model
+              ? () =>
+                setParams({
+                  resource_id: null,
+                  model: null,
+                  usage_kind: null,
+                  product_section: null,
+                })
+              : undefined,
+        },
+      ]
       : []),
     ...(evaluationId
       ? [
-          {
-            label: evaluationLabel || 'Evaluation',
-            onClick: model
-              ? () => setParams({ model: null, usage_kind: null })
-              : undefined,
-          },
-        ]
+        {
+          label: evaluationLabel || 'Evaluation',
+          onClick: model
+            ? () => setParams({ model: null, usage_kind: null })
+            : undefined,
+        },
+      ]
       : []),
     ...(model ? [{ label: modelDisplayLabel }] : []),
   ]
@@ -1239,11 +1243,10 @@ export default function Usage() {
                 setDisplayCurrency(currency)
                 setUsageDisplayCurrency(currency)
               }}
-              className={`rounded-md px-2.5 py-1 transition-colors ${
-                displayCurrency === currency
+              className={`rounded-md px-2.5 py-1 transition-colors ${displayCurrency === currency
                   ? 'bg-gray-900 text-white'
                   : 'text-gray-600 hover:bg-gray-50'
-              }`}
+                }`}
             >
               {currency}
             </button>
@@ -1432,162 +1435,161 @@ export default function Usage() {
             ref={tableScrollRef}
             className="overflow-x-auto max-h-[min(70vh,640px)] overflow-y-auto custom-scrollbar"
           >
-          {tableLoading || breakdownStale ? (
-            <div className="flex justify-center py-12">
-              <Spinner />
-            </div>
-          ) : rows.length === 0 && tablePage === 1 ? (
-            <div className="py-12 text-center text-sm text-gray-500">
-              No usage in this period for the current scope. Try 7d or 30d, or go back up a
-              level.
-            </div>
-          ) : (
-            <div
-              className={`relative transition-opacity ${
-                tableFetching ? 'opacity-60 pointer-events-none' : ''
-              }`}
-            >
-              {tableFetching ? (
-                <div className="absolute top-2 right-3 z-20">
-                  <Spinner size="sm" />
-                </div>
-              ) : null}
-            <table className="min-w-full text-sm">
-              <thead className="bg-gray-50 text-left text-xs uppercase text-gray-500 sticky top-0 z-10">
-                <tr>
-                  <th className="px-4 py-3 font-semibold">
-                    {drillColumnLabel(groupBy, showWorkspaceComposite)}
-                  </th>
-                  <th className="px-4 py-3 font-semibold text-right">LLM calls</th>
-                  <th className="px-4 py-3 font-semibold text-right">Input tokens</th>
-                  <th className="px-4 py-3 font-semibold text-right">Output tokens</th>
-                  <th className="px-4 py-3 font-semibold text-right">Total tokens</th>
-                  <th className="px-4 py-3 font-semibold text-right">Est. cost</th>
-                  <th className="px-4 py-3 font-semibold text-right">STT audio</th>
-                  <th className="px-4 py-3 font-semibold text-right">TTS chars</th>
-                  <th className="px-4 py-3 font-semibold text-right">Cache read</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {rows.map((row, idx) => {
-                  const drillable = isRowDrillable(row)
-                  const compositeHeadline =
-                    'rowKind' in row ? compositeRowHeadline(row) : null
-                  const rowTitle = tableRowLabel(groupBy, row, filterOptions)
-                  const showRowTitle =
-                    'rowKind' in row
-                      ? row.rowKind === 'workspace_resource' ||
-                        (compositeHeadline &&
-                          rowTitle.toLowerCase() !== compositeHeadline.toLowerCase())
-                      : true
-                  return (
-                    <tr
-                      key={idx}
-                      className={
-                        drillable
-                          ? 'hover:bg-[#fefce8]/60 cursor-pointer group'
-                          : 'hover:bg-gray-50'
-                      }
-                      onClick={() => drillable && handleRowDrill(row)}
-                    >
-                      <td className="px-4 py-3 text-gray-900 max-w-md">
-                        <span className="flex items-center gap-1 min-w-0">
-                          <span className="min-w-0">
-                            {'rowKind' in row ? (
-                              <span className="block text-[10px] font-semibold uppercase tracking-wide text-primary-600 mb-0.5">
-                                {compositeHeadline}
-                              </span>
-                            ) : null}
-                            {showRowTitle ? (
-                              <span className="truncate block font-medium">
-                                {rowTitle}
-                              </span>
-                            ) : !('rowKind' in row) ? (
-                              <span className="truncate block">{rowTitle}</span>
-                            ) : null}
-                            {'hint' in row && row.hint ? (
-                              <span className="text-xs text-gray-400 truncate block">
-                                {row.hint}
-                              </span>
-                            ) : null}
-                          </span>
-                          {drillable ? (
-                            <ChevronRight
-                              className="h-4 w-4 shrink-0 text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                            />
-                          ) : null}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <UsageMetricValue
-                          display={formatCompactCount(row.call_count)}
-                          exact={formatExactCount(row.call_count)}
-                        />
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <UsageMetricValue
-                          display={formatCompactCount(row.prompt_tokens)}
-                          exact={formatExactCount(row.prompt_tokens)}
-                        />
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <UsageMetricValue
-                          display={formatCompactCount(row.completion_tokens)}
-                          exact={formatExactCount(row.completion_tokens)}
-                        />
-                      </td>
-                      <td className="px-4 py-3 text-right font-medium">
-                        <UsageMetricValue
-                          display={formatCompactCount(row.total_tokens)}
-                          exact={formatExactCount(row.total_tokens)}
-                        />
-                      </td>
-                      <td className="px-4 py-3 text-right text-gray-700">
-                        <UsageMetricValue
-                          display={formatCostUsd(rowCostUsd(row))}
-                          exact={formatCostExact(rowCostUsd(row))}
-                        />
-                      </td>
-                      <td className="px-4 py-3 text-right text-gray-500">
-                        {row.audio_seconds ? (
-                          <UsageMetricValue
-                            display={formatAudioDuration(row.audio_seconds)}
-                            exact={formatAudioExact(row.audio_seconds)}
-                          />
-                        ) : (
-                          '—'
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-right text-gray-500">
-                        {row.tts_characters ? (
-                          <UsageMetricValue
-                            display={formatCompactCount(row.tts_characters)}
-                            exact={formatExactCount(row.tts_characters)}
-                          />
-                        ) : (
-                          '—'
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-right text-gray-500">
-                        <UsageMetricValue
-                          display={formatCompactCount(row.cache_read_tokens)}
-                          exact={formatExactCount(row.cache_read_tokens)}
-                        />
-                      </td>
+            {tableLoading || breakdownStale ? (
+              <div className="flex justify-center py-12">
+                <Spinner />
+              </div>
+            ) : rows.length === 0 && tablePage === 1 ? (
+              <div className="py-12 text-center text-sm text-gray-500">
+                No usage in this period for the current scope. Try 7d or 30d, or go back up a
+                level.
+              </div>
+            ) : (
+              <div
+                className={`relative transition-opacity ${tableFetching ? 'opacity-60 pointer-events-none' : ''
+                  }`}
+              >
+                {tableFetching ? (
+                  <div className="absolute top-2 right-3 z-20">
+                    <Spinner size="sm" />
+                  </div>
+                ) : null}
+                <table className="min-w-full text-sm">
+                  <thead className="bg-gray-50 text-left text-xs uppercase text-gray-500 sticky top-0 z-10">
+                    <tr>
+                      <th className="px-4 py-3 font-semibold">
+                        {drillColumnLabel(groupBy, showWorkspaceComposite)}
+                      </th>
+                      <th className="px-4 py-3 font-semibold text-right">LLM calls</th>
+                      <th className="px-4 py-3 font-semibold text-right">Input tokens</th>
+                      <th className="px-4 py-3 font-semibold text-right">Output tokens</th>
+                      <th className="px-4 py-3 font-semibold text-right">Total tokens</th>
+                      <th className="px-4 py-3 font-semibold text-right">Est. cost</th>
+                      <th className="px-4 py-3 font-semibold text-right">STT audio</th>
+                      <th className="px-4 py-3 font-semibold text-right">TTS chars</th>
+                      <th className="px-4 py-3 font-semibold text-right">Cache read</th>
                     </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-            <UsageTablePager
-              page={tablePage}
-              hasNext={hasNextPage}
-              disabled={tableFetching}
-              onPrev={() => setTablePage((page) => Math.max(1, page - 1))}
-              onNext={() => setTablePage((page) => page + 1)}
-            />
-            </div>
-          )}
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {rows.map((row, idx) => {
+                      const drillable = isRowDrillable(row)
+                      const compositeHeadline =
+                        'rowKind' in row ? compositeRowHeadline(row) : null
+                      const rowTitle = tableRowLabel(groupBy, row, filterOptions)
+                      const showRowTitle =
+                        'rowKind' in row
+                          ? row.rowKind === 'workspace_resource' ||
+                          (compositeHeadline &&
+                            rowTitle.toLowerCase() !== compositeHeadline.toLowerCase())
+                          : true
+                      return (
+                        <tr
+                          key={idx}
+                          className={
+                            drillable
+                              ? 'hover:bg-[#fefce8]/60 cursor-pointer group'
+                              : 'hover:bg-gray-50'
+                          }
+                          onClick={() => drillable && handleRowDrill(row)}
+                        >
+                          <td className="px-4 py-3 text-gray-900 max-w-md">
+                            <span className="flex items-center gap-1 min-w-0">
+                              <span className="min-w-0">
+                                {'rowKind' in row ? (
+                                  <span className="block text-[10px] font-semibold uppercase tracking-wide text-primary-600 mb-0.5">
+                                    {compositeHeadline}
+                                  </span>
+                                ) : null}
+                                {showRowTitle ? (
+                                  <span className="truncate block font-medium">
+                                    {rowTitle}
+                                  </span>
+                                ) : !('rowKind' in row) ? (
+                                  <span className="truncate block">{rowTitle}</span>
+                                ) : null}
+                                {'hint' in row && row.hint ? (
+                                  <span className="text-xs text-gray-400 truncate block">
+                                    {row.hint}
+                                  </span>
+                                ) : null}
+                              </span>
+                              {drillable ? (
+                                <ChevronRight
+                                  className="h-4 w-4 shrink-0 text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                                />
+                              ) : null}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <UsageMetricValue
+                              display={formatCompactCount(row.call_count)}
+                              exact={formatExactCount(row.call_count)}
+                            />
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <UsageMetricValue
+                              display={formatCompactCount(row.prompt_tokens)}
+                              exact={formatExactCount(row.prompt_tokens)}
+                            />
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <UsageMetricValue
+                              display={formatCompactCount(row.completion_tokens)}
+                              exact={formatExactCount(row.completion_tokens)}
+                            />
+                          </td>
+                          <td className="px-4 py-3 text-right font-medium">
+                            <UsageMetricValue
+                              display={formatCompactCount(row.total_tokens)}
+                              exact={formatExactCount(row.total_tokens)}
+                            />
+                          </td>
+                          <td className="px-4 py-3 text-right text-gray-700">
+                            <UsageMetricValue
+                              display={formatCostUsd(rowCostUsd(row))}
+                              exact={formatCostExact(rowCostUsd(row))}
+                            />
+                          </td>
+                          <td className="px-4 py-3 text-right text-gray-500">
+                            {row.audio_seconds ? (
+                              <UsageMetricValue
+                                display={formatAudioDuration(row.audio_seconds)}
+                                exact={formatAudioExact(row.audio_seconds)}
+                              />
+                            ) : (
+                              '—'
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right text-gray-500">
+                            {row.tts_characters ? (
+                              <UsageMetricValue
+                                display={formatCompactCount(row.tts_characters)}
+                                exact={formatExactCount(row.tts_characters)}
+                              />
+                            ) : (
+                              '—'
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right text-gray-500">
+                            <UsageMetricValue
+                              display={formatCompactCount(row.cache_read_tokens)}
+                              exact={formatExactCount(row.cache_read_tokens)}
+                            />
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+                <UsageTablePager
+                  page={tablePage}
+                  hasNext={hasNextPage}
+                  disabled={tableFetching}
+                  onPrev={() => setTablePage((page) => Math.max(1, page - 1))}
+                  onNext={() => setTablePage((page) => page + 1)}
+                />
+              </div>
+            )}
           </div>
         </CardBody>
       </Card>
@@ -1628,9 +1630,8 @@ function StatCard({
       <CardBody className="p-3">
         <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{label}</p>
         <p
-          className={`mt-0.5 text-xl font-semibold ${
-            emphasize ? 'text-[#854d0e]' : 'text-gray-900'
-          }`}
+          className={`mt-0.5 text-xl font-semibold ${emphasize ? 'text-[#854d0e]' : 'text-gray-900'
+            }`}
         >
           {loading ? '—' : <UsageMetricValue display={display} exact={exact} />}
         </p>

@@ -850,13 +850,45 @@ def _usage_totals_from_row(row) -> dict:
     )
 
 
-def _breakdown_sort_exprs():
-    """Highest token volume first, then calls, then cost. Matches the UI sort."""
+_CALL_IMPORT_PRODUCT_SECTIONS = ("call_imports", "call_import_evaluations")
+_CALL_IMPORT_RESOURCE_TYPES = ("call_import", "call_import_evaluation")
+
+
+def _breakdown_sort_exprs(*group_cols):
+    """Highest token volume first, then calls, then cost.
+
+    Group columns are the final tie-break so OFFSET pages stay stable when
+    several groups share the same totals.
+    """
     tokens = func.sum(LLMUsageDaily.prompt_tokens + LLMUsageDaily.completion_tokens)
     return (
-        tokens.desc(),
-        func.sum(LLMUsageDaily.call_count).desc(),
-        func.sum(LLMUsageDaily.total_cost_micro_usd).desc(),
+        tokens.desc().nulls_last(),
+        func.sum(LLMUsageDaily.call_count).desc().nulls_last(),
+        func.sum(LLMUsageDaily.total_cost_micro_usd).desc().nulls_last(),
+        *(col.asc().nulls_last() for col in group_cols),
+    )
+
+
+def _workspace_other_source_filters():
+    """Rows the workspace table shows besides call-import batches."""
+    resource_type = cast(_resource_type_expr(), String)
+    return (
+        LLMUsageDaily.product_section.isnot(None),
+        LLMUsageDaily.product_section.notin_(_CALL_IMPORT_PRODUCT_SECTIONS),
+        or_(
+            resource_type.is_(None),
+            resource_type.notin_(_CALL_IMPORT_RESOURCE_TYPES),
+        ),
+    )
+
+
+def _displayable_usage_having():
+    """Match the composite table, which hides groups with no visible usage."""
+    return or_(
+        func.sum(LLMUsageDaily.prompt_tokens + LLMUsageDaily.completion_tokens) > 0,
+        func.sum(LLMUsageDaily.call_count) > 0,
+        func.sum(LLMUsageDaily.audio_seconds) > 0,
+        func.sum(LLMUsageDaily.tts_characters) > 0,
     )
 
 
@@ -1244,6 +1276,13 @@ def get_usage_breakdown(
     evaluation_row_id: Optional[UUID] = Query(None),
     dataset: Optional[str] = Query(None),
     tag_id: Optional[UUID] = Query(None),
+    omit_call_import_sources: bool = Query(
+        False,
+        description=(
+            "When grouping by resource, drop call-import batches and their "
+            "evaluation rows so offsets match the workspace source table."
+        ),
+    ),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     organization_id: UUID = Depends(get_organization_id),
@@ -1268,6 +1307,7 @@ def get_usage_breakdown(
         evaluation_row_id=evaluation_row_id,
         dataset=dataset,
         tag_id=tag_id,
+        omit_call_import_sources=omit_call_import_sources,
         limit=limit,
         offset=offset,
     )
@@ -1338,6 +1378,8 @@ def get_usage_breakdown(
                 select_cols.append(LLMUsageDaily.product_section)
                 group_cols.append(LLMUsageDaily.product_section)
             base_query = db.query(*select_cols, *aggregates)
+            if omit_call_import_sources and group_by == "resource":
+                base_query = base_query.filter(*_workspace_other_source_filters())
 
         query = _apply_filters(
             base_query,
@@ -1357,11 +1399,13 @@ def get_usage_breakdown(
             tag_id=tag_id,
             db=db,
         ).group_by(*group_cols)
+        if omit_call_import_sources and group_by == "resource":
+            query = query.having(_displayable_usage_having())
 
         # Read one extra row so a full page of exactly `limit` rows is not
         # reported as truncated when nothing follows it.
         window = (
-            query.order_by(*_breakdown_sort_exprs())
+            query.order_by(*_breakdown_sort_exprs(*group_cols))
             .offset(offset)
             .limit(limit + 1)
             .all()

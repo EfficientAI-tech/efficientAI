@@ -179,6 +179,29 @@ def test_breakdown_sort_weights_tokens_before_cost():
     assert sql.index("prompt_tokens") < sql.index("total_cost_micro_usd")
 
 
+def test_breakdown_sort_breaks_ties_on_the_grouped_column():
+    from app.models.database import LLMUsageDaily
+
+    sql = " ".join(
+        str(expr.compile(dialect=postgresql.dialect()))
+        for expr in _breakdown_sort_exprs(LLMUsageDaily.model)
+    )
+    assert sql.index("total_cost_micro_usd") < sql.index("model")
+    assert "NULLS LAST" in sql
+
+
+def test_workspace_other_source_filter_drops_call_import_groups():
+    from app.api.v1.routes.org_usage import _workspace_other_source_filters
+
+    sql = " ".join(
+        str(expr.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+        for expr in _workspace_other_source_filters()
+    )
+    assert "call_imports" in sql
+    assert "call_import_evaluations" in sql
+    assert "call_import" in sql
+
+
 def test_resource_filter_bundle_labels_evaluations_from_grouped_rows(monkeypatch):
     from app.api.v1.routes import org_usage as usage_routes
 
