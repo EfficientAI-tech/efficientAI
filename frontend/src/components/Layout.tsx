@@ -7,14 +7,12 @@ import { apiClient } from '../lib/api'
 import { Profile } from '../types/api'
 import {
   LayoutDashboard,
-  FileCheck,
   LogOut,
   Menu,
   Phone,
   Users,
   FileText,
   Shield,
-  Play,
   BarChart3,
   Plug,
   ChevronRight,
@@ -22,7 +20,6 @@ import {
   ChevronLeft,
   Database,
   Settings,
-  Mic,
   Bot,
   Activity,
   PieChart,
@@ -34,16 +31,27 @@ import {
   Gamepad2,
   ScrollText,
   Github,
-  Sparkles,
   Upload,
   Wrench,
+  FlaskConical,
+  ClipboardCheck,
+  SlidersHorizontal,
+  MessageSquare,
+  Gauge,
+  Ruler,
+  LayoutGrid,
+  PhoneCall,
+  AudioLines,
+  ArrowLeft,
+  Info,
+  X,
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
-import { Info, X } from 'lucide-react'
 import Logo from './Logo'
 import { consumeJoinNotice } from '../lib/joinNotice'
 import WorkspaceSwitcher from './WorkspaceSwitcher'
 import WalkthroughRail from './walkthrough/WalkthroughRail'
+import { getSettingsReturnPath, rememberSettingsReturnPath } from '../lib/settingsReturnPath'
 
 interface NavItem {
   name: string
@@ -61,11 +69,13 @@ interface NavSection {
 const navigationSections: NavSection[] = [
   {
     title: 'Simulations',
-    icon: Play,
+    icon: FlaskConical,
     items: [
       { name: 'Agents', href: '/agents', icon: Bot },
       { name: 'Personas', href: '/personas', icon: Users },
       { name: 'Scenarios', href: '/scenarios', icon: FileText },
+      { name: 'Evaluators', href: '/evaluate-test-agents', icon: Gauge },
+      { name: 'Results', href: '/results', icon: BarChart3 },
       { name: 'Tools', href: '/tools', icon: Wrench },
     ],
   },
@@ -73,60 +83,34 @@ const navigationSections: NavSection[] = [
     title: 'Playground',
     icon: Gamepad2,
     items: [
-      { name: 'Agent Playground', href: '/playground', icon: Play },
+      { name: 'Agent Playground', href: '/playground', icon: MessageSquare },
       { name: 'Voice Playground', href: '/voice-playground', icon: Volume2, enterpriseFeature: 'voice_playground' },
     ],
   },
   {
     title: 'Evaluations',
-    icon: FileCheck,
+    icon: ClipboardCheck,
     items: [
-      { name: 'Evaluators', href: '/evaluate-test-agents', icon: Mic },
-      { name: 'Evaluation Results', href: '/results', icon: BarChart3 },
-      { name: 'Judge Alignment', href: '/judge-alignment', icon: Sparkles },
-      { name: 'Imports', href: '/call-imports', icon: Upload, enterpriseFeature: 'call_imports' },
-    ],
-  },
-  {
-    title: 'Prompts',
-    icon: ScrollText,
-    items: [
-      { name: 'Partials', href: '/prompt-partials', icon: FileText },
-      { name: 'Optimization', href: '/prompt-optimization', icon: Sparkles },
+      { name: 'Prompts', href: '/prompts', icon: ScrollText },
+      { name: 'Call Imports', href: '/call-imports', icon: Upload, enterpriseFeature: 'call_imports' },
     ],
   },
   {
     title: 'Observability',
-    icon: BarChart3,
+    icon: Activity,
     items: [
-      { name: 'Overview', href: '/observability', icon: Activity },
-      { name: 'Calls', href: '/observability/calls', icon: Phone },
-    ],
-  },
-  {
-    title: 'Usage',
-    icon: PieChart,
-    items: [
-      { name: 'Overview', href: '/usage', icon: PieChart },
-    ],
-  },
-  {
-    title: 'Alerting',
-    icon: Bell,
-    items: [
-      { name: 'Alerts', href: '/alerts', icon: Bell, enterpriseFeature: 'alerts' },
-      { name: 'Alert History', href: '/alerts/history', icon: History, enterpriseFeature: 'alerts' },
+      { name: 'Overview', href: '/observability', icon: LayoutGrid },
+      { name: 'Calls', href: '/observability/calls', icon: PhoneCall },
+      { name: 'Usage', href: '/observability/usage', icon: PieChart },
     ],
   },
   {
     title: 'Configurations',
-    icon: Settings,
+    icon: SlidersHorizontal,
     items: [
-      { name: 'Cloud Storage', href: '/data-sources', icon: Database },
-      { name: 'VoiceBundle', href: '/voicebundles', icon: Mic },
-      { name: 'Integrations', href: '/integrations', icon: Plug },
-      { name: 'Telephony Numbers', href: '/telephony-numbers', icon: Phone },
-      { name: 'API Keys', href: '/settings', icon: Key },
+      { name: 'Voice Bundles', href: '/voicebundles', icon: AudioLines },
+      { name: 'Alerts', href: '/alerts', icon: Bell, enterpriseFeature: 'alerts' },
+      { name: 'Alert History', href: '/alerts/history', icon: History, enterpriseFeature: 'alerts' },
       { name: 'Cron Jobs', href: '/cron-jobs', icon: Clock },
     ],
   },
@@ -134,12 +118,18 @@ const navigationSections: NavSection[] = [
 
 const otherNavigation: NavItem[] = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-  { name: 'Metrics', href: '/metrics-management', icon: BarChart3 },
+  { name: 'Metrics', href: '/metrics-management', icon: Ruler },
 ]
 
-const bottomNavigation = [
-  { name: 'IAM', href: '/iam', icon: Shield },
+const settingsNavigation: NavItem[] = [
+  { name: 'API Keys', href: '/settings/api-keys', icon: Key },
+  { name: 'Integrations', href: '/settings/integrations', icon: Plug },
+  { name: 'Cloud Storage', href: '/settings/cloud-storage', icon: Database },
+  { name: 'Telephony', href: '/settings/telephony', icon: Phone },
+  { name: 'Members and Access', href: '/settings/members', icon: Shield },
 ]
+
+const settingsEntry: NavItem = { name: 'Settings', href: '/settings/api-keys', icon: Settings }
 
 const SIDEBAR_COLLAPSED_KEY = 'sidebarCollapsed'
 
@@ -148,26 +138,39 @@ function readSidebarCollapsedPreference(): boolean {
   return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true'
 }
 
-function getFlattenedNavItems(): NavItem[] {
+function getMainNavItems(): NavItem[] {
   const items: NavItem[] = [...otherNavigation]
   for (const section of navigationSections) {
     items.push(...section.items)
   }
-  items.push(...bottomNavigation)
+  items.push(settingsEntry)
   return items
 }
 
+function isSettingsPath(pathname: string): boolean {
+  return pathname === '/settings' || pathname.startsWith('/settings/')
+}
+
 function isNavItemActive(href: string, pathname: string): boolean {
+  if (href === '/') {
+    return pathname === '/'
+  }
+  if (href === '/observability') {
+    return pathname === '/observability'
+  }
   if (href === '/tools') {
     // Knowledge bases live under Tools; their detail pages keep the Tools item lit.
-    return pathname === href || pathname.startsWith('/knowledge-bases')
+    return pathname === href || pathname.startsWith('/tools/') || pathname.startsWith('/knowledge-bases')
   }
-  if (href === '/metrics-management') {
-    return (
-      pathname === href || pathname.startsWith('/metrics-management/')
+  if (href === '/alerts') {
+    return pathname === '/alerts' || (
+      pathname.startsWith('/alerts/') && !pathname.startsWith('/alerts/history')
     )
   }
-  return pathname === href
+  if (href === '/settings/api-keys') {
+    return pathname === '/settings' || pathname === href || pathname.startsWith(`${href}/`)
+  }
+  return pathname === href || pathname.startsWith(`${href}/`)
 }
 
 export default function Layout() {
@@ -225,6 +228,10 @@ export default function Layout() {
   useEffect(() => {
     setJoinNotice(consumeJoinNotice())
   }, [])
+
+  useEffect(() => {
+    rememberSettingsReturnPath(location.pathname, location.search)
+  }, [location.pathname, location.search])
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -385,6 +392,17 @@ export default function Layout() {
                 <Github className="h-4 w-4" />
                 <span>Star us on GitHub</span>
               </a>
+              <Link
+                to="/settings/api-keys"
+                title="Settings"
+                aria-label="Settings"
+                className={`flex items-center justify-center w-10 h-10 rounded-lg transition-colors ${isSettingsPath(location.pathname)
+                  ? 'bg-gray-100 text-gray-900'
+                  : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'
+                  }`}
+              >
+                <Settings className="h-5 w-5" />
+              </Link>
               <ProfileAvatar />
             </div>
           </div>
@@ -475,8 +493,10 @@ function SidebarContent({
   onToggleCollapse?: () => void
 }) {
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
-    new Set(['Simulations', 'Playground', 'Evaluations', 'Prompts', 'Observability', 'Alerting', 'Configurations'])
+    () => new Set(navigationSections.map((section) => section.title))
   )
+  const settingsOpen = isSettingsPath(location.pathname)
+  const backPath = getSettingsReturnPath()
 
   const toggleSection = (title: string) => {
     const newExpanded = new Set(expandedSections)
@@ -511,27 +531,56 @@ function SidebarContent({
             </button>
           )}
         </div>
-        <div className="flex-1 flex flex-col min-h-0 overflow-y-auto">
-          <nav className="flex-1 px-2 py-3 space-y-1">
-            {getFlattenedNavItems().map((item) => (
-              <SidebarIconLink
-                key={item.href}
-                item={item}
-                isActive={isNavItemActive(item.href, location.pathname)}
-              />
-            ))}
+        <div className="relative flex-1 min-h-0 overflow-hidden">
+          <nav
+            className={`absolute inset-0 overflow-y-auto transition-transform duration-300 ease-in-out ${settingsOpen ? '-translate-x-full pointer-events-none' : 'translate-x-0'
+              }`}
+            aria-hidden={settingsOpen}
+          >
+            <div className="flex min-h-full flex-col px-2 py-3">
+              <div className="space-y-1">
+                {getMainNavItems().filter((item) => item.href !== settingsEntry.href).map((item) => (
+                  <SidebarIconLink
+                    key={item.href}
+                    item={item}
+                    isActive={isNavItemActive(item.href, location.pathname)}
+                  />
+                ))}
+              </div>
+              <div className="mt-auto border-t border-gray-200 pt-2">
+                <SidebarIconLink
+                  item={settingsEntry}
+                  isActive={isNavItemActive(settingsEntry.href, location.pathname)}
+                />
+              </div>
+            </div>
+          </nav>
+          <nav
+            className={`absolute inset-0 overflow-y-auto transition-transform duration-300 ease-in-out ${settingsOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'
+              }`}
+            aria-hidden={!settingsOpen}
+            aria-label="Settings"
+          >
+            <div className="flex min-h-full flex-col px-2 py-3">
+              <div className="space-y-1">
+                {settingsNavigation.map((item) => (
+                  <SidebarIconLink
+                    key={item.href}
+                    item={item}
+                    isActive={isNavItemActive(item.href, location.pathname)}
+                  />
+                ))}
+              </div>
+              <div className="mt-auto border-t border-gray-200 pt-2">
+                <SidebarIconLink
+                  item={{ name: 'Back to app', href: backPath, icon: ArrowLeft }}
+                  isActive={false}
+                />
+              </div>
+            </div>
           </nav>
         </div>
-        <div className="flex-shrink-0 border-t border-gray-200 p-2">
-          <button
-            onClick={onLogout}
-            className="w-full flex items-center justify-center p-2 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors"
-            title="Logout"
-            aria-label="Logout"
-          >
-            <LogOut className="h-5 w-5" />
-          </button>
-        </div>
+        <LogoutButton onLogout={onLogout} collapsed />
       </div>
     )
   }
@@ -565,121 +614,170 @@ function SidebarContent({
         </div>
         <WorkspaceSwitcher />
       </div>
-      <div className="flex-1 flex flex-col min-h-0 overflow-y-auto">
-        <nav className="flex-1 px-2 py-4 space-y-1">
-          {/* Other Navigation */}
-          {otherNavigation.map((item) => {
-            const isActive = isNavItemActive(item.href, location.pathname)
-            return (
-              <Link
-                key={item.name}
-                to={item.href}
-                className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md relative overflow-hidden ${isActive
-                  ? 'bg-gradient-to-r from-gray-900 via-gray-700 to-gray-400 text-white'
-                  : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
-                  }`}
-              >
-                <item.icon
-                  className={`mr-3 flex-shrink-0 h-5 w-5 ${isActive ? 'text-white' : 'text-gray-400 group-hover:text-gray-500'
-                    }`}
-                />
-                {item.name}
-              </Link>
-            )
-          })}
+      <div className="relative flex-1 min-h-0 overflow-hidden">
+        <div
+          className={`absolute inset-0 flex flex-col transition-transform duration-300 ease-in-out ${settingsOpen ? '-translate-x-full pointer-events-none' : 'translate-x-0'
+            }`}
+          aria-hidden={settingsOpen}
+        >
+          <nav className="flex-1 overflow-y-auto px-2 pt-4">
+            <div className="flex min-h-full flex-col">
+              <div className="space-y-1">
+                {otherNavigation.map((item) => (
+                  <SidebarTextLink
+                    key={item.href}
+                    item={item}
+                    isActive={isNavItemActive(item.href, location.pathname)}
+                  />
+                ))}
+              </div>
 
-          {/* Navigation Sections */}
-          <div className="mt-4 space-y-1">
-            {navigationSections.map((section) => {
-              const isExpanded = expandedSections.has(section.title)
-              const isActive = isSectionActive(section)
-              const SectionIcon = section.icon
+              <div className="mt-1 space-y-1">
+                {navigationSections.map((section) => {
+                  const isExpanded = expandedSections.has(section.title)
+                  const isActive = isSectionActive(section)
+                  const SectionIcon = section.icon
 
-              return (
-                <div key={section.title}>
-                  <button
-                    onClick={() => toggleSection(section.title)}
-                    className={`w-full group flex items-center justify-between px-2 py-2 text-sm font-medium rounded-md ${isActive
-                      ? 'bg-gray-100 text-gray-900'
-                      : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
-                      }`}
-                  >
-                    <div className="flex items-center">
-                      <SectionIcon
-                        className={`mr-3 flex-shrink-0 h-5 w-5 ${isActive ? 'text-gray-700' : 'text-gray-400 group-hover:text-gray-500'
+                  return (
+                    <div key={section.title}>
+                      <button
+                        type="button"
+                        onClick={() => toggleSection(section.title)}
+                        className={`w-full group flex items-center justify-between px-2 py-2 text-sm font-medium rounded-md ${isActive
+                          ? 'bg-gray-100 text-gray-900'
+                          : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
                           }`}
-                      />
-                      {section.title}
-                    </div>
-                    {isExpanded ? (
-                      <ChevronDown className="h-4 w-4 text-gray-400" />
-                    ) : (
-                      <ChevronRight className="h-4 w-4 text-gray-400" />
-                    )}
-                  </button>
-                  {isExpanded && (
-                    <div className="ml-6 mt-1 space-y-1">
-                      {section.items.map((item) => {
-                        const isItemActive = isNavItemActive(item.href, location.pathname)
-                        return (
-                          <Link
-                            key={item.name}
-                            to={item.href}
-                            className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md relative overflow-hidden ${isItemActive
-                              ? 'bg-gradient-to-r from-gray-900 via-gray-700 to-gray-400 text-white'
-                              : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                      >
+                        <div className="flex items-center">
+                          <SectionIcon
+                            className={`mr-3 flex-shrink-0 h-5 w-5 ${isActive ? 'text-gray-700' : 'text-gray-400 group-hover:text-gray-500'
                               }`}
-                          >
-                            <item.icon
-                              className={`mr-3 flex-shrink-0 h-4 w-4 ${isItemActive ? 'text-white' : 'text-gray-400 group-hover:text-gray-500'
-                                }`}
+                          />
+                          {section.title}
+                        </div>
+                        {isExpanded ? (
+                          <ChevronDown className="h-4 w-4 text-gray-400" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4 text-gray-400" />
+                        )}
+                      </button>
+                      {isExpanded && (
+                        <div className="ml-6 mt-1 space-y-1">
+                          {section.items.map((item) => (
+                            <SidebarTextLink
+                              key={item.href}
+                              item={item}
+                              isActive={isNavItemActive(item.href, location.pathname)}
+                              iconClassName="h-4 w-4"
+                              inactiveTextClassName="text-gray-600"
                             />
-                            {item.name}
-                          </Link>
-                        )
-                      })}
+                          ))}
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        </nav>
-        <nav className="mt-5 px-2 space-y-1 border-t border-gray-200 pt-4">
-          {bottomNavigation.map((item) => {
-            const isActive = isNavItemActive(item.href, location.pathname)
-            return (
-              <Link
-                key={item.name}
-                to={item.href}
-                className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md relative overflow-hidden ${isActive
-                  ? 'bg-gradient-to-r from-gray-900 via-gray-700 to-gray-400 text-white'
-                  : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
-                  }`}
-              >
-                <item.icon
-                  className={`mr-3 flex-shrink-0 h-5 w-5 ${isActive ? 'text-white' : 'text-gray-400 group-hover:text-gray-500'
-                    }`}
+                  )
+                })}
+              </div>
+              <div className="mt-auto border-t border-gray-200">
+                <SidebarTextLink item={settingsEntry} isActive={false} paddingClassName="py-4" />
+              </div>
+            </div>
+          </nav>
+        </div>
+        <nav
+          className={`absolute inset-0 overflow-y-auto transition-transform duration-300 ease-in-out ${settingsOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'
+            }`}
+          aria-hidden={!settingsOpen}
+          aria-label="Settings"
+        >
+          <div className="flex min-h-full flex-col px-2 pt-4">
+            <div className="space-y-1">
+              {settingsNavigation.map((item) => (
+                <SidebarTextLink
+                  key={item.href}
+                  item={item}
+                  isActive={isNavItemActive(item.href, location.pathname)}
                 />
-                {item.name}
-              </Link>
-            )
-          })}
+              ))}
+            </div>
+            <div className="mt-auto border-t border-gray-200">
+              <SidebarTextLink
+                item={{ name: 'Back to app', href: backPath, icon: ArrowLeft }}
+                isActive={false}
+                paddingClassName="py-4"
+              />
+            </div>
+          </div>
         </nav>
       </div>
-      <div className="flex-shrink-0 border-t border-gray-200 p-4">
+      <LogoutButton onLogout={onLogout} />
+    </div>
+  )
+}
+
+function SidebarTextLink({
+  item,
+  isActive,
+  iconClassName = 'h-5 w-5',
+  inactiveTextClassName = 'text-gray-700',
+  paddingClassName = 'py-2',
+}: {
+  item: NavItem
+  isActive: boolean
+  iconClassName?: string
+  inactiveTextClassName?: string
+  paddingClassName?: string
+}) {
+  return (
+    <Link
+      to={item.href}
+      className={`group flex items-center px-2 ${paddingClassName} text-sm font-medium rounded-md relative overflow-hidden ${isActive
+        ? 'bg-gradient-to-r from-gray-900 via-gray-700 to-gray-400 text-white'
+        : `${inactiveTextClassName} hover:bg-gray-50 hover:text-gray-900`
+        }`}
+    >
+      <item.icon
+        className={`mr-3 flex-shrink-0 ${iconClassName} ${isActive ? 'text-white' : 'text-gray-400 group-hover:text-gray-500'
+          }`}
+      />
+      {item.name}
+    </Link>
+  )
+}
+
+function LogoutButton({
+  onLogout,
+  collapsed = false,
+}: {
+  onLogout: () => void
+  collapsed?: boolean
+}) {
+  if (collapsed) {
+    return (
+      <div className="flex-shrink-0 border-t border-gray-200 p-2">
         <button
+          type="button"
           onClick={onLogout}
-          className="w-full group block"
+          className="w-full flex items-center justify-center p-2 rounded-md text-gray-400 hover:bg-red-50 hover:text-red-600 transition-colors"
+          title="Logout"
+          aria-label="Logout"
         >
-          <div className="flex items-center">
-            <LogOut className="h-5 w-5 text-gray-400 group-hover:text-gray-500" />
-            <span className="ml-3 text-sm font-medium text-gray-700 group-hover:text-gray-900">
-              Logout
-            </span>
-          </div>
+          <LogOut className="h-5 w-5" />
         </button>
       </div>
+    )
+  }
+
+  return (
+    <div className="flex-shrink-0 border-t border-gray-200">
+      <button
+        type="button"
+        onClick={onLogout}
+        className="group flex w-full items-center px-4 py-4 text-sm font-medium text-gray-600 transition-colors hover:bg-red-50 hover:text-red-600"
+      >
+        <LogOut className="mr-3 h-5 w-5 text-gray-400 transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-red-600" />
+        Logout
+      </button>
     </div>
   )
 }
@@ -696,8 +794,8 @@ function SidebarIconLink({
       to={item.href}
       title={item.name}
       className={`group relative flex items-center justify-center p-2 rounded-md transition-colors ${isActive
-          ? 'bg-gradient-to-r from-gray-900 via-gray-700 to-gray-400 text-white'
-          : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'
+        ? 'bg-gradient-to-r from-gray-900 via-gray-700 to-gray-400 text-white'
+        : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'
         }`}
     >
       <item.icon

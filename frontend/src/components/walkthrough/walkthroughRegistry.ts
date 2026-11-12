@@ -523,14 +523,14 @@ function getPromptOptimizationWalkthrough(
 }
 
 export function getWalkthroughSectionId(pathname: string): WalkthroughSectionId | null {
-  if (pathname.startsWith('/integrations')) return 'integrations'
+  if (pathname.startsWith('/settings/integrations') || pathname.startsWith('/integrations')) return 'integrations'
   if (pathname.startsWith('/voicebundles')) return 'voicebundles'
   if (pathname.startsWith('/agents')) return 'agents'
   if (pathname.startsWith('/personas')) return 'personas'
   if (pathname.startsWith('/scenarios')) return 'scenarios'
   if (pathname.startsWith('/evaluate-test-agents')) return 'evaluators'
   if (pathname.startsWith('/voice-playground')) return 'voice-playground'
-  if (pathname.startsWith('/prompt-optimization')) return 'prompt-optimization'
+  if (pathname.startsWith('/prompts/optimization') || pathname.startsWith('/prompt-optimization')) return 'prompt-optimization'
   return null
 }
 

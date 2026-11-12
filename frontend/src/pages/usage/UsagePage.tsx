@@ -68,5 +68,5 @@ export default function UsagePage() {
 }
 
 export function UsagePricingRedirect() {
-  return <Navigate to="/usage?tab=pricing" replace />
+  return <Navigate to="/observability/usage?tab=pricing" replace />
 }

@@ -400,7 +400,7 @@ export default function ImportPlatformModal({ open, onClose, onImportStarted }: 
                   <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
                     No active {getIntegrationPlatformLabel(platformMeta.platform)} credentials.
                     <Link
-                      to="/integrations"
+                      to="/settings/integrations"
                       className="block mt-2 font-medium text-primary-600 hover:underline"
                       onClick={onClose}
                     >

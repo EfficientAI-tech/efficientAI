@@ -145,7 +145,7 @@ export default function KnowledgeBaseEmbeddingPicker({
         <p className="text-sm text-amber-800 bg-amber-50 border border-amber-100 rounded-lg p-3">
           No connected AI provider has a {requiredDims}-dimension embedding model. Add OpenAI,
           OpenRouter, or Azure under{' '}
-          <Link to="/integrations" className="font-medium text-primary-700 hover:underline">
+          <Link to="/settings/integrations" className="font-medium text-primary-700 hover:underline">
             Configurations → AI Providers
           </Link>
           .

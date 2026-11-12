@@ -9,7 +9,7 @@ import Button from '../../components/Button'
 import NewDatasetModal from './NewDatasetModal'
 import SettingsPanel from './SettingsPanel'
 
-export default function JudgeAlignment() {
+export default function JudgeAlignment({ embedded = false }: { embedded?: boolean }) {
   const queryClient = useQueryClient()
   const [showNewModal, setShowNewModal] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
@@ -37,7 +37,8 @@ export default function JudgeAlignment() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between">
+      <div className={`flex items-start ${embedded ? 'justify-end' : 'justify-between'}`}>
+        {!embedded && (
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Judge Alignment</h1>
           <p className="mt-2 text-sm text-gray-600 max-w-2xl">
@@ -47,6 +48,7 @@ export default function JudgeAlignment() {
             judge prompt with GEPA.
           </p>
         </div>
+        )}
         <div className="flex gap-2">
           <Button
             variant="ghost"
@@ -220,7 +222,7 @@ function DatasetCard({
     <div className="bg-white border border-gray-200 rounded-lg p-5 shadow-sm hover:shadow-md transition-shadow flex flex-col">
       <div className="flex items-start justify-between gap-2">
         <Link
-          to={`/judge-alignment/datasets/${dataset.id}`}
+          to={`/prompts/judge-alignment/datasets/${dataset.id}`}
           className="flex-1 min-w-0"
         >
           <div className="flex items-center gap-2 mb-1">
@@ -269,7 +271,7 @@ function DatasetCard({
             : ''}
         </span>
         <Link
-          to={`/judge-alignment/datasets/${dataset.id}`}
+          to={`/prompts/judge-alignment/datasets/${dataset.id}`}
           className="text-yellow-700 hover:text-yellow-900 font-medium flex items-center gap-1"
         >
           Open <Sparkles className="h-3 w-3" />

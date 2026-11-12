@@ -687,7 +687,7 @@ export default function VoiceBundles() {
               </p>
               <Button
                 variant="primary"
-                onClick={() => window.location.href = '/integrations'}
+                onClick={() => window.location.href = '/settings/integrations'}
                 leftIcon={<Brain className="h-4 w-4" />}
               >
                 Configure AI Providers

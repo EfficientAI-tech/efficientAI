@@ -79,7 +79,7 @@ export default function VoicePlatformConnectGrid({
                 {platformIntegrations.length === 0 ? (
                   <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
                     No active {label} integration found.{' '}
-                    <Link to="/integrations" className="underline font-medium">
+                    <Link to="/settings/integrations" className="underline font-medium">
                       Add integration
                     </Link>
                   </p>

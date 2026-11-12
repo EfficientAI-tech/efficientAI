@@ -51,7 +51,7 @@ export default function JudgeDatasetDetail() {
     <div className="space-y-6">
       <div>
         <Link
-          to="/judge-alignment"
+          to="/prompts/judge-alignment"
           className="inline-flex items-center text-sm text-gray-600 hover:text-gray-900"
         >
           <ChevronLeft className="h-4 w-4 mr-1" />

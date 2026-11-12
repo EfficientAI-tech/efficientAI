@@ -181,7 +181,7 @@ export default function DashboardKpiRow({ summary, isLoading }: DashboardKpiRowP
               icon={Zap}
               label="Integrations"
               value={summary.resources.integrations}
-              href="/integrations"
+              href="/settings/integrations"
               color="orange"
             />
           </div>

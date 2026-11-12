@@ -43,7 +43,7 @@ export default function Dashboard() {
               icon={Brain}
               title="Configure AI Provider"
               description="Set up your AI provider credentials (OpenAI, Anthropic, etc.)"
-              href="/integrations"
+              href="/settings/integrations"
               step={1}
             />
             <QuickStartCard
@@ -57,7 +57,7 @@ export default function Dashboard() {
               icon={Cloud}
               title="Connect Data Sources"
               description="Connect your S3 bucket to manage audio files"
-              href="/data-sources"
+              href="/settings/cloud-storage"
               step={3}
             />
             <QuickStartCard

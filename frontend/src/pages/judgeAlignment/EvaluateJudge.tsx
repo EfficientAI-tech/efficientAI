@@ -174,7 +174,7 @@ export default function EvaluateJudge({ datasetId }: { datasetId: string }) {
             <div>
               No LLM-capable AI providers configured.{' '}
               <Link
-                to="/integrations"
+                to="/settings/integrations"
                 className="font-medium underline hover:text-amber-900"
               >
                 Add one in Integrations

@@ -482,7 +482,7 @@ export default function MetricPromptImprovementsPanel({
         <div className="rounded-md border border-dashed border-gray-200 bg-gray-50 px-3 py-3 text-sm text-gray-600">
           No imported agents yet.{' '}
           <Link
-            to="/prompt-partials?kind=imported_agent"
+            to="/prompts/partials?kind=imported_agent"
             className="text-primary-700 hover:text-primary-800"
           >
             Import a production prompt
@@ -501,7 +501,7 @@ export default function MetricPromptImprovementsPanel({
               <p className="text-xs text-gray-600 mt-1">
                 Live prompt was imported as{' '}
                 <Link
-                  to={`/prompt-partials/${linkedImportedAgentPartialId}?kind=imported_agent`}
+                  to={`/prompts/partials/${linkedImportedAgentPartialId}?kind=imported_agent`}
                   className="text-primary-700 hover:text-primary-800 font-medium"
                 >
                   Prompt Partial v1
@@ -607,7 +607,7 @@ export default function MetricPromptImprovementsPanel({
               ) : null}
             </p>
             <Link
-              to={`/prompt-partials/${effectiveAgentId}?kind=imported_agent`}
+              to={`/prompts/partials/${effectiveAgentId}?kind=imported_agent`}
               className="text-[11px] text-primary-700 hover:text-primary-800 inline-flex items-center gap-1"
             >
               Open full diagram
@@ -785,7 +785,7 @@ export default function MetricPromptImprovementsPanel({
                           </p>
                           {pushPreview.imported_agent_id ? (
                             <Link
-                              to={`/prompt-partials/${pushPreview.imported_agent_id}?kind=imported_agent`}
+                              to={`/prompts/partials/${pushPreview.imported_agent_id}?kind=imported_agent`}
                               className="inline-flex items-center gap-1 text-xs font-medium text-sky-800 hover:text-sky-950"
                               onClick={closePushModal}
                             >

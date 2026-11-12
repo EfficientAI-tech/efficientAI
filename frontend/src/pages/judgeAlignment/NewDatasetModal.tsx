@@ -40,7 +40,7 @@ export default function NewDatasetModal({ onClose }: { onClose: () => void }) {
     onSuccess: (dataset) => {
       queryClient.invalidateQueries({ queryKey: ['judge-datasets'] })
       onClose()
-      navigate(`/judge-alignment/datasets/${dataset.id}`)
+      navigate(`/prompts/judge-alignment/datasets/${dataset.id}`)
     },
     onError: (e: any) => {
       setError(e?.response?.data?.detail || e?.message || 'Failed to create dataset')
