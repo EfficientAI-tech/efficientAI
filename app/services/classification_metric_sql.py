@@ -53,6 +53,17 @@ def _top_probability_key(probabilities_path: str) -> str:
     )
 
 
+def effective_yes_no_sql() -> str:
+    noul = "metric_scores -> :mid -> 'answers' -> 'noul' -> 'noul'"
+    derived = (
+        f"(CASE WHEN json_typeof({noul}) IN ('number', 'string') "
+        f"AND ({noul} #>> '{{}}') ~ '{_NUMERIC_TEXT_RE}' "
+        f"THEN CASE WHEN ({noul} #>> '{{}}')::double precision >= 0.5 "
+        f"THEN 'Yes' ELSE 'No' END END)"
+    )
+    return f"coalesce({_flat_string('classification_yes_no')}, {derived})"
+
+
 def effective_choice_sql() -> str:
     explicit = "metric_scores -> :mid -> 'answers' -> 'choice' -> 'choice'"
     top = _top_probability_key("metric_scores -> :mid -> 'answers' -> 'choice' -> 'probabilities'")

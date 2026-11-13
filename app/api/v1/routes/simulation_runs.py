@@ -13,7 +13,12 @@ from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
 from app.core.auth import Principal, get_principal
-from app.dependencies import get_db, get_organization_id, get_workspace_id
+from app.dependencies import (
+    get_db,
+    get_organization_id,
+    get_workspace_id,
+    require_enterprise_feature,
+)
 from app.models.database import (
     Agent,
     EvaluatorResult,
@@ -59,7 +64,11 @@ from app.services.harbor.trial_store import llm_override
 from app.services.testing.simulation_llms import describe_simulation_llms
 from app.services.testing.simulation_run_naming import simulation_run_name_for_rerun
 
-router =APIRouter(prefix="/simulation-runs", tags=["simulation-runs"])
+router = APIRouter(
+    prefix="/simulation-runs",
+    tags=["simulation-runs"],
+    dependencies=[Depends(require_enterprise_feature("harbor_simulations"))],
+)
 
 
 def _generate_unique_run_id(db: Session) -> str:

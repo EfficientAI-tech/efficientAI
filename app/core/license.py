@@ -69,6 +69,16 @@ FEATURE_CATALOG: Dict[str, Dict[str, str]] = {
         "description": "Route batch LLM workloads through Bifrost or LiteLLM Proxy from Integrations.",
         "category": "integrations",
     },
+    "harbor_simulations": {
+        "title": "Harbor Simulations",
+        "description": "Run Harbor-based simulation batches against production agents.",
+        "category": "evaluation",
+    },
+    "hosted_agents": {
+        "title": "Hosted Agents",
+        "description": "Create hosted agents from scratch with AI-assisted prompts and test setup.",
+        "category": "agents",
+    },
     "enterprise_platform": {
         "title": "Enterprise Platform",
         "description": "Unlocks default enterprise offerings (alerts, metric studio, sharding, gateway).",

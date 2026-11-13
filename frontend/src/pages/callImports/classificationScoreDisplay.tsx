@@ -11,6 +11,60 @@ export type ClassificationHeadlines = {
   level: string | null
 }
 
+export type ClassificationFacetColumn = 'yes_no' | 'choice' | 'level'
+
+export const CLASSIFICATION_FACET_HEADER_LABELS: Record<
+  ClassificationFacetColumn,
+  string
+> = {
+  yes_no: 'Yes/No',
+  choice: 'Category',
+  level: 'Level',
+}
+
+type MetricClassificationMeta = {
+  custom_data_type?: string | null
+  custom_config?: unknown
+}
+
+/** Which facet columns to show for a classification metric (mirrors CSV export). */
+export function classificationFacetColumnsForMetric(
+  metricMeta: MetricClassificationMeta | undefined,
+  sampleScore: unknown,
+): ClassificationFacetColumn[] | null {
+  const scoreType =
+    sampleScore &&
+    typeof sampleScore === 'object' &&
+    typeof (sampleScore as { type?: string }).type === 'string'
+      ? (sampleScore as { type: string }).type.toLowerCase()
+      : undefined
+  const isClassification =
+    metricMeta?.custom_data_type === 'classification' ||
+    scoreType === 'classification'
+  if (!isClassification) return null
+
+  const cfg = metricMeta?.custom_config
+  if (cfg && typeof cfg === 'object' && !Array.isArray(cfg)) {
+    const record = cfg as Record<string, { enabled?: boolean }>
+    const cols: ClassificationFacetColumn[] = []
+    if (record.noul?.enabled) cols.push('yes_no')
+    if (record.choice?.enabled) cols.push('choice')
+    if (record.score?.enabled) cols.push('level')
+    if (cols.length) return cols
+  }
+  return ['yes_no', 'choice', 'level']
+}
+
+export function classificationFacetCellValue(
+  facet: ClassificationFacetColumn,
+  score: ClassificationScoreView,
+): string | null {
+  const { yesNo, category, level } = getClassificationHeadlines(score)
+  if (facet === 'yes_no') return yesNo
+  if (facet === 'choice') return category
+  return level
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return value as Record<string, unknown>

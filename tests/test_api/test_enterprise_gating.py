@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 
 from app.core import license as license_module
@@ -244,3 +246,33 @@ def test_workspace_iam_forbidden_without_license(unlicensed_client, default_work
     )
     assert response.status_code == 403
     assert response.json()["detail"]["error"] == "enterprise_license_required"
+
+
+def test_harbor_simulations_forbidden_without_feature(unlicensed_client):
+    response = unlicensed_client.post(
+        "/api/v1/simulation-runs",
+        json={
+            "agent_id": str(uuid4()),
+            "scenario_ids": [],
+            "persona_ids": [],
+            "n_attempts": 1,
+        },
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "enterprise_feature_required"
+    assert response.json()["detail"]["feature"] == "harbor_simulations"
+
+
+def test_generate_production_prompt_forbidden_without_hosted_agents(unlicensed_client):
+    response = unlicensed_client.post(
+        "/api/v1/agents/generate-production-prompt",
+        json={
+            "brief": "A refunds assistant",
+            "agent_name": "Refunds",
+            "language": "en",
+            "call_type": "inbound",
+        },
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "enterprise_feature_required"
+    assert response.json()["detail"]["feature"] == "hosted_agents"

@@ -1029,6 +1029,11 @@ class InvitationCreate(BaseModel):
     """Schema for creating an invitation."""
     email: str = Field(..., description="Email address of the user to invite")
     role: RoleEnum = RoleEnum.READER
+    workspace_ids: List[UUID] = Field(
+        ...,
+        min_length=1,
+        description="Workspaces the invitee will be added to when they accept.",
+    )
 
 
 class InvitationResponse(BaseModel):
@@ -1041,6 +1046,8 @@ class InvitationResponse(BaseModel):
     expires_at: datetime
     created_at: datetime
     organization_name: Optional[str] = None  # Include organization name
+    workspace_ids: List[UUID] = Field(default_factory=list)
+    workspace_names: List[str] = Field(default_factory=list)
     invite_path: Optional[str] = None
     invite_url: Optional[str] = None
 
@@ -4832,6 +4839,8 @@ class CallImportMetricSummary(BaseModel):
     # Discovered Labels panel next to a multi_label parent. Defaults to
     # False to keep legacy clients (and standalone metrics) unaffected.
     allow_discovery: bool = False
+    custom_data_type: Optional[str] = None
+    custom_config: Optional[Dict[str, Any]] = None
 
     model_config = ConfigDict(from_attributes=True)
 

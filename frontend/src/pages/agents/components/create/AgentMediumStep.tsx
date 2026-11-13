@@ -2,6 +2,8 @@ import { Brain, Mic, MessagesSquare } from 'lucide-react'
 import type { AgentMedium } from './createAgentTypes'
 import { WizardStepHeader } from './WizardStepHeader'
 import WizardIconCard from './WizardIconCard'
+import { useLicenseStore } from '../../../../store/licenseStore'
+import { wizardOptionGridClass } from './wizardCopy'
 
 interface AgentMediumStepProps {
   value: AgentMedium | null
@@ -17,13 +19,6 @@ const OPTIONS: {
   icon: typeof Mic
 }[] = [
   {
-    id: 'hosted',
-    label: 'Hosted agent from scratch',
-    subtitle:
-      'Create your production agent from scratch and self improve by simulating them against 100s of scenarios',
-    icon: Brain,
-  },
-  {
     id: 'voice',
     label: 'Voice',
     subtitle: 'Test your voice agents already hosted in production.',
@@ -35,22 +30,38 @@ const OPTIONS: {
     subtitle: 'Test your chat agents already hosted in production.',
     icon: MessagesSquare,
   },
+  {
+    id: 'hosted',
+    label: 'Hosted agent from scratch',
+    subtitle:
+      'Create your production agent from scratch and self improve by simulating them against 100s of scenarios',
+    icon: Brain,
+  },
 ]
 
 export default function AgentMediumStep({ value, onChange, embedded, compact }: AgentMediumStepProps) {
+  const { isFeatureEnabled, isLoaded } = useLicenseStore()
+  const hostedEnabled = !isLoaded || isFeatureEnabled('hosted_agents')
+  const visibleOptions = OPTIONS.filter(
+    (option) => option.id !== 'hosted' || hostedEnabled,
+  )
+  const gridClass = wizardOptionGridClass(visibleOptions.length, Boolean(compact))
+
   return (
     <div className={embedded ? 'w-full' : 'w-full max-w-4xl mx-auto space-y-6'}>
       {!embedded ? (
         <WizardStepHeader
           title="What kind of agent?"
-          subtitle="Hosted on EfficientAI, voice with telephony or a platform, or external chat."
+          subtitle={
+            hostedEnabled
+              ? 'Hosted on EfficientAI, voice with telephony or a platform, or external chat.'
+              : 'Voice with telephony or a platform, or external chat.'
+          }
           prominence={compact ? 'entry' : 'default'}
         />
       ) : null}
-      <div
-        className={`grid w-full grid-cols-1 ${compact ? 'gap-3.5 mt-4 sm:grid-cols-3' : 'gap-4 mt-6 sm:grid-cols-3'}`}
-      >
-        {OPTIONS.map((option) => (
+      <div className={gridClass}>
+        {visibleOptions.map((option) => (
           <WizardIconCard
             key={option.id}
             label={option.label}

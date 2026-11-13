@@ -17,9 +17,10 @@ import { itemsOf } from '../../../../lib/safeData'
 import type { CallImportEvaluation, CallImportEvaluationRow } from '../../../../types/api'
 import FilterChip from '../evalCharts/FilterChip'
 import {
-  ClassificationScoreSummary,
-  formatClassificationScoreTooltip,
+  CLASSIFICATION_FACET_HEADER_LABELS,
+  classificationFacetCellValue,
   humanizeClassificationLabel,
+  type ClassificationFacetColumn,
   type ClassificationScoreView,
 } from '../../classificationScoreDisplay'
 import { CallRowDetailSplitLayout } from '../CallRowDetailSplitLayout'
@@ -62,6 +63,13 @@ export type EvaluationRowsTableProps = {
     id: string
     name: string
     hasRationale: boolean
+  }[]
+  tableMetricColumns: {
+    columnKey: string
+    metricId: string
+    metricName: string
+    facet?: ClassificationFacetColumn
+    isRationale?: boolean
   }[]
   totalPages: number
   filteredRowsSummary: string
@@ -177,6 +185,7 @@ export function EvaluationRowsTable(props: EvaluationRowsTableProps) {
     setEvalPanelTab,
     parentMetrics,
     displayMetrics,
+    tableMetricColumns,
     totalPages,
     filteredRowsSummary,
     hasActiveFilters,
@@ -704,47 +713,59 @@ export function EvaluationRowsTable(props: EvaluationRowsTableProps) {
                     >
                       Status
                     </SortableHeader>
-                    {displayMetrics.flatMap((metric) => {
-                      const llmLabel = getMetricLlmLabel(metric.id)
-                      const headers = [
-                        <SortableHeader
-                          key={metric.id}
-                          columnKey={`metric:${metric.id}`}
-                          activeKey={sortBy}
-                          activeDir={sortDir}
-                          onCycle={handleColumnSort}
-                          title={metric.name}
-                        >
-                          <span className="flex flex-col items-start leading-tight normal-case">
-                            <span className="truncate max-w-[220px] text-xs font-medium text-gray-700">
-                              {metric.name}
-                            </span>
-                            <span className="text-[10px] font-normal text-gray-400 mt-0.5">
-                              {llmLabel}
-                            </span>
-                          </span>
-                        </SortableHeader>,
-                      ]
-                      if (metric.hasRationale) {
-                        headers.push(
+                    {tableMetricColumns.map((col) => {
+                      const llmLabel = getMetricLlmLabel(col.metricId)
+                      if (col.isRationale) {
+                        return (
                           <th
-                            key={`${metric.id}__rationale`}
+                            key={col.columnKey}
                             className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap"
-                            title={`${metric.name} - LLM Rationale`}
+                            title={`${col.metricName} - LLM Rationale`}
                           >
                             <span className="flex flex-col items-start leading-tight normal-case">
                               <span className="text-xs font-medium text-gray-700">
-                                {metric.name}{' '}
+                                {col.metricName}{' '}
                                 <span className="text-gray-400">- LLM Rationale</span>
                               </span>
                               <span className="text-[10px] font-normal text-gray-400 mt-0.5">
                                 {llmLabel}
                               </span>
                             </span>
-                          </th>,
+                          </th>
                         )
                       }
-                      return headers
+                      const sortColumnKey = col.facet
+                        ? `metric:${col.metricId}:${col.facet}`
+                        : `metric:${col.metricId}`
+                      return (
+                        <SortableHeader
+                          key={col.columnKey}
+                          columnKey={sortColumnKey}
+                          activeKey={sortBy}
+                          activeDir={sortDir}
+                          onCycle={handleColumnSort}
+                          title={
+                            col.facet
+                              ? `${col.metricName} — ${CLASSIFICATION_FACET_HEADER_LABELS[col.facet]}`
+                              : col.metricName
+                          }
+                        >
+                          <span className="flex flex-col items-start leading-tight normal-case">
+                            <span className="truncate max-w-[220px] text-xs font-medium text-gray-700">
+                              {col.metricName}
+                              {col.facet ? (
+                                <span className="text-gray-500 font-normal">
+                                  {' '}
+                                  · {CLASSIFICATION_FACET_HEADER_LABELS[col.facet]}
+                                </span>
+                              ) : null}
+                            </span>
+                            <span className="text-[10px] font-normal text-gray-400 mt-0.5">
+                              {llmLabel}
+                            </span>
+                          </span>
+                        </SortableHeader>
+                      )
                     })}
                     <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase whitespace-nowrap">
                       &nbsp;
@@ -823,102 +844,22 @@ export function EvaluationRowsTable(props: EvaluationRowsTableProps) {
                             />
                           </div>
                         </td>
-                        {displayMetrics.flatMap((metric) => {
-                          const score = row.metric_scores?.[metric.id]
-                          const value =
-                            score && typeof score === 'object'
-                              ? score.value
-                              : undefined
-                          const scoreType =
-                            score &&
-                            typeof score === 'object' &&
-                            typeof score.type === 'string'
-                              ? score.type.toLowerCase()
-                              : undefined
-                          const isClassificationRow =
-                            score &&
-                            typeof score === 'object' &&
-                            typeof (score as { type?: string }).type === 'string' &&
-                            (score as { type: string }).type.toLowerCase() ===
-                              'classification'
-                          const isEmpty =
-                            !score ||
-                            (!isClassificationRow &&
-                              (value === undefined ||
-                                value === null ||
-                                value === ''))
-                          const valueStr = isEmpty ? '' : String(value)
-                          const isLongText =
-                            scoreType === 'text' && valueStr.length > 80
-                          const errorText =
-                            score &&
-                            typeof score === 'object' &&
-                            score.error
-                              ? String(score.error)
-                              : undefined
-                          // ``rationale`` is only populated for metrics that
-                          // were scored with capture_rationale=true. When
-                          // ``metric.hasRationale`` is true we render the
-                          // rationale in its own adjacent column (mirroring
-                          // the CSV export), otherwise we omit the column
-                          // entirely so other metrics stay compact.
-                          const rationale =
-                            score &&
-                            typeof score === 'object' &&
-                            typeof (score as { rationale?: unknown })
-                              .rationale === 'string' &&
-                            (score as { rationale?: string }).rationale
-                              ? String(
-                                  (score as { rationale: string }).rationale,
-                                )
-                              : undefined
-                          const isClassification =
-                            scoreType === 'classification' || isClassificationRow
-                          const classificationTooltip =
-                            isClassification &&
-                            score &&
-                            typeof score === 'object'
-                              ? formatClassificationScoreTooltip(
-                                  score as ClassificationScoreView,
-                                )
-                              : undefined
-                          const valueTooltip =
-                            errorText ||
-                            classificationTooltip ||
-                            (isLongText ? valueStr : undefined)
-                          const valueCellClassName =
-                            scoreType === 'text'
-                              ? 'px-3 py-2 text-sm text-gray-700 align-top max-w-xs'
-                              : isClassification
-                                ? 'px-3 py-2 text-sm text-gray-700 align-top whitespace-normal min-w-[9rem] max-w-[16rem]'
-                                : 'px-3 py-2 text-sm text-gray-700 whitespace-nowrap'
-                          const cells = [
-                            <td
-                              key={metric.id}
-                              className={valueCellClassName}
-                              title={valueTooltip}
-                            >
-                              {isEmpty ? (
-                                '-'
-                              ) : isClassification &&
-                                score &&
-                                typeof score === 'object' ? (
-                                <ClassificationScoreSummary
-                                  score={score as ClassificationScoreView}
-                                />
-                              ) : scoreType === 'text' ? (
-                                <span className="block whitespace-pre-wrap break-words leading-snug line-clamp-3">
-                                  {valueStr}
-                                </span>
-                              ) : (
-                                <span className="font-medium">{valueStr}</span>
-                              )}
-                            </td>,
-                          ]
-                          if (metric.hasRationale) {
-                            cells.push(
+                        {tableMetricColumns.map((col) => {
+                          const score = row.metric_scores?.[col.metricId]
+                          if (col.isRationale) {
+                            const rationale =
+                              score &&
+                              typeof score === 'object' &&
+                              typeof (score as { rationale?: unknown })
+                                .rationale === 'string' &&
+                              (score as { rationale?: string }).rationale
+                                ? String(
+                                    (score as { rationale: string }).rationale,
+                                  )
+                                : undefined
+                            return (
                               <td
-                                key={`${metric.id}__rationale`}
+                                key={col.columnKey}
                                 className="px-3 py-2 text-sm text-gray-600 align-top max-w-xs"
                                 title={rationale || undefined}
                               >
@@ -929,10 +870,84 @@ export function EvaluationRowsTable(props: EvaluationRowsTableProps) {
                                 ) : (
                                   <span className="text-gray-300">-</span>
                                 )}
-                              </td>,
+                              </td>
                             )
                           }
-                          return cells
+                          if (col.facet) {
+                            const view =
+                              score && typeof score === 'object'
+                                ? (score as ClassificationScoreView)
+                                : null
+                            const facetValue =
+                              view && !view.error
+                                ? classificationFacetCellValue(col.facet, view)
+                                : null
+                            const errorText =
+                              view?.error != null ? String(view.error) : undefined
+                            return (
+                              <td
+                                key={col.columnKey}
+                                className="px-3 py-2 text-sm text-gray-700 whitespace-nowrap"
+                                title={errorText}
+                              >
+                                {errorText ? (
+                                  <span className="text-amber-700 text-xs">
+                                    Error
+                                  </span>
+                                ) : facetValue ? (
+                                  <span className="font-medium">{facetValue}</span>
+                                ) : (
+                                  <span className="text-gray-300">-</span>
+                                )}
+                              </td>
+                            )
+                          }
+                          const value =
+                            score && typeof score === 'object'
+                              ? score.value
+                              : undefined
+                          const scoreType =
+                            score &&
+                            typeof score === 'object' &&
+                            typeof score.type === 'string'
+                              ? score.type.toLowerCase()
+                              : undefined
+                          const isEmpty =
+                            !score ||
+                            value === undefined ||
+                            value === null ||
+                            value === ''
+                          const valueStr = isEmpty ? '' : String(value)
+                          const isLongText =
+                            scoreType === 'text' && valueStr.length > 80
+                          const errorText =
+                            score &&
+                            typeof score === 'object' &&
+                            score.error
+                              ? String(score.error)
+                              : undefined
+                          const valueTooltip = errorText || (isLongText ? valueStr : undefined)
+                          const valueCellClassName =
+                            scoreType === 'text'
+                              ? 'px-3 py-2 text-sm text-gray-700 align-top max-w-xs'
+                              : 'px-3 py-2 text-sm text-gray-700 whitespace-nowrap'
+                          return (
+                            <td
+                              key={col.columnKey}
+                              className={valueCellClassName}
+                              title={valueTooltip}
+                            >
+                              {isEmpty ? (
+                                '-'
+                              ) : scoreType === 'text' ? (
+                                <span className="block whitespace-pre-wrap break-words leading-snug line-clamp-3">
+                                  {valueStr}
+                                </span>
+                              ) : (
+                                <span className="font-medium">{valueStr}</span>
+                              )}
+                            </td>
+                          )
                         })}
                         <td className="px-3 py-2 text-right whitespace-nowrap">
                           <div className="inline-flex items-center gap-1">

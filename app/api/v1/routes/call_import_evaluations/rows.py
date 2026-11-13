@@ -18,7 +18,7 @@ from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Qu
 from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import Float, case, cast, desc, func, or_, text
+from sqlalchemy import Float, asc, case, cast, desc, func, nullslast, or_, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -129,7 +129,12 @@ from app.services.classification_metric_scores import classification_facets_from
 from app.services.classification_metric_sql import (
     classification_choice_row_predicate,
     classification_level_row_predicate,
+    effective_choice_sql,
+    effective_level_sql,
+    effective_yes_no_sql,
 )
+
+_CLASSIFICATION_SORT_FACETS = frozenset({"yes_no", "choice", "level"})
 from app.services.metric_classification_validation import is_classification_metric
 from app.services.metric_failure_policy import (
     aggregate_primary_percent,
@@ -172,6 +177,61 @@ from app.api.v1.routes.call_import_evaluations.flow import (  # noqa: E402
     _DISCOVERED_NODE_PREFIX,
     _FLOW_START_NODE_ID,
 )
+
+def _parse_metric_sort_key(sort_by_clean: str) -> Tuple[Optional[UUID], Optional[str]]:
+    """Parse ``metric:<uuid>`` or ``metric:<uuid>:yes_no|choice|level``."""
+    if not sort_by_clean.startswith("metric:"):
+        return None, None
+    payload = sort_by_clean[len("metric:") :].strip()
+    if not payload:
+        return None, None
+    parts = payload.split(":")
+    try:
+        metric_uuid = UUID(parts[0].strip())
+    except (TypeError, ValueError):
+        return None, None
+    if len(parts) < 2:
+        return metric_uuid, None
+    facet = parts[1].strip().lower()
+    if facet not in _CLASSIFICATION_SORT_FACETS:
+        return None, None
+    return metric_uuid, facet
+
+
+def _sqlite_classification_facet_sort_column(facet: str, metric_uuid: UUID):
+    scores = CallImportEvaluationRow.metric_scores
+    mid = str(metric_uuid)
+    if facet == "yes_no":
+        noul_txt = func.json_extract(scores, f'$."{mid}".answers.noul.noul')
+        noul_f = cast(noul_txt, Float)
+        derived = case(
+            (noul_f >= 0.5, "Yes"),
+            (noul_f.isnot(None), "No"),
+            else_=None,
+        )
+        return func.coalesce(
+            func.json_extract(scores, f'$."{mid}".classification_yes_no'),
+            derived,
+        )
+    if facet == "choice":
+        return func.coalesce(
+            func.json_extract(scores, f'$."{mid}".classification_choice'),
+            func.json_extract(scores, f'$."{mid}".answers.choice.choice'),
+        )
+    return func.coalesce(
+        func.json_extract(scores, f'$."{mid}".classification_level'),
+        func.json_extract(scores, f'$."{mid}".answers.score.score'),
+    )
+
+
+def _postgres_classification_facet_sort_expr(facet: str, metric_uuid: UUID):
+    sql_by_facet = {
+        "yes_no": effective_yes_no_sql(),
+        "choice": effective_choice_sql(),
+        "level": effective_level_sql(),
+    }
+    return text(f"({sql_by_facet[facet]})").bindparams(mid=str(metric_uuid))
+
 
 def _apply_classification_metric_filters(
     query,
@@ -322,8 +382,10 @@ async def list_call_import_evaluation_rows(
         description=(
             "Column to sort by. Accepted values: ``row_index`` (default "
             "when omitted), ``conversation_id``, ``status`` (the "
-            "evaluation-row status), or ``metric:<metric_uuid>`` to sort "
-            "by ``metric_scores[<uuid>].value``. Metric sorts compare "
+            "evaluation-row status), ``metric:<metric_uuid>`` to sort "
+            "by ``metric_scores[<uuid>].value``, or "
+            "``metric:<metric_uuid>:yes_no|choice|level`` for Jev "
+            "classification facet columns. Metric value sorts compare "
             "the extracted JSON text — adequate for booleans, enum "
             "labels, and 0-1 ratings; large integer values may sort "
             "lexicographically (10 before 2)."
@@ -598,6 +660,7 @@ async def list_call_import_evaluation_rows(
     sort_by_clean = (sort_by or "").strip()
     primary_sort = None
     metric_uuid: Optional[UUID] = None
+    classification_facet: Optional[str] = None
     if sort_by_clean == "row_index":
         sort_recognized = True
         # Falls through to the default ``order_by`` below with
@@ -610,31 +673,22 @@ async def list_call_import_evaluation_rows(
         sort_recognized = True
         primary_sort = _apply_direction(CallImportEvaluationRow.status)
     elif sort_by_clean.startswith("metric:"):
-        raw_metric_id = sort_by_clean.split(":", 1)[1].strip()
-        try:
-            metric_uuid = UUID(raw_metric_id)
-        except (TypeError, ValueError):
-            metric_uuid = None
+        metric_uuid, classification_facet = _parse_metric_sort_key(sort_by_clean)
         if metric_uuid is not None:
             sort_recognized = True
-            # ``metric_scores`` is JSON-typed but the helper functions
-            # for path extraction differ between Postgres (production)
-            # and SQLite (default test backend). Branch on the active
-            # dialect so we can use the right primitive:
-            #   * Postgres → ``json_extract_path_text(col, key, "value")``
-            #     which returns the value as TEXT for both ``json`` and
-            #     ``jsonb`` columns.
-            #   * SQLite   → ``json_extract(col, '$."<uuid>".value')``
-            #     using JSONPath syntax. ``metric_uuid`` is already
-            #     validated above (``UUID(raw_metric_id)``), so the
-            #     interpolated path is safe from injection.
-            # NULL values (rows where the metric wasn't scored) sort
-            # to the END regardless of direction so un-scored rows
-            # don't crowd the top of an ascending sort.
             dialect_name = (
                 db.bind.dialect.name if db.bind is not None else "postgresql"
             )
-            if dialect_name == "sqlite":
+            if classification_facet:
+                if dialect_name == "sqlite":
+                    path_value = _sqlite_classification_facet_sort_column(
+                        classification_facet, metric_uuid
+                    )
+                else:
+                    path_value = _postgres_classification_facet_sort_expr(
+                        classification_facet, metric_uuid
+                    )
+            elif dialect_name == "sqlite":
                 json_path = f'$."{metric_uuid}".value'
                 path_value = func.json_extract(
                     CallImportEvaluationRow.metric_scores,
@@ -647,9 +701,9 @@ async def list_call_import_evaluation_rows(
                     "value",
                 )
             primary_sort = (
-                path_value.desc().nullslast()
+                nullslast(desc(path_value))
                 if direction_desc
-                else path_value.asc().nullslast()
+                else nullslast(asc(path_value))
             )
 
     if primary_sort is not None:
@@ -696,21 +750,44 @@ async def list_call_import_evaluation_rows(
     elif sort_by_clean.startswith("metric:") and metric_uuid is not None:
         metric_id_str = str(metric_uuid)
 
-        def _pair_sort_key(
-            pair: Tuple[CallImportEvaluationRow, CallImportRow],
-        ) -> Tuple[Any, ...]:
-            scores = pair[0].metric_scores or {}
-            entry = scores.get(metric_id_str, {})
-            raw_value = entry.get("value") if isinstance(entry, dict) else None
-            null_rank = 1 if raw_value is None else 0
-            return (
-                null_rank,
-                _directed_string(
-                    str(raw_value) if raw_value is not None else None,
-                    direction_desc,
-                ),
-                _pair_row_index(pair),
-            )
+        if classification_facet:
+
+            def _pair_sort_key(
+                pair: Tuple[CallImportEvaluationRow, CallImportRow],
+            ) -> Tuple[Any, ...]:
+                scores = pair[0].metric_scores or {}
+                entry = scores.get(metric_id_str, {})
+                if isinstance(entry, dict):
+                    facets = classification_facets_from_entry(entry)
+                    raw_value = facets.get(classification_facet)
+                else:
+                    raw_value = None
+                null_rank = 1 if raw_value in (None, "") else 0
+                return (
+                    null_rank,
+                    _directed_string(
+                        str(raw_value) if raw_value not in (None, "") else None,
+                        direction_desc,
+                    ),
+                    _pair_row_index(pair),
+                )
+        else:
+
+            def _pair_sort_key(
+                pair: Tuple[CallImportEvaluationRow, CallImportRow],
+            ) -> Tuple[Any, ...]:
+                scores = pair[0].metric_scores or {}
+                entry = scores.get(metric_id_str, {})
+                raw_value = entry.get("value") if isinstance(entry, dict) else None
+                null_rank = 1 if raw_value is None else 0
+                return (
+                    null_rank,
+                    _directed_string(
+                        str(raw_value) if raw_value is not None else None,
+                        direction_desc,
+                    ),
+                    _pair_row_index(pair),
+                )
     elif sort_recognized and sort_by_clean == "row_index":
         def _pair_sort_key(
             pair: Tuple[CallImportEvaluationRow, CallImportRow],

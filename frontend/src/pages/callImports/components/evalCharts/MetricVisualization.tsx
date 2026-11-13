@@ -20,6 +20,15 @@ import {
   sortValueCounts,
 } from './CategoricalCharts'
 import type { CategoricalChartType } from './chartPrefs'
+import { humanizeClassificationLabel } from '../../classificationScoreDisplay'
+
+export type ClassificationFacetKey = 'yes_no' | 'choice' | 'level'
+
+const CLASSIFICATION_FACET_LABELS: Record<ClassificationFacetKey, string> = {
+  yes_no: 'Yes / No',
+  choice: 'Category',
+  level: 'Level',
+}
 
 function clampProseToSentences(
   text: string,
@@ -50,6 +59,9 @@ export default function MetricVisualization({
   periodDelta,
   failurePoliciesSource,
   onValueClick,
+  onClassificationFacetClick,
+  classificationActiveFacet,
+  classificationActiveValue,
 }: {
   metric: CallImportMetricAggregate
   chartType: CategoricalChartType
@@ -61,6 +73,12 @@ export default function MetricVisualization({
   periodDelta?: MetricPeriodDelta | null
   failurePoliciesSource?: 'inferred' | 'user' | null
   onValueClick: (value: string) => void
+  onClassificationFacetClick?: (
+    facet: ClassificationFacetKey,
+    value: string,
+  ) => void
+  classificationActiveFacet?: ClassificationFacetKey | null
+  classificationActiveValue?: string | null
 }) {
   const histogram = metric.histogram_buckets
   const valueCounts = useMemo(
@@ -71,6 +89,32 @@ export default function MetricVisualization({
   const hasCategorical = valueCounts.length > 0
   const totalCategorical = valueCounts.reduce((sum, v) => sum + v.count, 0)
   const isMultiLabelParent = metric.is_multi_label_parent === true
+  const facets = metric.classification_facets
+  const classificationSections = useMemo(() => {
+    if (!facets) return []
+    const sections: {
+      key: ClassificationFacetKey
+      label: string
+      valueCounts: CallImportMetricAggregate['value_counts']
+    }[] = []
+    const entries: [ClassificationFacetKey, keyof NonNullable<typeof facets>][] = [
+      ['yes_no', 'yes_no'],
+      ['choice', 'choice'],
+      ['level', 'level'],
+    ]
+    for (const [key, field] of entries) {
+      const counts = facets[field]
+      if (counts?.length) {
+        sections.push({
+          key,
+          label: CLASSIFICATION_FACET_LABELS[key],
+          valueCounts: sortValueCounts(counts),
+        })
+      }
+    }
+    return sections
+  }, [facets])
+  const hasClassificationCharts = classificationSections.length > 0
 
   let chart: ReactNode = null
   if (histogram.length > 0) {
@@ -114,6 +158,47 @@ export default function MetricVisualization({
           />
         </BarChart>
       </ResponsiveContainer>
+    )
+  } else if (hasClassificationCharts && onClassificationFacetClick) {
+    chart = (
+      <div className="space-y-5">
+        {classificationSections.map((section) => {
+          const total = section.valueCounts.reduce((sum, v) => sum + v.count, 0)
+          const facetActive =
+            isActive && classificationActiveFacet === section.key
+          const facetActiveValue = facetActive ? classificationActiveValue : null
+          return (
+            <div key={section.key}>
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 mb-2">
+                {section.label}
+              </p>
+              <CategoricalChart
+                metric={metric}
+                chartType={chartType}
+                valueCounts={section.valueCounts.map((vc) => ({
+                  ...vc,
+                  label:
+                    section.key === 'choice'
+                      ? humanizeClassificationLabel(String(vc.label))
+                      : String(vc.label),
+                }))}
+                totalCategorical={total}
+                activeValue={facetActiveValue ?? null}
+                onValueClick={(value) => {
+                  const raw =
+                    section.valueCounts.find(
+                      (vc) =>
+                        (section.key === 'choice'
+                          ? humanizeClassificationLabel(String(vc.label))
+                          : String(vc.label)) === value,
+                    )?.label ?? value
+                  onClassificationFacetClick(section.key, String(raw))
+                }}
+              />
+            </div>
+          )
+        })}
+      </div>
     )
   } else if (valueCounts.length) {
     chart = (
@@ -169,6 +254,10 @@ export default function MetricVisualization({
               <span className="inline-flex items-center text-[10px] font-medium px-2 py-0.5 rounded-full bg-primary-50 text-primary-700">
                 Multi-label
               </span>
+            ) : hasClassificationCharts ? (
+              <span className="inline-flex items-center text-[10px] font-medium px-2 py-0.5 rounded-full bg-primary-50 text-primary-700">
+                Classification
+              </span>
             ) : (
               metric.metric_type && (
                 <span className="inline-flex items-center text-[10px] font-medium px-2 py-0.5 rounded-full bg-primary-50 text-primary-700 capitalize">
@@ -201,7 +290,7 @@ export default function MetricVisualization({
               Filtering
             </span>
           )}
-          {hasCategorical && !hasNumeric && (
+          {(hasCategorical || hasClassificationCharts) && !hasNumeric && (
             <CategoricalChartPicker
               metric={metric}
               active={chartType}
@@ -314,7 +403,7 @@ export default function MetricVisualization({
         </div>
       )}
 
-      {hasCategorical && totalCategorical > 0 && (
+      {hasCategorical && totalCategorical > 0 && !hasClassificationCharts && (
         <CategoryLegend
           valueCounts={valueCounts}
           totalCategorical={totalCategorical}

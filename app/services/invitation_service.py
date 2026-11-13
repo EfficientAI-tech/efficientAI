@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -15,8 +15,9 @@ from app.models.database import (
     Organization,
     OrganizationMember,
     User,
+    Workspace,
 )
-from app.services.workspace_rbac import backfill_org_workspace_memberships
+from app.services.workspace_rbac import add_invitation_workspace_memberships
 
 
 class InvitationError(Exception):
@@ -52,6 +53,31 @@ def build_invite_url(token: str) -> str:
 
 def get_invitation_by_token(db: Session, token: str) -> Optional[Invitation]:
     return db.query(Invitation).filter(Invitation.token == token).first()
+
+
+def parse_invitation_workspace_ids(invitation: Invitation) -> List[UUID]:
+    raw = invitation.workspace_ids
+    if not isinstance(raw, list):
+        return []
+    out: List[UUID] = []
+    for item in raw:
+        try:
+            out.append(UUID(str(item)))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def workspace_names_for_ids(db: Session, workspace_ids: List[UUID]) -> List[str]:
+    if not workspace_ids:
+        return []
+    rows = (
+        db.query(Workspace)
+        .filter(Workspace.id.in_(workspace_ids))
+        .order_by(Workspace.is_default.desc(), Workspace.name.asc())
+        .all()
+    )
+    return [row.name for row in rows]
 
 
 def expire_invitation_if_needed(db: Session, invitation: Invitation) -> None:
@@ -125,6 +151,14 @@ def accept_invitation(
         invitation.status = InvitationStatus.ACCEPTED
         invitation.accepted_at = datetime.now(timezone.utc)
         invitation.invited_user_id = user.id
+        add_invitation_workspace_memberships(
+            db,
+            organization_id=invitation.organization_id,
+            user_id=user.id,
+            org_role=invitation.role,
+            workspace_ids=parse_invitation_workspace_ids(invitation),
+            added_by_user_id=invitation.invited_by_id,
+        )
         db.commit()
         return existing_member
 
@@ -155,7 +189,14 @@ def accept_invitation(
     invitation.invited_user_id = user.id
 
     db.flush()
-    backfill_org_workspace_memberships(db, organization_id=invitation.organization_id)
+    add_invitation_workspace_memberships(
+        db,
+        organization_id=invitation.organization_id,
+        user_id=user.id,
+        org_role=invitation.role,
+        workspace_ids=parse_invitation_workspace_ids(invitation),
+        added_by_user_id=invitation.invited_by_id,
+    )
     db.commit()
     db.refresh(member)
     return member
@@ -182,6 +223,9 @@ def get_invitation_preview(db: Session, token: str) -> dict:
 
         has_password = user_has_any_local_password(db, existing_user)
 
+    workspace_ids = parse_invitation_workspace_ids(invitation)
+    workspace_names = workspace_names_for_ids(db, workspace_ids)
+
     status_value = getattr(invitation.status, "value", invitation.status)
     return {
         "organization_name": org.name if org else None,
@@ -191,6 +235,8 @@ def get_invitation_preview(db: Session, token: str) -> dict:
         "status": status_value,
         "user_exists": user_exists,
         "has_password": has_password,
+        "workspace_ids": [str(wid) for wid in workspace_ids],
+        "workspace_names": workspace_names,
     }
 
 
@@ -267,6 +313,8 @@ def invitation_to_response_dict(
         invite_path = build_invite_path(invitation.token)
         invite_url = build_invite_url(invitation.token)
 
+    workspace_ids = parse_invitation_workspace_ids(invitation)
+
     return {
         "id": invitation.id,
         "organization_id": invitation.organization_id,
@@ -276,6 +324,8 @@ def invitation_to_response_dict(
         "expires_at": invitation.expires_at,
         "created_at": invitation.created_at,
         "organization_name": organization_name,
+        "workspace_ids": workspace_ids,
+        "workspace_names": workspace_names_for_ids(db, workspace_ids),
         "invite_path": invite_path,
         "invite_url": invite_url,
     }

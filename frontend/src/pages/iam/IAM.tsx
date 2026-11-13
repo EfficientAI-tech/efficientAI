@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useSearchParams } from 'react-router-dom'
 import { Role, Invitation, OrganizationMember, InvitationCreate } from '../../types/api'
@@ -72,6 +72,7 @@ export default function IAM() {
   const [showInviteModal, setShowInviteModal] = useState(false)
   const [inviteEmail, setInviteEmail] = useState('')
   const [inviteRole, setInviteRole] = useState<Role>(Role.READER)
+  const [inviteWorkspaceIds, setInviteWorkspaceIds] = useState<string[]>([])
   const [showRemoveModal, setShowRemoveModal] = useState(false)
   const [memberToRemove, setMemberToRemove] = useState<OrganizationMember | null>(null)
   const [showCancelModal, setShowCancelModal] = useState(false)
@@ -105,6 +106,23 @@ export default function IAM() {
     queryFn: () => apiClient.listInvitations(),
   })
 
+  const { data: orgWorkspaces = [] } = useQuery({
+    queryKey: ['iam', 'workspaces'],
+    queryFn: () => apiClient.listWorkspaces(),
+    enabled: isAdmin,
+  })
+
+  const inviteableWorkspaces = useMemo(
+    () => orgWorkspaces.filter((ws) => ws.is_active),
+    [orgWorkspaces],
+  )
+
+  useEffect(() => {
+    if (showInviteModal && inviteableWorkspaces.length > 0 && inviteWorkspaceIds.length === 0) {
+      setInviteWorkspaceIds(inviteableWorkspaces.map((ws) => ws.id))
+    }
+  }, [showInviteModal, inviteableWorkspaces, inviteWorkspaceIds.length])
+
   const updateOrgMutation = useMutation({
     mutationFn: (name: string) => apiClient.updateOrganization({ name }),
     onSuccess: () => {
@@ -127,6 +145,7 @@ export default function IAM() {
       setShowInviteModal(false)
       setInviteEmail('')
       setInviteRole(Role.READER)
+      setInviteWorkspaceIds([])
       if (invitation.invite_path || invitation.invite_url) {
         const shareUrl = buildInviteShareUrl(invitation)
         if (shareUrl) {
@@ -223,7 +242,35 @@ export default function IAM() {
 
   const handleInvite = (e: React.FormEvent) => {
     e.preventDefault()
-    inviteMutation.mutate({ email: inviteEmail, role: inviteRole })
+    if (!inviteWorkspaceIds.length) {
+      showToast('Select at least one workspace', 'error')
+      return
+    }
+    inviteMutation.mutate({
+      email: inviteEmail,
+      role: inviteRole,
+      workspace_ids: inviteWorkspaceIds,
+    })
+  }
+
+  const toggleInviteWorkspace = (workspaceId: string) => {
+    setInviteWorkspaceIds((prev) =>
+      prev.includes(workspaceId)
+        ? prev.filter((id) => id !== workspaceId)
+        : [...prev, workspaceId],
+    )
+  }
+
+  const allInviteWorkspacesSelected =
+    inviteableWorkspaces.length > 0 &&
+    inviteableWorkspaces.every((ws) => inviteWorkspaceIds.includes(ws.id))
+
+  const selectAllInviteWorkspaces = () => {
+    setInviteWorkspaceIds(inviteableWorkspaces.map((ws) => ws.id))
+  }
+
+  const clearAllInviteWorkspaces = () => {
+    setInviteWorkspaceIds([])
   }
 
   const handleCopyInviteLink = (invitation: Invitation) => {
@@ -357,6 +404,7 @@ export default function IAM() {
                 showToast(limitMessage('org_members'), 'error')
                 return
               }
+              setInviteWorkspaceIds(inviteableWorkspaces.map((ws) => ws.id))
               setShowInviteModal(true)
             }}
             leftIcon={<UserPlus className="h-5 w-5" />}
@@ -672,6 +720,11 @@ export default function IAM() {
                     <div className="text-sm text-gray-500">
                       Role: {invitation.role} • Expires: {new Date(invitation.expires_at).toLocaleDateString()}
                     </div>
+                    {invitation.workspace_names && invitation.workspace_names.length > 0 ? (
+                      <div className="text-xs text-gray-500 mt-0.5">
+                        Workspaces: {invitation.workspace_names.join(', ')}
+                      </div>
+                    ) : null}
                   </div>
                   <div className="flex items-center gap-3">
                     {getInvitationStatusBadge(invitation.status)}
@@ -778,6 +831,60 @@ export default function IAM() {
                     <option value={Role.WRITER}>Writer - Create and edit</option>
                     <option value={Role.ADMIN}>Admin - Full access</option>
                   </select>
+                </div>
+                <div>
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <p className="text-sm font-medium text-gray-700">Workspaces</p>
+                    {inviteableWorkspaces.length > 0 ? (
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={selectAllInviteWorkspaces}
+                          disabled={allInviteWorkspacesSelected}
+                          className="text-xs font-medium text-primary-600 hover:text-primary-800 disabled:text-gray-400 disabled:cursor-default"
+                        >
+                          Select all
+                        </button>
+                        <span className="text-gray-300" aria-hidden>
+                          |
+                        </span>
+                        <button
+                          type="button"
+                          onClick={clearAllInviteWorkspaces}
+                          disabled={inviteWorkspaceIds.length === 0}
+                          className="text-xs font-medium text-gray-600 hover:text-gray-800 disabled:text-gray-400 disabled:cursor-default"
+                        >
+                          Clear all
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                  <p className="text-xs text-gray-500 mb-2">
+                    The invitee is added only to the active workspaces you select here.
+                  </p>
+                  <div className="max-h-40 overflow-y-auto rounded-lg border border-gray-200 divide-y divide-gray-100">
+                    {inviteableWorkspaces.length === 0 ? (
+                      <p className="px-3 py-2 text-sm text-gray-500">No active workspaces available.</p>
+                    ) : (
+                      inviteableWorkspaces.map((ws) => (
+                        <label
+                          key={ws.id}
+                          className="flex items-center gap-2 px-3 py-2 text-sm text-gray-800 cursor-pointer hover:bg-gray-50"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={inviteWorkspaceIds.includes(ws.id)}
+                            onChange={() => toggleInviteWorkspace(ws.id)}
+                            className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                          />
+                          <span>{ws.name}</span>
+                          {ws.is_default ? (
+                            <span className="text-[10px] text-gray-400">(default)</span>
+                          ) : null}
+                        </label>
+                      ))
+                    )}
+                  </div>
                 </div>
                 <div className="flex gap-3 pt-4">
                   <Button

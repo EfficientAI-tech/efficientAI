@@ -20,6 +20,7 @@ import type { AgentDetailTab } from './components/AgentInfoView'
 import AgentEditForm from './components/AgentEditForm'
 import AgentTalkSidebar from './components/AgentTalkSidebar'
 import AgentSimulationsPanel from '../simulations/AgentSimulationsPanel'
+import { useLicenseStore } from '../../store/licenseStore'
 import { Save, X } from 'lucide-react'
 import { extractPhoneConflictDetail } from './components/agentPhoneValidation'
 import {
@@ -126,6 +127,9 @@ export default function AgentWorkspaceDetail({
   const queryClient = useQueryClient()
   const { selectedAgent: globalSelectedAgent, setSelectedAgent: setGlobalSelectedAgent } = useAgentStore()
   const { showToast, ToastContainer } = useToast()
+  const { isFeatureEnabled, isLoaded: licenseLoaded } = useLicenseStore()
+  const harborSimulationsEnabled =
+    licenseLoaded && isFeatureEnabled('harbor_simulations')
 
   const activeTab = parseTabFromSearch(searchParams)
 
@@ -141,6 +145,12 @@ export default function AgentWorkspaceDetail({
     },
     [searchParams, setSearchParams]
   )
+
+  useEffect(() => {
+    if (licenseLoaded && activeTab === 'simulations' && !harborSimulationsEnabled) {
+      setActiveTab('overview')
+    }
+  }, [licenseLoaded, activeTab, harborSimulationsEnabled, setActiveTab])
 
   const [isEditMode, setIsEditMode] = useState(false)
   const [showDeleteModal, setShowDeleteModal] = useState(false)
@@ -604,7 +614,11 @@ export default function AgentWorkspaceDetail({
                     { id: 'voice_ai_agent' as const, label: agentProductionTabLabel('voice') },
                     { id: 'simulations' as const, label: 'Simulations' },
                   ]
-            ).map((tab) => (
+            )
+              .filter(
+                (tab) => tab.id !== 'simulations' || harborSimulationsEnabled,
+              )
+              .map((tab) => (
               <button
                 key={tab.id}
                 type="button"

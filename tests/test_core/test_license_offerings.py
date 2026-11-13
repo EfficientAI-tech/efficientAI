@@ -77,6 +77,23 @@ def test_gateway_entitlement_uses_valid_license_not_feature_flag(monkeypatch):
     assert license_module.is_feature_enabled("llm_gateway", org_id) is False
 
 
+def test_harbor_and_hosted_agents_not_enabled_from_other_entitlements(monkeypatch):
+    org_id = uuid4()
+    monkeypatch.setattr(
+        license_module,
+        "get_license_info",
+        lambda: {"features": ["call_imports"], "org_id": None},
+    )
+    monkeypatch.setattr(
+        license_module,
+        "get_enabled_features",
+        lambda: ["call_imports"],
+    )
+
+    assert license_module.is_feature_enabled("harbor_simulations", org_id) is False
+    assert license_module.is_feature_enabled("hosted_agents", org_id) is False
+
+
 def test_get_features_enabled_for_org_includes_defaults(monkeypatch):
     org_id = uuid4()
     monkeypatch.setattr(

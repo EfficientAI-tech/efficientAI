@@ -59,7 +59,10 @@ import {
 } from './evaluationBulkOperation'
 import { importHeaderPollMs } from './importPolling'
 import { isReservedMetricScoreKey } from './metricScoresMeta'
-import MetricVisualization from './components/evalCharts/MetricVisualization'
+import { classificationFacetColumnsForMetric } from './classificationScoreDisplay'
+import MetricVisualization, {
+  type ClassificationFacetKey,
+} from './components/evalCharts/MetricVisualization'
 import {
   loadChartGlobalDefault,
   saveChartGlobalDefault,
@@ -920,6 +923,72 @@ export default function CallImportEvaluationDetail() {
     childrenInGroups,
   ])
 
+  const tableMetricColumns = useMemo(() => {
+    const metricsById = new Map(
+      (evaluation?.metrics ?? []).map((m) => [m.id, m]),
+    )
+    const columns: {
+      columnKey: string
+      metricId: string
+      metricName: string
+      facet?: 'yes_no' | 'choice' | 'level'
+      isRationale?: boolean
+    }[] = []
+    for (const dm of displayMetrics) {
+      const meta = metricsById.get(dm.id)
+      let sampleScore: unknown
+      for (const row of itemsOf<CallImportEvaluationRow>(rowsQuery.data)) {
+        const s = row.metric_scores?.[dm.id]
+        if (s && typeof s === 'object') {
+          sampleScore = s
+          break
+        }
+      }
+      const facets = classificationFacetColumnsForMetric(
+        meta
+          ? {
+              custom_data_type: meta.custom_data_type,
+              custom_config: meta.custom_config,
+            }
+          : undefined,
+        sampleScore,
+      )
+      if (facets?.length) {
+        for (const facet of facets) {
+          columns.push({
+            columnKey: `${dm.id}:${facet}`,
+            metricId: dm.id,
+            metricName: dm.name,
+            facet,
+          })
+        }
+        if (dm.hasRationale) {
+          columns.push({
+            columnKey: `${dm.id}:rationale`,
+            metricId: dm.id,
+            metricName: dm.name,
+            isRationale: true,
+          })
+        }
+        continue
+      }
+      columns.push({
+        columnKey: dm.id,
+        metricId: dm.id,
+        metricName: dm.name,
+      })
+      if (dm.hasRationale) {
+        columns.push({
+          columnKey: `${dm.id}:rationale`,
+          metricId: dm.id,
+          metricName: dm.name,
+          isRationale: true,
+        })
+      }
+    }
+    return columns
+  }, [displayMetrics, evaluation?.metrics, rowsQuery.data?.items])
+
   const tableFilterMetricAggregate = useMemo(() => {
     if (!tableFilterMetricId || !aggregateQuery.data) return undefined
     return aggregateQuery.data.metrics.find(
@@ -1080,12 +1149,8 @@ export default function CallImportEvaluationDetail() {
   // Total visible metric-related columns (value + optional rationale per
   // metric). Used for the "scroll horizontally" hint.
   const totalMetricColumnCount = useMemo(
-    () =>
-      displayMetrics.reduce(
-        (sum, m) => sum + 1 + (m.hasRationale ? 1 : 0),
-        0,
-      ),
-    [displayMetrics],
+    () => tableMetricColumns.length,
+    [tableMetricColumns],
   )
 
   const reportQualityMetrics = useMemo(
@@ -1887,6 +1952,11 @@ export default function CallImportEvaluationDetail() {
                   (m) => m.metric_category === 'user_insight',
                 )
                 const renderAggregate = (m: CallImportMetricAggregate) => {
+                  const hasClassificationViz = Boolean(
+                    m.classification_facets?.yes_no?.length ||
+                      m.classification_facets?.choice?.length ||
+                      m.classification_facets?.level?.length,
+                  )
                   // For multi-label parents, the visualization "active"
                   // state is driven by the flowFilter (we route bar
                   // clicks through it because the parent's stored
@@ -1897,14 +1967,60 @@ export default function CallImportEvaluationDetail() {
                     m.is_multi_label_parent === true &&
                     flowFilter?.parentId === m.metric_id &&
                     !flowFilter?.targetNodeId
+                  const isClassificationActive =
+                    hasClassificationViz &&
+                    classificationMetricFilter?.metricId === m.metric_id
                   const isActive = isMultiLabelActive
                     ? true
-                    : metricFilter?.metricId === m.metric_id
+                    : isClassificationActive
+                      ? true
+                      : metricFilter?.metricId === m.metric_id
                   const activeValue = isMultiLabelActive
                     ? flowFilter?.nodeLabel ?? null
                     : metricFilter?.metricId === m.metric_id
                       ? metricFilter.value
                       : null
+                  let classificationActiveFacet: ClassificationFacetKey | null =
+                    null
+                  let classificationActiveValue: string | null = null
+                  if (isClassificationActive && classificationMetricFilter) {
+                    if (classificationMetricFilter.yesNo) {
+                      classificationActiveFacet = 'yes_no'
+                      classificationActiveValue =
+                        classificationMetricFilter.yesNo
+                    } else if (classificationMetricFilter.choice) {
+                      classificationActiveFacet = 'choice'
+                      classificationActiveValue =
+                        classificationMetricFilter.choice
+                    } else if (classificationMetricFilter.level) {
+                      classificationActiveFacet = 'level'
+                      classificationActiveValue =
+                        classificationMetricFilter.level
+                    }
+                  }
+                  const applyClassificationVizFilter = (
+                    facet: ClassificationFacetKey,
+                    value: string,
+                  ) => {
+                    const yesNo = facet === 'yes_no' ? value : ''
+                    const choice = facet === 'choice' ? value : ''
+                    const level = facet === 'level' ? value : ''
+                    setClassificationTableYesNo(yesNo)
+                    setClassificationTableChoice(choice)
+                    setClassificationTableLevel(level)
+                    setTableFilterMetricId(m.metric_id)
+                    setTableFilterMetricValue('')
+                    applyClassificationTableFilter(
+                      m.metric_id,
+                      yesNo,
+                      choice,
+                      level,
+                    )
+                    setMetricFilter(null)
+                    setFlowFilter(null)
+                    setDiscoveredFilter(null)
+                    setResultsTab('table')
+                  }
                   return (
                     <div
                       key={m.metric_id}
@@ -1913,7 +2029,9 @@ export default function CallImportEvaluationDetail() {
                       // keeps the y-axis labels readable instead of
                       // clipping inside a half-column.
                       className={
-                        m.is_multi_label_parent ? 'lg:col-span-2' : ''
+                        m.is_multi_label_parent || hasClassificationViz
+                          ? 'lg:col-span-2'
+                          : ''
                       }
                     >
                       <MetricVisualization
@@ -1929,6 +2047,8 @@ export default function CallImportEvaluationDetail() {
                         }
                         isActive={isActive}
                         activeValue={activeValue}
+                        classificationActiveFacet={classificationActiveFacet}
+                        classificationActiveValue={classificationActiveValue}
                         businessInsight={
                           evaluationInsightsQuery.data?.metric_insights?.[
                           m.metric_id
@@ -1941,6 +2061,11 @@ export default function CallImportEvaluationDetail() {
                         }
                         failurePoliciesSource={
                           aggregateQuery.data?.failure_policies_source ?? null
+                        }
+                        onClassificationFacetClick={
+                          hasClassificationViz
+                            ? applyClassificationVizFilter
+                            : undefined
                         }
                         onValueClick={(value) => {
                           if (m.is_multi_label_parent) {
@@ -1963,6 +2088,9 @@ export default function CallImportEvaluationDetail() {
                             })
                             setMetricFilter(null)
                             setDiscoveredFilter(null)
+                            setClassificationMetricFilter(null)
+                          } else if (hasClassificationViz) {
+                            return
                           } else {
                             setMetricFilter({
                               metricId: m.metric_id,
@@ -1971,6 +2099,7 @@ export default function CallImportEvaluationDetail() {
                             })
                             setFlowFilter(null)
                             setDiscoveredFilter(null)
+                            setClassificationMetricFilter(null)
                           }
                           setResultsTab('table')
                         }}
@@ -2205,6 +2334,7 @@ export default function CallImportEvaluationDetail() {
             setEvalPanelTab={setEvalPanelTab}
             parentMetrics={parentMetrics}
             displayMetrics={displayMetrics}
+            tableMetricColumns={tableMetricColumns}
             totalPages={totalPages}
             filteredRowsSummary={filteredRowsSummary}
             hasActiveFilters={hasActiveFilters}

@@ -312,6 +312,60 @@ def test_export_emits_rationale_column_for_capture_rationale_metric(
     assert rows[0]["Evaluated Transcript Source"] == "Production"
 
 
+def test_export_splits_classification_metric_into_facet_columns(
+    db_session, org_id, seed_org
+):
+    call_import = _make_call_import(db_session, org_id)
+    source_row = _make_call_import_row(db_session, call_import)
+    metric = _make_metric(
+        db_session,
+        org_id,
+        name="Issue clarity",
+        custom_data_type="classification",
+        custom_config={
+            "noul": {
+                "enabled": True,
+                "instructions": "Was the issue clear?",
+                "criteria": {"true": "yes", "false": "no"},
+            },
+            "choice": {
+                "enabled": True,
+                "instructions": "Pick category",
+                "criteria": {"billing": "billing", "product": "product"},
+            },
+            "score": {"enabled": False},
+        },
+    )
+    evaluation = _make_evaluation_with_row(
+        db_session,
+        call_import=call_import,
+        source_row=source_row,
+        metrics=[metric],
+        metric_scores={
+            str(metric.id): {
+                "type": "classification",
+                "metric_name": "Issue clarity",
+                "value": "Likely yes · Category: billing",
+                "answers": {
+                    "noul": {"noul": 0.82},
+                    "choice": {"choice": "billing"},
+                },
+            }
+        },
+    )
+    response = _render_export(
+        db_session, call_import, evaluation, include_transcripts=False
+    )
+    headers, rows = _parse_csv(response.content)
+    assert "Issue clarity" not in headers
+    assert "Issue clarity Yes/No" in headers
+    assert "Issue clarity Category" in headers
+    assert "Issue clarity Level" not in headers
+    assert len(rows) == 1
+    assert rows[0]["Issue clarity Yes/No"] == "Yes"
+    assert rows[0]["Issue clarity Category"] == "billing"
+
+
 def test_export_omits_rationale_column_when_capture_rationale_false(
     authenticated_client, db_session, org_id, seed_org
 ):

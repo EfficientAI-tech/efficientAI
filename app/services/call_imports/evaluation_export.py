@@ -52,6 +52,7 @@ class ExportLayout:
     include_transcripts: bool
     transcript_source: str = "diarised"
     omitted_raw_headers: set = field(default_factory=set)
+    classification_columns: Dict[str, List[str]] = field(default_factory=dict)
 
 
 class _ExportSuperseded(Exception):
@@ -227,7 +228,34 @@ def build_export_layout(
 
     metric_headers: List[str] = []
     rationale_headers: Dict[str, str] = {}
+    classification_columns: Dict[str, List[str]] = {}
     seen: set = set()
+
+    def _classification_export_columns(metric: Metric) -> List[str]:
+        from app.services.metric_classification_validation import is_classification_metric
+
+        if not is_classification_metric(
+            custom_data_type=getattr(metric, "custom_data_type", None)
+        ):
+            return []
+        header = metric.name
+        cfg = metric.custom_config if isinstance(metric.custom_config, dict) else {}
+        cols: List[str] = []
+        for key, suffix in (
+            ("noul", "Yes/No"),
+            ("choice", "Category"),
+            ("score", "Level"),
+        ):
+            block = cfg.get(key)
+            if isinstance(block, dict) and block.get("enabled"):
+                cols.append(f"{header} {suffix}")
+        if not cols:
+            cols = [
+                f"{header} Yes/No",
+                f"{header} Category",
+                f"{header} Level",
+            ]
+        return cols
 
     def _add_metric(metric: Metric) -> None:
         mid = str(metric.id)
@@ -235,7 +263,12 @@ def build_export_layout(
             return
         seen.add(mid)
         header = metric_names[mid]
-        metric_headers.append(header)
+        class_cols = _classification_export_columns(metric)
+        if class_cols:
+            metric_headers.extend(class_cols)
+            classification_columns[mid] = class_cols
+        else:
+            metric_headers.append(header)
         from app.services.metrics.computed_metrics import (
             COMPUTED_TRANSCRIPT_SCORING_METHODS,
             metric_scoring_method_key,
@@ -294,6 +327,7 @@ def build_export_layout(
         include_transcripts=include_transcripts,
         transcript_source=(evaluation.transcript_source or "diarised"),
         omitted_raw_headers=omitted,
+        classification_columns=classification_columns,
     )
 
 
@@ -326,21 +360,35 @@ def project_export_row(
     )
 
     scores = eval_row.metric_scores if isinstance(eval_row.metric_scores, dict) else {}
+    from app.services.classification_metric_scores import classification_facets_from_entry
+
     for metric in layout.metrics:
         metric_score = scores.get(str(metric.id)) if isinstance(scores, dict) else None
-        value = metric_score.get("value") if isinstance(metric_score, dict) else None
-        if (
-            metric.selection_mode
-            and not metric.parent_metric_id
-            and isinstance(metric_score, dict)
-        ):
-            if metric.selection_mode == "multi_label":
-                selected = metric_score.get("selected_child_names")
-                if isinstance(selected, list):
-                    value = ";".join(str(item) for item in selected)
-            else:
-                value = metric_score.get("chosen_child_name") or metric_score.get("value")
-        row_out[metric.name] = "" if value is None else str(value)
+        class_cols = layout.classification_columns.get(str(metric.id))
+        if class_cols and isinstance(metric_score, dict):
+            facets = classification_facets_from_entry(metric_score)
+            facet_by_col = {
+                f"{metric.name} Yes/No": facets.get("yes_no"),
+                f"{metric.name} Category": facets.get("choice"),
+                f"{metric.name} Level": facets.get("level"),
+            }
+            for col in class_cols:
+                val = facet_by_col.get(col)
+                row_out[col] = "" if val is None else str(val)
+        else:
+            value = metric_score.get("value") if isinstance(metric_score, dict) else None
+            if (
+                metric.selection_mode
+                and not metric.parent_metric_id
+                and isinstance(metric_score, dict)
+            ):
+                if metric.selection_mode == "multi_label":
+                    selected = metric_score.get("selected_child_names")
+                    if isinstance(selected, list):
+                        value = ";".join(str(item) for item in selected)
+                else:
+                    value = metric_score.get("chosen_child_name") or metric_score.get("value")
+            row_out[metric.name] = "" if value is None else str(value)
         from app.services.metrics.computed_metrics import (
             COMPUTED_TRANSCRIPT_SCORING_METHODS,
             metric_scoring_method_key,
