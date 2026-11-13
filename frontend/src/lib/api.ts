@@ -4926,6 +4926,7 @@ class ApiClient {
     capture_rationale?: boolean
     supported_surfaces: string[]
     enabled_surfaces: string[]
+    tags?: string[] | null
     children: Array<{
       name: string
       description?: string | null

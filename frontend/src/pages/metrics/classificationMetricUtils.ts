@@ -1,3 +1,5 @@
+import { tagsCsvFromList, tagsForMetricCreate, tagsForMetricUpdate } from './metricTagsUtils'
+
 export type MetricSurface = 'agent' | 'voice_playground' | 'blind_test'
 
 export type ClassificationChoiceOption = {
@@ -28,6 +30,7 @@ export type ClassificationFormState = {
     instructions: string
     levels: string[]
   }
+  tags_csv: string
 }
 
 export function defaultClassificationForm(): ClassificationFormState {
@@ -56,6 +59,7 @@ export function defaultClassificationForm(): ClassificationFormState {
       instructions: '',
       levels: ['Low', 'High'],
     },
+    tags_csv: '',
   }
 }
 
@@ -67,6 +71,7 @@ type MetricLike = {
   scope?: 'workspace' | 'organization'
   workspace_id?: string | null
   custom_config?: Record<string, unknown> | null
+  tags?: string[] | null
 }
 
 export function classificationFormFromMetric(metric: MetricLike): ClassificationFormState {
@@ -117,6 +122,7 @@ export function classificationFormFromMetric(metric: MetricLike): Classification
       instructions: String(scoreCfg.instructions || ''),
       levels: scoreLevels.length >= 2 ? scoreLevels : defaultClassificationForm().score.levels,
     },
+    tags_csv: tagsCsvFromList(metric.tags),
   }
 }
 
@@ -220,6 +226,13 @@ export function buildClassificationPayload(
     custom_config: buildClassificationCustomConfig(form),
     capture_rationale: false,
     compare_transcripts: false,
+    ...(() => {
+      if (editing) {
+        return { tags: tagsForMetricUpdate(form.tags_csv) }
+      }
+      const createTags = tagsForMetricCreate(form.tags_csv)
+      return createTags !== undefined ? { tags: createTags } : {}
+    })(),
     ...(!editing ? { scope: form.scope } : {}),
   }
 }
