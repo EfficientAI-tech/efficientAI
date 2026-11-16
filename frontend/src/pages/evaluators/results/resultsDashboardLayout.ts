@@ -1,6 +1,10 @@
 export type ResultsChartType = 'line' | 'bar' | 'area'
 
 export type ResultsWidgetType =
+  | 'total_calls'
+  | 'avg_duration'
+  | 'metric_usage'
+  | 'scenarios_by_agent'
   | 'agent_cost'
   | 'model_cost'
   | 'tool_calls'
@@ -23,6 +27,10 @@ export interface ResultsWidget {
 export const MAX_VISIBLE_WIDGETS = 6
 
 export const WIDGET_LABELS: Record<ResultsWidgetType, string> = {
+  total_calls: 'Total calls',
+  avg_duration: 'Avg duration / call',
+  metric_usage: 'Metric usage',
+  scenarios_by_agent: 'Scenarios / agent',
   agent_cost: 'Agent cost',
   model_cost: 'Model cost',
   tool_calls: 'Tool calls',
@@ -35,6 +43,8 @@ export const WIDGET_LABELS: Record<ResultsWidgetType, string> = {
   metric_trend: 'Metric trend',
 }
 
+export const PLATFORM_WIDGETS: ResultsWidgetType[] = ['agent_cost', 'model_cost', 'tool_calls']
+
 const CHART_TYPES: ResultsChartType[] = ['line', 'bar', 'area']
 
 export const CHART_TYPE_LABELS: Record<ResultsChartType, string> = {
@@ -43,19 +53,17 @@ export const CHART_TYPE_LABELS: Record<ResultsChartType, string> = {
   area: 'Area',
 }
 
-const STORAGE_KEY = 'resultsDashboardLayout.v2'
+const STORAGE_KEY = 'resultsDashboardLayout.v3'
 
 function seed(type: ResultsWidgetType, display: ResultsChartType): ResultsWidget {
   return { id: type, type, display }
 }
 
 export const DEFAULT_RESULTS_WIDGETS: ResultsWidget[] = [
-  seed('agent_cost', 'bar'),
-  seed('model_cost', 'area'),
-  seed('tool_calls', 'line'),
-  seed('avg_score', 'line'),
-  seed('completion', 'line'),
-  seed('lowest_metrics', 'bar'),
+  seed('total_calls', 'bar'),
+  seed('avg_duration', 'line'),
+  seed('metric_usage', 'line'),
+  seed('scenarios_by_agent', 'bar'),
 ]
 
 export function copyResultsWidgets(widgets: ResultsWidget[]): ResultsWidget[] {

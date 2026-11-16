@@ -10,14 +10,19 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.models.database import Agent, Evaluator, EvaluatorResult, LLMUsageDaily
+from app.models.database import Agent, Evaluator, EvaluatorResult, LLMUsageDaily, VoiceBundle
 from app.models.schemas import (
     DashboardOpsAgentDay,
     DashboardOpsCostByAgent,
     DashboardOpsModelDay,
+    DashboardOpsModelLayer,
     DashboardOpsModelSpend,
+    DashboardOpsProviderAgent,
+    DashboardOpsProviderDay,
+    DashboardOpsProviderTotal,
     DashboardOpsToolAgentDay,
     DashboardOpsToolByTool,
+    DashboardOpsToolCallsPerRun,
     EvaluatorResultsDashboardOpsResponse,
 )
 from app.services.evaluators.evaluator_results_query import build_evaluator_results_query
@@ -195,6 +200,35 @@ def rollup_usage(
     return cost_by_agent, cost_by_model_day, cost_by_agent_day
 
 
+def rollup_model_layers(
+    rows: Iterable[UsageSpendRow],
+    *,
+    playground: bool,
+    agent_id: Optional[UUID] = None,
+    scenario_ids: Optional[Set[str]] = None,
+) -> List[DashboardOpsModelLayer]:
+    totals: Dict[Tuple[str, str], int] = defaultdict(int)
+    for row in rows:
+        if not usage_row_in_scope(
+            row,
+            playground=playground,
+            agent_id=agent_id,
+            scenario_ids=scenario_ids,
+        ):
+            continue
+        layer = _layer(row.usage_kind)
+        if layer is None or row.total_cost_micro_usd == 0:
+            continue
+        totals[(row.model or "Unknown model", layer)] += int(row.total_cost_micro_usd)
+    layers = [
+        DashboardOpsModelLayer(model=model, usage_kind=kind, cost_usd=_usd(micro))
+        for (model, kind), micro in totals.items()
+        if micro
+    ]
+    layers.sort(key=lambda item: (item.usage_kind, -item.cost_usd, item.model))
+    return layers
+
+
 def _tool_records(call_data: Any) -> List[Dict[str, Any]]:
     if not isinstance(call_data, dict):
         return []
@@ -215,25 +249,50 @@ def _is_error_call(call: Dict[str, Any]) -> bool:
     return str(call.get("status") or "") == "error"
 
 
+@dataclass
+class ToolRollup:
+    agent_days: List[DashboardOpsToolAgentDay]
+    by_tool: List[DashboardOpsToolByTool]
+    per_run: List[DashboardOpsToolCallsPerRun]
+    providers: List[DashboardOpsProviderTotal]
+    provider_days: List[DashboardOpsProviderDay]
+    provider_agents: List[DashboardOpsProviderAgent]
+    calls_with_no_tools: int
+
+
+def _provider_name(call: Dict[str, Any]) -> str:
+    provider = str(call.get("provider") or "").strip()
+    return provider or "unknown"
+
+
 def rollup_tool_calls(
     rows: Iterable[ToolCallSource],
     *,
     agent_names: Optional[Dict[UUID, str]] = None,
-) -> Tuple[List[DashboardOpsToolAgentDay], List[DashboardOpsToolByTool]]:
+) -> ToolRollup:
     names = agent_names or {}
     by_day: Dict[Tuple[date, UUID], Dict[str, int]] = defaultdict(lambda: {"calls": 0, "errors": 0})
     by_tool: Dict[Tuple[UUID, str], Dict[str, int]] = defaultdict(lambda: {"calls": 0, "errors": 0})
+    runs: Dict[UUID, int] = defaultdict(int)
+    calls_by_agent: Dict[UUID, int] = defaultdict(int)
+    provider_totals: Dict[str, int] = defaultdict(int)
+    provider_days: Dict[Tuple[date, str], int] = defaultdict(int)
+    provider_agents: Dict[Tuple[UUID, str], int] = defaultdict(int)
+    calls_with_no_tools = 0
 
     for row in rows:
         if row.agent_id is None or row.timestamp is None:
             continue
         day = row.timestamp.date()
-        for call in _tool_records(row.call_data):
-            if not _is_production_call(call):
-                continue
+        runs[row.agent_id] += 1
+        production = [call for call in _tool_records(row.call_data) if _is_production_call(call)]
+        if not production:
+            calls_with_no_tools += 1
+        for call in production:
             error = _is_error_call(call)
             day_bucket = by_day[(day, row.agent_id)]
             day_bucket["calls"] += 1
+            calls_by_agent[row.agent_id] += 1
             if error:
                 day_bucket["errors"] += 1
             tool = str(call.get("tool") or "tool")
@@ -241,6 +300,10 @@ def rollup_tool_calls(
             tool_bucket["calls"] += 1
             if error:
                 tool_bucket["errors"] += 1
+            provider = _provider_name(call)
+            provider_totals[provider] += 1
+            provider_days[(day, provider)] += 1
+            provider_agents[(row.agent_id, provider)] += 1
 
     agent_days = [
         DashboardOpsToolAgentDay(
@@ -266,7 +329,49 @@ def rollup_tool_calls(
         if counts["calls"]
     ]
     tools.sort(key=lambda item: (item.agent_name.lower(), -item.calls, item.tool))
-    return agent_days, tools
+    per_run = [
+        DashboardOpsToolCallsPerRun(
+            agent_id=owner,
+            agent_name=names.get(owner, "Unknown agent"),
+            runs=run_count,
+            calls=calls_by_agent.get(owner, 0),
+            avg_per_run=round(calls_by_agent.get(owner, 0) / run_count, 2) if run_count else 0,
+        )
+        for owner, run_count in runs.items()
+    ]
+    per_run.sort(key=lambda item: item.avg_per_run, reverse=True)
+    providers = [
+        DashboardOpsProviderTotal(provider=provider, calls=count)
+        for provider, count in provider_totals.items()
+        if count
+    ]
+    providers.sort(key=lambda item: item.calls, reverse=True)
+    provider_day_rows = [
+        DashboardOpsProviderDay(day=day, provider=provider, calls=count)
+        for (day, provider), count in provider_days.items()
+        if count
+    ]
+    provider_day_rows.sort(key=lambda item: (item.day, -item.calls, item.provider))
+    provider_agent_rows = [
+        DashboardOpsProviderAgent(
+            agent_id=owner,
+            agent_name=names.get(owner, "Unknown agent"),
+            provider=provider,
+            calls=count,
+        )
+        for (owner, provider), count in provider_agents.items()
+        if count
+    ]
+    provider_agent_rows.sort(key=lambda item: (item.agent_name.lower(), -item.calls, item.provider))
+    return ToolRollup(
+        agent_days=agent_days,
+        by_tool=tools,
+        per_run=per_run,
+        providers=providers,
+        provider_days=provider_day_rows,
+        provider_agents=provider_agent_rows,
+        calls_with_no_tools=calls_with_no_tools,
+    )
 
 
 def _scenario_ids_for_filter(
@@ -374,11 +479,92 @@ def compute_evaluator_results_dashboard_ops(
         scenario_ids=scenario_ids,
         agent_names=agent_names,
     )
-    tool_by_day, tool_by_tool = rollup_tool_calls(tool_rows, agent_names=agent_names)
+    model_layers = rollup_model_layers(
+        usage_rows,
+        playground=live,
+        agent_id=agent_id,
+        scenario_ids=scenario_ids,
+    )
+    model_layers = _with_s2s_models(db, agent_ids, model_layers)
+    model_layers = _attach_catalog_rates(db, organization_id, model_layers)
+    tools = rollup_tool_calls(tool_rows, agent_names=agent_names)
     return EvaluatorResultsDashboardOpsResponse(
         cost_by_agent=cost_by_agent,
         cost_by_model_day=cost_by_model_day,
         cost_by_agent_day=cost_by_agent_day,
-        tool_calls_by_agent_day=tool_by_day,
-        tool_calls_by_tool=tool_by_tool,
+        model_layers=model_layers,
+        tool_calls_by_agent_day=tools.agent_days,
+        tool_calls_by_tool=tools.by_tool,
+        tool_calls_per_run=tools.per_run,
+        providers=tools.providers,
+        provider_by_day=tools.provider_days,
+        provider_by_agent=tools.provider_agents,
+        calls_with_no_tools=tools.calls_with_no_tools,
     )
+
+
+def _with_s2s_models(
+    db: Session,
+    agent_ids: Set[UUID],
+    layers: List[DashboardOpsModelLayer],
+) -> List[DashboardOpsModelLayer]:
+    if not agent_ids:
+        return layers
+    rows = (
+        db.query(VoiceBundle.s2s_model)
+        .join(Agent, Agent.voice_bundle_id == VoiceBundle.id)
+        .filter(Agent.id.in_(agent_ids), VoiceBundle.s2s_model.isnot(None))
+        .all()
+    )
+    present = {(item.model, item.usage_kind) for item in layers}
+    extra = list(layers)
+    for (model,) in rows:
+        name = str(model or "").strip()
+        if not name or (name, "s2s") in present:
+            continue
+        present.add((name, "s2s"))
+        extra.append(DashboardOpsModelLayer(model=name, usage_kind="s2s", cost_usd=0))
+    return extra
+
+
+def _attach_catalog_rates(
+    db: Session,
+    organization_id: UUID,
+    layers: List[DashboardOpsModelLayer],
+) -> List[DashboardOpsModelLayer]:
+    if not layers:
+        return layers
+    try:
+        from app.services.usage.pricing import PricingResolver
+    except Exception:
+        return layers
+    resolver = PricingResolver(db)
+    today = date.today()
+    rated: List[DashboardOpsModelLayer] = []
+    for layer in layers:
+        per_minute = None
+        per_million = None
+        kind = "llm" if layer.usage_kind == "s2s" else layer.usage_kind
+        try:
+            card = resolver.resolve_rate(
+                organization_id=organization_id,
+                model=layer.model,
+                usage_kind=kind,
+                usage_date=today,
+            )
+        except Exception:
+            card = None
+        if card is not None:
+            if card.audio_micro_usd_per_second:
+                per_minute = round(card.audio_micro_usd_per_second * 60 / _MICRO, 6)
+            if card.input_micro_usd_per_million:
+                per_million = round(card.input_micro_usd_per_million / _MICRO, 6)
+        rated.append(
+            layer.model_copy(
+                update={
+                    "usd_per_minute": per_minute,
+                    "usd_per_million_tokens": per_million,
+                }
+            )
+        )
+    return rated

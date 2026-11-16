@@ -2379,12 +2379,52 @@ export interface DashboardOpsToolByTool {
   errors: number
 }
 
+export interface DashboardOpsToolCallsPerRun {
+  agent_id: string
+  agent_name: string
+  runs: number
+  calls: number
+  avg_per_run: number
+}
+
+export interface DashboardOpsProviderTotal {
+  provider: string
+  calls: number
+}
+
+export interface DashboardOpsProviderDay {
+  day: string
+  provider: string
+  calls: number
+}
+
+export interface DashboardOpsProviderAgent {
+  agent_id: string
+  agent_name: string
+  provider: string
+  calls: number
+}
+
+export interface DashboardOpsModelLayer {
+  model: string
+  usage_kind: string
+  cost_usd: number
+  usd_per_minute?: number | null
+  usd_per_million_tokens?: number | null
+}
+
 export interface EvaluatorResultsDashboardOpsResponse {
   cost_by_agent: DashboardOpsCostByAgent[]
   cost_by_model_day: DashboardOpsModelDay[]
   cost_by_agent_day: DashboardOpsAgentDay[]
+  model_layers: DashboardOpsModelLayer[]
   tool_calls_by_agent_day: DashboardOpsToolAgentDay[]
   tool_calls_by_tool: DashboardOpsToolByTool[]
+  tool_calls_per_run: DashboardOpsToolCallsPerRun[]
+  providers: DashboardOpsProviderTotal[]
+  provider_by_day: DashboardOpsProviderDay[]
+  provider_by_agent: DashboardOpsProviderAgent[]
+  calls_with_no_tools: number
 }
 
 export interface CallImportInsightsRunPoint {

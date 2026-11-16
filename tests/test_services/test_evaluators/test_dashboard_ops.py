@@ -7,6 +7,7 @@ from uuid import uuid4
 from app.services.evaluators.evaluator_results_dashboard_ops import (
     ToolCallSource,
     UsageSpendRow,
+    rollup_model_layers,
     rollup_tool_calls,
     rollup_usage,
 )
@@ -191,6 +192,29 @@ def test_rollup_usage_scenario_filter_drops_rows_without_scenario():
     assert empty == []
 
 
+def test_rollup_model_layers_groups_cost_by_kind():
+    agent_id = uuid4()
+    rows = [
+        _spend(
+            context={"agent_id": str(agent_id), "simulation_leg": "production_agent"},
+            usage_kind="llm",
+            model="gpt-4.1",
+            total_cost_micro_usd=2_000_000,
+        ),
+        _spend(
+            context={"agent_id": str(agent_id), "simulation_leg": "production_agent"},
+            usage_kind="stt",
+            model="whisper",
+            total_cost_micro_usd=500_000,
+        ),
+    ]
+    layers = rollup_model_layers(rows, playground=False)
+    assert {(item.model, item.usage_kind, item.cost_usd) for item in layers} == {
+        ("gpt-4.1", "llm", 2.0),
+        ("whisper", "stt", 0.5),
+    }
+
+
 def test_rollup_tool_calls_counts_production_side_and_kb_fallback():
     agent_id = uuid4()
     when = datetime(2026, 11, 16, 12, tzinfo=timezone.utc)
@@ -200,8 +224,8 @@ def test_rollup_tool_calls_counts_production_side_and_kb_fallback():
             timestamp=when,
             call_data={
                 "tool_calls": [
-                    {"tool": "lookup", "side": "production", "status": "ok"},
-                    {"tool": "lookup", "side": "production", "status": "error"},
+                    {"tool": "lookup", "provider": "postgres", "side": "production", "status": "ok"},
+                    {"tool": "lookup", "provider": "postgres", "side": "production", "status": "error"},
                     {"tool": "caller_tool", "side": "test", "status": "ok"},
                 ]
             },
@@ -221,10 +245,16 @@ def test_rollup_tool_calls_counts_production_side_and_kb_fallback():
             call_data={"tool_calls": [{"tool": "ignored", "status": "ok"}]},
         ),
     ]
-    by_day, by_tool = rollup_tool_calls(rows, agent_names={agent_id: "Support"})
-    assert len(by_day) == 1
-    assert by_day[0].calls == 3
-    assert by_day[0].errors == 1
-    assert by_day[0].agent_name == "Support"
-    tools = {item.tool: (item.calls, item.errors) for item in by_tool}
+    rolled = rollup_tool_calls(rows, agent_names={agent_id: "Support"})
+    assert len(rolled.agent_days) == 1
+    assert rolled.agent_days[0].calls == 3
+    assert rolled.agent_days[0].errors == 1
+    assert rolled.agent_days[0].agent_name == "Support"
+    tools = {item.tool: (item.calls, item.errors) for item in rolled.by_tool}
     assert tools == {"lookup": (2, 1), "kb": (1, 0)}
+    assert rolled.calls_with_no_tools == 0
+    assert rolled.per_run[0].runs == 2
+    assert rolled.per_run[0].calls == 3
+    assert rolled.per_run[0].avg_per_run == 1.5
+    assert {item.provider: item.calls for item in rolled.providers} == {"postgres": 2, "unknown": 1}
+    assert rolled.provider_agents[0].provider in {"postgres", "unknown"}

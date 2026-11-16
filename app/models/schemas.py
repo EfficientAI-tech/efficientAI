@@ -5557,14 +5557,54 @@ class DashboardOpsToolByTool(BaseModel):
     errors: int = 0
 
 
+class DashboardOpsToolCallsPerRun(BaseModel):
+    agent_id: UUID
+    agent_name: str
+    runs: int = 0
+    calls: int = 0
+    avg_per_run: float = 0
+
+
+class DashboardOpsProviderTotal(BaseModel):
+    provider: str
+    calls: int = 0
+
+
+class DashboardOpsProviderDay(BaseModel):
+    day: date
+    provider: str
+    calls: int = 0
+
+
+class DashboardOpsProviderAgent(BaseModel):
+    agent_id: UUID
+    agent_name: str
+    provider: str
+    calls: int = 0
+
+
+class DashboardOpsModelLayer(BaseModel):
+    model: str
+    usage_kind: str
+    cost_usd: float = 0
+    usd_per_minute: Optional[float] = None
+    usd_per_million_tokens: Optional[float] = None
+
+
 class EvaluatorResultsDashboardOpsResponse(BaseModel):
     """Cost, model, and tool-call series for the evaluation results dashboard."""
 
     cost_by_agent: List[DashboardOpsCostByAgent] = Field(default_factory=list)
     cost_by_model_day: List[DashboardOpsModelDay] = Field(default_factory=list)
     cost_by_agent_day: List[DashboardOpsAgentDay] = Field(default_factory=list)
+    model_layers: List[DashboardOpsModelLayer] = Field(default_factory=list)
     tool_calls_by_agent_day: List[DashboardOpsToolAgentDay] = Field(default_factory=list)
     tool_calls_by_tool: List[DashboardOpsToolByTool] = Field(default_factory=list)
+    tool_calls_per_run: List[DashboardOpsToolCallsPerRun] = Field(default_factory=list)
+    providers: List[DashboardOpsProviderTotal] = Field(default_factory=list)
+    provider_by_day: List[DashboardOpsProviderDay] = Field(default_factory=list)
+    provider_by_agent: List[DashboardOpsProviderAgent] = Field(default_factory=list)
+    calls_with_no_tools: int = 0
 
 
 # --- LLM-generated TLDR for the Visualizations tab ---

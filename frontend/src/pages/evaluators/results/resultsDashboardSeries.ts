@@ -401,3 +401,241 @@ export function categoryColors(labels: string[]): ChartSeries[] {
     stack: 'labels',
   }))
 }
+
+const LAYER_ORDER = ['llm', 'stt', 'tts', 's2s']
+
+export function usageCard(ops: EvaluatorResultsDashboardOpsResponse | undefined): ChartModel {
+  const totals = new Map<string, number>()
+  for (const row of ops?.model_layers ?? []) {
+    totals.set(row.usage_kind, (totals.get(row.usage_kind) ?? 0) + row.cost_usd)
+  }
+  const total = Array.from(totals.values()).reduce((sum, value) => sum + value, 0)
+  return {
+    headline: formatUsd(total),
+    caption: 'Spend by layer',
+    data: LAYER_ORDER.filter((kind) => totals.has(kind)).map((kind) => ({
+      name: kind.toUpperCase(),
+      cost: totals.get(kind) ?? 0,
+    })),
+    series: [{ key: 'cost', color: LAYER_LLM }],
+    horizontal: true,
+  }
+}
+
+export function usageHasS2S(ops: EvaluatorResultsDashboardOpsResponse | undefined): boolean {
+  return (ops?.model_layers ?? []).some((row) => row.usage_kind === 's2s')
+}
+
+export function usageFacts(ops: EvaluatorResultsDashboardOpsResponse | undefined): { most: string; least: string; highest: string } {
+  const totals = new Map<string, number>()
+  for (const row of ops?.model_layers ?? []) {
+    if (row.cost_usd <= 0) continue
+    totals.set(row.model, (totals.get(row.model) ?? 0) + row.cost_usd)
+  }
+  const ranked = Array.from(totals.entries()).sort((a, b) => b[1] - a[1])
+  return {
+    most: ranked[0]?.[0] ?? '—',
+    least: ranked[ranked.length - 1]?.[0] ?? '—',
+    highest: ranked[0] ? formatUsd(ranked[0][1]) : '—',
+  }
+}
+
+export function usageDetail(
+  ops: EvaluatorResultsDashboardOpsResponse | undefined,
+  view: string,
+  focus: string | null,
+): ChartModel {
+  const layers = ops?.model_layers ?? []
+  if (view === 'price_minute' || view === 'price_million') {
+    const key = view === 'price_minute' ? 'usd_per_minute' : 'usd_per_million_tokens'
+    const rows = layers.filter((row) => {
+      const rate = row[key]
+      if (rate == null || rate <= 0) return false
+      return !focus || row.model === focus
+    })
+    const unique = new Map<string, number>()
+    for (const row of rows) {
+      const rate = row[key] ?? 0
+      if (!unique.has(row.model) || rate > (unique.get(row.model) ?? 0)) unique.set(row.model, rate)
+    }
+    return {
+      headline: formatUsd(unique.size ? Math.max(...unique.values()) : 0),
+      caption: view === 'price_minute' ? 'Current price per minute' : 'Current price per 1M tokens',
+      data: Array.from(unique.entries()).sort((a, b) => b[1] - a[1]).map(([name, rate]) => ({ name, rate })),
+      series: [{ key: 'rate', color: LAYER_LLM }],
+      horizontal: true,
+    }
+  }
+  const rows = layers.filter((row) => row.usage_kind === view && (!focus || row.model === focus))
+  const total = rows.reduce((sum, row) => sum + row.cost_usd, 0)
+  return {
+    headline: formatUsd(total),
+    caption: `${view.toUpperCase()} models`,
+    data: rows.map((row) => ({ name: row.model, cost: row.cost_usd })),
+    series: [{ key: 'cost', color: LAYER_LLM }],
+    horizontal: true,
+  }
+}
+
+export function toolsCard(ops: EvaluatorResultsDashboardOpsResponse | undefined): ChartModel {
+  const providers = ops?.providers ?? []
+  return {
+    headline: providers.length.toLocaleString(),
+    caption: 'Products in use',
+    data: providers.slice(0, 6).map((row) => ({ name: row.provider, calls: row.calls })),
+    series: [{ key: 'calls', color: LAYER_LLM }],
+    horizontal: true,
+  }
+}
+
+export function toolFacts(ops: EvaluatorResultsDashboardOpsResponse | undefined): { most: string; least: string; empty: string } {
+  const providers = ops?.providers ?? []
+  return {
+    most: providers[0]?.provider ?? '—',
+    least: providers[providers.length - 1]?.provider ?? '—',
+    empty: (ops?.calls_with_no_tools ?? 0).toLocaleString(),
+  }
+}
+
+export function platformToolDetail(
+  ops: EvaluatorResultsDashboardOpsResponse | undefined,
+  view: string,
+  focus: string | null,
+): ChartModel {
+  if (view === 'per_call') {
+    const rows = (ops?.tool_calls_per_run ?? []).filter((row) => !focus || row.agent_id === focus || row.agent_name === focus)
+    const avg = rows.length ? rows.reduce((sum, row) => sum + row.avg_per_run, 0) / rows.length : 0
+    return {
+      headline: avg.toLocaleString(undefined, { maximumFractionDigits: 2 }),
+      caption: 'Use cases per call by agent',
+      data: rows.map((row) => ({ name: row.agent_name, avg: row.avg_per_run })),
+      series: [{ key: 'avg', color: LAYER_LLM }],
+      horizontal: true,
+    }
+  }
+  if (view === 'use_cases') {
+    const totals = new Map<string, number>()
+    for (const row of ops?.tool_calls_by_tool ?? []) {
+      if (focus && row.tool !== focus && row.agent_id !== focus && row.agent_name !== focus) continue
+      totals.set(row.tool, (totals.get(row.tool) ?? 0) + row.calls)
+    }
+    const ranked = Array.from(totals.entries()).sort((a, b) => b[1] - a[1])
+    return {
+      headline: ranked.reduce((sum, item) => sum + item[1], 0).toLocaleString(),
+      caption: 'Use cases',
+      data: ranked.map(([name, calls]) => ({ name, calls })),
+      series: [{ key: 'calls', color: LAYER_LLM }],
+      horizontal: true,
+    }
+  }
+  const rows = (ops?.tool_calls_by_agent_day ?? []).filter((row) => !focus || row.agent_id === focus || row.agent_name === focus)
+  const byDay = new Map<string, Record<string, number>>()
+  const keys = new Set<string>()
+  for (const row of rows) {
+    const bucket = byDay.get(row.day) ?? {}
+    bucket[row.agent_name] = (bucket[row.agent_name] ?? 0) + row.calls
+    byDay.set(row.day, bucket)
+    keys.add(row.agent_name)
+  }
+  const seriesKeys = Array.from(keys)
+  return {
+    headline: rows.reduce((sum, row) => sum + row.calls, 0).toLocaleString(),
+    caption: 'Usage over time by agent',
+    data: Array.from(byDay.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([day, values]) => ({
+      day: formatDayLabel(day),
+      ...values,
+    })),
+    series: seriesKeys.map((key, index) => ({ key, color: MODEL_COLORS[index % MODEL_COLORS.length] })),
+  }
+}
+
+export function toolsDetail(
+  ops: EvaluatorResultsDashboardOpsResponse | undefined,
+  view: string,
+  focus: string | null,
+): ChartModel {
+  if (view === 'over_time') {
+    const rows = (ops?.provider_by_day ?? []).filter((row) => !focus || row.provider === focus)
+    const byDay = new Map<string, Record<string, number>>()
+    const keys = new Set<string>()
+    for (const row of rows) {
+      const bucket = byDay.get(row.day) ?? {}
+      bucket[row.provider] = (bucket[row.provider] ?? 0) + row.calls
+      byDay.set(row.day, bucket)
+      keys.add(row.provider)
+    }
+    const seriesKeys = Array.from(keys)
+    return {
+      headline: rows.reduce((sum, row) => sum + row.calls, 0).toLocaleString(),
+      caption: 'Usage over time',
+      data: Array.from(byDay.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([day, values]) => ({
+        day: formatDayLabel(day),
+        ...values,
+      })),
+      series: seriesKeys.map((key, index) => ({ key, color: MODEL_COLORS[index % MODEL_COLORS.length] })),
+    }
+  }
+  if (view === 'by_agent') {
+    const rows = (ops?.provider_by_agent ?? []).filter((row) => !focus || row.provider === focus || row.agent_name === focus || row.agent_id === focus)
+    const byAgent = new Map<string, Record<string, number>>()
+    const keys = new Set<string>()
+    for (const row of rows) {
+      const bucket = byAgent.get(row.agent_name) ?? {}
+      bucket[row.provider] = (bucket[row.provider] ?? 0) + row.calls
+      byAgent.set(row.agent_name, bucket)
+      keys.add(row.provider)
+    }
+    const seriesKeys = Array.from(keys)
+    return {
+      headline: rows.reduce((sum, row) => sum + row.calls, 0).toLocaleString(),
+      caption: 'By agent',
+      data: Array.from(byAgent.entries()).map(([name, values]) => ({ name, ...values })),
+      series: seriesKeys.map((key, index) => ({ key, color: MODEL_COLORS[index % MODEL_COLORS.length], stack: 'tools' })),
+    }
+  }
+  const providers = (ops?.providers ?? []).filter((row) => !focus || row.provider === focus)
+  return {
+    headline: providers.reduce((sum, row) => sum + row.calls, 0).toLocaleString(),
+    caption: 'Share of tool traffic',
+    data: providers.map((row) => ({ name: row.provider, calls: row.calls })),
+    series: [{ key: 'calls', color: LAYER_LLM }],
+    horizontal: true,
+  }
+}
+
+export function scenarioStack(
+  rows: Array<{ agentName: string; scenarioName: string; count: number }>,
+): ChartModel {
+  const scenarioTotals = new Map<string, number>()
+  for (const row of rows) scenarioTotals.set(row.scenarioName, (scenarioTotals.get(row.scenarioName) ?? 0) + row.count)
+  const top = Array.from(scenarioTotals.entries()).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([name]) => name)
+  const topSet = new Set(top)
+  const byAgent = new Map<string, Record<string, number>>()
+  for (const row of rows) {
+    const key = topSet.has(row.scenarioName) ? row.scenarioName : 'Other'
+    const bucket = byAgent.get(row.agentName) ?? {}
+    bucket[key] = (bucket[key] ?? 0) + row.count
+    byAgent.set(row.agentName, bucket)
+  }
+  const keys = scenarioTotals.size > top.length ? [...top, 'Other'] : top
+  const total = rows.reduce((sum, row) => sum + row.count, 0)
+  return {
+    headline: total.toLocaleString(),
+    caption: 'Scenario runs by agent',
+    data: Array.from(byAgent.entries()).map(([name, values]) => ({ name, ...values })),
+    series: keys.map((key, index) => ({
+      key,
+      color: key === 'Other' ? SERIES_OTHER : MODEL_COLORS[index % MODEL_COLORS.length],
+      stack: 'scenarios',
+    })),
+  }
+}
+
+export function formatDuration(seconds: number | null): string {
+  if (seconds == null || Number.isNaN(seconds)) return '—'
+  const whole = Math.round(seconds)
+  const minutes = Math.floor(whole / 60)
+  const remain = whole % 60
+  if (minutes <= 0) return `${remain}s`
+  return `${minutes}m ${remain.toString().padStart(2, '0')}s`
+}
