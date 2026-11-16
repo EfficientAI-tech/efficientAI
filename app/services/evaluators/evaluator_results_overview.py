@@ -26,9 +26,9 @@ from app.models.schemas import (
     EvaluatorResultsUnassignedSummary,
 )
 from app.services.evaluators.evaluator_results_query import (
+    apply_playground_scope_filter,
     classify_display_status,
     is_in_progress_status,
-    playground_linked_evaluator_result_ids_subquery,
 )
 
 
@@ -79,12 +79,17 @@ def build_evaluator_results_overview(
     suite_id: Optional[UUID] = None,
     since: Optional[datetime] = None,
     until: Optional[datetime] = None,
+    playground: Optional[bool] = None,
 ) -> EvaluatorResultsOverviewResponse:
     query = db.query(EvaluatorResult).filter(
         EvaluatorResult.organization_id == organization_id,
         EvaluatorResult.workspace_id == workspace_id,
-        EvaluatorResult.evaluator_id.isnot(None),
-        ~EvaluatorResult.id.in_(playground_linked_evaluator_result_ids_subquery(db)),
+    )
+    query = apply_playground_scope_filter(
+        query,
+        db,
+        playground=playground,
+        test_agents_only=None,
     )
     if since is not None:
         query = query.filter(EvaluatorResult.timestamp >= since)

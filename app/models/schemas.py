@@ -5507,6 +5507,66 @@ class EvaluatorResultsAggregateResponse(BaseModel):
     metrics: List[CallImportMetricAggregate] = Field(default_factory=list)
 
 
+class DashboardOpsModelSpend(BaseModel):
+    model: str
+    role: str
+    cost_usd: float = 0
+
+
+class DashboardOpsCostByAgent(BaseModel):
+    agent_id: UUID
+    agent_name: str
+    llm_usd: float = 0
+    stt_usd: float = 0
+    tts_usd: float = 0
+    total_usd: float = 0
+    agent_usd: float = 0
+    simulator_usd: float = 0
+    judge_usd: float = 0
+    models: List[DashboardOpsModelSpend] = Field(default_factory=list)
+
+
+class DashboardOpsModelDay(BaseModel):
+    day: date
+    model: str
+    cost_usd: float = 0
+
+
+class DashboardOpsAgentDay(BaseModel):
+    day: date
+    agent_id: UUID
+    role: str
+    llm_usd: float = 0
+    stt_usd: float = 0
+    tts_usd: float = 0
+
+
+class DashboardOpsToolAgentDay(BaseModel):
+    day: date
+    agent_id: UUID
+    agent_name: str
+    calls: int = 0
+    errors: int = 0
+
+
+class DashboardOpsToolByTool(BaseModel):
+    agent_id: UUID
+    agent_name: str
+    tool: str
+    calls: int = 0
+    errors: int = 0
+
+
+class EvaluatorResultsDashboardOpsResponse(BaseModel):
+    """Cost, model, and tool-call series for the evaluation results dashboard."""
+
+    cost_by_agent: List[DashboardOpsCostByAgent] = Field(default_factory=list)
+    cost_by_model_day: List[DashboardOpsModelDay] = Field(default_factory=list)
+    cost_by_agent_day: List[DashboardOpsAgentDay] = Field(default_factory=list)
+    tool_calls_by_agent_day: List[DashboardOpsToolAgentDay] = Field(default_factory=list)
+    tool_calls_by_tool: List[DashboardOpsToolByTool] = Field(default_factory=list)
+
+
 # --- LLM-generated TLDR for the Visualizations tab ---
 
 

@@ -2329,6 +2329,64 @@ export interface EvaluatorResultsAggregateResponse {
   metrics: CallImportMetricAggregate[]
 }
 
+export interface DashboardOpsModelSpend {
+  model: string
+  role: string
+  cost_usd: number
+}
+
+export interface DashboardOpsCostByAgent {
+  agent_id: string
+  agent_name: string
+  llm_usd: number
+  stt_usd: number
+  tts_usd: number
+  total_usd: number
+  agent_usd: number
+  simulator_usd: number
+  judge_usd: number
+  models: DashboardOpsModelSpend[]
+}
+
+export interface DashboardOpsModelDay {
+  day: string
+  model: string
+  cost_usd: number
+}
+
+export interface DashboardOpsAgentDay {
+  day: string
+  agent_id: string
+  role: string
+  llm_usd: number
+  stt_usd: number
+  tts_usd: number
+}
+
+export interface DashboardOpsToolAgentDay {
+  day: string
+  agent_id: string
+  agent_name: string
+  calls: number
+  errors: number
+}
+
+export interface DashboardOpsToolByTool {
+  agent_id: string
+  agent_name: string
+  tool: string
+  calls: number
+  errors: number
+}
+
+export interface EvaluatorResultsDashboardOpsResponse {
+  cost_by_agent: DashboardOpsCostByAgent[]
+  cost_by_model_day: DashboardOpsModelDay[]
+  cost_by_agent_day: DashboardOpsAgentDay[]
+  tool_calls_by_agent_day: DashboardOpsToolAgentDay[]
+  tool_calls_by_tool: DashboardOpsToolByTool[]
+}
+
 export interface CallImportInsightsRunPoint {
   evaluation_id: string
   name: string | null

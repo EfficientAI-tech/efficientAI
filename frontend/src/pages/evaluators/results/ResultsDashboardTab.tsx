@@ -23,12 +23,15 @@ import type {
   CallImportMetricAggregate,
   EvaluatorResultRow,
   EvaluatorResultsAgentSummary,
+  EvaluatorResultsDashboardOpsResponse,
 } from '../../../types/api'
 import { dateRangeToSinceUntil, rangeForDays } from './resultsDateRange'
 import {
   CHART_TYPE_LABELS,
+  DEFAULT_RESULTS_WIDGETS,
   MAX_VISIBLE_WIDGETS,
   WIDGET_LABELS,
+  copyResultsWidgets,
   readResultsDashboardLayout,
   visibleWidgets,
   writeResultsDashboardLayout,
@@ -36,6 +39,22 @@ import {
   type ResultsWidget,
   type ResultsWidgetType,
 } from './resultsDashboardLayout'
+import {
+  agentCostCard,
+  agentCostDetail,
+  buildCategorySeries,
+  categoryColors,
+  formatUsd,
+  isCategoricalMetric,
+  modelCostCard,
+  modelCostDetail,
+  modelTotals,
+  modelsForAgent,
+  shareSeries,
+  toolAgentTotals,
+  toolCallCard,
+  toolCallDetail,
+} from './resultsDashboardSeries'
 
 const PRIMARY = '#ca8a04'
 const SERIES_MUTED = '#9ca3af'
@@ -165,10 +184,39 @@ export default function ResultsDashboardTab({
     queryFn: () => apiClient.listEvaluatorResults(listParams),
   })
 
+  const { data: ops } = useQuery({
+    queryKey: ['evaluator-results-dashboard-ops', listParams],
+    queryFn: () =>
+      apiClient.getEvaluatorResultsDashboardOps({
+        agentId: agentId || undefined,
+        suiteId: suiteId || undefined,
+        scenarioId: scenarioId || undefined,
+        since: dateBounds.since,
+        until: dateBounds.until,
+        playground,
+      }),
+  })
+
+  const overviewRange = startDate && endDate ? dateBounds : undefined
+  const { data: chartOverview } = useQuery({
+    queryKey: ['evaluator-results-overview', 'dashboard-charts', overviewRange?.since, overviewRange?.until, playground],
+    queryFn: () =>
+      apiClient.getEvaluatorResultsOverview({
+        since: overviewRange?.since,
+        until: overviewRange?.until,
+        playground,
+      }),
+  })
+
+  const { data: metricsCatalog = [] } = useQuery({
+    queryKey: ['metrics', 'agent', 'dashboard'],
+    queryFn: () => apiClient.listMetrics('agent'),
+  })
+
   const results = itemsOf<EvaluatorResultRow>(listResponse)
   const totalInRange = listResponse?.total ?? aggregate?.total_rows ?? 0
   const truncated = totalInRange > TRENDS_PAGE_LIMIT
-  const metrics = aggregate?.metrics ?? []
+  const metrics = useMemo(() => aggregate?.metrics ?? [], [aggregate])
   const primaryMetric = useMemo(
     () =>
       [...metrics]
@@ -193,12 +241,34 @@ export default function ResultsDashboardTab({
       }))
   }, [metrics])
 
+  const chartAgents = useMemo(
+    () => chartOverview?.agents ?? (playground ? [] : agents),
+    [chartOverview, playground, agents],
+  )
+  const { childIdsByParent, childNamesById } = useMemo(() => {
+    const childIdsByParent = new Map<string, string[]>()
+    const childNamesById = new Map<string, string>()
+    for (const metric of metricsCatalog as Array<{ id?: string; name?: string; parent_metric_id?: string | null }>) {
+      if (metric.parent_metric_id && metric.id) {
+        childNamesById.set(metric.id, metric.name || metric.id)
+        const siblings = childIdsByParent.get(metric.parent_metric_id) ?? []
+        siblings.push(metric.id)
+        childIdsByParent.set(metric.parent_metric_id, siblings)
+      }
+    }
+    return { childIdsByParent, childNamesById }
+  }, [metricsCatalog])
+  const categorySeries = useMemo(
+    () => buildCategorySeries(results, metrics, childIdsByParent, childNamesById),
+    [results, metrics, childIdsByParent, childNamesById],
+  )
+
   const scenarioRows = useMemo(
-    () => collectScenarios(agents, agentId, suiteId),
-    [agents, agentId, suiteId],
+    () => collectScenarios(chartAgents, agentId, suiteId),
+    [chartAgents, agentId, suiteId],
   )
   const agentRows = useMemo(() => {
-    const source = agentId ? agents.filter((agent) => agent.agent_id === agentId) : agents
+    const source = agentId ? chartAgents.filter((agent) => agent.agent_id === agentId) : chartAgents
     return [...source]
       .map((agent) => ({
         id: agent.agent_id,
@@ -211,7 +281,7 @@ export default function ResultsDashboardTab({
           : 0,
       }))
       .sort((a, b) => b.total - a.total)
-  }, [agents, agentId])
+  }, [chartAgents, agentId])
 
   const shown = visibleWidgets(widgets)
   const visibleCount = widgets.filter((widget) => !widget.hidden).length
@@ -252,19 +322,36 @@ export default function ResultsDashboardTab({
     reorderWidgets(String(event.active.id), overId)
   }
 
-  const addWidget = (type: ResultsWidgetType) => {
+  const addWidget = (type: ResultsWidgetType, metricId?: string) => {
     if (visibleCount >= MAX_VISIBLE_WIDGETS) return
+    if (type === 'metric_trend') {
+      const nextMetric = metrics.find((metric) => metric.metric_id === metricId) ?? metrics.find((metric) => (
+        !widgets.some((widget) => widget.type === 'metric_trend' && widget.metricId === metric.metric_id && !widget.hidden)
+      ))
+      if (!nextMetric) return
+      const existing = widgets.find((widget) => widget.type === 'metric_trend' && widget.metricId === nextMetric.metric_id)
+      if (existing) {
+        update(widgets.map((widget) => (widget.id === existing.id ? { ...widget, hidden: false } : widget)))
+      } else {
+        update([
+          ...widgets,
+          { id: `metric_trend:${nextMetric.metric_id}`, type, display: 'line', metricId: nextMetric.metric_id },
+        ])
+      }
+      setAddOpen(false)
+      return
+    }
     const existing = widgets.find((widget) => widget.type === type)
     if (existing) {
       update(widgets.map((widget) => (widget.id === existing.id ? { ...widget, hidden: false } : widget)))
     } else {
+      const lineTypes: ResultsWidgetType[] = ['completion', 'avg_score', 'model_cost', 'tool_calls']
       update([
         ...widgets,
         {
           id: type,
           type,
-          display: type === 'completion' || type === 'avg_score' || type === 'metric_trend' ? 'line' : 'bar',
-          metricId: type === 'metric_trend' ? primaryMetric?.metric_id ?? null : null,
+          display: lineTypes.includes(type) ? (type === 'model_cost' ? 'area' : 'line') : 'bar',
         },
       ])
     }
@@ -292,6 +379,8 @@ export default function ResultsDashboardTab({
         metrics={metrics}
         days={days}
         scoreSeries={scoreSeries}
+        categorySeries={categorySeries}
+        ops={ops}
         lowest={lowest}
         agentRows={agentRows}
         scenarioRows={scenarioRows}
@@ -349,10 +438,38 @@ export default function ResultsDashboardTab({
               Add chart
             </button>
             {addOpen && (
-              <div className="absolute right-0 z-20 mt-1 w-48 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
-                {(Object.keys(WIDGET_LABELS) as ResultsWidgetType[]).map((type) => {
+              <div className="absolute right-0 z-20 mt-1 max-h-80 w-56 overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+                {(Object.keys(WIDGET_LABELS) as ResultsWidgetType[]).flatMap((type) => {
+                  if (type === 'metric_trend') {
+                    if (!metrics.length) {
+                      return [(
+                        <button key={type} type="button" disabled className="block w-full px-3 py-1.5 text-left text-xs text-gray-300">
+                          Metric trend
+                        </button>
+                      )]
+                    }
+                    return [
+                      <p key="metric-trend-label" className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-gray-400">
+                        Metric trend
+                      </p>,
+                      ...metrics.map((metric) => {
+                        const alreadyVisible = widgets.some((widget) => widget.type === 'metric_trend' && widget.metricId === metric.metric_id && !widget.hidden)
+                        return (
+                          <button
+                            key={metric.metric_id}
+                            type="button"
+                            disabled={alreadyVisible || visibleCount >= MAX_VISIBLE_WIDGETS}
+                            onClick={() => addWidget('metric_trend', metric.metric_id)}
+                            className="block w-full px-3 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-50 disabled:text-gray-300"
+                          >
+                            {metric.metric_name}
+                          </button>
+                        )
+                      }),
+                    ]
+                  }
                   const alreadyVisible = widgets.some((widget) => widget.type === type && !widget.hidden)
-                  return (
+                  return [(
                     <button
                       key={type}
                       type="button"
@@ -362,14 +479,14 @@ export default function ResultsDashboardTab({
                     >
                       {WIDGET_LABELS[type]}
                     </button>
-                  )
+                  )]
                 })}
               </div>
             )}
           </div>
           <button
             type="button"
-            onClick={() => update(readDefaultWidgets())}
+            onClick={() => update(copyResultsWidgets(DEFAULT_RESULTS_WIDGETS))}
             className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
           >
             <RotateCcw className="h-3.5 w-3.5" />
@@ -396,6 +513,8 @@ export default function ResultsDashboardTab({
                   metrics={metrics}
                   days={days}
                   scoreSeries={scoreSeries}
+                  categorySeries={categorySeries}
+                  ops={ops}
                   lowest={lowest}
                   agentRows={agentRows}
                   scenarioRows={scenarioRows}
@@ -416,17 +535,6 @@ export default function ResultsDashboardTab({
       )}
     </div>
   )
-}
-
-function readDefaultWidgets(): ResultsWidget[] {
-  return [
-    { id: 'volume', type: 'volume', display: 'bar' },
-    { id: 'completion', type: 'completion', display: 'line' },
-    { id: 'avg_score', type: 'avg_score', display: 'line' },
-    { id: 'lowest_metrics', type: 'lowest_metrics', display: 'bar' },
-    { id: 'agents', type: 'agents', display: 'bar' },
-    { id: 'scenarios', type: 'scenarios', display: 'bar' },
-  ]
 }
 
 function buildDays(results: EvaluatorResultRow[]): DayPoint[] {
@@ -508,6 +616,8 @@ function DashboardPanel({
   metrics,
   days,
   scoreSeries,
+  categorySeries,
+  ops,
   lowest,
   agentRows,
   scenarioRows,
@@ -527,6 +637,8 @@ function DashboardPanel({
   metrics: CallImportMetricAggregate[]
   days: DayPoint[]
   scoreSeries: Map<string, Array<{ day: string; value: number }>>
+  categorySeries: Map<string, { labels: string[]; data: Array<Record<string, string | number>> }>
+  ops: EvaluatorResultsDashboardOpsResponse | undefined
   lowest: Array<{ name: string; value: number; count?: number; metricId?: string }>
   agentRows: Array<{ id: string; name: string; total: number; completed: number; failed: number; rate: number }>
   scenarioRows: Array<{ name: string; count: number; completed: number; failed: number; suiteId: string; scenarioId: string; agentId: string }>
@@ -557,6 +669,8 @@ function DashboardPanel({
   const model = panelModel(widget, {
     days,
     scoreSeries,
+    categorySeries,
+    ops,
     lowest,
     agentRows,
     scenarioRows,
@@ -675,6 +789,8 @@ function panelModel(
   source: {
     days: DayPoint[]
     scoreSeries: Map<string, Array<{ day: string; value: number }>>
+    categorySeries: Map<string, { labels: string[]; data: Array<Record<string, string | number>> }>
+    ops: EvaluatorResultsDashboardOpsResponse | undefined
     lowest: Array<{ name: string; value: number }>
     agentRows: Array<{ id: string; name: string; total: number; completed: number; failed: number; rate: number }>
     scenarioRows: Array<{ name: string; count: number }>
@@ -691,6 +807,9 @@ function panelModel(
   horizontal?: boolean
 } {
   const terminalDays = source.days
+  if (widget.type === 'agent_cost') return agentCostCard(source.ops, widget.display)
+  if (widget.type === 'model_cost') return modelCostCard(source.ops)
+  if (widget.type === 'tool_calls') return toolCallCard(source.ops, widget.display)
   if (widget.type === 'volume') {
     return {
       headline: formatHeadline(source.aggregateTotal),
@@ -716,6 +835,16 @@ function panelModel(
   }
   if (widget.type === 'avg_score' || widget.type === 'metric_trend') {
     const metric = widget.type === 'metric_trend' ? source.trendMetric : source.primaryMetric
+    if (metric && widget.type === 'metric_trend' && isCategoricalMetric(metric)) {
+      const category = source.categorySeries.get(metric.metric_id)
+      const labels = category?.labels ?? metric.value_counts.map((count) => count.label)
+      return {
+        headline: formatHeadline(metric.count),
+        caption: metric.metric_name,
+        data: category?.data ?? [],
+        series: categoryColors(labels),
+      }
+    }
     const points = metric ? source.scoreSeries.get(metric.metric_id) ?? [] : []
     return {
       headline: formatHeadline(metric?.mean ?? null),
@@ -1000,6 +1129,8 @@ function ResultsDetailView({
   metrics,
   days,
   scoreSeries,
+  categorySeries,
+  ops,
   lowest,
   agentRows,
   scenarioRows,
@@ -1019,6 +1150,8 @@ function ResultsDetailView({
   metrics: CallImportMetricAggregate[]
   days: DayPoint[]
   scoreSeries: Map<string, Array<{ day: string; value: number }>>
+  categorySeries: Map<string, { labels: string[]; data: Array<Record<string, string | number>> }>
+  ops: EvaluatorResultsDashboardOpsResponse | undefined
   lowest: Array<{ name: string; value: number; count?: number; metricId?: string }>
   agentRows: Array<{ id: string; name: string; total: number; completed: number; failed: number; rate: number }>
   scenarioRows: Array<{ name: string; count: number; completed: number; failed: number; suiteId: string; scenarioId: string; agentId: string }>
@@ -1042,7 +1175,7 @@ function ResultsDetailView({
         ? primaryMetric
         : null
   const agent = detail.kind === 'agent' ? agentRows.find((row) => row.id === detail.agentId) : null
-  const title = detail.kind === 'metric'
+  const title = detail.kind === 'metric' || widget?.type === 'metric_trend'
     ? metric?.metric_name ?? 'Metric'
     : detail.kind === 'agent'
       ? agent?.name ?? 'Agent'
@@ -1052,6 +1185,8 @@ function ResultsDetailView({
     ? panelModel(widget, {
       days,
       scoreSeries,
+      categorySeries,
+      ops,
       lowest,
       agentRows,
       scenarioRows,
@@ -1072,9 +1207,33 @@ function ResultsDetailView({
   const recent = metric
     ? results.filter((row) => row.metric_scores?.[metric.metric_id]).slice(0, 12)
     : results.slice(0, 12)
-  const views = buildDetailViews(widget?.type, model, days, lowest, agentRows, scenarioRows, metric)
+  const [focusId, setFocusId] = useState<string | null>(null)
+  const category = metric ? categorySeries.get(metric.metric_id) : undefined
+  const categorical = Boolean(metric && isCategoricalMetric(metric) && (widget?.type === 'metric_trend' || detail.kind === 'metric'))
+  const baseViews = categorical && category
+    ? [
+      { id: 'counts', label: 'Counts', headline: formatHeadline(metric?.count ?? null), caption: metric?.metric_name, data: category.data, series: categoryColors(category.labels) },
+      { id: 'share', label: 'Share', headline: formatHeadline(metric?.count ?? null), caption: 'Share of labels', data: shareSeries(category.data, category.labels), series: categoryColors(category.labels) },
+    ]
+    : buildDetailViews(widget?.type, model, days, lowest, agentRows, scenarioRows, metric)
+  const views = widget?.type === 'agent_cost'
+    ? (['all', 'agent', 'simulator', 'judge'] as const).map((role) => {
+      const chart = agentCostDetail(ops, role === 'all' ? null : role, focusId)
+      return { id: role, label: role === 'all' ? 'All' : role[0].toUpperCase() + role.slice(1), ...chart }
+    })
+    : widget?.type === 'model_cost'
+      ? [{ id: 'cost', label: 'Cost', ...modelCostDetail(ops, focusId) }]
+      : widget?.type === 'tool_calls'
+        ? (['calls', 'errors'] as const).map((mode) => {
+          const chart = toolCallDetail(ops, mode, focusId)
+          return { id: mode, label: mode === 'calls' ? 'Calls' : 'Errors', ...chart }
+        })
+        : baseViews
   const [viewId, setViewId] = useState(views[0]?.id ?? 'main')
   const active = views.find((view) => view.id === viewId) ?? views[0]
+  const costRole = widget?.type === 'agent_cost' && active?.id !== 'all' ? active?.id ?? null : null
+  const focusedAgent = ops?.cost_by_agent.find((agent) => agent.agent_id === focusId)
+  const focusedModels = modelsForAgent(focusedAgent, widget?.type === 'agent_cost' ? costRole : null)
 
   return (
     <div className="space-y-4">
@@ -1133,6 +1292,89 @@ function ResultsDetailView({
                 }
               }}
             />
+          </div>
+        )}
+        {widget?.type === 'agent_cost' && (ops?.cost_by_agent.length ?? 0) > 0 && (
+          <div className="mt-4">
+            <div className="mb-2 flex items-center justify-between">
+              <h3 className="text-xs font-semibold text-gray-900">Agents</h3>
+              {focusId && (
+                <button type="button" onClick={() => setFocusId(null)} className="text-xs font-medium text-gray-500 hover:text-gray-800">
+                  All agents
+                </button>
+              )}
+            </div>
+            <ul className="divide-y divide-gray-100">
+              {ops?.cost_by_agent.map((agent) => (
+                <li key={agent.agent_id}>
+                  <button
+                    type="button"
+                    onClick={() => setFocusId(agent.agent_id)}
+                    className={`flex w-full items-center justify-between py-2 text-left text-sm ${focusId === agent.agent_id ? 'text-gray-900' : 'text-gray-700 hover:text-gray-900'}`}
+                  >
+                    <span className="truncate">{agent.agent_name}</span>
+                    <span className="shrink-0 text-xs text-gray-500">{formatUsd(costRole === 'agent' ? agent.agent_usd : costRole === 'simulator' ? agent.simulator_usd : costRole === 'judge' ? agent.judge_usd : agent.total_usd)}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+            {focusedModels.length > 0 && (
+              <p className="mt-2 text-xs text-gray-500">
+                Models: {focusedModels.map((spend) => `${spend.model} ${formatUsd(spend.cost_usd)}`).join(' · ')}
+              </p>
+            )}
+          </div>
+        )}
+        {widget?.type === 'model_cost' && (ops?.cost_by_model_day.length ?? 0) > 0 && (
+          <div className="mt-4">
+            <div className="mb-2 flex items-center justify-between">
+              <h3 className="text-xs font-semibold text-gray-900">Models</h3>
+              {focusId && (
+                <button type="button" onClick={() => setFocusId(null)} className="text-xs font-medium text-gray-500 hover:text-gray-800">
+                  All models
+                </button>
+              )}
+            </div>
+            <ul className="divide-y divide-gray-100">
+              {modelTotals(ops).map((item) => (
+                <li key={item.model}>
+                  <button
+                    type="button"
+                    onClick={() => setFocusId(item.model)}
+                    className="flex w-full items-center justify-between py-2 text-left text-sm text-gray-700 hover:text-gray-900"
+                  >
+                    <span className="truncate">{item.model}</span>
+                    <span className="shrink-0 text-xs text-gray-500">{formatUsd(item.cost_usd)}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {widget?.type === 'tool_calls' && (ops?.tool_calls_by_agent_day.length ?? 0) > 0 && (
+          <div className="mt-4">
+            <div className="mb-2 flex items-center justify-between">
+              <h3 className="text-xs font-semibold text-gray-900">Agents</h3>
+              {focusId && (
+                <button type="button" onClick={() => setFocusId(null)} className="text-xs font-medium text-gray-500 hover:text-gray-800">
+                  All agents
+                </button>
+              )}
+            </div>
+            <ul className="divide-y divide-gray-100">
+              {toolAgentTotals(ops).map((item) => (
+                <li key={item.agent_id}>
+                  <button
+                    type="button"
+                    onClick={() => setFocusId(item.agent_id)}
+                    className="flex w-full items-center justify-between py-2 text-left text-sm text-gray-700 hover:text-gray-900"
+                  >
+                    <span className="truncate">{item.agent_name}</span>
+                    <span className="shrink-0 text-xs text-gray-500">{item.calls.toLocaleString()} calls</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
           </div>
         )}
         {metric && (

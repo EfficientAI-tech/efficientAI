@@ -247,6 +247,7 @@ def run_trial_conversation(
             **ids,
             "synthetic_testing": "pre_prod",
             "simulation_leg": "production_agent",
+            "usage_role": "agent",
             "provider_platform": "internal",
         },
     )

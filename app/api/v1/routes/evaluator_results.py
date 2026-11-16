@@ -19,6 +19,7 @@ from app.models.schemas import (
     EvaluatorResultListResponse,
     EvaluatorResultsOverviewResponse,
     EvaluatorResultsAggregateResponse,
+    EvaluatorResultsDashboardOpsResponse,
 )
 from app.services.evaluators.evaluator_results_query import (
     build_evaluator_results_query,
@@ -26,6 +27,9 @@ from app.services.evaluators.evaluator_results_query import (
 )
 from app.services.evaluators.evaluator_results_overview import build_evaluator_results_overview
 from app.services.evaluators.evaluator_results_aggregate import compute_evaluator_results_aggregate
+from app.services.evaluators.evaluator_results_dashboard_ops import (
+    compute_evaluator_results_dashboard_ops,
+)
 from app.services.evaluators.evaluator_result_status import (
     effective_evaluator_result_status,
     repair_evaluator_result_status_if_needed,
@@ -323,6 +327,10 @@ def get_evaluator_results_overview(
     suite_id: Optional[str] = Query(None, description="When set, return scenarios for this suite"),
     since: Optional[datetime] = Query(None),
     until: Optional[datetime] = Query(None),
+    playground: Optional[bool] = Query(
+        None,
+        description="True for playground/live results only. False for evaluator simulations only.",
+    ),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
@@ -349,6 +357,7 @@ def get_evaluator_results_overview(
         suite_id=suite_uuid,
         since=since,
         until=until,
+        playground=playground,
     )
 
 
@@ -389,6 +398,57 @@ def get_evaluator_results_aggregate(
 
     try:
         return compute_evaluator_results_aggregate(
+            db,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            suite_id=suite_uuid,
+            agent_id=agent_uuid,
+            scenario_id=scenario_uuid,
+            since=since,
+            until=until,
+            playground=playground,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/dashboard-ops", response_model=EvaluatorResultsDashboardOpsResponse)
+def get_evaluator_results_dashboard_ops(
+    suite_id: Optional[str] = Query(None),
+    agent_id: Optional[str] = Query(None),
+    scenario_id: Optional[str] = Query(None),
+    since: Optional[datetime] = Query(None),
+    until: Optional[datetime] = Query(None),
+    playground: Optional[bool] = Query(
+        None,
+        description="True for playground/live results only. False for evaluator simulations only.",
+    ),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Cost by agent and layer, model cost per day, and tool calls for the dashboard."""
+    suite_uuid: Optional[UUID] = None
+    agent_uuid: Optional[UUID] = None
+    scenario_uuid: Optional[UUID] = None
+    if suite_id:
+        try:
+            suite_uuid = UUID(suite_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid suite_id")
+    if agent_id:
+        try:
+            agent_uuid = UUID(agent_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid agent_id")
+    if scenario_id:
+        try:
+            scenario_uuid = UUID(scenario_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid scenario_id")
+
+    try:
+        return compute_evaluator_results_dashboard_ops(
             db,
             organization_id=organization_id,
             workspace_id=workspace_id,

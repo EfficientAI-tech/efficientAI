@@ -1,6 +1,9 @@
 export type ResultsChartType = 'line' | 'bar' | 'area'
 
 export type ResultsWidgetType =
+  | 'agent_cost'
+  | 'model_cost'
+  | 'tool_calls'
   | 'volume'
   | 'completion'
   | 'avg_score'
@@ -20,6 +23,9 @@ export interface ResultsWidget {
 export const MAX_VISIBLE_WIDGETS = 6
 
 export const WIDGET_LABELS: Record<ResultsWidgetType, string> = {
+  agent_cost: 'Agent cost',
+  model_cost: 'Model cost',
+  tool_calls: 'Tool calls',
   volume: 'Run volume',
   completion: 'Completion rate',
   avg_score: 'Average score',
@@ -37,20 +43,24 @@ export const CHART_TYPE_LABELS: Record<ResultsChartType, string> = {
   area: 'Area',
 }
 
-const STORAGE_KEY = 'resultsDashboardLayout.v1'
+const STORAGE_KEY = 'resultsDashboardLayout.v2'
 
 function seed(type: ResultsWidgetType, display: ResultsChartType): ResultsWidget {
   return { id: type, type, display }
 }
 
 export const DEFAULT_RESULTS_WIDGETS: ResultsWidget[] = [
-  seed('volume', 'bar'),
-  seed('completion', 'line'),
+  seed('agent_cost', 'bar'),
+  seed('model_cost', 'area'),
+  seed('tool_calls', 'line'),
   seed('avg_score', 'line'),
+  seed('completion', 'line'),
   seed('lowest_metrics', 'bar'),
-  seed('agents', 'bar'),
-  seed('scenarios', 'bar'),
 ]
+
+export function copyResultsWidgets(widgets: ResultsWidget[]): ResultsWidget[] {
+  return widgets.map((widget) => ({ ...widget }))
+}
 
 function isChartType(value: unknown): value is ResultsChartType {
   return typeof value === 'string' && CHART_TYPES.includes(value as ResultsChartType)

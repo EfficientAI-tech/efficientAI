@@ -81,6 +81,7 @@ import type {
   EvaluatorResultListResponse,
   EvaluatorResultsOverviewResponse,
   EvaluatorResultsAggregateResponse,
+  EvaluatorResultsDashboardOpsResponse,
   ListEvaluatorResultsParams,
   CallImportTranscribeRequest,
   CallImportTranscribeResponse,
@@ -5046,13 +5047,34 @@ class ApiClient {
     suiteId?: string
     since?: string
     until?: string
+    playground?: boolean
   }): Promise<EvaluatorResultsOverviewResponse> {
     const query: Record<string, string> = {}
     if (params?.agentId) query.agent_id = params.agentId
     if (params?.suiteId) query.suite_id = params.suiteId
     if (params?.since) query.since = params.since
     if (params?.until) query.until = params.until
+    if (params?.playground !== undefined) query.playground = String(params.playground)
     const response = await this.client.get('/api/v1/evaluator-results/overview', { params: query })
+    return response.data
+  }
+
+  async getEvaluatorResultsDashboardOps(params: {
+    suiteId?: string
+    agentId?: string
+    scenarioId?: string
+    since?: string
+    until?: string
+    playground?: boolean
+  }): Promise<EvaluatorResultsDashboardOpsResponse> {
+    const query: Record<string, string> = {}
+    if (params.suiteId) query.suite_id = params.suiteId
+    if (params.agentId) query.agent_id = params.agentId
+    if (params.scenarioId) query.scenario_id = params.scenarioId
+    if (params.since) query.since = params.since
+    if (params.until) query.until = params.until
+    if (params.playground !== undefined) query.playground = String(params.playground)
+    const response = await this.client.get('/api/v1/evaluator-results/dashboard-ops', { params: query })
     return response.data
   }
 

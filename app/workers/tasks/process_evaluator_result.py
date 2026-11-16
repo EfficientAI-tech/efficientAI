@@ -748,12 +748,13 @@ def _record_agent_call_usage(result, *, usage_ctx) -> None:
     if _external_usage_already_recorded(result):
         return
     try:
+        from app.services.usage.context import usage_context_as_production_agent
         from app.services.usage.llm_usage import record_call_usage
 
         record_call_usage(
             "voice-agent-call",
             organization_id=result.organization_id,
-            ctx=usage_ctx,
+            ctx=usage_context_as_production_agent(usage_ctx),
             audio_seconds=_resolve_call_duration_seconds(result),
         )
     except Exception as exc:

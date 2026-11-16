@@ -315,6 +315,7 @@ def record_external_agent_usage(
             **(usage_ctx.extra or {}),
             "synthetic_testing": "pre_prod",
             "simulation_leg": "production_agent",
+            "usage_role": "agent",
             "provider_platform": str(platform).lower(),
         },
     )
