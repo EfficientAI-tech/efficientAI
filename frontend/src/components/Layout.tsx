@@ -8,6 +8,7 @@ import { Profile } from '../types/api'
 import {
   LayoutDashboard,
   LogOut,
+  User,
   Menu,
   Phone,
   Users,
@@ -46,7 +47,7 @@ import {
   Info,
   X,
 } from 'lucide-react'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import Logo from './Logo'
 import { consumeJoinNotice } from '../lib/joinNotice'
 import WorkspaceSwitcher from './WorkspaceSwitcher'
@@ -175,7 +176,6 @@ function isNavItemActive(href: string, pathname: string): boolean {
 
 export default function Layout() {
   const location = useLocation()
-  const { logout } = useAuthStore()
   const { selectedAgent, setSelectedAgent, loadPreferences, isInitialized } = useAgentStore()
   const { fetchLicense } = useLicenseStore()
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -249,7 +249,7 @@ export default function Layout() {
           className={`fixed inset-y-0 left-0 w-64 bg-white shadow-xl transition-transform duration-300 ease-in-out ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'
             }`}
         >
-          <SidebarContent onLogout={logout} location={location} />
+          <SidebarContent location={location} />
         </div>
       </div>
 
@@ -260,7 +260,6 @@ export default function Layout() {
       >
         <div className="flex flex-col h-full w-full bg-white border-r border-gray-200 shadow-sm overflow-hidden">
           <SidebarContent
-            onLogout={logout}
             location={location}
             collapsed={desktopSidebarCollapsed}
             onToggleCollapse={toggleDesktopSidebar}
@@ -439,6 +438,10 @@ export default function Layout() {
 
 function ProfileAvatar() {
   const location = useLocation()
+  const { logout } = useAuthStore()
+  const menuRef = useRef<HTMLDivElement>(null)
+  const closeTimer = useRef<number | null>(null)
+  const [open, setOpen] = useState(false)
   const { data: profile } = useQuery<Profile>({
     queryKey: ['profile'],
     queryFn: () => apiClient.getProfile(),
@@ -462,32 +465,115 @@ function ProfileAvatar() {
   }
 
   const initials = getInitials()
+  const displayName = profile?.name
+    || [profile?.first_name, profile?.last_name].filter(Boolean).join(' ')
+    || profile?.email
+    || 'Account'
+
+  const openMenu = () => {
+    if (closeTimer.current) window.clearTimeout(closeTimer.current)
+    setOpen(true)
+  }
+
+  const scheduleClose = () => {
+    if (closeTimer.current) window.clearTimeout(closeTimer.current)
+    closeTimer.current = window.setTimeout(() => setOpen(false), 120)
+  }
+
+  useEffect(() => {
+    setOpen(false)
+  }, [location.pathname])
+
+  useEffect(() => {
+    if (!open) return
+    const onPointerDown = (event: MouseEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [open])
+
+  useEffect(() => () => {
+    if (closeTimer.current) window.clearTimeout(closeTimer.current)
+  }, [])
 
   return (
-    <div className="flex items-center">
-      <Link
-        to="/profile"
-        className={`flex items-center justify-center w-10 h-10 rounded-lg transition-colors ${location.pathname === '/profile'
+    <div
+      ref={menuRef}
+      className="relative flex items-center"
+      onMouseEnter={openMenu}
+      onMouseLeave={scheduleClose}
+    >
+      <button
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="Account menu"
+        onClick={() => setOpen((current) => !current)}
+        className={`flex items-center justify-center w-10 h-10 rounded-lg transition-colors ${open || location.pathname === '/profile'
           ? 'bg-gray-100'
           : 'hover:bg-gray-50'
           }`}
-        title="Profile"
       >
         <div className="w-8 h-8 rounded-full bg-transparent border-2 border-gray-400 flex items-center justify-center text-gray-700 text-sm font-semibold">
           {initials}
         </div>
-      </Link>
+      </button>
+      <div
+        className={`absolute right-0 top-full z-50 w-56 origin-top-right pt-2 transition duration-150 ease-out ${open
+          ? 'pointer-events-auto translate-y-0 scale-100 opacity-100'
+          : 'pointer-events-none -translate-y-1 scale-95 opacity-0'
+          }`}
+      >
+        <div role="menu" className="overflow-hidden rounded-xl border border-gray-200 bg-white py-1 shadow-lg ring-1 ring-black/5">
+          <div className="border-b border-gray-100 px-3 py-2.5">
+            <p className="truncate text-sm font-medium text-gray-900">{displayName}</p>
+            {profile?.email && displayName !== profile.email && (
+              <p className="truncate text-xs text-gray-500">{profile.email}</p>
+            )}
+          </div>
+          <Link
+            to="/profile"
+            role="menuitem"
+            onClick={() => setOpen(false)}
+            className={`flex items-center gap-2 px-3 py-2 text-sm transition-colors ${location.pathname === '/profile'
+              ? 'bg-gray-50 text-gray-900'
+              : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
+              }`}
+          >
+            <User className="h-4 w-4 text-gray-400" />
+            Profile
+          </Link>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false)
+              logout()
+            }}
+            className="group flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 transition-colors hover:bg-red-50 hover:text-red-600"
+          >
+            <LogOut className="h-4 w-4 text-gray-400 transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-red-600" />
+            Logout
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
 
 function SidebarContent({
-  onLogout,
   location,
   collapsed = false,
   onToggleCollapse,
 }: {
-  onLogout: () => void
   location: ReturnType<typeof useLocation>
   collapsed?: boolean
   onToggleCollapse?: () => void
@@ -580,7 +666,6 @@ function SidebarContent({
             </div>
           </nav>
         </div>
-        <LogoutButton onLogout={onLogout} collapsed />
       </div>
     )
   }
@@ -710,7 +795,6 @@ function SidebarContent({
           </div>
         </nav>
       </div>
-      <LogoutButton onLogout={onLogout} />
     </div>
   )
 }
@@ -742,43 +826,6 @@ function SidebarTextLink({
       />
       {item.name}
     </Link>
-  )
-}
-
-function LogoutButton({
-  onLogout,
-  collapsed = false,
-}: {
-  onLogout: () => void
-  collapsed?: boolean
-}) {
-  if (collapsed) {
-    return (
-      <div className="flex-shrink-0 border-t border-gray-200 p-2">
-        <button
-          type="button"
-          onClick={onLogout}
-          className="w-full flex items-center justify-center p-2 rounded-md text-gray-400 hover:bg-red-50 hover:text-red-600 transition-colors"
-          title="Logout"
-          aria-label="Logout"
-        >
-          <LogOut className="h-5 w-5" />
-        </button>
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex-shrink-0 border-t border-gray-200">
-      <button
-        type="button"
-        onClick={onLogout}
-        className="group flex w-full items-center px-4 py-4 text-sm font-medium text-gray-600 transition-colors hover:bg-red-50 hover:text-red-600"
-      >
-        <LogOut className="mr-3 h-5 w-5 text-gray-400 transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-red-600" />
-        Logout
-      </button>
-    </div>
   )
 }
 

@@ -207,6 +207,7 @@ def compute_evaluator_results_aggregate(
     scenario_id: Optional[UUID] = None,
     since: Optional[datetime] = None,
     until: Optional[datetime] = None,
+    playground: Optional[bool] = None,
 ) -> EvaluatorResultsAggregateResponse:
     query = build_evaluator_results_query(
         db,
@@ -217,6 +218,7 @@ def compute_evaluator_results_aggregate(
         scenario_id=str(scenario_id) if scenario_id else None,
         since=since,
         until=until,
+        playground=playground,
     )
     rows = query.all()
 

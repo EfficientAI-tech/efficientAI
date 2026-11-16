@@ -791,17 +791,17 @@ export default function ResultsHub() {
 
       ) : overview && overview.unassigned.counts.total > 0 && showScopeFilters ? (
 
-          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
 
-            {overview.unassigned.counts.total} run(s) are not linked to an evaluator suite.{' '}
+          {overview.unassigned.counts.total} run(s) are not linked to an evaluator suite.{' '}
 
-            <Link to="/results/unassigned" className="font-semibold underline">
+          <Link to="/results/unassigned" className="font-semibold underline">
 
-              View unassigned
+            View unassigned
 
-            </Link>
+          </Link>
 
-          </div>
+        </div>
 
       ) : null}
 
@@ -939,15 +939,13 @@ export default function ResultsHub() {
 
           onClick={() => setTab('dashboard')}
 
-          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
+          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${activeTab === 'dashboard'
 
-            activeTab === 'dashboard'
+            ? 'border-primary-600 text-primary-700'
 
-              ? 'border-primary-600 text-primary-700'
+            : 'border-transparent text-gray-600 hover:text-gray-900'
 
-              : 'border-transparent text-gray-600 hover:text-gray-900'
-
-          }`}
+            }`}
 
         >
 
@@ -963,15 +961,13 @@ export default function ResultsHub() {
 
             onClick={() => setTab('clusters')}
 
-            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${activeTab === 'clusters'
 
-              activeTab === 'clusters'
+              ? 'border-primary-600 text-primary-700'
 
-                ? 'border-primary-600 text-primary-700'
+              : 'border-transparent text-gray-600 hover:text-gray-900'
 
-                : 'border-transparent text-gray-600 hover:text-gray-900'
-
-            }`}
+              }`}
 
           >
 
@@ -987,15 +983,13 @@ export default function ResultsHub() {
 
           onClick={() => setTab('runs')}
 
-          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
+          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${activeTab === 'runs'
 
-            activeTab === 'runs'
+            ? 'border-primary-600 text-primary-700'
 
-              ? 'border-primary-600 text-primary-700'
+            : 'border-transparent text-gray-600 hover:text-gray-900'
 
-              : 'border-transparent text-gray-600 hover:text-gray-900'
-
-          }`}
+            }`}
 
         >
 
@@ -1020,6 +1014,30 @@ export default function ResultsHub() {
           startDate={startDate}
 
           endDate={endDate}
+
+          agents={agents}
+
+          onSelectAgent={(id) => setFilter('agent', id)}
+
+          onSelectScenario={(nextSuiteId, nextScenarioId, nextAgentId) => setParams({
+
+            agent: nextAgentId,
+
+            suite: nextSuiteId,
+
+            scenario: nextScenarioId,
+
+          })}
+
+          onOpenRuns={() => setTab('runs')}
+
+          onOpenResult={(resultId) => {
+
+            const qs = searchParams.toString()
+
+            navigate(`/results/${resultId}${qs ? `?from=${encodeURIComponent(`/results?${qs}`)}` : ''}`)
+
+          }}
 
         />
 

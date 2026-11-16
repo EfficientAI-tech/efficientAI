@@ -359,6 +359,10 @@ def get_evaluator_results_aggregate(
     scenario_id: Optional[str] = Query(None),
     since: Optional[datetime] = Query(None),
     until: Optional[datetime] = Query(None),
+    playground: Optional[bool] = Query(
+        None,
+        description="True for playground/live results only. False for evaluator simulations only.",
+    ),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
@@ -393,6 +397,7 @@ def get_evaluator_results_aggregate(
             scenario_id=scenario_uuid,
             since=since,
             until=until,
+            playground=playground,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
