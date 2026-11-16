@@ -237,6 +237,8 @@ export interface MetricsManagementProps {
   createModalOnly?: boolean
   draftMode?: boolean
   createModalOpen?: boolean
+  /** Tailwind z-index class when the create modal must sit above another overlay (e.g. Studio wizard). */
+  createModalZIndexClass?: string
   onCreateModalClose?: () => void
   onMetricCreated?: (metric: Metric) => void
 }
@@ -245,6 +247,7 @@ export default function MetricsManagement({
   createModalOnly = false,
   draftMode = false,
   createModalOpen = false,
+  createModalZIndexClass = 'z-[9999]',
   onCreateModalClose,
   onMetricCreated,
 }: MetricsManagementProps = {}) {
@@ -2321,7 +2324,11 @@ export default function MetricsManagement({
 
       {/* Create/Edit Modal */}
       {showCreateModal && (
-        <div className={`fixed inset-0 ${createModalOnly ? 'z-[9999]' : 'z-50'} overflow-y-auto`}>
+        <div
+          className={`fixed inset-0 ${
+            createModalOnly ? createModalZIndexClass : 'z-50'
+          } overflow-y-auto`}
+        >
           <div className="flex min-h-screen items-center justify-center p-4">
             <div
               className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"

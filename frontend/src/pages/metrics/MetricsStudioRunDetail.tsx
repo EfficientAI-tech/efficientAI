@@ -99,7 +99,7 @@ export default function MetricsStudioRunDetail() {
   if (!run) {
     return (
       <div className="space-y-4">
-        <Link to="/metrics-management/studio" className="text-sm text-primary-700">
+        <Link to="/metrics-management/studio?tab=results" className="text-sm text-primary-700">
           ← Back to Studio
         </Link>
         <p className="text-sm text-gray-600">Run not found.</p>
@@ -114,10 +114,10 @@ export default function MetricsStudioRunDetail() {
   return (
     <div className="space-y-6">
       <Link
-        to="/metrics-management/studio"
+        to="/metrics-management/studio?tab=results"
         className="text-sm text-primary-700 hover:text-primary-900"
       >
-        ← Back to Studio
+        ← Back to Studio results
       </Link>
 
       <MetricsStudioRunHeader

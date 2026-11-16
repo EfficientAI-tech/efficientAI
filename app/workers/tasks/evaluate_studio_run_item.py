@@ -62,6 +62,24 @@ def _rollup_run(db: Session, run: MetricStudioRun) -> None:
     rollup_metric_studio_run(db, run, emit_flexprice=True, commit=True)
 
 
+def studio_run_llm_bucket_kwargs(run: MetricStudioRun) -> dict[str, Any]:
+    """Keyword args for ``build_llm_config_buckets`` from a studio run record."""
+    overrides = (
+        run.metric_llm_overrides if isinstance(run.metric_llm_overrides, dict) else {}
+    )
+    return {
+        "overrides": overrides,
+        "run_provider": (run.llm_provider or "").strip() or None,
+        "run_model": (run.llm_model or "").strip() or None,
+        "run_llm_config": (
+            run.llm_config if isinstance(run.llm_config, dict) else None
+        ),
+        "run_credential_id": (
+            str(run.llm_credential_id) if run.llm_credential_id else None
+        ),
+    }
+
+
 @celery_app.task(
     bind=True,
     name="evaluate_studio_run_item",
@@ -203,11 +221,7 @@ def evaluate_studio_run_item_task(self, result_row_id: str) -> dict[str, Any]:
                 buckets = build_llm_config_buckets(
                     db,
                     llm_metrics,
-                    overrides={},
-                    run_provider=None,
-                    run_model=None,
-                    run_llm_config=None,
-                    run_credential_id=None,
+                    **studio_run_llm_bucket_kwargs(run),
                 )
                 try:
                     for _config, groups in buckets.items():

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Optional
+from uuid import UUID
 
 from sqlalchemy import or_
 
@@ -36,7 +37,12 @@ def conversation_id_substring_filter(term: Optional[str]):
     if not needle:
         return None
     pattern = ilike_substring_pattern(needle)
-    return CallImportRow.conversation_id.ilike(pattern, escape="\\")
+    conv_clause = CallImportRow.conversation_id.ilike(pattern, escape="\\")
+    try:
+        row_uuid = UUID(needle)
+    except ValueError:
+        return conv_clause
+    return or_(conv_clause, CallImportRow.id == row_uuid)
 
 
 def evaluation_row_free_text_filter(term: Optional[str]):
