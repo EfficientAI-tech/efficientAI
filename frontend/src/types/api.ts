@@ -2441,6 +2441,12 @@ export interface DashboardOpsAgentMetricCount {
   metric_count: number
 }
 
+export interface DashboardOpsDurationBucket {
+  start_seconds: number
+  end_seconds: number
+  count: number
+}
+
 export interface EvaluatorResultsDashboardOpsResponse {
   cost_by_agent: DashboardOpsCostByAgent[]
   cost_by_model_day: DashboardOpsModelDay[]
@@ -2462,6 +2468,7 @@ export interface EvaluatorResultsDashboardOpsResponse {
   metrics?: CallImportMetricAggregate[]
   agents?: EvaluatorResultsAgentSummary[]
   agent_metric_counts?: DashboardOpsAgentMetricCount[]
+  duration_buckets?: DashboardOpsDurationBucket[]
 }
 
 export interface CallImportInsightsRunPoint {

@@ -17,6 +17,7 @@ from app.models.schemas import (
     DashboardOpsAgentDay,
     DashboardOpsAgentMetricCount,
     DashboardOpsCostByAgent,
+    DashboardOpsDurationBucket,
     DashboardOpsModelDay,
     DashboardOpsModelLayer,
     DashboardOpsModelSpend,
@@ -34,6 +35,29 @@ from app.services.evaluators.evaluator_results_query import build_evaluator_resu
 from app.services.usage.context import LIVE_USAGE_SECTIONS, resolve_usage_role
 
 _LAYER_KINDS = ("llm", "stt", "tts")
+_DURATION_BUCKET_EDGES = (0, 60, 90, 120, 150, 180, 240, 86_400)
+
+
+def _duration_buckets_from_query(result_query) -> List[DashboardOpsDurationBucket]:
+    edges = _DURATION_BUCKET_EDGES
+    counts = [0] * (len(edges) - 1)
+    for (duration,) in result_query.with_entities(EvaluatorResult.duration_seconds).all():
+        if duration is None:
+            continue
+        value = float(duration)
+        for index in range(len(edges) - 1):
+            if edges[index] <= value < edges[index + 1]:
+                counts[index] += 1
+                break
+    return [
+        DashboardOpsDurationBucket(
+            start_seconds=edges[index],
+            end_seconds=edges[index + 1],
+            count=counts[index],
+        )
+        for index in range(len(counts))
+        if counts[index] > 0
+    ]
 _MICRO = 1_000_000
 _OPS_CACHE_TTL_SECONDS = 90
 _OPS_CACHE_HISTORICAL_TTL_SECONDS = 900
@@ -522,6 +546,7 @@ def compute_evaluator_results_dashboard_ops(
     model_layers = _with_s2s_models(db, agent_ids, model_layers)
     model_layers = _attach_catalog_rates(db, organization_id, model_layers)
     tools = rollup_tool_calls(tool_rows, agent_names=agent_names)
+    duration_buckets = _duration_buckets_from_query(result_query)
     from app.services.evaluators.evaluator_result_daily import load_dashboard_series
 
     series = load_dashboard_series(
@@ -595,6 +620,7 @@ def compute_evaluator_results_dashboard_ops(
             DashboardOpsAgentMetricCount(agent_id=row.agent_id, metric_count=row.metric_count)
             for row in series.agent_metric_counts
         ],
+        duration_buckets=duration_buckets,
     )
 
 

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
@@ -63,6 +63,7 @@ import {
 } from './metricPartialUtils'
 import type { AgentFlowGraph, AgentFlowNode, PromptPushRecord, PromptVersionPushPreview } from '../../types/api'
 import PromptLineDiff from '../callImports/components/PromptLineDiff'
+import { PROMPTS_HEADER_ACTIONS_SLOT_ID } from '../prompts/promptsHeaderSlot'
 import {
   countMappedNodes,
   flowchartNeedsPromptMapping,
@@ -499,209 +500,228 @@ export default function PromptPartials({ embedded = false }: { embedded?: boolea
     agentPromptContent,
   ])
 
+  const [headerActionsSlot, setHeaderActionsSlot] = useState<HTMLElement | null>(null)
+
+  useLayoutEffect(() => {
+    if (!embedded) {
+      setHeaderActionsSlot(null)
+      return
+    }
+    setHeaderActionsSlot(document.getElementById(PROMPTS_HEADER_ACTIONS_SLOT_ID))
+  }, [embedded])
+
+  const createButtons = (
+    <>
+      <button
+        type="button"
+        onClick={() => setShowAIGenerateModal(true)}
+        className="inline-flex items-center gap-2 px-4 py-2 bg-amber-50 text-amber-700 text-sm font-medium rounded-lg border border-amber-300 hover:bg-amber-100 transition-colors"
+      >
+        <Sparkles className="h-4 w-4" />
+        AI Generate
+      </button>
+      {kindFilter === 'metric' ? (
+        <button
+          type="button"
+          onClick={() => setShowCreateMetricModal(true)}
+          className="inline-flex items-center gap-2 px-4 py-2 bg-gray-900 text-white text-sm font-medium rounded-lg hover:bg-gray-800 transition-colors"
+        >
+          <Plus className="h-4 w-4" />
+          New Metric Partial
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => openCreateModal(kindFilter === 'imported_agent')}
+          className="inline-flex items-center gap-2 px-4 py-2 bg-gray-900 text-white text-sm font-medium rounded-lg hover:bg-gray-800 transition-colors"
+        >
+          <Plus className="h-4 w-4" />
+          New Prompt
+        </button>
+      )}
+    </>
+  )
+
+  const headerActionsPortal = embedded && headerActionsSlot
+    ? createPortal(createButtons, headerActionsSlot)
+    : null
+
   return (
     <div className={`${embedded ? 'h-[calc(100vh-16rem)]' : 'h-[calc(100vh-7rem)]'} flex flex-col`}>
       <ToastContainer />
-      {/* Header */}
-      <div className={`flex items-center mb-6 ${embedded ? 'justify-end' : 'justify-between'}`}>
-        {!embedded && (
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Prompt Partials</h1>
-          <p className="mt-1 text-sm text-gray-500">
-            Create, manage, and version reusable prompts — including imported production agents
-          </p>
+      {headerActionsPortal}
+      {!embedded ? (
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-bold text-gray-900">Prompt Partials</h1>
+            <p className="mt-1 text-sm text-gray-500">
+              Versioned reusable prompts and imported production agents.
+            </p>
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">{createButtons}</div>
         </div>
-        )}
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShowAIGenerateModal(true)}
-            className="inline-flex items-center gap-2 px-4 py-2 bg-amber-50 text-amber-700 text-sm font-medium rounded-lg border border-amber-300 hover:bg-amber-100 transition-colors"
-          >
-            <Sparkles className="h-4 w-4" />
-            AI Generate
-          </button>
-          {kindFilter === 'metric' ? (
-            <button
-              onClick={() => setShowCreateMetricModal(true)}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-gray-900 text-white text-sm font-medium rounded-lg hover:bg-gray-800 transition-colors"
-            >
-              <Plus className="h-4 w-4" />
-              New Metric Partial
-            </button>
-          ) : (
-            <button
-              onClick={() => openCreateModal(kindFilter === 'imported_agent')}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-gray-900 text-white text-sm font-medium rounded-lg hover:bg-gray-800 transition-colors"
-            >
-              <Plus className="h-4 w-4" />
-              New Prompt
-            </button>
-          )}
-        </div>
-      </div>
+      ) : null}
 
       {/* Main Content - Split View */}
       <div className="flex-1 flex gap-4 min-h-0">
         {/* Left Panel - List */}
         {!listSidebarCollapsed ? (
-        <div className="w-80 flex-shrink-0 flex flex-col bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-          {/* Search + kind filter */}
-          <div className="p-3 border-b border-gray-200 space-y-2">
-            <div className="flex items-center gap-2">
-            <div className="relative flex-1 min-w-0">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-              <input
-                type="text"
-                placeholder="Search prompts..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
-              />
-            </div>
-            <button
-              type="button"
-              onClick={() => toggleListSidebar(true)}
-              className="flex-shrink-0 inline-flex items-center justify-center h-9 w-9 rounded-lg border border-gray-300 bg-white text-gray-600 hover:bg-gray-50 transition-colors"
-              title="Hide partials list"
-              aria-label="Hide partials list"
-            >
-              <PanelLeftClose className="h-4 w-4" />
-            </button>
-            </div>
-            <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
-              {KIND_TABS.map((tab) => (
+          <div className="w-80 flex-shrink-0 flex flex-col bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+            {/* Search + kind filter */}
+            <div className="p-3 border-b border-gray-200 space-y-2">
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1 min-w-0">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                  <input
+                    type="text"
+                    placeholder="Search prompts..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
+                  />
+                </div>
                 <button
-                  key={tab.id}
                   type="button"
-                  onClick={() => setKindFilter(tab.id)}
-                  className={`flex-1 px-2 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                    kindFilter === tab.id
+                  onClick={() => toggleListSidebar(true)}
+                  className="flex-shrink-0 inline-flex items-center justify-center h-9 w-9 rounded-lg border border-gray-300 bg-white text-gray-600 hover:bg-gray-50 transition-colors"
+                  title="Hide partials list"
+                  aria-label="Hide partials list"
+                >
+                  <PanelLeftClose className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
+                {KIND_TABS.map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setKindFilter(tab.id)}
+                    className={`flex-1 px-2 py-1.5 text-xs font-medium rounded-md transition-colors ${kindFilter === tab.id
                       ? 'bg-white text-gray-900 shadow-sm'
                       : 'text-gray-500 hover:text-gray-700'
-                  }`}
-                >
-                  {tab.label}
-                </button>
-              ))}
+                      }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* List */}
+            <div className="flex-1 overflow-y-auto">
+              {isLoading ? (
+                <div className="flex items-center justify-center h-32">
+                  <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-gray-900" />
+                </div>
+              ) : partials.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-48 px-4 text-center">
+                  {kindFilter === 'imported_agent' ? (
+                    <Bot className="h-10 w-10 text-gray-300 mb-3" />
+                  ) : kindFilter === 'metric' ? (
+                    <Tags className="h-10 w-10 text-gray-300 mb-3" />
+                  ) : (
+                    <FileText className="h-10 w-10 text-gray-300 mb-3" />
+                  )}
+                  <p className="text-sm text-gray-500">
+                    {searchQuery
+                      ? 'No prompts match your search'
+                      : kindFilter === 'imported_agent'
+                        ? 'No import-linked agent prompts yet'
+                        : kindFilter === 'metric'
+                          ? 'No metric partials yet'
+                          : kindFilter === 'partial'
+                            ? 'No prompt partials yet'
+                            : 'No prompts yet'}
+                  </p>
+                  {!searchQuery && (
+                    <button
+                      onClick={() =>
+                        kindFilter === 'metric'
+                          ? setShowCreateMetricModal(true)
+                          : openCreateModal(kindFilter === 'imported_agent')
+                      }
+                      className="mt-3 text-sm text-gray-700 font-medium hover:text-gray-900"
+                    >
+                      {kindFilter === 'imported_agent'
+                        ? 'Create your first agent prompt'
+                        : kindFilter === 'metric'
+                          ? 'Create your first metric partial'
+                          : 'Create your first prompt'}
+                    </button>
+                  )}
+                </div>
+              ) : (
+                partials.map((partial: PromptPartial) => {
+                  const listSubtitle = partialListSubtitle(partial)
+                  const visibleTags = displayTags(partial.tags)
+                  return (
+                    <button
+                      key={partial.id}
+                      onClick={() => handleSelectPartial(partial)}
+                      className={`w-full text-left px-4 py-3 border-b border-gray-100 hover:bg-gray-50 transition-colors ${selectedPartial?.id === partial.id ? 'bg-gray-50 border-l-4 border-l-gray-900' : 'border-l-4 border-l-transparent'
+                        }`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium text-gray-900 truncate">{partial.name}</p>
+                          {listSubtitle ? (
+                            <p
+                              className="text-xs text-gray-500 mt-0.5 truncate"
+                              title={listSubtitle}
+                            >
+                              {listSubtitle}
+                            </p>
+                          ) : null}
+                          <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                            {isImportedAgent(partial) ? (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-sky-50 text-sky-700 border border-sky-200">
+                                <Bot className="h-3 w-3" />
+                                {isPlatformImportAgentPartial(partial) ? 'Import' : 'Agent'}
+                              </span>
+                            ) : isMetricPartial(partial) ? (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-violet-50 text-violet-700 border border-violet-200">
+                                <Tags className="h-3 w-3" />
+                                Metric
+                              </span>
+                            ) : null}
+                            <span className="inline-flex items-center gap-1 text-xs text-gray-400">
+                              <History className="h-3 w-3" />
+                              v{partial.current_version}
+                            </span>
+                            {isImportedAgent(partial) ? (
+                              <span className="text-xs text-gray-400">
+                                {flowchartListLabel(partial.agent_flowchart_status)}
+                              </span>
+                            ) : (
+                              <span className="text-xs text-gray-400">
+                                {formatDateSafe(partial.updated_at, 'MMM d, yyyy')}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <ChevronRight className="h-4 w-4 text-gray-400 flex-shrink-0 mt-0.5" />
+                      </div>
+                      {visibleTags.length > 0 ? (
+                        <div className="flex flex-wrap gap-1 mt-2">
+                          {visibleTags.slice(0, 3).map((tag) => (
+                            <span
+                              key={tag}
+                              className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-gray-100 text-gray-600"
+                            >
+                              {tag}
+                            </span>
+                          ))}
+                          {visibleTags.length > 3 ? (
+                            <span className="text-xs text-gray-400">+{visibleTags.length - 3}</span>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </button>
+                  )
+                })
+              )}
             </div>
           </div>
-
-          {/* List */}
-          <div className="flex-1 overflow-y-auto">
-            {isLoading ? (
-              <div className="flex items-center justify-center h-32">
-                <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-gray-900" />
-              </div>
-            ) : partials.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-48 px-4 text-center">
-                {kindFilter === 'imported_agent' ? (
-                  <Bot className="h-10 w-10 text-gray-300 mb-3" />
-                ) : kindFilter === 'metric' ? (
-                  <Tags className="h-10 w-10 text-gray-300 mb-3" />
-                ) : (
-                  <FileText className="h-10 w-10 text-gray-300 mb-3" />
-                )}
-                <p className="text-sm text-gray-500">
-                  {searchQuery
-                    ? 'No prompts match your search'
-                    : kindFilter === 'imported_agent'
-                      ? 'No import-linked agent prompts yet'
-                      : kindFilter === 'metric'
-                        ? 'No metric partials yet'
-                      : kindFilter === 'partial'
-                        ? 'No prompt partials yet'
-                        : 'No prompts yet'}
-                </p>
-                {!searchQuery && (
-                  <button
-                    onClick={() =>
-                      kindFilter === 'metric'
-                        ? setShowCreateMetricModal(true)
-                        : openCreateModal(kindFilter === 'imported_agent')
-                    }
-                    className="mt-3 text-sm text-gray-700 font-medium hover:text-gray-900"
-                  >
-                    {kindFilter === 'imported_agent'
-                      ? 'Create your first agent prompt'
-                      : kindFilter === 'metric'
-                        ? 'Create your first metric partial'
-                      : 'Create your first prompt'}
-                  </button>
-                )}
-              </div>
-            ) : (
-              partials.map((partial: PromptPartial) => {
-                const listSubtitle = partialListSubtitle(partial)
-                const visibleTags = displayTags(partial.tags)
-                return (
-                <button
-                  key={partial.id}
-                  onClick={() => handleSelectPartial(partial)}
-                  className={`w-full text-left px-4 py-3 border-b border-gray-100 hover:bg-gray-50 transition-colors ${
-                    selectedPartial?.id === partial.id ? 'bg-gray-50 border-l-4 border-l-gray-900' : 'border-l-4 border-l-transparent'
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-gray-900 truncate">{partial.name}</p>
-                      {listSubtitle ? (
-                        <p
-                          className="text-xs text-gray-500 mt-0.5 truncate"
-                          title={listSubtitle}
-                        >
-                          {listSubtitle}
-                        </p>
-                      ) : null}
-                      <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                        {isImportedAgent(partial) ? (
-                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-sky-50 text-sky-700 border border-sky-200">
-                            <Bot className="h-3 w-3" />
-                            {isPlatformImportAgentPartial(partial) ? 'Import' : 'Agent'}
-                          </span>
-                        ) : isMetricPartial(partial) ? (
-                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-violet-50 text-violet-700 border border-violet-200">
-                            <Tags className="h-3 w-3" />
-                            Metric
-                          </span>
-                        ) : null}
-                        <span className="inline-flex items-center gap-1 text-xs text-gray-400">
-                          <History className="h-3 w-3" />
-                          v{partial.current_version}
-                        </span>
-                        {isImportedAgent(partial) ? (
-                          <span className="text-xs text-gray-400">
-                            {flowchartListLabel(partial.agent_flowchart_status)}
-                          </span>
-                        ) : (
-                          <span className="text-xs text-gray-400">
-                            {formatDateSafe(partial.updated_at, 'MMM d, yyyy')}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <ChevronRight className="h-4 w-4 text-gray-400 flex-shrink-0 mt-0.5" />
-                  </div>
-                  {visibleTags.length > 0 ? (
-                    <div className="flex flex-wrap gap-1 mt-2">
-                      {visibleTags.slice(0, 3).map((tag) => (
-                        <span
-                          key={tag}
-                          className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-gray-100 text-gray-600"
-                        >
-                          {tag}
-                        </span>
-                      ))}
-                      {visibleTags.length > 3 ? (
-                        <span className="text-xs text-gray-400">+{visibleTags.length - 3}</span>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </button>
-                )
-              })
-            )}
-          </div>
-        </div>
         ) : (
           <button
             type="button"
@@ -742,37 +762,37 @@ export default function PromptPartials({ embedded = false }: { embedded?: boolea
                       </span>
                     )}
                     <span className="flex items-center gap-1.5 shrink-0">
-                    {selectedIsAgent ? (
-                      <>
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-sky-100 text-sky-800 whitespace-nowrap">
-                          <Bot className="h-3 w-3" />
-                          {isPlatformImportAgentPartial(partialDetail || selectedPartial)
-                            ? 'Platform import agent'
-                            : 'Imported agent'}
+                      {selectedIsAgent ? (
+                        <>
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-sky-100 text-sky-800 whitespace-nowrap">
+                            <Bot className="h-3 w-3" />
+                            {isPlatformImportAgentPartial(partialDetail || selectedPartial)
+                              ? 'Platform import agent'
+                              : 'Imported agent'}
+                          </span>
+                          {isPlatformImportAgentPartial(partialDetail || selectedPartial) ? (
+                            <CallImportPartialLink
+                              tags={(partialDetail || selectedPartial).tags}
+                              variant="pill"
+                              className="whitespace-nowrap"
+                            />
+                          ) : null}
+                        </>
+                      ) : null}
+                      {selectedIsMetric ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-violet-100 text-violet-800 whitespace-nowrap">
+                          <Tags className="h-3 w-3" />
+                          Metric partial
                         </span>
-                        {isPlatformImportAgentPartial(partialDetail || selectedPartial) ? (
-                          <CallImportPartialLink
-                            tags={(partialDetail || selectedPartial).tags}
-                            variant="pill"
-                            className="whitespace-nowrap"
-                          />
-                        ) : null}
-                      </>
-                    ) : null}
-                    {selectedIsMetric ? (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-violet-100 text-violet-800 whitespace-nowrap">
-                        <Tags className="h-3 w-3" />
-                        Metric partial
-                      </span>
-                    ) : null}
-                    {displayTags(partialDetail?.tags || selectedPartial.tags).map((tag: string) => (
-                      <span
-                        key={tag}
-                        className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700 whitespace-nowrap"
-                      >
-                        {tag}
-                      </span>
-                    ))}
+                      ) : null}
+                      {displayTags(partialDetail?.tags || selectedPartial.tags).map((tag: string) => (
+                        <span
+                          key={tag}
+                          className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700 whitespace-nowrap"
+                        >
+                          {tag}
+                        </span>
+                      ))}
                     </span>
                   </div>
                 </div>
@@ -781,11 +801,10 @@ export default function PromptPartials({ embedded = false }: { embedded?: boolea
                     <button
                       type="button"
                       onClick={() => setPreviewMode('preview')}
-                      className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                        previewMode === 'preview'
-                          ? 'bg-white text-gray-900 shadow-sm'
-                          : 'text-gray-500 hover:text-gray-700'
-                      }`}
+                      className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${previewMode === 'preview'
+                        ? 'bg-white text-gray-900 shadow-sm'
+                        : 'text-gray-500 hover:text-gray-700'
+                        }`}
                     >
                       <Eye className="h-3.5 w-3.5" />
                       Preview
@@ -793,11 +812,10 @@ export default function PromptPartials({ embedded = false }: { embedded?: boolea
                     <button
                       type="button"
                       onClick={() => setPreviewMode('raw')}
-                      className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                        previewMode === 'raw'
-                          ? 'bg-white text-gray-900 shadow-sm'
-                          : 'text-gray-500 hover:text-gray-700'
-                      }`}
+                      className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${previewMode === 'raw'
+                        ? 'bg-white text-gray-900 shadow-sm'
+                        : 'text-gray-500 hover:text-gray-700'
+                        }`}
                     >
                       <Code className="h-3.5 w-3.5" />
                       Raw
@@ -815,9 +833,8 @@ export default function PromptPartials({ embedded = false }: { embedded?: boolea
                     <button
                       type="button"
                       onClick={() => setShowVersionHistory(true)}
-                      className={`${detailActionBtn} ${
-                        showVersionHistory ? 'ring-2 ring-offset-1 ring-gray-400' : ''
-                      }`}
+                      className={`${detailActionBtn} ${showVersionHistory ? 'ring-2 ring-offset-1 ring-gray-400' : ''
+                        }`}
                     >
                       <History className="h-3.5 w-3.5 shrink-0" />
                       Versions ({partialDetail?.current_version || selectedPartial.current_version})
@@ -855,9 +872,8 @@ export default function PromptPartials({ embedded = false }: { embedded?: boolea
                 {selectedIsAgent ? (
                   <div className="flex-1 flex flex-row min-h-0 min-w-0 relative">
                     <div
-                      className={`flex-1 min-w-0 overflow-y-auto ${
-                        !agentDiagramCollapsed ? 'border-r border-gray-200' : ''
-                      }`}
+                      className={`flex-1 min-w-0 overflow-y-auto ${!agentDiagramCollapsed ? 'border-r border-gray-200' : ''
+                        }`}
                     >
                       {compareVersion ? (
                         <div className="p-6 space-y-4">
@@ -951,146 +967,146 @@ export default function PromptPartials({ embedded = false }: { embedded?: boolea
                         Diagram
                       </button>
                     ) : (
-                    <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-gray-50/30">
-                      <div className="px-4 py-3 border-b border-gray-200 bg-white space-y-2 flex-shrink-0">
-                        <div className="flex items-center justify-between gap-2">
-                          <div>
-                            <h3 className="text-sm font-semibold text-gray-900">Agent logic</h3>
-                            <p className="text-[11px] text-gray-500 mt-0.5">
-                              Click a node to jump to its prompt section
-                            </p>
-                          </div>
-                          <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setAgentDiagramCollapsed(true)}
-                            className={`${toolBtn}`}
-                            title="Hide agent diagram"
-                            aria-label="Hide agent diagram"
-                          >
-                            <PanelRightClose className="h-3.5 w-3.5" />
-                            Hide
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => flowchartMutation.mutate(Boolean(flowchart))}
-                            disabled={flowchartMutation.isPending || isFlowchartJobRunning}
-                            className={`${toolBtn} disabled:opacity-50`}
-                          >
-                            {flowchartMutation.isPending ? (
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            ) : (
-                              <RefreshCw className="h-3.5 w-3.5" />
-                            )}
-                            {flowchart ? 'Regenerate' : 'Generate'}
-                          </button>
-                          </div>
-                        </div>
-                        <AIProviderModelPicker
-                          provider={pickerProvider}
-                          credentialId={pickerCredentialId}
-                          model={pickerModel}
-                          onProviderChange={(next) => {
-                            setLlmPickerTouched(true)
-                            setPickerProvider(next)
-                          }}
-                          onCredentialIdChange={(next) => {
-                            setLlmPickerTouched(true)
-                            setPickerCredentialId(next)
-                          }}
-                          onModelChange={(next) => {
-                            setLlmPickerTouched(true)
-                            setPickerModel(next)
-                          }}
-                          llm_config={pickerLlmConfig}
-                          onLLMConfigChange={setPickerLlmConfig}
-                          disabled={
-                            flowchartMutation.isPending || mapPromptSectionsMutation.isPending
-                          }
-                          size="sm"
-                        />
-                        {flowchart && totalNodeCount > 0 ? (
-                          <div className="flex flex-wrap items-center gap-2">
-                            <p className="text-[11px] text-gray-500">
-                              {mappedNodeCount}/{totalNodeCount} nodes mapped to prompt
-                            </p>
-                            {needsPromptMapping && flowchartStatus !== 'mapping' ? (
+                      <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-gray-50/30">
+                        <div className="px-4 py-3 border-b border-gray-200 bg-white space-y-2 flex-shrink-0">
+                          <div className="flex items-center justify-between gap-2">
+                            <div>
+                              <h3 className="text-sm font-semibold text-gray-900">Agent logic</h3>
+                              <p className="text-[11px] text-gray-500 mt-0.5">
+                                Click a node to jump to its prompt section
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-2">
                               <button
                                 type="button"
-                                onClick={() => mapPromptSectionsMutation.mutate()}
-                                disabled={
-                                  mapPromptSectionsMutation.isPending || isFlowchartJobRunning
-                                }
+                                onClick={() => setAgentDiagramCollapsed(true)}
+                                className={`${toolBtn}`}
+                                title="Hide agent diagram"
+                                aria-label="Hide agent diagram"
+                              >
+                                <PanelRightClose className="h-3.5 w-3.5" />
+                                Hide
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => flowchartMutation.mutate(Boolean(flowchart))}
+                                disabled={flowchartMutation.isPending || isFlowchartJobRunning}
                                 className={`${toolBtn} disabled:opacity-50`}
                               >
-                                {mapPromptSectionsMutation.isPending ? (
+                                {flowchartMutation.isPending ? (
                                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                                 ) : (
-                                  <Sparkles className="h-3.5 w-3.5" />
+                                  <RefreshCw className="h-3.5 w-3.5" />
                                 )}
-                                Map prompt sections
+                                {flowchart ? 'Regenerate' : 'Generate'}
                               </button>
-                            ) : null}
-                            {flowchartStatus === 'mapping' ? (
-                              <span className="text-[11px] text-amber-700 inline-flex items-center gap-1">
-                                <Loader2 className="h-3 w-3 animate-spin" />
-                                Mapping prompt sections…
-                              </span>
-                            ) : null}
+                            </div>
                           </div>
-                        ) : null}
-                        {flowchartError ? (
-                          <FlowchartErrorPanel
-                            variant="inline"
-                            error={flowchartError}
-                            title="Could not start flowchart generation"
-                          />
-                        ) : null}
-                        {flowchart?.generation_error ? (
-                          <FlowchartErrorPanel
-                            variant="inline"
-                            error={flowchart.generation_error}
-                            title={
-                              flowchart.nodes?.length
-                                ? 'Regeneration failed — showing previous diagram'
-                                : 'Flowchart generation failed'
+                          <AIProviderModelPicker
+                            provider={pickerProvider}
+                            credentialId={pickerCredentialId}
+                            model={pickerModel}
+                            onProviderChange={(next) => {
+                              setLlmPickerTouched(true)
+                              setPickerProvider(next)
+                            }}
+                            onCredentialIdChange={(next) => {
+                              setLlmPickerTouched(true)
+                              setPickerCredentialId(next)
+                            }}
+                            onModelChange={(next) => {
+                              setLlmPickerTouched(true)
+                              setPickerModel(next)
+                            }}
+                            llm_config={pickerLlmConfig}
+                            onLLMConfigChange={setPickerLlmConfig}
+                            disabled={
+                              flowchartMutation.isPending || mapPromptSectionsMutation.isPending
                             }
+                            size="sm"
                           />
-                        ) : null}
-                        {nodeMapError ? (
-                          <FlowchartErrorPanel
-                            variant="inline"
-                            error={nodeMapError}
-                            title="Could not map prompt sections"
-                          />
-                        ) : null}
+                          {flowchart && totalNodeCount > 0 ? (
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="text-[11px] text-gray-500">
+                                {mappedNodeCount}/{totalNodeCount} nodes mapped to prompt
+                              </p>
+                              {needsPromptMapping && flowchartStatus !== 'mapping' ? (
+                                <button
+                                  type="button"
+                                  onClick={() => mapPromptSectionsMutation.mutate()}
+                                  disabled={
+                                    mapPromptSectionsMutation.isPending || isFlowchartJobRunning
+                                  }
+                                  className={`${toolBtn} disabled:opacity-50`}
+                                >
+                                  {mapPromptSectionsMutation.isPending ? (
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  ) : (
+                                    <Sparkles className="h-3.5 w-3.5" />
+                                  )}
+                                  Map prompt sections
+                                </button>
+                              ) : null}
+                              {flowchartStatus === 'mapping' ? (
+                                <span className="text-[11px] text-amber-700 inline-flex items-center gap-1">
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                  Mapping prompt sections…
+                                </span>
+                              ) : null}
+                            </div>
+                          ) : null}
+                          {flowchartError ? (
+                            <FlowchartErrorPanel
+                              variant="inline"
+                              error={flowchartError}
+                              title="Could not start flowchart generation"
+                            />
+                          ) : null}
+                          {flowchart?.generation_error ? (
+                            <FlowchartErrorPanel
+                              variant="inline"
+                              error={flowchart.generation_error}
+                              title={
+                                flowchart.nodes?.length
+                                  ? 'Regeneration failed — showing previous diagram'
+                                  : 'Flowchart generation failed'
+                              }
+                            />
+                          ) : null}
+                          {nodeMapError ? (
+                            <FlowchartErrorPanel
+                              variant="inline"
+                              error={nodeMapError}
+                              title="Could not map prompt sections"
+                            />
+                          ) : null}
+                        </div>
+                        <div className="flex-1 min-h-0 overflow-hidden">
+                          {flowchart && flowchart.nodes?.length ? (
+                            <AgentFlowChart
+                              data={flowchart}
+                              title={partialDetail?.name || selectedPartial.name}
+                              onSaveLayout={(nodes) => saveLayoutMutation.mutate(nodes)}
+                              savingLayout={saveLayoutMutation.isPending}
+                              highlightNodeId={selectedFlowNodeId}
+                              onNodeClick={handleFlowNodeClick}
+                            />
+                          ) : flowchartStatus === 'generating' || flowchartMutation.isPending ? (
+                            <div className="flex h-full items-center justify-center px-6 text-center text-sm text-gray-500">
+                              <span className="inline-flex items-center gap-2">
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                                Generating flowchart…
+                              </span>
+                            </div>
+                          ) : flowchart?.generation_error || flowchartStatus === 'failed' ? (
+                            <FlowchartErrorPanel error={flowchart?.generation_error} />
+                          ) : (
+                            <div className="flex h-full items-center justify-center px-6 text-center text-sm text-gray-500">
+                              Generate a flowchart to visualize agent logic.
+                            </div>
+                          )}
+                        </div>
                       </div>
-                      <div className="flex-1 min-h-0 overflow-hidden">
-                        {flowchart && flowchart.nodes?.length ? (
-                          <AgentFlowChart
-                            data={flowchart}
-                            title={partialDetail?.name || selectedPartial.name}
-                            onSaveLayout={(nodes) => saveLayoutMutation.mutate(nodes)}
-                            savingLayout={saveLayoutMutation.isPending}
-                            highlightNodeId={selectedFlowNodeId}
-                            onNodeClick={handleFlowNodeClick}
-                          />
-                        ) : flowchartStatus === 'generating' || flowchartMutation.isPending ? (
-                          <div className="flex h-full items-center justify-center px-6 text-center text-sm text-gray-500">
-                            <span className="inline-flex items-center gap-2">
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                              Generating flowchart…
-                            </span>
-                          </div>
-                        ) : flowchart?.generation_error || flowchartStatus === 'failed' ? (
-                          <FlowchartErrorPanel error={flowchart?.generation_error} />
-                        ) : (
-                          <div className="flex h-full items-center justify-center px-6 text-center text-sm text-gray-500">
-                            Generate a flowchart to visualize agent logic.
-                          </div>
-                        )}
-                      </div>
-                    </div>
                     )}
                   </div>
                 ) : selectedIsMetric ? (
@@ -1199,34 +1215,34 @@ export default function PromptPartials({ embedded = false }: { embedded?: boolea
 
               {showVersionHistory && typeof document !== 'undefined'
                 ? createPortal(
-                    <div className="fixed inset-0 z-[55] flex justify-end">
-                      <div
-                        className="absolute inset-0 bg-gray-500/40"
-                        onClick={() => setShowVersionHistory(false)}
-                        aria-hidden
-                      />
-                      <div
-                        className="relative flex h-full w-full max-w-md flex-col border-l border-gray-200 bg-white shadow-xl"
-                        role="dialog"
-                        aria-label="Version history"
-                      >
-                        <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-gray-200 bg-gray-50">
-                          <h3 className="text-sm font-semibold text-gray-900">Version history</h3>
-                          <button
-                            type="button"
-                            onClick={() => setShowVersionHistory(false)}
-                            className="rounded-md p-1.5 text-gray-400 hover:bg-gray-200 hover:text-gray-700 shrink-0"
-                            aria-label="Close"
-                          >
-                            <X className="h-4 w-4" />
-                          </button>
-                        </div>
-                        <div className="flex-1 overflow-y-auto custom-scrollbar">
-                          {(() => {
-                            const liveOnProviderVersion = selectedIsAgent
-                              ? latestLivePromptVersion(partialDetail?.pushes)
-                              : null
-                            return (partialDetail?.versions || []).map((version: PromptPartialVersion) => {
+                  <div className="fixed inset-0 z-[55] flex justify-end">
+                    <div
+                      className="absolute inset-0 bg-gray-500/40"
+                      onClick={() => setShowVersionHistory(false)}
+                      aria-hidden
+                    />
+                    <div
+                      className="relative flex h-full w-full max-w-md flex-col border-l border-gray-200 bg-white shadow-xl"
+                      role="dialog"
+                      aria-label="Version history"
+                    >
+                      <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-gray-200 bg-gray-50">
+                        <h3 className="text-sm font-semibold text-gray-900">Version history</h3>
+                        <button
+                          type="button"
+                          onClick={() => setShowVersionHistory(false)}
+                          className="rounded-md p-1.5 text-gray-400 hover:bg-gray-200 hover:text-gray-700 shrink-0"
+                          aria-label="Close"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                      <div className="flex-1 overflow-y-auto custom-scrollbar">
+                        {(() => {
+                          const liveOnProviderVersion = selectedIsAgent
+                            ? latestLivePromptVersion(partialDetail?.pushes)
+                            : null
+                          return (partialDetail?.versions || []).map((version: PromptPartialVersion) => {
                             const platformImport = isPlatformImportAgentPartial(
                               partialDetail || selectedPartial,
                             )
@@ -1250,9 +1266,8 @@ export default function PromptPartials({ embedded = false }: { embedded?: boolea
                             return (
                               <div
                                 key={version.id}
-                                className={`px-4 py-3 border-b border-gray-100 ${
-                                  isCurrent ? 'bg-green-50/40 ring-1 ring-inset ring-green-100' : ''
-                                }`}
+                                className={`px-4 py-3 border-b border-gray-100 ${isCurrent ? 'bg-green-50/40 ring-1 ring-inset ring-green-100' : ''
+                                  }`}
                               >
                                 <div className="flex flex-wrap items-center gap-1.5">
                                   <span className="text-sm font-semibold text-gray-900">
@@ -1336,44 +1351,44 @@ export default function PromptPartials({ embedded = false }: { embedded?: boolea
                               </div>
                             )
                           })
-                          })()}
-                          {selectedIsAgent && (partialDetail?.pushes || []).length > 0 ? (
-                            <div className="px-4 py-3 border-t border-gray-200 bg-gray-50/50">
-                              <h4 className="text-xs font-semibold text-gray-800 mb-1">
-                                Push &amp; save log
-                              </h4>
-                              <p className="text-[11px] text-gray-500 mb-2 leading-snug">
-                                Audit trail from evaluations and manual pushes (newest first).
-                              </p>
-                              {(partialDetail?.pushes || []).map((push) => (
-                                <div
-                                  key={push.id}
-                                  className="mb-2.5 text-[11px] text-gray-600 last:mb-0 border-l-2 border-gray-200 pl-2"
-                                >
-                                  <span className="font-medium text-gray-800">v{push.prompt_version}</span>
-                                  {' — '}
-                                  {push.status === 'saved_only'
-                                    ? 'Saved in Partials only (eval improvements, not pushed)'
-                                    : push.status === 'pushed'
-                                      ? `Pushed live${push.provider ? ` · ${push.provider}` : ''}`
-                                      : push.status === 'failed'
-                                        ? 'Push failed'
-                                        : push.status}
-                                  <br />
-                                  {formatDateSafe(push.created_at, 'MMM d, yyyy HH:mm')}
-                                  {push.pushed_by ? ` · ${push.pushed_by}` : ''}
-                                  {push.error_message ? (
-                                    <span className="text-rose-600"> · {push.error_message}</span>
-                                  ) : null}
-                                </div>
-                              ))}
-                            </div>
-                          ) : null}
-                        </div>
+                        })()}
+                        {selectedIsAgent && (partialDetail?.pushes || []).length > 0 ? (
+                          <div className="px-4 py-3 border-t border-gray-200 bg-gray-50/50">
+                            <h4 className="text-xs font-semibold text-gray-800 mb-1">
+                              Push &amp; save log
+                            </h4>
+                            <p className="text-[11px] text-gray-500 mb-2 leading-snug">
+                              Audit trail from evaluations and manual pushes (newest first).
+                            </p>
+                            {(partialDetail?.pushes || []).map((push) => (
+                              <div
+                                key={push.id}
+                                className="mb-2.5 text-[11px] text-gray-600 last:mb-0 border-l-2 border-gray-200 pl-2"
+                              >
+                                <span className="font-medium text-gray-800">v{push.prompt_version}</span>
+                                {' — '}
+                                {push.status === 'saved_only'
+                                  ? 'Saved in Partials only (eval improvements, not pushed)'
+                                  : push.status === 'pushed'
+                                    ? `Pushed live${push.provider ? ` · ${push.provider}` : ''}`
+                                    : push.status === 'failed'
+                                      ? 'Push failed'
+                                      : push.status}
+                                <br />
+                                {formatDateSafe(push.created_at, 'MMM d, yyyy HH:mm')}
+                                {push.pushed_by ? ` · ${push.pushed_by}` : ''}
+                                {push.error_message ? (
+                                  <span className="text-rose-600"> · {push.error_message}</span>
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
                       </div>
-                    </div>,
-                    document.body,
-                  )
+                    </div>
+                  </div>,
+                  document.body,
+                )
                 : null}
             </>
           ) : (
@@ -1692,21 +1707,21 @@ function PromptPartialModal({
     }) =>
       data.isAgent
         ? apiClient.createImportedAgent({
-            name: data.name,
-            description: data.description || null,
-            content: data.content,
-          })
+          name: data.name,
+          description: data.description || null,
+          content: data.content,
+        })
         : apiClient.createPromptPartial({
-            name: data.name,
-            description: data.description,
-            content: data.content,
-            tags: data.tags,
-          }),
+          name: data.name,
+          description: data.description,
+          content: data.content,
+          tags: data.tags,
+        }),
     onSuccess: (created) => onSaved(created as PromptPartial),
     onError: (err: any) => {
       setError(
         err?.response?.data?.detail ||
-          (agentMode ? 'Failed to create agent prompt' : 'Failed to create prompt partial'),
+        (agentMode ? 'Failed to create agent prompt' : 'Failed to create prompt partial'),
       )
     },
   })
@@ -1807,22 +1822,20 @@ function PromptPartialModal({
                 <button
                   type="button"
                   onClick={() => setIsAgentPrompt(false)}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition ${
-                    !isAgentPrompt
-                      ? 'bg-white text-gray-900 shadow-sm'
-                      : 'text-gray-600 hover:text-gray-900'
-                  }`}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition ${!isAgentPrompt
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-600 hover:text-gray-900'
+                    }`}
                 >
                   Prompt partial
                 </button>
                 <button
                   type="button"
                   onClick={() => setIsAgentPrompt(true)}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition ${
-                    isAgentPrompt
-                      ? 'bg-white text-gray-900 shadow-sm'
-                      : 'text-gray-600 hover:text-gray-900'
-                  }`}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition ${isAgentPrompt
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-600 hover:text-gray-900'
+                    }`}
                 >
                   Agent prompt
                 </button>
@@ -1896,11 +1909,10 @@ function PromptPartialModal({
                     setShowImprovePanel(!showImprovePanel)
                   }}
                   disabled={improveMutation.isPending}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-lg border transition-colors ${
-                    showImprovePanel
-                      ? 'bg-amber-100 text-amber-800 border-amber-300'
-                      : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
-                  }`}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-lg border transition-colors ${showImprovePanel
+                    ? 'bg-amber-100 text-amber-800 border-amber-300'
+                    : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
+                    }`}
                 >
                   {improveMutation.isPending ? (
                     <Loader2 className="h-3 w-3 animate-spin" />
@@ -1912,22 +1924,20 @@ function PromptPartialModal({
                 <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
                   <button
                     onClick={() => setEditorMode('write')}
-                    className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                      editorMode === 'write'
-                        ? 'bg-white text-gray-900 shadow-sm'
-                        : 'text-gray-500 hover:text-gray-700'
-                    }`}
+                    className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${editorMode === 'write'
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700'
+                      }`}
                   >
                     <Code className="h-3 w-3" />
                     Write
                   </button>
                   <button
                     onClick={() => setEditorMode('preview')}
-                    className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                      editorMode === 'preview'
-                        ? 'bg-white text-gray-900 shadow-sm'
-                        : 'text-gray-500 hover:text-gray-700'
-                    }`}
+                    className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${editorMode === 'preview'
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700'
+                      }`}
                   >
                     <Eye className="h-3 w-3" />
                     Preview
@@ -2243,9 +2253,8 @@ function AIGenerateModal({
                     value={promptName}
                     onChange={(e) => setPromptName(e.target.value)}
                     placeholder="e.g., Customer Support System Prompt"
-                    className={`w-full px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent ${
-                      !promptName.trim() ? 'border-amber-300 bg-amber-50/30' : 'border-gray-300'
-                    }`}
+                    className={`w-full px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent ${!promptName.trim() ? 'border-amber-300 bg-amber-50/30' : 'border-gray-300'
+                      }`}
                   />
                   {!promptName.trim() && (
                     <p className="mt-1 text-xs text-amber-600">Required to save the prompt</p>
@@ -2406,11 +2415,11 @@ function MetricPartialModal({
       ...(metricKind === 'single'
         ? { children: undefined }
         : {
-            children:
-              prev.children && prev.children.length > 0
-                ? prev.children
-                : [{ name: '', description: '', example: '' }],
-          }),
+          children:
+            prev.children && prev.children.length > 0
+              ? prev.children
+              : [{ name: '', description: '', example: '' }],
+        }),
     }))
   }, [metricKind])
 
@@ -2597,22 +2606,20 @@ function MetricPartialModal({
                 <button
                   type="button"
                   onClick={() => setMetricKind('single')}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition ${
-                    metricKind === 'single'
-                      ? 'bg-white text-gray-900 shadow-sm'
-                      : 'text-gray-600 hover:text-gray-900'
-                  }`}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition ${metricKind === 'single'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-600 hover:text-gray-900'
+                    }`}
                 >
                   Single metric
                 </button>
                 <button
                   type="button"
                   onClick={() => setMetricKind('category')}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition ${
-                    metricKind === 'category'
-                      ? 'bg-white text-gray-900 shadow-sm'
-                      : 'text-gray-600 hover:text-gray-900'
-                  }`}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition ${metricKind === 'category'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-600 hover:text-gray-900'
+                    }`}
                 >
                   Categorization labels
                 </button>
@@ -2651,22 +2658,20 @@ function MetricPartialModal({
                       <button
                         type="button"
                         onClick={() => setAIMode('description')}
-                        className={`pb-2 px-1 text-xs font-medium border-b-2 transition-colors ${
-                          aiMode === 'description'
-                            ? 'border-purple-600 text-purple-700'
-                            : 'border-transparent text-purple-500 hover:text-purple-700'
-                        }`}
+                        className={`pb-2 px-1 text-xs font-medium border-b-2 transition-colors ${aiMode === 'description'
+                          ? 'border-purple-600 text-purple-700'
+                          : 'border-transparent text-purple-500 hover:text-purple-700'
+                          }`}
                       >
                         From description
                       </button>
                       <button
                         type="button"
                         onClick={() => setAIMode('examples')}
-                        className={`pb-2 px-1 text-xs font-medium border-b-2 transition-colors ${
-                          aiMode === 'examples'
-                            ? 'border-purple-600 text-purple-700'
-                            : 'border-transparent text-purple-500 hover:text-purple-700'
-                        }`}
+                        className={`pb-2 px-1 text-xs font-medium border-b-2 transition-colors ${aiMode === 'examples'
+                          ? 'border-purple-600 text-purple-700'
+                          : 'border-transparent text-purple-500 hover:text-purple-700'
+                          }`}
                       >
                         From examples
                       </button>

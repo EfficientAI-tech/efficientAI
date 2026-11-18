@@ -1770,6 +1770,7 @@ function ResultsDetailView({
             drillDayActive={drillDayActive}
             windowRunTotal={scopedRunTotal}
             sampleSize={results.length}
+            windowDurationBuckets={ops?.duration_buckets}
             activeScenarioId={drillScenarioId}
             activeScenarioName={activeScenarioName}
             title={`${agent.name} · scenarios`}
@@ -1799,6 +1800,7 @@ function ResultsDetailView({
             drillDayActive={drillDayActive}
             windowRunTotal={scopedRunTotal}
             sampleSize={results.length}
+            windowDurationBuckets={ops?.duration_buckets}
             activeScenarioId={drillScenarioId}
             activeScenarioName={activeScenarioName}
             title={
@@ -1823,6 +1825,7 @@ function ResultsDetailView({
           drillDayActive={drillDayActive}
           windowRunTotal={scopedRunTotal}
           sampleSize={results.length}
+          windowDurationBuckets={ops?.duration_buckets}
           activeScenarioId={drillScenarioId}
           activeScenarioName={activeScenarioName}
           title="Runs in window"

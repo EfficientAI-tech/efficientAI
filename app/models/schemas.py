@@ -5611,6 +5611,12 @@ class DashboardOpsAgentMetricCount(BaseModel):
     metric_count: int = 0
 
 
+class DashboardOpsDurationBucket(BaseModel):
+    start_seconds: int
+    end_seconds: int
+    count: int = 0
+
+
 class EvaluatorResultsDashboardOpsResponse(BaseModel):
     """Cost, tool calls, daily run series, score summaries, and the agent tree."""
 
@@ -5633,6 +5639,7 @@ class EvaluatorResultsDashboardOpsResponse(BaseModel):
     metrics: List[CallImportMetricAggregate] = Field(default_factory=list)
     agents: List[EvaluatorResultsAgentSummary] = Field(default_factory=list)
     agent_metric_counts: List[DashboardOpsAgentMetricCount] = Field(default_factory=list)
+    duration_buckets: List[DashboardOpsDurationBucket] = Field(default_factory=list)
 
 
 # --- LLM-generated TLDR for the Visualizations tab ---

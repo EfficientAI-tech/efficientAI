@@ -124,6 +124,7 @@ export function RunInsightBreakdown({
   drillDayActive = false,
   windowRunTotal,
   sampleSize,
+  windowDurationBuckets,
 }: {
   results: EvaluatorResultRow[]
   scenarioRows: Array<{ name: string; scenarioId: string; count: number; failed: number; agentId: string }>
@@ -137,19 +138,28 @@ export function RunInsightBreakdown({
   drillDayActive?: boolean
   windowRunTotal?: number
   sampleSize?: number
+  windowDurationBuckets?: Array<{ start_seconds: number; end_seconds: number; count: number }>
 }) {
   const [openAgents, setOpenAgents] = useState<Set<string> | null>(null)
 
+  const useWindowDuration = !drillDayActive && (windowDurationBuckets?.length ?? 0) > 0
   const values = results.map((row) => row.duration_seconds).filter((value): value is number => value != null)
   const edges = [0, 60, 90, 120, 150, 180, 240]
-  const buckets = edges
-    .slice(0, -1)
-    .map((start, index) => {
-      const end = edges[index + 1]
-      const count = values.filter((value) => value >= start && value < end).length
-      return { name: `${start}–${end}s`, count }
-    })
-    .filter((bucket) => bucket.count > 0)
+  const buckets = useWindowDuration
+    ? (windowDurationBuckets ?? []).map((bucket) => ({
+      name: bucket.end_seconds >= 86_400
+        ? `${bucket.start_seconds}s+`
+        : `${bucket.start_seconds}–${bucket.end_seconds}s`,
+      count: bucket.count,
+    }))
+    : edges
+      .slice(0, -1)
+      .map((start, index) => {
+        const end = edges[index + 1]
+        const count = values.filter((value) => value >= start && value < end).length
+        return { name: `${start}–${end}s`, count }
+      })
+      .filter((bucket) => bucket.count > 0)
   const bucketMax = Math.max(...buckets.map((b) => b.count), 1)
 
   const byAgentDuration = new Map<string, { sum: number; count: number; failed: number }>()
@@ -190,7 +200,11 @@ export function RunInsightBreakdown({
     : mergeScenarioCounts(scenarioRows)
   const scenarioMax = Math.max(...scenarios.map((s) => s.total), 1)
   const sampleNote =
-    !drillDayActive && windowRunTotal != null && sampleSize != null && sampleSize < windowRunTotal
+    !useWindowDuration
+      && !drillDayActive
+      && windowRunTotal != null
+      && sampleSize != null
+      && sampleSize < windowRunTotal
       ? `Duration buckets use ${sampleSize.toLocaleString()} loaded runs · scenario counts are full window (${windowRunTotal.toLocaleString()}) · runs table below is complete.`
       : null
 
