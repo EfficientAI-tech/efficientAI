@@ -4,6 +4,7 @@ import type {
   EvaluatorResultRow,
   EvaluatorResultsDashboardOpsResponse,
 } from '../../../types/api'
+import { formatUsageCostUsd, getUsageDisplayCurrency, type UsageDisplayCurrency } from '../../../lib/usageCurrency'
 
 export const LAYER_LLM = '#ca8a04'
 export const LAYER_STT = '#a16207'
@@ -411,14 +412,19 @@ export function categoryColors(labels: string[]): ChartSeries[] {
 
 const LAYER_ORDER = ['llm', 'stt', 'tts', 's2s']
 
-export function usageCard(ops: EvaluatorResultsDashboardOpsResponse | undefined): ChartModel {
+export function usageCard(
+  ops: EvaluatorResultsDashboardOpsResponse | undefined,
+  options?: { currency?: UsageDisplayCurrency; inrRate?: number },
+): ChartModel {
   const totals = new Map<string, number>()
   for (const row of ops?.model_layers ?? []) {
     totals.set(row.usage_kind, (totals.get(row.usage_kind) ?? 0) + row.cost_usd)
   }
   const total = Array.from(totals.values()).reduce((sum, value) => sum + value, 0)
+  const currency = options?.currency ?? getUsageDisplayCurrency()
+  const inrRate = options?.inrRate ?? 95
   return {
-    headline: formatUsd(total),
+    headline: formatUsageCostUsd(total, currency, inrRate),
     caption: 'Spend by layer',
     data: LAYER_ORDER.filter((kind) => totals.has(kind)).map((kind) => ({
       name: kind.toUpperCase(),
@@ -668,3 +674,112 @@ export function formatDuration(seconds: number | null): string {
   if (minutes <= 0) return `${remain}s`
   return `${minutes}m ${remain.toString().padStart(2, '0')}s`
 }
+
+export function totalCallsByAgentCard(
+  agentRows: Array<{ name: string; total: number }>,
+  aggregateTotal: number,
+): ChartModel {
+  return {
+    headline: formatHeadlineNumber(aggregateTotal),
+    caption: 'Calls by agent',
+    data: agentRows.slice(0, 8).map((row) => ({ name: row.name, total: row.total })),
+    series: [{ key: 'total', color: LAYER_LLM }],
+    horizontal: true,
+  }
+}
+
+export function metricUsageAgentsCard(
+  agentRows: Array<{ name: string; total: number }>,
+): ChartModel {
+  const top = agentRows.slice(0, 6)
+  return {
+    headline: top.length.toLocaleString(),
+    caption: 'Agents with runs',
+    data: top.map((row) => ({ name: row.name, total: row.total })),
+    series: [{ key: 'total', color: LAYER_LLM }],
+    horizontal: true,
+  }
+}
+
+/** Counts and whole numbers — no trailing decimals. */
+function formatHeadlineNumber(value: number): string {
+  if (!value) return '—'
+  return value.toLocaleString()
+}
+
+/** Scores, means, and other floats — drop IEEE noise; at most 4 decimal places. */
+export function formatChartNumber(value: number | string | null | undefined): string {
+  if (value == null || value === '') return '—'
+  const num = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(num)) return String(value)
+  if (Math.abs(num - Math.round(num)) < 1e-9) {
+    return Math.round(num).toLocaleString()
+  }
+  const rounded = Math.round(num * 10_000) / 10_000
+  return rounded.toLocaleString(undefined, { maximumFractionDigits: 4, minimumFractionDigits: 0 })
+}
+
+export function mergedToolsCard(ops: EvaluatorResultsDashboardOpsResponse | undefined): ChartModel {
+  const calls = (ops?.tool_calls_by_agent_day ?? []).reduce((sum, row) => sum + row.calls, 0)
+  const products = ops?.providers?.length ?? 0
+  return {
+    headline: calls.toLocaleString(),
+    caption: `${products} product${products === 1 ? '' : 's'} · calls and tool use in pre-prod runs`,
+    data: (ops?.providers ?? []).slice(0, 5).map((row) => ({ name: row.provider, calls: row.calls })),
+    series: [{ key: 'calls', color: LAYER_LLM }],
+    horizontal: true,
+  }
+}
+
+export const MERGED_TOOLS_VIEWS = [
+  { id: 'over_time', label: 'Over time' },
+  { id: 'per_call', label: 'Per call' },
+  { id: 'use_cases', label: 'Use cases' },
+  { id: 'share', label: 'Share' },
+  { id: 'by_agent', label: 'By agent' },
+] as const
+
+export type MergedToolsViewId = (typeof MERGED_TOOLS_VIEWS)[number]['id']
+
+export function mergedToolsDetail(
+  ops: EvaluatorResultsDashboardOpsResponse | undefined,
+  view: MergedToolsViewId,
+  focus: string | null,
+): ChartModel {
+  if (view === 'per_call') return platformToolDetail(ops, 'per_call', focus)
+  if (view === 'use_cases') return platformToolDetail(ops, 'use_cases', focus)
+  if (view === 'over_time') {
+    const agentSeries = platformToolDetail(ops, 'over_time', focus)
+    if (agentSeries.data.length) return agentSeries
+    return toolsDetail(ops, 'over_time', focus)
+  }
+  if (view === 'share') return toolsDetail(ops, 'share', focus)
+  if (view === 'by_agent') return toolsDetail(ops, 'by_agent', focus)
+  return platformToolDetail(ops, 'over_time', focus)
+}
+
+/** Daily mean scores for the metric using score_days already scoped to the dashboard date filter. */
+export function scoreTrendForWindow(
+  scoreDays: EvaluatorResultsDashboardOpsResponse['score_days'],
+  metricId: string,
+  dateRange: { start: string; end: string } | null,
+): { points: Array<{ day: string; value: number }>; note: string } {
+  const rows = (scoreDays ?? [])
+    .filter((row) => row.metric_id === metricId && row.score_count > 0)
+    .sort((a, b) => a.day.localeCompare(b.day))
+  const note = dateRange
+    ? `Daily mean · ${dateRange.start} → ${dateRange.end}`
+    : rows.length === 1
+      ? `Daily mean · ${rows[0].day}`
+      : 'Daily mean · all time'
+  return {
+    note,
+    points: rows.map((row) => ({
+      day: formatDayLabel(row.day),
+      value: Number((row.score_sum / row.score_count).toFixed(2)),
+    })),
+  }
+}
+
+/** @deprecated use scoreTrendForWindow */
+export const last7DayScoreTrend = scoreTrendForWindow

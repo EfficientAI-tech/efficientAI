@@ -169,6 +169,14 @@ export const SAMPLE_OPS: EvaluatorResultsDashboardOpsResponse = {
     { agent_id: 'sample-billing', agent_name: 'Billing', provider: 'postgres', calls: 8 },
   ],
   calls_with_no_tools: 6,
+  run_days: DAYS.map((day, index) => ({
+    day,
+    calls: AGENTS.length,
+    completed: index === 2 ? AGENTS.length - 1 : AGENTS.length,
+    failed: index === 2 ? 1 : 0,
+    duration_seconds: 240 + index * 30,
+    duration_count: AGENTS.length,
+  })),
 }
 
 const OUTCOMES = ['Resolved', 'Escalated', 'Abandoned']
@@ -216,6 +224,28 @@ export const SAMPLE_RESULTS: EvaluatorResultRow[] = DAYS.flatMap((day, dayIndex)
     }
   }),
 )
+
+function buildSampleScoreDays() {
+  const buckets = new Map<string, { sum: number; count: number }>()
+  for (const row of SAMPLE_RESULTS) {
+    if (!row.metric_scores) continue
+    const day = row.timestamp.slice(0, 10)
+    for (const [metricId, score] of Object.entries(row.metric_scores)) {
+      if (typeof score.value !== 'number') continue
+      const key = `${day}\0${metricId}`
+      const cur = buckets.get(key) ?? { sum: 0, count: 0 }
+      cur.sum += score.value
+      cur.count += 1
+      buckets.set(key, cur)
+    }
+  }
+  return Array.from(buckets.entries()).map(([key, value]) => {
+    const [day, metric_id] = key.split('\0')
+    return { day, metric_id, score_sum: value.sum, score_count: value.count }
+  })
+}
+
+SAMPLE_OPS.score_days = buildSampleScoreDays()
 
 function numericMetric(
   id: string,
@@ -266,6 +296,16 @@ function numericMetric(
     value_counts: [],
   }
 }
+
+/** Catalog rows for metric scope filters in sample drilldowns. */
+export const SAMPLE_METRIC_CATALOG = [
+  { id: 'sample-unused', name: 'Hold time', agent_ids: [] as string[], scenario_ids: [] as string[], parent_metric_id: null as string | null },
+  { id: 'sample-transfer', name: 'Transfer offer', agent_ids: [], scenario_ids: [], parent_metric_id: null },
+  { id: METRICS.closing, name: 'Closing quality', agent_ids: ['sample-support', 'sample-sales'], scenario_ids: [], parent_metric_id: null },
+  { id: METRICS.accuracy, name: 'Answer accuracy', agent_ids: ['sample-support'], scenario_ids: ['sample-refund'], parent_metric_id: null },
+  { id: METRICS.empathy, name: 'Empathy', agent_ids: ['sample-billing'], scenario_ids: [], parent_metric_id: null },
+  { id: METRICS.outcome, name: 'Call outcome', agent_ids: [], scenario_ids: [], parent_metric_id: null },
+]
 
 export const SAMPLE_METRICS: CallImportMetricAggregate[] = [
   numericMetric('sample-unused', 'Hold time', 0, 0),
@@ -389,6 +429,8 @@ export function scopeSampleOps(
     tool_calls_per_run: ops.tool_calls_per_run.filter((row) => !agentId || row.agent_id === agentId),
     provider_by_day: ops.provider_by_day.filter((row) => dayInRange(row.day, start, end)),
     provider_by_agent: ops.provider_by_agent.filter((row) => !agentId || row.agent_id === agentId),
+    score_days: (ops.score_days ?? []).filter((row) => dayInRange(row.day, start, end)),
+    run_days: (ops.run_days ?? []).filter((row) => dayInRange(row.day, start, end)),
   }
 }
 

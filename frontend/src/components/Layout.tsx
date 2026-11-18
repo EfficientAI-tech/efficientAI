@@ -408,7 +408,7 @@ export default function Layout() {
         </div>
 
         {/* Page content */}
-        <main className="flex-1 px-6 pb-6 pt-[5.5rem] transition-all duration-300">
+        <main className="min-w-0 flex-1 overflow-x-clip px-6 pb-6 pt-[5.5rem] transition-all duration-300">
           {joinNotice && (
             <div
               role="status"
@@ -426,7 +426,7 @@ export default function Layout() {
               </button>
             </div>
           )}
-          <div className="min-w-0">
+          <div className="min-w-0 max-w-full overflow-x-clip">
             <Outlet />
           </div>
         </main>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Calendar } from 'lucide-react'
 import { formatResultsDateRange, rangeForDays, toDateInput } from './resultsDateRange'
 import { formatUsageTimezoneLabel, getUsageTimezone } from '../../usage/usageTimezone'
+import { usageTheme } from '../../usage/usageTheme'
 
 type Mode = 'relative' | 'absolute'
 
@@ -52,10 +53,7 @@ export default function ResultsDateRangePicker({ start, end, allTime = false, on
   }, [])
 
   const pillClass = (active: boolean) =>
-    `rounded-md px-2.5 py-1 text-xs font-medium transition-colors border ${active
-      ? 'border-primary-300 bg-primary-50 text-primary-800'
-      : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
-    }`
+    `rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${active ? usageTheme.pillActive : usageTheme.pillInactive}`
 
   const applyAbsolute = () => {
     if (!draftStart || !draftEnd || draftEnd < draftStart) return
@@ -89,12 +87,12 @@ export default function ResultsDateRangePicker({ start, end, allTime = false, on
       </div>
 
       {hasRange ? (
-        <span className="text-xs text-gray-500 truncate hidden md:inline">
+        <span className="text-xs text-[#854d0e]/80 truncate hidden md:inline">
           {formatResultsDateRange(start!, end!)}
           <span className="text-gray-400"> · {formatUsageTimezoneLabel(getUsageTimezone())}</span>
         </span>
       ) : (
-        <span className="text-xs text-gray-500 hidden md:inline">Showing all runs by call time</span>
+        <span className="text-xs text-[#854d0e]/80 hidden md:inline">Showing all runs by call time</span>
       )}
 
       {open ? (

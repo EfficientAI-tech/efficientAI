@@ -19,6 +19,8 @@ import ResultsDateRangePicker from './ResultsDateRangePicker'
 
 import ResultsDashboardTab from './ResultsDashboardTab'
 
+import { RESULTS_DASHBOARD_TOOLBAR_SLOT_ID, resultsScopeTheme } from './resultsScopeTheme'
+
 import MetricClustersPanel from '../../../components/metricClusters/MetricClustersPanel'
 
 import ClusterScopeHistory from '../../../components/metricClusters/ClusterScopeHistory'
@@ -768,7 +770,7 @@ export default function ResultsHub() {
 
   return (
 
-    <div className="space-y-6">
+    <div className="min-w-0 max-w-full space-y-6 overflow-x-clip">
 
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
 
@@ -777,9 +779,7 @@ export default function ResultsHub() {
           <h1 className="text-3xl font-bold text-gray-900">Evaluation Results</h1>
 
           <p className="mt-2 text-sm text-gray-600">
-
-            Scores, duration, cost, and tool use for simulation and live runs.
-
+            Drill down by agent, suite, scenario, and when the call happened.
           </p>
 
         </div>
@@ -821,85 +821,6 @@ export default function ResultsHub() {
       ) : null}
 
 
-
-      {showScopeFilters ? (
-        <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 shadow-sm">
-          <div className="flex flex-wrap items-center gap-2">
-            <ResultsDateRangePicker
-              start={startDate}
-              end={endDate}
-              allTime={searchParams.get('dates') === 'all'}
-              onApply={setDateRange}
-            />
-            <button
-              type="button"
-              onClick={() => setScopeFiltersOpen((open) => !open)}
-              className={`inline-flex max-w-full items-center gap-2 rounded-lg border px-2.5 py-1 text-xs font-medium ${scopeFiltersOpen || scopeActive
-                ? 'border-primary-300 bg-primary-50 text-primary-800'
-                : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
-                }`}
-              aria-expanded={scopeFiltersOpen}
-            >
-              <span>{scopeFiltersOpen ? 'Hide filters' : 'Filters'}</span>
-              <span className="truncate font-normal text-gray-500">{scopeSummary}</span>
-            </button>
-          </div>
-          {scopeFiltersOpen ? (
-            <div className="mt-2 space-y-2 border-t border-gray-100 pt-2">
-              <ResultsDrillPath crumbs={drillCrumbs} levelLabel={drillLevelLabel} />
-              <div className="flex flex-wrap items-center gap-2">
-                <label className="flex min-w-[12rem] flex-1 items-center gap-2 text-xs font-medium uppercase tracking-wide text-gray-500">
-                  Agent
-                  <select
-                    className="w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm font-normal normal-case tracking-normal text-gray-900"
-                    value={agentId}
-                    onChange={(e) => setFilter('agent', e.target.value)}
-                  >
-                    <option value="">All agents</option>
-                    {agents.map((agent) => (
-                      <option key={agent.agent_id} value={agent.agent_id}>
-                        {agent.agent_name} ({agent.counts.total})
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="flex min-w-[12rem] flex-1 items-center gap-2 text-xs font-medium uppercase tracking-wide text-gray-500">
-                  Suite
-                  <select
-                    className="w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm font-normal normal-case tracking-normal text-gray-900 disabled:bg-gray-50"
-                    value={suiteId}
-                    onChange={(e) => setFilter('suite', e.target.value)}
-                    disabled={suiteOptions.length === 0}
-                  >
-                    <option value="">All suites</option>
-                    {suiteOptions.map((suite) => (
-                      <option key={suite.suite_id} value={suite.suite_id}>
-                        {suite.suite_name || 'Evaluator suite'} ({suite.counts.total})
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="flex min-w-[12rem] flex-1 items-center gap-2 text-xs font-medium uppercase tracking-wide text-gray-500">
-                  Scenario
-                  <select
-                    className="w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm font-normal normal-case tracking-normal text-gray-900 disabled:bg-gray-50"
-                    value={scenarioId}
-                    onChange={(e) => setFilter('scenario', e.target.value)}
-                    disabled={!suiteId || scenarioOptions.length === 0}
-                  >
-                    <option value="">All scenarios</option>
-                    {scenarioOptions.map((scenario) => (
-                      <option key={scenario.scenario_id} value={scenario.scenario_id}>
-                        {scenario.scenario_name} ({scenario.counts.total})
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
 
       <div className="flex gap-1 border-b border-gray-200">
 
@@ -969,7 +890,90 @@ export default function ResultsHub() {
 
       </div>
 
-
+      {showScopeFilters ? (
+        <div className={resultsScopeTheme.panel}>
+          <div className={`flex flex-wrap items-center gap-2 px-3 py-2 ${resultsScopeTheme.panelHeader}`}>
+            <ResultsDateRangePicker
+              start={startDate}
+              end={endDate}
+              allTime={searchParams.get('dates') === 'all'}
+              onApply={setDateRange}
+            />
+            <button
+              type="button"
+              onClick={() => setScopeFiltersOpen((open) => !open)}
+              className={`inline-flex max-w-full items-center gap-2 rounded-lg border px-2.5 py-1 text-xs font-medium ${scopeFiltersOpen || scopeActive
+                ? resultsScopeTheme.pillActive
+                : 'border-gray-200 bg-white text-gray-600 hover:bg-[#fefce8] hover:text-[#854d0e]'
+                }`}
+              aria-expanded={scopeFiltersOpen}
+            >
+              <span>{scopeFiltersOpen ? 'Hide filters' : 'Filters'}</span>
+              <span className="truncate font-normal text-[#854d0e]/75">{scopeSummary}</span>
+            </button>
+            {activeTab === 'dashboard' ? (
+              <div
+                id={RESULTS_DASHBOARD_TOOLBAR_SLOT_ID}
+                className="ml-auto flex shrink-0 items-center justify-end"
+              />
+            ) : null}
+          </div>
+          {scopeFiltersOpen ? (
+            <div className="space-y-2 border-t border-[#fde047]/40 px-3 py-2">
+              <ResultsDrillPath crumbs={drillCrumbs} levelLabel={drillLevelLabel} />
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex min-w-[12rem] flex-1 items-center gap-2 text-xs font-medium uppercase tracking-wide text-gray-500">
+                  Agent
+                  <select
+                    className="w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm font-normal normal-case tracking-normal text-gray-900"
+                    value={agentId}
+                    onChange={(e) => setFilter('agent', e.target.value)}
+                  >
+                    <option value="">All agents</option>
+                    {agents.map((agent) => (
+                      <option key={agent.agent_id} value={agent.agent_id}>
+                        {agent.agent_name} ({agent.counts.total})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex min-w-[12rem] flex-1 items-center gap-2 text-xs font-medium uppercase tracking-wide text-gray-500">
+                  Suite
+                  <select
+                    className="w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm font-normal normal-case tracking-normal text-gray-900 disabled:bg-gray-50"
+                    value={suiteId}
+                    onChange={(e) => setFilter('suite', e.target.value)}
+                    disabled={suiteOptions.length === 0}
+                  >
+                    <option value="">All suites</option>
+                    {suiteOptions.map((suite) => (
+                      <option key={suite.suite_id} value={suite.suite_id}>
+                        {suite.suite_name || 'Evaluator suite'} ({suite.counts.total})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex min-w-[12rem] flex-1 items-center gap-2 text-xs font-medium uppercase tracking-wide text-gray-500">
+                  Scenario
+                  <select
+                    className="w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm font-normal normal-case tracking-normal text-gray-900 disabled:bg-gray-50"
+                    value={scenarioId}
+                    onChange={(e) => setFilter('scenario', e.target.value)}
+                    disabled={!suiteId || scenarioOptions.length === 0}
+                  >
+                    <option value="">All scenarios</option>
+                    {scenarioOptions.map((scenario) => (
+                      <option key={scenario.scenario_id} value={scenario.scenario_id}>
+                        {scenario.scenario_name} ({scenario.counts.total})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {activeTab === 'dashboard' ? (
 
