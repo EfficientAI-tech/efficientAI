@@ -29,11 +29,10 @@ export function UsageDisplayCurrencyPicker({
             key={currency}
             type="button"
             onClick={() => pick(currency)}
-            className={`rounded-md px-2 py-0.5 text-[11px] font-semibold ${
-              value === currency
+            className={`rounded-md px-2 py-0.5 text-[11px] font-semibold ${value === currency
                 ? 'bg-white text-gray-900 shadow-sm'
                 : 'text-gray-500 hover:text-gray-800'
-            }`}
+              }`}
           >
             {currency}
           </button>
@@ -50,11 +49,10 @@ export function UsageDisplayCurrencyPicker({
           key={currency}
           type="button"
           onClick={() => pick(currency)}
-          className={`block w-full px-3 py-1.5 text-left text-xs ${
-            value === currency ? 'font-semibold text-gray-900' : 'text-gray-600 hover:bg-gray-50'
-          }`}
+          className={`block w-full px-3 py-1.5 text-left text-xs ${value === currency ? 'font-semibold text-gray-900' : 'text-gray-600 hover:bg-gray-50'
+            }`}
         >
-          {currency === 'USD' ? 'US dollars (USD)' : 'Indian rupees (INR)'}
+          {currency}
         </button>
       ))}
     </div>

@@ -32,6 +32,9 @@ import {
 import { DrillChartPanel, DrillTrendChart } from './resultsDashboardDrillCharts'
 import { isGoldenMetric, type MetricRow } from '../../simulations/simulationMetricScope'
 import type { ListEvaluatorResultsParams } from '../../../types/api'
+import type { RunListBase } from './resultsDashboardInsightDrill'
+
+export type { RunListBase } from './resultsDashboardInsightDrill'
 
 const PAGE_SIZE = 20
 
@@ -44,17 +47,6 @@ function formatCallTime(iso: string): string {
 function formatCostCell(costUsd: number, currency: UsageDisplayCurrency, inrRate: number): string {
   if (!costUsd) return '—'
   return formatUsageCostExactUsd(costUsd, currency, inrRate)
-}
-
-type RunListBase = {
-  agentId?: string
-  suiteId?: string
-  scenarioId?: string
-  since?: string
-  until?: string
-  playground: boolean
-  sampleOn: boolean
-  sampleRows: EvaluatorResultRow[]
 }
 
 export function PaginatedRunsTable({

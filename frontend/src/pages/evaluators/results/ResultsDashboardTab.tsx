@@ -52,37 +52,27 @@ import {
   type DashboardDrillCall,
 } from './resultsDashboardSample'
 import {
-  agentCostCard,
   agentCostDetail,
   buildCategorySeries,
   categoryColors,
   formatUsd,
   isCategoricalMetric,
   formatDuration,
-  modelCostCard,
   modelCostDetail,
   modelTotals,
   modelsForAgent,
-  scenarioStack,
   shareSeries,
   toolAgentTotals,
   toolCallDetail,
+  type ChartModel,
 } from './resultsDashboardSeries'
-import {
-  MetricUsageDrill,
-  PaginatedRunsTable,
-  ToolsMergedDetail,
-  TotalCallsDrill,
-  UsageWidgetDetail,
-} from './resultsDashboardDrilldowns'
+import { PaginatedRunsTable } from './resultsDashboardDrilldowns'
+import { InsightDrillHost } from './resultsDashboardInsightDrillHost'
+import { buildRegisteredInsightCard } from './resultsDashboardInsights'
 import type { MetricRow } from '../../simulations/simulationMetricScope'
 import ResultsDashboardSettingsMenu from './ResultsDashboardSettingsMenu'
 import { restrictToDashboardContainer } from './resultsDashboardDndModifiers'
-import {
-  buildRegisteredInsightCard,
-  insightCapabilities,
-  resolveInsightDetail,
-} from './resultsDashboardInsights'
+import { insightCapabilities, resolveInsightDetail } from './resultsDashboardInsights'
 import { RESULTS_DASHBOARD_TOOLBAR_SLOT_ID } from './resultsScopeTheme'
 import { UsageDisplayCurrencyPicker, readUsageDisplayCurrency } from './UsageDisplayCurrencyPicker'
 import type { UsageDisplayCurrency } from '../../../lib/usageCurrency'
@@ -599,72 +589,34 @@ export default function ResultsDashboardTab({
     )
   }
 
-  if (detail?.kind === 'usage') {
+  if (
+    detail
+    && (detail.kind === 'usage'
+      || detail.kind === 'tools'
+      || detail.kind === 'metric_flow'
+      || detail.kind === 'total_calls_flow')
+  ) {
     return (
       <>
         {dashboardSettingsPortal}
-        <UsageWidgetDetail
-          ops={ops}
-          calls={drillCalls}
+        <InsightDrillHost
+          detail={detail}
           runListBase={runListBase}
           onBack={() => setDetail(null)}
           onOpenResult={onOpenResult}
-        />
-      </>
-    )
-  }
-
-  if (detail?.kind === 'tools') {
-    return (
-      <>
-        {dashboardSettingsPortal}
-        <ToolsMergedDetail
           ops={ops}
           calls={drillCalls}
-          runListBase={runListBase}
-          onBack={() => setDetail(null)}
-          onOpenResult={onOpenResult}
-        />
-      </>
-    )
-  }
-
-  if (detail?.kind === 'metric_flow') {
-    return (
-      <>
-        {dashboardSettingsPortal}
-        <MetricUsageDrill
           agents={chartAgents}
           metrics={metrics}
           catalog={metricCatalogRows}
           scoreDays={ops?.score_days}
           dateRange={effectiveDateRange}
           results={results}
-          runListBase={runListBase}
-          agentId={detail.agentId}
-          metricId={detail.metricId}
-          scenarioId={detail.scenarioId}
-          onBack={() => setDetail(null)}
-          onNavigate={(next) => setDetail({ kind: 'metric_flow', widgetId: detail.widgetId, ...next })}
-          onOpenResult={onOpenResult}
-        />
-      </>
-    )
-  }
-
-  if (detail?.kind === 'total_calls_flow') {
-    return (
-      <>
-        {dashboardSettingsPortal}
-        <TotalCallsDrill
-          agentRows={agentRows}
+          agentRows={agentRows.map((row) => ({ id: row.id, name: row.name, total: row.total }))}
           callDays={callDays}
-          runListBase={runListBase}
           aggregateTotal={aggregateTotal}
-          agentId={detail.agentId}
-          onBack={() => setDetail(null)}
-          onNavigate={(nextAgentId) => setDetail({ kind: 'total_calls_flow', widgetId: detail.widgetId, agentId: nextAgentId })}
-          onOpenResult={onOpenResult}
+          onMetricNavigate={(next) => setDetail({ kind: 'metric_flow', widgetId: detail.widgetId, ...next })}
+          onTotalCallsNavigate={(agentId) => setDetail({ kind: 'total_calls_flow', widgetId: detail.widgetId, agentId })}
         />
       </>
     )
@@ -679,7 +631,6 @@ export default function ResultsDashboardTab({
           widgets={widgets}
           metrics={metrics}
           days={days}
-          callDays={callDays}
           duration={duration}
           scenarioMatrix={scenarioMatrix}
           scoreSeries={scoreSeries}
@@ -743,7 +694,6 @@ export default function ResultsDashboardTab({
                   canMoveDown={shown.findIndex((item) => item.id === widget.id) < shown.length - 1}
                   metrics={metrics}
                   days={days}
-                  callDays={callDays}
                   duration={duration}
                   scenarioMatrix={scenarioMatrix}
                   scoreSeries={scoreSeries}
@@ -969,7 +919,6 @@ function DashboardPanel({
   canMoveDown,
   metrics,
   days,
-  callDays,
   duration,
   scenarioMatrix,
   scoreSeries,
@@ -996,7 +945,6 @@ function DashboardPanel({
   canMoveDown: boolean
   metrics: CallImportMetricAggregate[]
   days: DayPoint[]
-  callDays: Array<{ day: string; calls: number }>
   duration: { average: number | null; points: Array<{ day: string; value: number }> }
   scenarioMatrix: Array<{ agentName: string; scenarioName: string; count: number }>
   scoreSeries: Map<string, Array<{ day: string; value: number }>>
@@ -1033,9 +981,9 @@ function DashboardPanel({
   }, [menuOpen])
 
   const trendMetric = metrics.find((metric) => metric.metric_id === widget.metricId) ?? primaryMetric
-  const model = panelModel(widget, {
+  const model = buildRegisteredInsightCard(widget, {
+    widget,
     days,
-    callDays,
     duration,
     scenarioMatrix,
     scoreSeries,
@@ -1179,142 +1127,6 @@ function resolvePanelChartLayout(
   if (stacked) return 'stacked'
   if (model.horizontal && display === 'bar') return 'vertical'
   return 'horizontal'
-}
-
-function panelModel(
-  widget: ResultsWidget,
-  source: {
-    days: DayPoint[]
-    callDays: Array<{ day: string; calls: number }>
-    duration: { average: number | null; points: Array<{ day: string; value: number }> }
-    scenarioMatrix: Array<{ agentName: string; scenarioName: string; count: number }>
-    scoreSeries: Map<string, Array<{ day: string; value: number }>>
-    categorySeries: Map<string, { labels: string[]; data: Array<Record<string, string | number>> }>
-    ops: EvaluatorResultsDashboardOpsResponse | undefined
-    lowest: Array<{ name: string; value: number }>
-    agentRows: Array<{ id: string; name: string; total: number; completed: number; failed: number; rate: number }>
-    scenarioRows: Array<{ name: string; count: number }>
-    primaryMetric: CallImportMetricAggregate | null
-    trendMetric: CallImportMetricAggregate | null
-    aggregateTotal: number
-    aggregateCompleted: number
-    usageCurrency?: UsageDisplayCurrency
-    usageInrRate?: number
-  },
-): {
-  headline: string
-  caption?: string
-  data: Array<Record<string, string | number>>
-  series: Array<{ key: string; color: string; stack?: string }>
-  horizontal?: boolean
-} {
-  const terminalDays = source.days
-  const registered = buildRegisteredInsightCard(widget, {
-    ops: source.ops,
-    aggregateTotal: source.aggregateTotal,
-    aggregateCompleted: source.aggregateCompleted,
-    agentRows: source.agentRows.map((row) => ({ id: row.id, name: row.name, total: row.total })),
-    primaryMetric: source.primaryMetric,
-    usageCurrency: source.usageCurrency,
-    usageInrRate: source.usageInrRate,
-  })
-  if (registered) return registered
-
-  if (widget.type === 'agent_cost') return agentCostCard(source.ops, widget.display)
-  if (widget.type === 'model_cost') return modelCostCard(source.ops)
-  if (widget.type === 'avg_duration') {
-    return {
-      headline: formatDuration(source.duration.average),
-      caption: 'Average call length',
-      data: source.duration.points,
-      series: [{ key: 'value', color: PRIMARY }],
-    }
-  }
-  if (widget.type === 'scenarios_by_agent') return scenarioStack(source.scenarioMatrix)
-  if (widget.type === 'volume') {
-    return {
-      headline: formatHeadline(source.aggregateTotal),
-      caption: 'Runs in window',
-      data: terminalDays.map((day) => ({ day: day.day, completed: day.completed, failed: day.failed })),
-      series: [
-        { key: 'completed', color: PRIMARY, stack: 'runs' },
-        { key: 'failed', color: FAIL, stack: 'runs' },
-      ],
-    }
-  }
-  if (widget.type === 'completion') {
-    const rate = source.aggregateTotal ? (source.aggregateCompleted / source.aggregateTotal) * 100 : null
-    return {
-      headline: formatHeadline(rate, '%'),
-      caption: 'Completed runs',
-      data: terminalDays.map((day) => {
-        const denom = day.completed + day.failed
-        return { day: day.day, rate: denom ? Math.round((day.completed / denom) * 100) : 0 }
-      }),
-      series: [{ key: 'rate', color: PRIMARY }],
-    }
-  }
-  if (widget.type === 'avg_score' || widget.type === 'metric_trend') {
-    const metric = widget.type === 'avg_score' ? source.primaryMetric : source.trendMetric
-    if (metric && metric.count === 0 && widget.type !== 'avg_score') {
-      return {
-        headline: 'Never scored',
-        caption: metric.metric_name,
-        data: [],
-        series: [{ key: 'value', color: PRIMARY }],
-      }
-    }
-    if (metric && widget.type !== 'avg_score' && isCategoricalMetric(metric)) {
-      const category = source.categorySeries.get(metric.metric_id)
-      if (category?.data.length) {
-        return {
-          headline: formatHeadline(metric.count),
-          caption: metric.metric_name,
-          data: category.data,
-          series: categoryColors(category.labels),
-        }
-      }
-      return {
-        headline: formatHeadline(metric.count),
-        caption: metric.metric_name,
-        data: metric.value_counts.map((count) => ({ name: count.label, count: count.count })),
-        series: [{ key: 'count', color: PRIMARY }],
-        horizontal: true,
-      }
-    }
-    const points = metric ? source.scoreSeries.get(metric.metric_id) ?? [] : []
-    return {
-      headline: formatHeadline(metric?.mean ?? null),
-      caption: metric?.metric_name ?? 'No scored metric',
-      data: points,
-      series: [{ key: 'value', color: PRIMARY }],
-    }
-  }
-  if (widget.type === 'lowest_metrics') {
-    return {
-      headline: formatHeadline(source.lowest[0]?.value ?? null),
-      caption: 'Lowest mean first',
-      data: source.lowest,
-      series: [{ key: 'value', color: SERIES_MUTED }],
-      horizontal: widget.display === 'bar',
-    }
-  }
-  if (widget.type === 'agents') {
-    return {
-      headline: formatHeadline(source.agentRows.length),
-      caption: 'Agents in this window',
-      data: source.agentRows.map((row) => ({ name: row.name, total: row.total })),
-      series: [{ key: 'total', color: PRIMARY }],
-      horizontal: widget.display === 'bar',
-    }
-  }
-  return {
-    headline: formatHeadline(source.scenarioRows.reduce((sum, row) => sum + row.count, 0)),
-    caption: 'Scenario runs',
-    data: source.scenarioRows.map((row) => ({ name: row.name, count: row.count })),
-    series: [{ key: 'count', color: PRIMARY }],
-    horizontal: widget.display === 'bar',
-  }
 }
 
 function PanelChart({
@@ -1582,7 +1394,7 @@ function AgentTable({
 
 function buildDetailViews(
   type: ResultsWidgetType | undefined,
-  model: ReturnType<typeof panelModel> | null,
+  model: ChartModel | null,
   days: DayPoint[],
   lowest: Array<{ name: string; value: number; count?: number }>,
   agentRows: Array<{ name: string; total: number; rate: number }>,
@@ -1656,7 +1468,6 @@ function ResultsDetailView({
   widgets,
   metrics,
   days,
-  callDays,
   duration,
   scenarioMatrix,
   scoreSeries,
@@ -1682,7 +1493,6 @@ function ResultsDetailView({
   widgets: ResultsWidget[]
   metrics: CallImportMetricAggregate[]
   days: DayPoint[]
-  callDays: Array<{ day: string; calls: number }>
   duration: { average: number | null; points: Array<{ day: string; value: number }> }
   scenarioMatrix: Array<{ agentName: string; scenarioName: string; count: number }>
   scoreSeries: Map<string, Array<{ day: string; value: number }>>
@@ -1729,9 +1539,9 @@ function ResultsDetailView({
       : widget ? WIDGET_LABELS[widget.type] : 'Details'
   const metricSeries = metric ? scoreSeries.get(metric.metric_id) ?? [] : []
   const model = widget
-    ? panelModel(widget, {
+    ? buildRegisteredInsightCard(widget, {
+      widget,
       days,
-      callDays,
       duration,
       scenarioMatrix,
       scoreSeries,
