@@ -1780,7 +1780,14 @@ function ResultsDetailView({
             </ul>
           </div>
         )}
-        {widget?.type === 'metric_usage' && metric && <MetricScenarioScores results={results} metricId={metric.metric_id} />}
+        {widget?.type === 'metric_usage' && metric && (
+          <MetricScenarioScores
+            results={results}
+            metricId={metric.metric_id}
+            scenarioRows={scenarioRows}
+            windowScoped
+          />
+        )}
         {agent && (
           <div className="mt-4 flex flex-wrap gap-2">
             <button type="button" onClick={() => onSelectAgent(agent.id)} className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50">
@@ -2129,33 +2136,60 @@ function UnusedMetricList({
   )
 }
 
-function MetricScenarioScores({ results, metricId }: { results: EvaluatorResultRow[]; metricId: string }) {
-  const groups = new Map<string, { sum: number; count: number; failed: number }>()
+function MetricScenarioScores({
+  results,
+  metricId,
+  scenarioRows,
+  windowScoped = false,
+}: {
+  results: EvaluatorResultRow[]
+  metricId: string
+  scenarioRows?: Array<{ name: string; count: number; failed: number; scenarioId: string }>
+  windowScoped?: boolean
+}) {
+  const groups = new Map<string, { sum: number; count: number; failed: number; scored: number }>()
+  if (windowScoped && scenarioRows?.length) {
+    for (const row of scenarioRows) {
+      groups.set(row.name, { sum: 0, count: row.count, failed: row.failed, scored: 0 })
+    }
+  }
   for (const row of results) {
     const name = row.scenario?.name
     if (!name) continue
     const score = row.metric_scores?.[metricId]
-    const bucket = groups.get(name) ?? { sum: 0, count: 0, failed: 0 }
-    if (row.status === 'failed') bucket.failed += 1
-    const value = typeof score?.value === 'number' ? score.value : Number(score?.value)
-    if (!Number.isNaN(value) && score) {
-      bucket.sum += value
+    const bucket = groups.get(name) ?? { sum: 0, count: 0, failed: 0, scored: 0 }
+    if (!windowScoped) {
+      if (row.status === 'failed') bucket.failed += 1
       bucket.count += 1
+    }
+    const value = typeof score?.value === 'number' ? score.value : Number(score?.value)
+    const scoreMeta = score as { skipped?: boolean; error?: string } | undefined
+    if (!Number.isNaN(value) && score && !scoreMeta?.skipped && !scoreMeta?.error) {
+      bucket.sum += value
+      bucket.scored += 1
     }
     groups.set(name, bucket)
   }
-  const rows = Array.from(groups.entries()).sort((a, b) => b[1].count - a[1].count)
+  const rows = Array.from(groups.entries())
+    .sort((a, b) => (windowScoped ? b[1].count - a[1].count : b[1].scored - a[1].scored))
   if (!rows.length) return <p className="mt-4 text-sm text-gray-400">No scored runs for this metric.</p>
   return (
     <div className="mt-4">
       <h3 className="text-sm font-semibold text-gray-900">By scenario</h3>
+      {windowScoped && results.length < (scenarioRows?.reduce((sum, row) => sum + row.count, 0) ?? 0) ? (
+        <p className="mt-1 text-[10px] text-gray-500">
+          Run counts are for the full filter window; means use loaded scored runs.
+        </p>
+      ) : null}
       <ul className="mt-2 divide-y divide-gray-100">
         {rows.map(([name, stats]) => (
           <li key={name} className="flex items-center justify-between py-2 text-sm text-gray-700">
             <span className="truncate pr-3">{name}</span>
             <span className="shrink-0 text-xs text-gray-500">
-              {stats.count ? `avg ${(stats.sum / stats.count).toFixed(2)}` : 'never scored'}
-              {` · ${stats.failed} failed`}
+              {stats.scored ? `avg ${(stats.sum / stats.scored).toFixed(2)}` : 'never scored'}
+              {windowScoped
+                ? ` · ${stats.count} runs · ${stats.failed} failed`
+                : ` · ${stats.failed} failed`}
             </span>
           </li>
         ))}

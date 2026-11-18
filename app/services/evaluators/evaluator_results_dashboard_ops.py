@@ -470,7 +470,9 @@ def compute_evaluator_results_dashboard_ops(
     playground: Optional[bool] = None,
 ) -> EvaluatorResultsDashboardOpsResponse:
     live = playground is True
-    scenario_ids = _scenario_ids_for_filter(db, suite_id=suite_id, scenario_id=scenario_id)
+    scenario_ids = None if suite_id is not None else _scenario_ids_for_filter(
+        db, suite_id=suite_id, scenario_id=scenario_id
+    )
     start_day = _usage_day(since)
     end_day = _usage_day(until)
 
@@ -555,6 +557,8 @@ def compute_evaluator_results_dashboard_ops(
         workspace_id=workspace_id,
         agent_id=agent_id,
         scenario_ids=scenario_ids,
+        suite_id=suite_id,
+        scenario_id=scenario_id,
         since=since,
         until=until,
         playground=playground,

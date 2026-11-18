@@ -210,11 +210,36 @@ export function RunInsightBreakdown({
 
   const agentNameById = new Map(agentRows.map((row) => [row.id, row.name]))
   const scenariosByAgent = new Map<string, Array<{ name: string; scenarioId: string; count: number; failed: number }>>()
-  for (const row of scenarioRows) {
-    const agentName = agentNameById.get(row.agentId) ?? 'Agent'
-    const list = scenariosByAgent.get(agentName) ?? []
-    list.push({ name: row.name, scenarioId: row.scenarioId, count: row.count, failed: row.failed })
-    scenariosByAgent.set(agentName, list)
+  if (scenarioCountsFromSample) {
+    for (const row of results) {
+      const agentKey = row.agent_id ?? row.agent?.id
+      if (!agentKey) continue
+      const agentName = agentNameById.get(agentKey) ?? row.agent?.name ?? 'Agent'
+      const scenarioName = row.scenario?.name
+      const scenarioId = row.scenario?.id
+      if (!scenarioName || !scenarioId) continue
+      const list = scenariosByAgent.get(agentName) ?? []
+      const existing = list.find((item) => item.scenarioId === scenarioId)
+      if (existing) {
+        existing.count += 1
+        if (row.status === 'failed') existing.failed += 1
+      } else {
+        list.push({
+          name: scenarioName,
+          scenarioId,
+          count: 1,
+          failed: row.status === 'failed' ? 1 : 0,
+        })
+      }
+      scenariosByAgent.set(agentName, list)
+    }
+  } else {
+    for (const row of scenarioRows) {
+      const agentName = agentNameById.get(row.agentId) ?? 'Agent'
+      const list = scenariosByAgent.get(agentName) ?? []
+      list.push({ name: row.name, scenarioId: row.scenarioId, count: row.count, failed: row.failed })
+      scenariosByAgent.set(agentName, list)
+    }
   }
   const agentScenarioGroups = Array.from(scenariosByAgent.entries()).sort((a, b) => {
     const totalA = a[1].reduce((sum, item) => sum + item.count, 0)

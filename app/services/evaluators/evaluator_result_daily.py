@@ -98,6 +98,15 @@ def utc_day(value: datetime) -> date:
     return value.astimezone(timezone.utc).date()
 
 
+def _reporting_day(value: datetime, anchor: Optional[datetime] = None) -> date:
+    """Calendar day for charts, aligned with the filter window timezone when provided."""
+    if value.tzinfo is None:
+        return value.date()
+    if anchor is not None and anchor.tzinfo is not None:
+        return value.astimezone(anchor.tzinfo).date()
+    return value.astimezone(timezone.utc).date()
+
+
 def _display_status(status: Optional[str], metric_scores: Any) -> str:
     return effective_evaluator_result_status(
         SimpleNamespace(status=status, metric_scores=metric_scores)
@@ -119,7 +128,11 @@ def _numeric_score(entry: Any) -> Optional[float]:
     return None
 
 
-def fold_daily_buckets(rows: Iterable[DailySource]) -> List[DailyBucket]:
+def fold_daily_buckets(
+    rows: Iterable[DailySource],
+    *,
+    reporting_anchor: Optional[datetime] = None,
+) -> List[DailyBucket]:
     """Group finished runs into day, agent, scenario, and live/simulation buckets."""
     buckets: Dict[tuple, DailyBucket] = {}
     for row in rows:
@@ -128,7 +141,7 @@ def fold_daily_buckets(rows: Iterable[DailySource]) -> List[DailyBucket]:
         display = _display_status(row.status, row.metric_scores)
         if display not in _TERMINAL:
             continue
-        day = utc_day(row.timestamp)
+        day = _reporting_day(row.timestamp, reporting_anchor)
         key = (day, row.agent_id, row.scenario_id, row.is_live)
         bucket = buckets.get(key)
         if bucket is None:
@@ -196,10 +209,64 @@ def _window_sources(
         EvaluatorResult.workspace_id == workspace_id,
     )
     if since is not None:
-        query = query.filter(EvaluatorResult.timestamp >= _since_bound(since))
+        query = query.filter(EvaluatorResult.timestamp >= since)
     if until is not None:
-        query = query.filter(EvaluatorResult.timestamp <= _until_bound(until))
+        query = query.filter(EvaluatorResult.timestamp <= until)
     loaded = query.all()
+    live_ids = _live_result_ids(db, [row[0] for row in loaded])
+    sources: List[DailySource] = []
+    for result_id, agent_id, scenario_id, evaluator_id, timestamp, status, duration, scores in loaded:
+        sources.append(
+            DailySource(
+                result_id=result_id,
+                agent_id=agent_id,
+                scenario_id=scenario_id,
+                evaluator_id=evaluator_id,
+                timestamp=timestamp,
+                status=status,
+                duration_seconds=duration,
+                metric_scores=scores,
+                is_live=evaluator_id is None or result_id in live_ids,
+            )
+        )
+    return sources
+
+
+def _scoped_window_sources(
+    db: Session,
+    *,
+    organization_id: UUID,
+    workspace_id: UUID,
+    since: Optional[datetime] = None,
+    until: Optional[datetime] = None,
+    playground: Optional[bool] = None,
+    agent_id: Optional[UUID] = None,
+    suite_id: Optional[UUID] = None,
+    scenario_id: Optional[UUID] = None,
+) -> List[DailySource]:
+    from app.services.evaluators.evaluator_results_query import build_evaluator_results_query
+
+    query = build_evaluator_results_query(
+        db,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        agent_id=str(agent_id) if agent_id else None,
+        suite_id=str(suite_id) if suite_id else None,
+        scenario_id=str(scenario_id) if scenario_id else None,
+        since=since,
+        until=until,
+        playground=playground,
+    )
+    loaded = query.with_entities(
+        EvaluatorResult.id,
+        EvaluatorResult.agent_id,
+        EvaluatorResult.scenario_id,
+        EvaluatorResult.evaluator_id,
+        EvaluatorResult.timestamp,
+        EvaluatorResult.status,
+        EvaluatorResult.duration_seconds,
+        EvaluatorResult.metric_scores,
+    ).all()
     live_ids = _live_result_ids(db, [row[0] for row in loaded])
     sources: List[DailySource] = []
     for result_id, agent_id, scenario_id, evaluator_id, timestamp, status, duration, scores in loaded:
@@ -395,9 +462,9 @@ def _read_series(
         EvaluatorResultDaily.is_live == (playground is True),
     )
     if since is not None:
-        query = query.filter(EvaluatorResultDaily.usage_date >= utc_day(since))
+        query = query.filter(EvaluatorResultDaily.usage_date >= _reporting_day(since, since))
     if until is not None:
-        query = query.filter(EvaluatorResultDaily.usage_date <= utc_day(until))
+        query = query.filter(EvaluatorResultDaily.usage_date <= _reporting_day(until, since or until))
     if agent_id is not None:
         query = query.filter(EvaluatorResultDaily.agent_id == agent_id)
     if scenario_ids is not None:
@@ -463,11 +530,32 @@ def load_dashboard_series(
     workspace_id: UUID,
     agent_id: Optional[UUID],
     scenario_ids: Optional[Set[str]],
+    suite_id: Optional[UUID] = None,
+    scenario_id: Optional[UUID] = None,
     since: Optional[datetime],
     until: Optional[datetime],
     playground: Optional[bool],
 ) -> DashboardSeries:
     """Read the daily table. Rebuild the window when its totals are stale."""
+    use_exact_sources = suite_id is not None or scenario_id is not None or agent_id is not None
+    if use_exact_sources:
+        sources = _scoped_window_sources(
+            db,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            since=since,
+            until=until,
+            playground=playground,
+            agent_id=agent_id,
+            suite_id=suite_id,
+            scenario_id=scenario_id,
+        )
+        return _series_from_buckets(
+            fold_daily_buckets(sources, reporting_anchor=since),
+            agent_id=agent_id,
+            scenario_ids=None,
+            playground=playground,
+        )
     try:
         if _terminal_count(
             db,
@@ -511,7 +599,8 @@ def load_dashboard_series(
                         workspace_id=workspace_id,
                         since=since,
                         until=until,
-                    )
+                    ),
+                    reporting_anchor=since,
                 ),
                 agent_id=agent_id,
                 scenario_ids=scenario_ids,

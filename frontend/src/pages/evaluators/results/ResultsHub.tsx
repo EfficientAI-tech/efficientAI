@@ -38,7 +38,7 @@ import {
 
 } from '../../../components/metricClusters/clients'
 
-import { dateRangeToSinceUntil, isoToDateInput } from './resultsDateRange'
+import { dateRangeToSinceUntil, isoToDateInput, rangeForDays } from './resultsDateRange'
 
 import {
   hubSearchHasDateScope,
@@ -128,13 +128,13 @@ export default function ResultsHub() {
 
   useEffect(() => {
     const qs = searchParams.toString()
-    if (qs) persistResultsHubQueryString(qs)
-  }, [searchParams])
+    if (qs) persistResultsHubQueryString(qs, activeWorkspaceId)
+  }, [searchParams, activeWorkspaceId])
 
   useEffect(() => {
     if (restoredHubScopeRef.current) return
     restoredHubScopeRef.current = true
-    const persisted = readPersistedResultsHubQueryString()
+    const persisted = readPersistedResultsHubQueryString(activeWorkspaceId)
     if (!persisted) return
     const saved = new URLSearchParams(persisted)
     if (!hubSearchHasDateScope(saved)) return
@@ -162,51 +162,39 @@ export default function ResultsHub() {
 
 
 
+  const allTimeDates = searchParams.get('dates') === 'all'
+
+  const effectiveHubDateRange = useMemo(() => {
+    if (allTimeDates) return null
+    if (startDate && endDate) return { start: startDate, end: endDate }
+    return rangeForDays(7)
+  }, [allTimeDates, startDate, endDate])
+
   const dateBounds = useMemo(() => {
+    if (!effectiveHubDateRange) return undefined
+    return dateRangeToSinceUntil(effectiveHubDateRange.start, effectiveHubDateRange.end)
+  }, [effectiveHubDateRange])
 
-    if (!startDate || !endDate) return undefined
-
-    return dateRangeToSinceUntil(startDate, endDate)
-
-  }, [startDate, endDate])
-
-
-
-  const overviewParams = useMemo(
+  const filterCatalogParams = useMemo(
     () => ({
-      ...(agentId ? { agentId } : {}),
-      ...(suiteId ? { suiteId } : {}),
-      ...(scenarioId ? { scenarioId } : {}),
       ...(dateBounds ? { since: dateBounds.since, until: dateBounds.until } : {}),
       playground: playgroundScope,
     }),
-    [agentId, suiteId, scenarioId, dateBounds, playgroundScope],
+    [dateBounds, playgroundScope],
   )
 
+  const [, setDashboardAgents] = useState<EvaluatorResultsAgentSummary[] | null>(null)
 
-
-  const [dashboardAgents, setDashboardAgents] = useState<EvaluatorResultsAgentSummary[] | null>(null)
-
-  const { data: overview, isLoading: loadingOverview } = useQuery({
-
-    queryKey: ['evaluator-results-overview', activeWorkspaceId, overviewParams],
-
-    queryFn: () => apiClient.getEvaluatorResultsOverview(overviewParams),
-
+  const { data: filterCatalog, isLoading: loadingFilterCatalog } = useQuery({
+    queryKey: ['evaluator-results-overview-catalog', activeWorkspaceId, filterCatalogParams],
+    queryFn: () => apiClient.getEvaluatorResultsOverview(filterCatalogParams),
     enabled: showScopeFilters || generateModalOpen,
-
     staleTime: 60_000,
-
   })
 
-
-
   const agents = useMemo(
-
-    () => (activeTab === 'dashboard' && dashboardAgents ? dashboardAgents : (overview?.agents ?? [])),
-
-    [activeTab, dashboardAgents, overview],
-
+    () => filterCatalog?.agents ?? [],
+    [filterCatalog],
   )
 
 
@@ -823,15 +811,15 @@ export default function ResultsHub() {
 
 
 
-      {activeTab !== 'dashboard' && showScopeFilters && (loadingOverview || !overview) ? (
+      {activeTab !== 'dashboard' && showScopeFilters && (loadingFilterCatalog || !filterCatalog) ? (
 
         <p className="text-gray-500">Loading overview…</p>
 
-      ) : overview && overview.unassigned.counts.total > 0 && showScopeFilters ? (
+      ) : filterCatalog && filterCatalog.unassigned.counts.total > 0 && showScopeFilters ? (
 
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
 
-          {overview.unassigned.counts.total} run(s) are not linked to an evaluator suite.{' '}
+          {filterCatalog.unassigned.counts.total} run(s) are not linked to an evaluator suite.{' '}
 
           <Link to="/results/unassigned" className="font-semibold underline">
 
@@ -944,7 +932,7 @@ export default function ResultsHub() {
                 type="button"
                 onClick={() => {
                   void queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })
-                  void queryClient.invalidateQueries({ queryKey: ['evaluator-results-overview'] })
+                  void queryClient.invalidateQueries({ queryKey: ['evaluator-results-overview-catalog'] })
                 }}
                 disabled={runsListFetching}
                 className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
@@ -1021,11 +1009,11 @@ export default function ResultsHub() {
 
           scenarioId={scenarioId}
 
-          startDate={startDate}
+          startDate={effectiveHubDateRange?.start ?? null}
 
-          endDate={endDate}
+          endDate={effectiveHubDateRange?.end ?? null}
 
-          allTime={searchParams.get('dates') === 'all'}
+          allTime={allTimeDates}
 
           agents={agents}
 

@@ -825,7 +825,10 @@ export function mergedToolsDetail(
         : toolErrorsByUseCase(ops, focus)
     }
     const agentId = resolveToolAgentFocusId(ops, focus)
-    if (view === 'over_time' || view === 'by_agent') {
+    if (view === 'by_agent') {
+      return toolsDetail(ops, 'by_agent', focus, mode)
+    }
+    if (view === 'over_time') {
       return toolCallDetail(ops, 'errors', agentId)
     }
   }

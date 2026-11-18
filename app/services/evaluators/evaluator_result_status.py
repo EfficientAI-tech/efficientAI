@@ -46,8 +46,27 @@ def repair_evaluator_result_status_if_needed(
     return True
 
 
+def _metric_scores_mark_failed(metric_scores: Any) -> bool:
+    if not isinstance(metric_scores, dict) or not metric_scores:
+        return False
+    has_scored_value = False
+    has_error = False
+    for entry in metric_scores.values():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("error"):
+            has_error = True
+        if entry.get("skipped"):
+            continue
+        if entry.get("value") is not None:
+            has_scored_value = True
+    return has_error and not has_scored_value
+
+
 def effective_evaluator_result_status(result: EvaluatorResult) -> str:
     """Status string safe for API responses when DB row is slightly stale."""
+    if _metric_scores_mark_failed(result.metric_scores):
+        return EvaluatorResultStatus.FAILED.value
     if has_meaningful_metric_scores(result.metric_scores) and result.status in _IN_FLIGHT_STATUSES:
         return EvaluatorResultStatus.COMPLETED.value
     return result.status or EvaluatorResultStatus.QUEUED.value

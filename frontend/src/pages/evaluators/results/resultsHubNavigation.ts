@@ -1,6 +1,10 @@
 /** Keeps Evaluation Results hub filters (dates, tab, scope) while drilling into a run. */
 
-const STORAGE_KEY = 'evaluator-results-hub-search'
+function storageKey(workspaceId: string | null | undefined) {
+  return workspaceId
+    ? `evaluator-results-hub-search:${workspaceId}`
+    : 'evaluator-results-hub-search'
+}
 
 const HUB_SCOPE_KEYS = [
   'start',
@@ -14,26 +18,29 @@ const HUB_SCOPE_KEYS = [
   'status',
 ] as const
 
-export function persistResultsHubQueryString(queryString: string) {
+export function persistResultsHubQueryString(queryString: string, workspaceId?: string | null) {
   const trimmed = queryString.trim()
   if (!trimmed) return
   try {
-    sessionStorage.setItem(STORAGE_KEY, trimmed)
+    sessionStorage.setItem(storageKey(workspaceId), trimmed)
   } catch {
     /* ignore quota / private mode */
   }
 }
 
-export function readPersistedResultsHubQueryString(): string {
+export function readPersistedResultsHubQueryString(workspaceId?: string | null): string {
   try {
-    return sessionStorage.getItem(STORAGE_KEY) ?? ''
+    const scoped = workspaceId ? sessionStorage.getItem(storageKey(workspaceId)) : null
+    if (scoped) return scoped
+    const legacy = sessionStorage.getItem('evaluator-results-hub-search')
+    return legacy ?? ''
   } catch {
     return ''
   }
 }
 
-export function resultsHubHref(queryString = ''): string {
-  const qs = queryString || readPersistedResultsHubQueryString()
+export function resultsHubHref(queryString = '', workspaceId?: string | null): string {
+  const qs = queryString || readPersistedResultsHubQueryString(workspaceId)
   return qs ? `/results?${qs}` : '/results'
 }
 
@@ -42,7 +49,7 @@ export function resultsDetailHref(resultId: string, hubQueryString: string): str
   return `/results/${resultId}?from=${encodeURIComponent(hubPath)}`
 }
 
-export function resolveResultsHubBackPath(fromSearchParam: string | null): string {
+export function resolveResultsHubBackPath(fromSearchParam: string | null, workspaceId?: string | null): string {
   if (fromSearchParam) {
     try {
       const decoded = decodeURIComponent(fromSearchParam)
@@ -51,7 +58,7 @@ export function resolveResultsHubBackPath(fromSearchParam: string | null): strin
       /* ignore malformed */
     }
   }
-  return resultsHubHref()
+  return resultsHubHref('', workspaceId)
 }
 
 export function resultsHubHrefWithScope(
