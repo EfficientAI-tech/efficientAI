@@ -28,7 +28,13 @@ import type {
   EvaluatorResultsAgentSummary,
   EvaluatorResultsDashboardOpsResponse,
 } from '../../../types/api'
-import { dateRangeToSinceUntil, formatDashboardWindowLabel, rangeForDays } from './resultsDateRange'
+import {
+  dateRangeToSinceUntil,
+  formatChartDayLabel,
+  formatDashboardWindowLabel,
+  rangeForDays,
+  resultLocalDayKey,
+} from './resultsDateRange'
 import {
   CHART_TYPE_LABELS,
   DEFAULT_RESULTS_WIDGETS,
@@ -95,6 +101,8 @@ interface ResultsDashboardTabProps {
   onOpenRuns: () => void
   onOpenResult: (resultId: string) => void
   onDashboardAgents?: (agents: EvaluatorResultsAgentSummary[]) => void
+  runSource?: 'simulation' | 'live'
+  onRunSourceChange?: (source: 'simulation' | 'live') => void
 }
 
 interface DayPoint {
@@ -104,12 +112,9 @@ interface DayPoint {
   failed: number
 }
 
-function dayKey(iso: string): { day: string; sortKey: string } {
-  const date = new Date(iso)
-  return {
-    day: date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
-    sortKey: date.toISOString().slice(0, 10),
-  }
+function dayKey(iso: string, includeYear = false): { day: string; sortKey: string } {
+  const sortKey = resultLocalDayKey(iso)
+  return { day: formatChartDayLabel(sortKey, includeYear), sortKey }
 }
 
 function isNumericMetric(metric: CallImportMetricAggregate): boolean {
@@ -183,12 +188,16 @@ export default function ResultsDashboardTab({
   onOpenRuns,
   onOpenResult,
   onDashboardAgents,
+  runSource: runSourceProp,
+  onRunSourceChange,
 }: ResultsDashboardTabProps) {
   const [widgets, setWidgets] = useState<ResultsWidget[]>(readResultsDashboardLayout)
   const [addOpen, setAddOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [toolbarSlot, setToolbarSlot] = useState<HTMLElement | null>(null)
-  const [source, setSource] = useState<'simulation' | 'live'>('simulation')
+  const [localSource, setLocalSource] = useState<'simulation' | 'live'>('simulation')
+  const source = runSourceProp ?? localSource
+  const setSource = onRunSourceChange ?? setLocalSource
   const [usageDisplayCurrency, setUsageDisplayCurrency] = useState<UsageDisplayCurrency>(readUsageDisplayCurrency)
   const playground = source === 'live'
   const { data: usageFxRate } = useQuery({
@@ -298,10 +307,15 @@ export default function ResultsDashboardTab({
     [metrics],
   )
 
-  const days = useMemo(() => daysFromRunDays(liveOps?.run_days), [liveOps])
-  const callDays = useMemo(() => callDaysFromRunDays(liveOps?.run_days), [liveOps])
-  const duration = useMemo(() => durationFromRunDays(liveOps?.run_days), [liveOps])
-  const scoreSeries = useMemo(() => scoreSeriesFromDays(liveOps?.score_days), [liveOps])
+  const chartDaySpansYears = useMemo(() => {
+    const keys = (liveOps?.run_days ?? []).map((row) => String(row.day).slice(0, 10))
+    if (keys.length < 2) return false
+    return keys[0].slice(0, 4) !== keys[keys.length - 1].slice(0, 4)
+  }, [liveOps])
+  const days = useMemo(() => daysFromRunDays(liveOps?.run_days, chartDaySpansYears), [liveOps, chartDaySpansYears])
+  const callDays = useMemo(() => callDaysFromRunDays(liveOps?.run_days, chartDaySpansYears), [liveOps, chartDaySpansYears])
+  const duration = useMemo(() => durationFromRunDays(liveOps?.run_days, chartDaySpansYears), [liveOps, chartDaySpansYears])
+  const scoreSeries = useMemo(() => scoreSeriesFromDays(liveOps?.score_days, chartDaySpansYears), [liveOps, chartDaySpansYears])
   const lowest = useMemo(() => {
     return metrics
       .filter((metric) => isNumericMetric(metric) && metric.mean != null)
@@ -640,30 +654,25 @@ export default function ResultsDashboardTab({
   )
 }
 
-function labelDay(iso: string): { day: string; sortKey: string } {
+function labelDay(iso: string, includeYear = false): { day: string; sortKey: string } {
   const sortKey = iso.slice(0, 10)
-  const [year, month, date] = sortKey.split('-').map(Number)
-  const local = new Date(year, (month || 1) - 1, date || 1)
-  return {
-    day: local.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
-    sortKey,
-  }
+  return { day: formatChartDayLabel(sortKey, includeYear), sortKey }
 }
 
-function daysFromRunDays(rows: DashboardOpsRunDay[] | undefined): DayPoint[] {
+function daysFromRunDays(rows: DashboardOpsRunDay[] | undefined, includeYear = false): DayPoint[] {
   return (rows ?? [])
     .map((row) => {
-      const labeled = labelDay(row.day)
+      const labeled = labelDay(row.day, includeYear)
       return { day: labeled.day, sortKey: labeled.sortKey, completed: row.completed, failed: row.failed }
     })
     .sort((a, b) => a.sortKey.localeCompare(b.sortKey))
 }
 
-function callDaysFromRunDays(rows: DashboardOpsRunDay[] | undefined): Array<{ day: string; calls: number }> {
-  return daysFromRunDays(rows).map((row) => ({ day: row.day, calls: row.completed + row.failed }))
+function callDaysFromRunDays(rows: DashboardOpsRunDay[] | undefined, includeYear = false): Array<{ day: string; calls: number }> {
+  return daysFromRunDays(rows, includeYear).map((row) => ({ day: row.day, sortKey: row.sortKey, calls: row.completed + row.failed }))
 }
 
-function durationFromRunDays(rows: DashboardOpsRunDay[] | undefined): { average: number | null; points: Array<{ day: string; value: number }> } {
+function durationFromRunDays(rows: DashboardOpsRunDay[] | undefined, includeYear = false): { average: number | null; points: Array<{ day: string; value: number }> } {
   let sum = 0
   let count = 0
   const points = [...(rows ?? [])]
@@ -672,18 +681,19 @@ function durationFromRunDays(rows: DashboardOpsRunDay[] | undefined): { average:
       sum += row.duration_seconds
       count += row.duration_count
       return {
-        day: labelDay(row.day).day,
+        day: labelDay(row.day, includeYear).day,
+        sortKey: labelDay(row.day, includeYear).sortKey,
         value: row.duration_count ? Number((row.duration_seconds / row.duration_count).toFixed(1)) : 0,
       }
     })
   return { average: count ? sum / count : null, points }
 }
 
-function scoreSeriesFromDays(rows: DashboardOpsScoreDay[] | undefined) {
+function scoreSeriesFromDays(rows: DashboardOpsScoreDay[] | undefined, includeYear = false) {
   const series = new Map<string, Array<{ day: string; value: number; sortKey: string }>>()
   for (const row of rows ?? []) {
     if (!row.score_count) continue
-    const labeled = labelDay(row.day)
+    const labeled = labelDay(row.day, includeYear)
     const points = series.get(row.metric_id) ?? []
     points.push({
       day: labeled.day,
@@ -979,22 +989,27 @@ function PanelChart({
   data: Array<Record<string, string | number>>
   series: Array<{ key: string; color: string; stack?: string }>
   layout: 'horizontal' | 'vertical' | 'stacked'
-  onPoint: (label: string, detail: string) => void
+  onPoint: (label: string, sortKey: string, detail: string) => void
   onCategory: (name: string) => void
   listClassName?: string
 }) {
   const categoryKey = data[0] && 'name' in data[0] ? 'name' : 'day'
-  const handleClick = (state: { activeLabel?: string | number; activePayload?: Array<{ name?: string; value?: number }> }) => {
+  const handleClick = (state: {
+    activeLabel?: string | number
+    activePayload?: Array<{ name?: string; value?: number; payload?: Record<string, unknown> }>
+  }) => {
     if (state?.activeLabel == null) return
     const label = String(state.activeLabel)
     const detail = (state.activePayload ?? [])
       .map((item) => `${item.name}: ${item.value ?? 0}`)
       .join(' · ')
-    if (categoryKey === 'name') {
+  if (categoryKey === 'name') {
       onCategory(label)
       return
     }
-    onPoint(label, detail || 'No values')
+    const payload = state.activePayload?.[0]?.payload
+    const sortKey = payload && payload.sortKey != null ? String(payload.sortKey) : label
+    onPoint(label, sortKey, detail || 'No values')
   }
 
   const grid = <CartesianGrid stroke={GRID} vertical={false} />
@@ -1255,14 +1270,14 @@ function buildDetailViews(
     const failed = days.reduce((sum, day) => sum + day.failed, 0)
     return [
       { id: 'both', label: 'Both', headline: model.headline, caption: 'Completed and failed', data: model.data, series: model.series },
-      { id: 'completed', label: 'Completed', headline: formatHeadline(completed), caption: 'Completed runs', data: days.map((day) => ({ day: day.day, completed: day.completed })), series: [{ key: 'completed', color: PRIMARY }] },
-      { id: 'failed', label: 'Failed', headline: formatHeadline(failed), caption: 'Failed runs', data: days.map((day) => ({ day: day.day, failed: day.failed })), series: [{ key: 'failed', color: FAIL }] },
+      { id: 'completed', label: 'Completed', headline: formatHeadline(completed), caption: 'Completed runs', data: days.map((day) => ({ day: day.day, sortKey: day.sortKey, completed: day.completed })), series: [{ key: 'completed', color: PRIMARY }] },
+      { id: 'failed', label: 'Failed', headline: formatHeadline(failed), caption: 'Failed runs', data: days.map((day) => ({ day: day.day, sortKey: day.sortKey, failed: day.failed })), series: [{ key: 'failed', color: FAIL }] },
     ]
   }
   if (type === 'completion') {
     return [
       { id: 'rate', label: 'Rate', headline: model.headline, caption: 'Completion rate', data: model.data, series: model.series },
-      { id: 'counts', label: 'Counts', headline: formatHeadline(days.reduce((sum, day) => sum + day.completed + day.failed, 0)), caption: 'Completed and failed counts', data: days.map((day) => ({ day: day.day, completed: day.completed, failed: day.failed })), series: [{ key: 'completed', color: PRIMARY, stack: 'runs' }, { key: 'failed', color: FAIL, stack: 'runs' }] },
+      { id: 'counts', label: 'Counts', headline: formatHeadline(days.reduce((sum, day) => sum + day.completed + day.failed, 0)), caption: 'Completed and failed counts', data: days.map((day) => ({ day: day.day, sortKey: day.sortKey, completed: day.completed, failed: day.failed })), series: [{ key: 'completed', color: PRIMARY, stack: 'runs' }, { key: 'failed', color: FAIL, stack: 'runs' }] },
     ]
   }
   if (type === 'total_calls' || type === 'avg_duration' || type === 'scenarios_by_agent') {
@@ -1450,19 +1465,18 @@ function ResultsDetailView({
       }
       : null
   const windowLabel = formatDashboardWindowLabel(dateRange, allTime)
-  const dayLabelToSortKey = useMemo(() => new Map(days.map((day) => [day.day, day.sortKey])), [days])
-  const [drillDayLabel, setDrillDayLabel] = useState<string | null>(null)
+  const showYearOnChart = useMemo(() => {
+    if (days.length < 2) return false
+    return days[0].sortKey.slice(0, 4) !== days[days.length - 1].sortKey.slice(0, 4)
+  }, [days])
+  const [drillSortKey, setDrillSortKey] = useState<string | null>(null)
   const [drillScenarioId, setDrillScenarioId] = useState<string | null>(null)
-  const drillSortKey = drillDayLabel ? dayLabelToSortKey.get(drillDayLabel) ?? null : null
-  const scenarioIdByName = useMemo(
-    () => new Map(scenarioRows.map((row) => [row.name, row.scenarioId])),
-    [scenarioRows],
-  )
+  const drillDayLabel = drillSortKey ? formatChartDayLabel(drillSortKey, showYearOnChart) : null
   const activeScenarioName = drillScenarioId
     ? scenarioRows.find((row) => row.scenarioId === drillScenarioId)?.name ?? null
     : null
   useEffect(() => {
-    setDrillDayLabel(null)
+    setDrillSortKey(null)
     setDrillScenarioId(null)
   }, [dateRange?.start, dateRange?.end, allTime])
   const agentSliceResults = useMemo(() => {
@@ -1472,9 +1486,15 @@ function ResultsDetailView({
     )
   }, [detail, results])
   const sliceResults = useMemo(() => {
-    if (!drillSortKey) return results
-    return results.filter((row) => dayKey(row.timestamp).sortKey === drillSortKey)
-  }, [results, drillSortKey])
+    let rows = results
+    if (drillSortKey) {
+      rows = rows.filter((row) => resultLocalDayKey(row.timestamp) === drillSortKey)
+    }
+    if (drillScenarioId) {
+      rows = rows.filter((row) => row.scenario?.id === drillScenarioId)
+    }
+    return rows
+  }, [results, drillSortKey, drillScenarioId])
   const tableBase = useMemo(() => {
     if (!drillSortKey) return runListBase
     const bounds = dateRangeToSinceUntil(drillSortKey, drillSortKey)
@@ -1519,7 +1539,10 @@ function ResultsDetailView({
     return withCost.filter((call) => call.model === focusId)
   }, [drillCalls, focusId, widget?.type])
   const runInsight = usesRunInsightLayout(widget?.type) || detail.kind === 'agent'
-  const drillDayActive = Boolean(drillSortKey)
+  const drillDayActive = Boolean(drillSortKey || drillScenarioId)
+  const scopedRunTotal = detail.kind === 'agent' && agent
+    ? agent.total
+    : aggregateTotal
   const scoreMetricId =
     metric?.metric_id ?? (detail.kind === 'metric' ? detail.metricId : undefined)
   const breakdownAgents = agentRows.map((row) => ({
@@ -1603,12 +1626,16 @@ function ResultsDetailView({
           <div className="mt-4 h-[320px] cursor-pointer [&_.recharts-surface]:cursor-pointer">
             <PanelChart
               display={widget?.type === 'avg_duration' ? durationDisplay : widget?.display ?? 'bar'}
-              data={active.data}
+              data={
+                drillSortKey && trendUsesDays
+                  ? active.data.filter((point) => String(point.sortKey ?? '') === drillSortKey)
+                  : active.data
+              }
               series={active.series}
               layout={active.horizontal ? 'vertical' : 'horizontal'}
               listClassName="max-h-[320px]"
-              onPoint={(label) => {
-                if (trendUsesDays) setDrillDayLabel((prev) => (prev === label ? null : label))
+              onPoint={(_label, sortKey) => {
+                if (trendUsesDays) setDrillSortKey((prev) => (prev === sortKey ? null : sortKey))
               }}
               onCategory={(name) => {
                 if (widget?.type === 'scenarios') {
@@ -1695,7 +1722,7 @@ function ResultsDetailView({
               )}
             </div>
             <ul className="divide-y divide-gray-100">
-              {toolAgentTotals(ops).map((item) => (
+              {toolAgentTotals(ops, viewId === 'errors' ? 'errors' : 'calls').map((item) => (
                 <li key={item.agent_id}>
                   <button
                     type="button"
@@ -1703,7 +1730,11 @@ function ResultsDetailView({
                     className="flex w-full items-center justify-between py-2 text-left text-sm text-gray-700 hover:text-gray-900"
                   >
                     <span className="truncate">{item.agent_name}</span>
-                    <span className="shrink-0 text-xs text-gray-500">{item.calls.toLocaleString()} calls</span>
+                    <span className="shrink-0 text-xs text-gray-500">
+                      {viewId === 'errors'
+                        ? `${item.errors.toLocaleString()} failures`
+                        : `${item.calls.toLocaleString()} calls`}
+                    </span>
                   </button>
                 </li>
               ))}
@@ -1724,10 +1755,10 @@ function ResultsDetailView({
           <RunInsightFilterBar
             dayLabel={drillDayLabel}
             scenarioName={activeScenarioName}
-            onClearDay={() => setDrillDayLabel(null)}
+            onClearDay={() => setDrillSortKey(null)}
             onClearScenario={() => setDrillScenarioId(null)}
             onClearAll={() => {
-              setDrillDayLabel(null)
+              setDrillSortKey(null)
               setDrillScenarioId(null)
             }}
           />
@@ -1737,13 +1768,13 @@ function ResultsDetailView({
             agentRows={[{ id: agent.id, name: agent.name }]}
             agentRunRows={breakdownAgents.filter((row) => row.id === detail.agentId)}
             drillDayActive={drillDayActive}
-            windowRunTotal={aggregateTotal}
+            windowRunTotal={scopedRunTotal}
             sampleSize={results.length}
+            activeScenarioId={drillScenarioId}
             activeScenarioName={activeScenarioName}
             title={`${agent.name} · scenarios`}
-            onScenarioClick={(name) => {
-              const id = scenarioIdByName.get(name)
-              if (id) setDrillScenarioId((prev) => (prev === id ? null : id))
+            onScenarioClick={(scenarioId) => {
+              setDrillScenarioId((prev) => (prev === scenarioId ? null : scenarioId))
             }}
           />
         </>
@@ -1753,10 +1784,10 @@ function ResultsDetailView({
           <RunInsightFilterBar
             dayLabel={drillDayLabel}
             scenarioName={activeScenarioName}
-            onClearDay={() => setDrillDayLabel(null)}
+            onClearDay={() => setDrillSortKey(null)}
             onClearScenario={() => setDrillScenarioId(null)}
             onClearAll={() => {
-              setDrillDayLabel(null)
+              setDrillSortKey(null)
               setDrillScenarioId(null)
             }}
           />
@@ -1766,8 +1797,9 @@ function ResultsDetailView({
             agentRows={agentRows.map((row) => ({ id: row.id, name: row.name }))}
             agentRunRows={breakdownAgents}
             drillDayActive={drillDayActive}
-            windowRunTotal={aggregateTotal}
+            windowRunTotal={scopedRunTotal}
             sampleSize={results.length}
+            activeScenarioId={drillScenarioId}
             activeScenarioName={activeScenarioName}
             title={
               widget.type === 'scenarios_by_agent'
@@ -1776,9 +1808,8 @@ function ResultsDetailView({
                   ? 'Scenario runs'
                   : 'Call duration'
             }
-            onScenarioClick={(name) => {
-              const id = scenarioIdByName.get(name)
-              if (id) setDrillScenarioId((prev) => (prev === id ? null : id))
+            onScenarioClick={(scenarioId) => {
+              setDrillScenarioId((prev) => (prev === scenarioId ? null : scenarioId))
             }}
           />
         </>
@@ -1790,13 +1821,13 @@ function ResultsDetailView({
           agentRows={agentRows.map((row) => ({ id: row.id, name: row.name }))}
           agentRunRows={breakdownAgents}
           drillDayActive={drillDayActive}
-          windowRunTotal={aggregateTotal}
+          windowRunTotal={scopedRunTotal}
           sampleSize={results.length}
+          activeScenarioId={drillScenarioId}
           activeScenarioName={activeScenarioName}
           title="Runs in window"
-          onScenarioClick={(name) => {
-            const id = scenarioIdByName.get(name)
-            if (id) setDrillScenarioId((prev) => (prev === id ? null : id))
+          onScenarioClick={(scenarioId) => {
+            setDrillScenarioId((prev) => (prev === scenarioId ? null : scenarioId))
           }}
         />
       )}
@@ -1830,6 +1861,7 @@ function ResultsDetailView({
                   : undefined
             }
             filterScenarioId={drillScenarioId ?? undefined}
+            metricId={scoreMetricId}
             scoreMetricId={scoreMetricId}
             callsByResultId={widget?.type === 'agent_cost' ? drillCalls : undefined}
             rich={widget?.type === 'agent_cost'}

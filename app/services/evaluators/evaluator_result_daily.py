@@ -16,6 +16,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 from uuid import UUID
 
 from sqlalchemy import String, and_, cast, func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.database import CallRecording, CallRecordingSource, EvaluatorResult, EvaluatorResultDaily
@@ -542,6 +543,10 @@ def record_evaluator_result_daily(db: Session, result: EvaluatorResult) -> None:
     display = _display_status(result.status, result.metric_scores)
     if display not in _TERMINAL:
         return
+    try:
+        db.flush()
+    except Exception:
+        logger.warning("Could not flush evaluator result before daily rollup", exc_info=True)
     day = utc_day(result.timestamp)
     start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
     end = start + timedelta(days=1)
@@ -587,36 +592,40 @@ def record_evaluator_result_daily(db: Session, result: EvaluatorResult) -> None:
         if bucket.day == day and bucket.agent_id == result.agent_id and bucket.scenario_id == result.scenario_id
     }
     for is_live in (False, True):
-        existing = _bucket_filter(
-            db.query(EvaluatorResultDaily).filter(
-                EvaluatorResultDaily.organization_id == result.organization_id,
-                EvaluatorResultDaily.workspace_id == result.workspace_id,
-                EvaluatorResultDaily.usage_date == day,
-            ),
-            agent_id=result.agent_id,
-            scenario_id=result.scenario_id,
-            is_live=is_live,
-        )
-        bucket = fresh.get(is_live)
-        row = existing.one_or_none()
-        if bucket is None:
-            if row is not None:
-                db.delete(row)
-            continue
-        if row is None:
-            row = EvaluatorResultDaily(
-                organization_id=result.organization_id,
-                workspace_id=result.workspace_id,
-                usage_date=day,
-                agent_id=result.agent_id,
-                scenario_id=result.scenario_id,
-                is_live=is_live,
-            )
-            db.add(row)
-        row.completed = bucket.completed
-        row.failed = bucket.failed
-        row.duration_seconds = bucket.duration_seconds
-        row.duration_count = bucket.duration_count
-        row.score = {key: {"sum": cell["sum"], "count": cell["count"]} for key, cell in bucket.score.items()}
-        row.metric_ids = sorted(bucket.metric_ids)
-        row.updated_at = datetime.now(timezone.utc)
+        try:
+            with db.begin_nested():
+                existing = _bucket_filter(
+                    db.query(EvaluatorResultDaily).filter(
+                        EvaluatorResultDaily.organization_id == result.organization_id,
+                        EvaluatorResultDaily.workspace_id == result.workspace_id,
+                        EvaluatorResultDaily.usage_date == day,
+                    ),
+                    agent_id=result.agent_id,
+                    scenario_id=result.scenario_id,
+                    is_live=is_live,
+                )
+                bucket = fresh.get(is_live)
+                row = existing.with_for_update(of=EvaluatorResultDaily).one_or_none()
+                if bucket is None:
+                    if row is not None:
+                        db.delete(row)
+                    continue
+                if row is None:
+                    row = EvaluatorResultDaily(
+                        organization_id=result.organization_id,
+                        workspace_id=result.workspace_id,
+                        usage_date=day,
+                        agent_id=result.agent_id,
+                        scenario_id=result.scenario_id,
+                        is_live=is_live,
+                    )
+                    db.add(row)
+                row.completed = bucket.completed
+                row.failed = bucket.failed
+                row.duration_seconds = bucket.duration_seconds
+                row.duration_count = bucket.duration_count
+                row.score = {key: {"sum": cell["sum"], "count": cell["count"]} for key, cell in bucket.score.items()}
+                row.metric_ids = sorted(bucket.metric_ids)
+                row.updated_at = datetime.now(timezone.utc)
+        except IntegrityError:
+            logger.warning("Daily rollup bucket race for result %s; will reconcile on read", result.id)

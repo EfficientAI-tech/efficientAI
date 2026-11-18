@@ -14,6 +14,24 @@ export function rangeForDays(days: number): { start: string; end: string } {
   return { start: toDateInput(start), end: toDateInput(end) }
 }
 
+/** Chart axis label for a calendar day key (YYYY-MM-DD). */
+export function formatChartDayLabel(sortKey: string, includeYear = false): string {
+  const [year, month, date] = sortKey.split('-').map(Number)
+  const local = new Date(year, (month || 1) - 1, date || 1)
+  return local.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    ...(includeYear ? { year: 'numeric' } : {}),
+  })
+}
+
+/** Local calendar day for an ISO timestamp (matches hub date filters). */
+export function resultLocalDayKey(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 10)
+  return toDateInput(d)
+}
+
 export function isoToDateInput(iso: string): string {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return iso.slice(0, 10)

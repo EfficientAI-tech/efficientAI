@@ -5037,6 +5037,7 @@ class ApiClient {
       if (p.unassignedOnly) params.unassigned_only = true
       if (p.playground !== undefined) params.playground = p.playground
       if (p.testAgentsOnly !== undefined) params.test_agents_only = p.testAgentsOnly
+      if (p.metricId) params.metric_id = p.metricId
     }
     const response = await this.client.get('/api/v1/evaluator-results', { params })
     return response.data

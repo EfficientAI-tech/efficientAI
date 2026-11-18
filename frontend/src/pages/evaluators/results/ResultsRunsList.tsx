@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { apiClient } from '../../../lib/api'
 import type { EvaluatorResultRow, ListEvaluatorResultsParams } from '../../../types/api'
 import ResultsHierarchyNav, { type HierarchyCrumb } from './ResultsHierarchyNav'
@@ -79,6 +79,11 @@ export default function ResultsRunsList({
     else setLocalStatusFilter(next)
     setPage(0)
   }
+
+  const listScopeKey = useMemo(() => JSON.stringify(listParams), [listParams])
+  useEffect(() => {
+    setPage(0)
+  }, [listScopeKey])
 
   const { data, isLoading, isFetching } = useQuery({
     queryKey: ['evaluator-results', listParams, page, apiStatus],

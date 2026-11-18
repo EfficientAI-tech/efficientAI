@@ -208,6 +208,7 @@ export interface ListEvaluatorResultsParams {
   unassignedOnly?: boolean
   playground?: boolean
   testAgentsOnly?: boolean
+  metricId?: string
 }
 
 export interface APIKey {

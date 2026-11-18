@@ -4,6 +4,7 @@ import type {
   EvaluatorResultRow,
   EvaluatorResultsDashboardOpsResponse,
 } from '../../../types/api'
+import { formatChartDayLabel, resultLocalDayKey } from './resultsDateRange'
 import { formatUsageCostUsd, getUsageDisplayCurrency, type UsageDisplayCurrency } from '../../../lib/usageCurrency'
 
 export const LAYER_LLM = '#ca8a04'
@@ -60,8 +61,8 @@ export function formatDayLabel(isoDay: string): string {
 }
 
 function dayParts(iso: string): { day: string; sortKey: string } {
-  const sortKey = new Date(iso).toISOString().slice(0, 10)
-  return { day: formatDayLabel(sortKey), sortKey }
+  const sortKey = resultLocalDayKey(iso)
+  return { day: formatChartDayLabel(sortKey), sortKey }
 }
 
 export function extractCategorizationLabels(
@@ -120,8 +121,8 @@ export function buildCategorySeries(
     const labels = Array.from(labelSet)
     const data = Array.from(dayMap.values())
       .sort((a, b) => a.sortKey.localeCompare(b.sortKey))
-      .map(({ day, counts }) => {
-        const point: Record<string, string | number> = { day }
+      .map(({ day, sortKey, counts }) => {
+        const point: Record<string, string | number> = { day, sortKey }
         for (const label of labels) point[label] = counts[label] ?? 0
         return point
       })
@@ -277,10 +278,18 @@ export function modelCostDetail(
   }
 }
 
-function topAgentIds(rows: Array<{ agent_id: string; calls: number }>, limit = 5): string[] {
+function topAgentIds(
+  rows: Array<{ agent_id: string; calls: number; errors?: number }>,
+  limit = 5,
+  mode: 'calls' | 'errors' = 'calls',
+): string[] {
   const totals = new Map<string, number>()
-  for (const row of rows) totals.set(row.agent_id, (totals.get(row.agent_id) ?? 0) + row.calls)
+  for (const row of rows) {
+    const value = mode === 'errors' ? (row.errors ?? 0) : row.calls
+    totals.set(row.agent_id, (totals.get(row.agent_id) ?? 0) + value)
+  }
   return Array.from(totals.entries())
+    .filter(([, value]) => value > 0)
     .sort((a, b) => b[1] - a[1])
     .slice(0, limit)
     .map(([id]) => id)
@@ -344,7 +353,7 @@ export function toolCallDetail(
   }
   const rows = ops?.tool_calls_by_agent_day ?? []
   const names = new Map(rows.map((row) => [row.agent_id, row.agent_name]))
-  const leaders = new Set(topAgentIds(rows))
+  const leaders = new Set(topAgentIds(rows, 5, mode))
   const byDay = new Map<string, Record<string, number>>()
   for (const row of rows) {
     if (!leaders.has(row.agent_id)) continue
@@ -353,7 +362,7 @@ export function toolCallDetail(
     bucket[name] = (bucket[name] ?? 0) + (mode === 'errors' ? row.errors : row.calls)
     byDay.set(row.day, bucket)
   }
-  const keys = topAgentIds(rows).map((id) => names.get(id) || id)
+  const keys = topAgentIds(rows, 5, mode).map((id) => names.get(id) || id)
   const total = rows.reduce((sum, row) => sum + (mode === 'errors' ? row.errors : row.calls), 0)
   return {
     headline: total.toLocaleString(),
@@ -378,16 +387,22 @@ export function modelTotals(ops: EvaluatorResultsDashboardOpsResponse | undefine
     .sort((a, b) => b.cost_usd - a.cost_usd)
 }
 
-export function toolAgentTotals(ops: EvaluatorResultsDashboardOpsResponse | undefined): Array<{ agent_id: string; agent_name: string; calls: number }> {
-  const totals = new Map<string, { agent_name: string; calls: number }>()
+export function toolAgentTotals(
+  ops: EvaluatorResultsDashboardOpsResponse | undefined,
+  mode: 'calls' | 'errors' = 'calls',
+): Array<{ agent_id: string; agent_name: string; calls: number; errors: number }> {
+  const totals = new Map<string, { agent_name: string; calls: number; errors: number }>()
   for (const row of ops?.tool_calls_by_agent_day ?? []) {
-    const current = totals.get(row.agent_id) ?? { agent_name: row.agent_name, calls: 0 }
+    const current = totals.get(row.agent_id) ?? { agent_name: row.agent_name, calls: 0, errors: 0 }
     current.calls += row.calls
+    current.errors += row.errors
     totals.set(row.agent_id, current)
   }
+  const pick = mode === 'errors' ? (value: { errors: number }) => value.errors : (value: { calls: number }) => value.calls
   return Array.from(totals.entries())
-    .map(([agent_id, value]) => ({ agent_id, agent_name: value.agent_name, calls: value.calls }))
-    .sort((a, b) => b.calls - a.calls)
+    .map(([agent_id, value]) => ({ agent_id, agent_name: value.agent_name, calls: value.calls, errors: value.errors }))
+    .filter((row) => pick(row) > 0)
+    .sort((a, b) => pick(b) - pick(a))
 }
 
 export function shareSeries(data: Array<Record<string, string | number>>, labels: string[]): Array<Record<string, string | number>> {

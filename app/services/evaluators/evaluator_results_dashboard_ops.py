@@ -549,6 +549,8 @@ def compute_evaluator_results_dashboard_ops(
         db,
         organization_id=organization_id,
         workspace_id=workspace_id,
+        agent_id=agent_id,
+        suite_id=suite_id,
         since=since,
         until=until,
         playground=playground,

@@ -118,6 +118,7 @@ export function RunInsightBreakdown({
   agentRows,
   agentRunRows,
   activeScenarioName,
+  activeScenarioId,
   onScenarioClick,
   title = 'Break down',
   drillDayActive = false,
@@ -125,18 +126,19 @@ export function RunInsightBreakdown({
   sampleSize,
 }: {
   results: EvaluatorResultRow[]
-  scenarioRows: Array<{ name: string; count: number; failed: number; agentId: string }>
+  scenarioRows: Array<{ name: string; scenarioId: string; count: number; failed: number; agentId: string }>
   agentRows: Array<{ id: string; name: string }>
   agentRunRows?: Array<{ id: string; name: string; total: number; failed: number }>
   activeScenarioName?: string | null
-  onScenarioClick?: (scenarioName: string) => void
+  activeScenarioId?: string | null
+  onScenarioClick?: (scenarioId: string) => void
   title?: string
   /** When set, scenario/run counts use dashboard-ops (full window), not the run sample. */
   drillDayActive?: boolean
   windowRunTotal?: number
   sampleSize?: number
 }) {
-  const [openAgents, setOpenAgents] = useState<Set<string>>(() => new Set())
+  const [openAgents, setOpenAgents] = useState<Set<string> | null>(null)
 
   const values = results.map((row) => row.duration_seconds).filter((value): value is number => value != null)
   const edges = [0, 60, 90, 120, 150, 180, 240]
@@ -193,11 +195,11 @@ export function RunInsightBreakdown({
       : null
 
   const agentNameById = new Map(agentRows.map((row) => [row.id, row.name]))
-  const scenariosByAgent = new Map<string, Array<{ name: string; count: number; failed: number }>>()
+  const scenariosByAgent = new Map<string, Array<{ name: string; scenarioId: string; count: number; failed: number }>>()
   for (const row of scenarioRows) {
     const agentName = agentNameById.get(row.agentId) ?? 'Agent'
     const list = scenariosByAgent.get(agentName) ?? []
-    list.push({ name: row.name, count: row.count, failed: row.failed })
+    list.push({ name: row.name, scenarioId: row.scenarioId, count: row.count, failed: row.failed })
     scenariosByAgent.set(agentName, list)
   }
   const agentScenarioGroups = Array.from(scenariosByAgent.entries()).sort((a, b) => {
@@ -208,10 +210,12 @@ export function RunInsightBreakdown({
 
   const toggleAgent = (name: string) => {
     setOpenAgents((prev) => {
-      const next = new Set(prev)
-      if (next.has(name)) next.delete(name)
-      else next.add(name)
-      return next
+      const base = prev === null
+        ? new Set(agentScenarioGroups.map(([agent]) => agent).filter((agent) => agent !== name))
+        : new Set(prev)
+      if (base.has(name)) base.delete(name)
+      else base.add(name)
+      return base
     })
   }
 
@@ -260,17 +264,24 @@ export function RunInsightBreakdown({
             {scenarios.length === 0 ? (
               <p className="text-xs text-gray-400">No scenarios in slice.</p>
             ) : (
-              scenarios.slice(0, 8).map((row) => (
-                <BarRow
-                  key={row.name}
-                  label={row.name}
-                  value={row.total}
-                  max={scenarioMax}
-                  suffix={`${row.total} · ${row.total ? Math.round((row.failed / row.total) * 100) : 0}% fail`}
-                  active={activeScenarioName === row.name}
-                  onClick={onScenarioClick ? () => onScenarioClick(row.name) : undefined}
-                />
-              ))
+              scenarios.slice(0, 8).map((row) => {
+                const match = scenarioRows.find((item) => item.name === row.name)
+                const scenarioId = match?.scenarioId
+                return (
+                  <BarRow
+                    key={scenarioId ?? row.name}
+                    label={row.name}
+                    value={row.total}
+                    max={scenarioMax}
+                    suffix={`${row.total} · ${row.total ? Math.round((row.failed / row.total) * 100) : 0}% fail`}
+                    active={
+                      (scenarioId != null && activeScenarioId === scenarioId)
+                      || (scenarioId == null && activeScenarioName === row.name)
+                    }
+                    onClick={onScenarioClick && scenarioId ? () => onScenarioClick(scenarioId) : undefined}
+                  />
+                )
+              })
             )}
           </div>
         </div>
@@ -315,7 +326,9 @@ export function RunInsightBreakdown({
           <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Scenarios by agent</h4>
           <div className="mt-2 space-y-2">
             {agentScenarioGroups.map(([agentName, rows]) => {
-              const open = openAgents.size === 0 ? agentScenarioGroups[0]?.[0] === agentName : openAgents.has(agentName)
+              const open = openAgents === null
+                ? agentScenarioGroups[0]?.[0] === agentName
+                : openAgents.has(agentName)
               const total = rows.reduce((sum, row) => sum + row.count, 0)
               return (
                 <div key={agentName} className="overflow-hidden rounded-lg border border-gray-200">
@@ -333,12 +346,12 @@ export function RunInsightBreakdown({
                         .slice()
                         .sort((a, b) => b.count - a.count)
                         .map((row) => (
-                          <li key={row.name}>
+                          <li key={row.scenarioId}>
                             {onScenarioClick ? (
                               <button
                                 type="button"
-                                onClick={() => onScenarioClick(row.name)}
-                                className={`flex w-full items-center justify-between gap-3 rounded-md px-2 py-2 text-left text-sm ${activeScenarioName === row.name
+                                onClick={() => onScenarioClick(row.scenarioId)}
+                                className={`flex w-full items-center justify-between gap-3 rounded-md px-2 py-2 text-left text-sm ${activeScenarioId === row.scenarioId
                                   ? 'bg-primary-50 font-medium text-primary-900'
                                   : 'text-gray-700 hover:bg-gray-50'
                                   }`}

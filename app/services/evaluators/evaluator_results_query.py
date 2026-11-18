@@ -7,7 +7,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from uuid import UUID
 
 from sqlalchemy.orm import Session, Query
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, cast, or_
+from sqlalchemy.dialects.postgresql import JSONB
 
 from app.models.database import EvaluatorResult, Evaluator, Agent, VoiceBundle, Scenario, Persona, CallRecording, CallRecordingSource
 from app.models.schemas import (
@@ -117,6 +118,7 @@ def build_evaluator_results_query(
     playground: Optional[bool] = None,
     test_agents_only: Optional[bool] = None,
     unassigned_only: Optional[bool] = None,
+    metric_id: Optional[str] = None,
 ) -> Query:
     query = db.query(EvaluatorResult).filter(
         EvaluatorResult.organization_id == organization_id,
@@ -183,6 +185,14 @@ def build_evaluator_results_query(
         query = query.filter(EvaluatorResult.timestamp >= since)
     if until is not None:
         query = query.filter(EvaluatorResult.timestamp <= until)
+
+    if metric_id:
+        metric_key = str(metric_id).strip()
+        if metric_key:
+            query = query.filter(
+                EvaluatorResult.metric_scores.isnot(None),
+                cast(EvaluatorResult.metric_scores, JSONB).has_key(metric_key),
+            )
 
     if status:
         normalized = status.strip().lower()

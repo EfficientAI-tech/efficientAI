@@ -104,6 +104,9 @@ export default function ResultsHub() {
   const clusterView: ClusterReportView =
     clusterViewParam === 'visualization' ? 'visualization' : 'details'
 
+  const runSource = searchParams.get('run_source') === 'live' ? 'live' : 'simulation'
+  const playgroundScope = runSource === 'live'
+
   const statusParam = searchParams.get('status')
 
   const statusFilter: StatusFilter =
@@ -145,15 +148,13 @@ export default function ResultsHub() {
 
 
   const overviewParams = useMemo(
-
     () => ({
-
+      ...(agentId ? { agentId } : {}),
+      ...(suiteId ? { suiteId } : {}),
       ...(dateBounds ? { since: dateBounds.since, until: dateBounds.until } : {}),
-
+      playground: playgroundScope,
     }),
-
-    [dateBounds],
-
+    [agentId, suiteId, dateBounds, playgroundScope],
   )
 
 
@@ -267,16 +268,12 @@ export default function ResultsHub() {
     if (scenarioId) params.scenarioId = scenarioId
 
     if (dateBounds) {
-
       params.since = dateBounds.since
-
       params.until = dateBounds.until
-
     }
-
+    params.playground = playgroundScope
     return params
-
-  }, [agentId, suiteId, scenarioId, dateBounds])
+  }, [agentId, suiteId, scenarioId, dateBounds, playgroundScope])
 
 
 
@@ -1016,7 +1013,10 @@ export default function ResultsHub() {
           }}
 
           onDashboardAgents={setDashboardAgents}
-
+          runSource={runSource}
+          onRunSourceChange={(next) => {
+            setParams({ run_source: next === 'live' ? 'live' : null })
+          }}
         />
 
       ) : activeTab === 'runs' ? (

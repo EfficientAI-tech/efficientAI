@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft, ChevronLeft, ChevronRight } from 'lucide-react'
 import { apiClient } from '../../../lib/api'
@@ -88,10 +88,11 @@ export function PaginatedRunsTable({
       since: base.since,
       until: base.until,
       playground: base.playground,
+      metricId: metricId || undefined,
       skip: page * PAGE_SIZE,
       limit: PAGE_SIZE,
     }),
-    [base, filterAgentId, filterScenarioId, page],
+    [base, filterAgentId, filterScenarioId, metricId, page],
   )
   const { data, isLoading } = useQuery({
     queryKey: ['evaluator-results-drill-runs', listParams, metricId],
@@ -117,12 +118,15 @@ export function PaginatedRunsTable({
     return map
   }, [callsByResultId])
   const useRich = rich || callLookup.size > 0
+  useEffect(() => {
+    setPage(0)
+  }, [listParams])
 
   return (
     <section className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-      <div className={`flex items-center justify-between gap-3 ${title ? '' : 'sr-only'}`}>
-        {title ? <h3 className="text-sm font-semibold text-gray-900">{title}</h3> : <span />}
-        <div className="flex items-center gap-2 text-xs text-gray-500">
+      <div className="flex items-center justify-between gap-3">
+        {title ? <h3 className="text-sm font-semibold text-gray-900">{title}</h3> : <span className="sr-only">Runs</span>}
+        <div className="ml-auto flex shrink-0 items-center gap-2 text-xs text-gray-500">
           <button
             type="button"
             disabled={page <= 0}
@@ -246,9 +250,9 @@ export function PaginatedCallRunsTable({
 
   return (
     <section className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-      <div className={`flex items-center justify-between gap-3 ${title ? '' : 'sr-only'}`}>
-        {title ? <h3 className="text-sm font-semibold text-gray-900">{title}</h3> : <span />}
-        <div className="flex items-center gap-2 text-xs text-gray-500">
+      <div className="flex items-center justify-between gap-3">
+        {title ? <h3 className="text-sm font-semibold text-gray-900">{title}</h3> : <span className="sr-only">Runs</span>}
+        <div className="ml-auto flex shrink-0 items-center gap-2 text-xs text-gray-500">
           <button
             type="button"
             disabled={page <= 0}
@@ -589,7 +593,14 @@ export function UsageWidgetDetail({
         valueFormat="currency"
         inrRate={inrRate}
         displayCurrency={displayCurrency}
-        onCategory={(name) => setFocusModel(name)}
+        onCategory={(name) => {
+          const usesDayAxis = chart.data[0] != null && 'day' in chart.data[0]
+          const priceView = activeId === 'price_minute' || activeId === 'price_million'
+          if (usesDayAxis || priceView) return
+          if ((ops?.model_layers ?? []).some((layer) => layer.model === name)) {
+            setFocusModel(name)
+          }
+        }}
       />
     </div>
   )
@@ -630,7 +641,6 @@ function DrillFocusBar({
 export function ToolsMergedDetail({
   ops,
   calls,
-  runListBase,
   dateRange,
   allTime,
   onBack,
@@ -669,12 +679,12 @@ export function ToolsMergedDetail({
           Back
         </button>
         <h2 className="text-lg font-semibold text-gray-900">{leaf.name}</h2>
-        <PaginatedRunsTable
-          base={runListBase}
+        <PaginatedCallRunsTable
+          calls={filtered}
           title={insightMode === 'errors' ? 'Runs with tool failures' : 'Calls'}
           onOpenResult={onOpenResult}
         />
-        {filtered.length > 0 && (
+        {filtered.length > 8 && (
           <ul className="divide-y divide-gray-100 rounded-xl border border-gray-200 bg-white p-4 text-sm">
             {filtered.slice(0, 8).map((call) => (
               <li key={call.at} className="py-2">

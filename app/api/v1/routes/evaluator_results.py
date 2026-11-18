@@ -501,6 +501,7 @@ def list_evaluator_results(
     ),
     playground: Optional[bool] = Query(None, description="If true, only return playground test results (evaluator_id is NULL). If false, exclude playground results. If not provided, exclude playground results by default."),
     test_agents_only: Optional[bool] = Query(None, description="If true, only return Test Agent results (no provider_platform). If false, include all playground results."),
+    metric_id: Optional[str] = Query(None, description="Only runs that have a score entry for this metric id"),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
@@ -526,6 +527,7 @@ def list_evaluator_results(
             playground=playground,
             test_agents_only=test_agents_only,
             unassigned_only=unassigned_only,
+            metric_id=metric_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
