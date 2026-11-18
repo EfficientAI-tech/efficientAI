@@ -11,8 +11,6 @@ import { useLicenseStore } from '../../../store/licenseStore'
 
 import { useWorkspaceStore } from '../../../store/workspaceStore'
 
-import ResultsHierarchyNav from './ResultsHierarchyNav'
-
 import ResultsRunsList from './ResultsRunsList'
 
 import ResultsDrillPath, { type ResultsDrillCrumb } from './ResultsDrillPath'
@@ -759,10 +757,6 @@ export default function ResultsHub() {
 
     <div className="space-y-6">
 
-      <ResultsHierarchyNav crumbs={[{ label: 'Evaluation Results' }]} />
-
-
-
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
 
         <div>
@@ -771,7 +765,7 @@ export default function ResultsHub() {
 
           <p className="mt-2 text-sm text-gray-600">
 
-            Drill down by agent, suite, scenario, and when the call happened
+            Scores, duration, cost, and tool use for simulation and live runs.
 
           </p>
 
@@ -827,8 +821,8 @@ export default function ResultsHub() {
               type="button"
               onClick={() => setScopeFiltersOpen((open) => !open)}
               className={`inline-flex max-w-full items-center gap-2 rounded-lg border px-2.5 py-1 text-xs font-medium ${scopeFiltersOpen || scopeActive
-                  ? 'border-primary-300 bg-primary-50 text-primary-800'
-                  : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
+                ? 'border-primary-300 bg-primary-50 text-primary-800'
+                : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
                 }`}
               aria-expanded={scopeFiltersOpen}
             >

@@ -2413,11 +2413,19 @@ export interface DashboardOpsModelLayer {
   usd_per_million_tokens?: number | null
 }
 
+export interface DashboardOpsPriceDay {
+  day: string
+  model: string
+  usd_per_minute?: number | null
+  usd_per_million_tokens?: number | null
+}
+
 export interface EvaluatorResultsDashboardOpsResponse {
   cost_by_agent: DashboardOpsCostByAgent[]
   cost_by_model_day: DashboardOpsModelDay[]
   cost_by_agent_day: DashboardOpsAgentDay[]
   model_layers: DashboardOpsModelLayer[]
+  price_by_day?: DashboardOpsPriceDay[]
   tool_calls_by_agent_day: DashboardOpsToolAgentDay[]
   tool_calls_by_tool: DashboardOpsToolByTool[]
   tool_calls_per_run: DashboardOpsToolCallsPerRun[]

@@ -23,7 +23,10 @@ export interface ChartModel {
   data: Array<Record<string, string | number>>
   series: ChartSeries[]
   horizontal?: boolean
+  stacked?: boolean
 }
+
+const AGENT_BAR_COLORS = ['#2563eb', '#0d9488', '#f97316', '#7c3aed', '#ca8a04']
 
 type ScoreEntry = {
   value?: unknown
@@ -447,33 +450,55 @@ export function usageDetail(
 ): ChartModel {
   const layers = ops?.model_layers ?? []
   if (view === 'price_minute' || view === 'price_million') {
-    const key = view === 'price_minute' ? 'usd_per_minute' : 'usd_per_million_tokens'
-    const rows = layers.filter((row) => {
-      const rate = row[key]
+    const rateKey = view === 'price_minute' ? 'usd_per_minute' : 'usd_per_million_tokens'
+    const history = (ops?.price_by_day ?? []).filter((row) => {
+      const rate = row[rateKey]
       if (rate == null || rate <= 0) return false
       return !focus || row.model === focus
     })
-    const unique = new Map<string, number>()
-    for (const row of rows) {
-      const rate = row[key] ?? 0
-      if (!unique.has(row.model) || rate > (unique.get(row.model) ?? 0)) unique.set(row.model, rate)
+    const models = Array.from(new Set(history.map((row) => row.model)))
+    const byDay = new Map<string, Record<string, number>>()
+    for (const row of history) {
+      const bucket = byDay.get(row.day) ?? {}
+      bucket[row.model] = row[rateKey] ?? 0
+      byDay.set(row.day, bucket)
     }
+    const latest = models.map((model) => {
+      const points = history.filter((row) => row.model === model)
+      return points[points.length - 1]?.[rateKey] ?? 0
+    })
     return {
-      headline: formatUsd(unique.size ? Math.max(...unique.values()) : 0),
-      caption: view === 'price_minute' ? 'Current price per minute' : 'Current price per 1M tokens',
-      data: Array.from(unique.entries()).sort((a, b) => b[1] - a[1]).map(([name, rate]) => ({ name, rate })),
-      series: [{ key: 'rate', color: LAYER_LLM }],
-      horizontal: true,
+      headline: formatUsd(latest.length ? Math.max(...latest) : 0),
+      caption: view === 'price_minute' ? 'Price / minute going forward' : 'Price / 1M tokens going forward',
+      data: Array.from(byDay.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([day, values]) => ({
+        day: formatDayLabel(day),
+        ...values,
+      })),
+      series: models.map((model, index) => ({ key: model, color: AGENT_BAR_COLORS[index % AGENT_BAR_COLORS.length] })),
     }
   }
-  const rows = layers.filter((row) => row.usage_kind === view && (!focus || row.model === focus))
-  const total = rows.reduce((sum, row) => sum + row.cost_usd, 0)
+  const models = layers.filter((row) => row.usage_kind === view && (!focus || row.model === focus))
+  const agents = ops?.cost_by_agent ?? []
+  const data = models.map((model) => {
+    const point: Record<string, string | number> = { name: model.model }
+    for (const agent of agents) {
+      point[agent.agent_name] = agent.models
+        .filter((spend) => spend.model === model.model)
+        .reduce((sum, spend) => sum + spend.cost_usd, 0)
+    }
+    return point
+  })
+  const total = models.reduce((sum, row) => sum + row.cost_usd, 0)
   return {
     headline: formatUsd(total),
     caption: `${view.toUpperCase()} models`,
-    data: rows.map((row) => ({ name: row.model, cost: row.cost_usd })),
-    series: [{ key: 'cost', color: LAYER_LLM }],
-    horizontal: true,
+    data,
+    series: agents.map((agent, index) => ({
+      key: agent.agent_name,
+      color: AGENT_BAR_COLORS[index % AGENT_BAR_COLORS.length],
+      stack: 'agents',
+    })),
+    stacked: true,
   }
 }
 

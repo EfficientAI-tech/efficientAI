@@ -43,9 +43,11 @@ import {
 import {
   SAMPLE_AGENTS,
   SAMPLE_COMPLETED,
+  SAMPLE_DRILL_CALLS,
   SAMPLE_METRICS,
   SAMPLE_OPS,
   SAMPLE_RESULTS,
+  type DashboardDrillCall,
 } from './resultsDashboardSample'
 import {
   agentCostCard,
@@ -403,8 +405,10 @@ export default function ResultsDashboardTab({
       <PlatformDetail
         section={detail.section}
         ops={ops}
+        calls={sampleOn ? SAMPLE_DRILL_CALLS : drillCallsFromResults(results)}
         onBack={() => setDetail(null)}
         onOpenRuns={onOpenRuns}
+        onOpenResult={onOpenResult}
       />
     )
   }
@@ -606,6 +610,12 @@ export default function ResultsDashboardTab({
           </SortableContext>
         </DndContext>
       )}
+      <MetricAgentsTable
+        agents={chartAgents}
+        results={results}
+        ops={ops}
+        onOpenAgent={(id) => setDetail({ kind: 'agent', agentId: id })}
+      />
     </div>
   )
 }
@@ -1082,7 +1092,7 @@ function PanelChart({
   display: ResultsChartType
   data: Array<Record<string, string | number>>
   series: Array<{ key: string; color: string; stack?: string }>
-  layout: 'horizontal' | 'vertical'
+  layout: 'horizontal' | 'vertical' | 'stacked'
   onPoint: (label: string, detail: string) => void
   onCategory: (name: string) => void
   listClassName?: string
@@ -1102,12 +1112,33 @@ function PanelChart({
   }
 
   const grid = <CartesianGrid stroke={GRID} vertical={false} />
-  const tooltip = (
-    <Tooltip
-      cursor={{ fill: '#f9fafb' }}
-      contentStyle={{ border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 12 }}
-    />
-  )
+  const tooltip = <Tooltip content={<BreakdownTooltip />} cursor={{ fill: '#f9fafb' }} />
+
+  if (layout === 'stacked') {
+    return (
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart layout="vertical" data={data} margin={{ top: 4, right: 12, left: 4, bottom: 4 }}>
+          <XAxis type="number" hide />
+          <YAxis type="category" dataKey="name" width={120} tick={{ fontSize: 11, fill: '#4b5563' }} />
+          <Tooltip content={<BreakdownTooltip />} cursor={{ fill: '#f9fafb' }} />
+          {series.map((item) => (
+            <Bar
+              key={item.key}
+              dataKey={item.key}
+              name={item.key}
+              stackId={item.stack ?? 'agents'}
+              fill={item.color}
+              barSize={18}
+              onClick={(state) => {
+                const name = (state as { name?: string })?.name
+                if (name) onCategory(name)
+              }}
+            />
+          ))}
+        </BarChart>
+      </ResponsiveContainer>
+    )
+  }
 
   if (layout === 'vertical') {
     const valueKey = series[0]?.key ?? 'count'
@@ -1410,6 +1441,7 @@ function ResultsDetailView({
     ? results.filter((row) => row.metric_scores?.[metric.metric_id]).slice(0, 12)
     : results.slice(0, 12)
   const [focusId, setFocusId] = useState<string | null>(null)
+  const [durationDisplay, setDurationDisplay] = useState<ResultsChartType>(widget?.display ?? 'line')
   const category = metric ? categorySeries.get(metric.metric_id) : undefined
   const categorical = Boolean(metric && isCategoricalMetric(metric) && (widget?.type === 'metric_trend' || widget?.type === 'metric_usage' || detail.kind === 'metric'))
   const baseViews = categorical && category
@@ -1465,6 +1497,20 @@ function ResultsDetailView({
                 ))}
               </div>
             )}
+            {widget?.type === 'avg_duration' && (
+              <div className="flex items-center rounded-lg border border-gray-200 bg-white p-0.5">
+                {(['line', 'area', 'bar'] as ResultsChartType[]).map((type) => (
+                  <button
+                    key={type}
+                    type="button"
+                    onClick={() => setDurationDisplay(type)}
+                    className={`rounded-md px-3 py-1.5 text-xs font-semibold ${durationDisplay === type ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-50'}`}
+                  >
+                    {CHART_TYPE_LABELS[type]}
+                  </button>
+                ))}
+              </div>
+            )}
             <button type="button" onClick={onOpenRuns} className="rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-medium text-white">
               View runs
             </button>
@@ -1478,10 +1524,11 @@ function ResultsDetailView({
             <Stat label="Skipped" value={formatHeadline(metric.skipped_count)} />
           </dl>
         )}
+        {widget?.type === 'avg_duration' && <DurationSummary results={results} />}
         {active && active.data.length > 0 && (
           <div className="mt-4 h-[320px] cursor-pointer [&_.recharts-surface]:cursor-pointer">
             <PanelChart
-              display={widget?.display ?? 'bar'}
+              display={widget?.type === 'avg_duration' ? durationDisplay : widget?.display ?? 'bar'}
               data={active.data}
               series={active.series}
               layout={active.horizontal ? 'vertical' : 'horizontal'}
@@ -1587,6 +1634,7 @@ function ResultsDetailView({
             </ul>
           </div>
         )}
+        {widget?.type === 'avg_duration' && <DurationBreakdown results={results} />}
         {agent && (
           <div className="mt-4 flex flex-wrap gap-2">
             <button type="button" onClick={() => onSelectAgent(agent.id)} className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50">
@@ -1640,6 +1688,167 @@ function ResultsDetailView({
           </ul>
         )}
       </section>
+    </div>
+  )
+}
+
+const AGENT_DOTS = ['#f97316', '#14b8a6', '#6366f1', '#ca8a04']
+type AgentColumn = 'metrics' | 'scenarios' | 'calls' | 'cost' | 'tools'
+
+function MetricAgentsTable({
+  agents,
+  results,
+  ops,
+  onOpenAgent,
+}: {
+  agents: EvaluatorResultsAgentSummary[]
+  results: EvaluatorResultRow[]
+  ops: EvaluatorResultsDashboardOpsResponse | undefined
+  onOpenAgent: (agentId: string) => void
+}) {
+  const [columns, setColumns] = useState<AgentColumn[]>(['metrics', 'scenarios'])
+  const labels: Record<AgentColumn, string> = {
+    metrics: 'No. of metrics',
+    scenarios: 'No. of scenarios',
+    calls: 'Calls',
+    cost: 'Cost',
+    tools: 'Tool calls',
+  }
+  const toggle = (column: AgentColumn) => {
+    setColumns((current) => current.includes(column) ? current.filter((item) => item !== column) : [...current, column])
+  }
+  const rows = agents.map((agent) => {
+    const runs = results.filter((row) => row.agent_id === agent.agent_id || row.agent?.id === agent.agent_id)
+    const metricIds = new Set<string>()
+    for (const run of runs) {
+      for (const id of Object.keys(run.metric_scores ?? {})) metricIds.add(id)
+    }
+    const scenarioCount = (agent.suites ?? []).reduce((sum, suite) => sum + (suite.scenarios?.length ?? 0), 0)
+    const cost = ops?.cost_by_agent.find((row) => row.agent_id === agent.agent_id)?.total_usd ?? 0
+    const tools = (ops?.tool_calls_per_run ?? []).find((row) => row.agent_id === agent.agent_id)?.calls
+      ?? (ops?.tool_calls_by_agent_day ?? []).filter((row) => row.agent_id === agent.agent_id).reduce((sum, row) => sum + row.calls, 0)
+    return {
+      id: agent.agent_id,
+      name: agent.agent_name,
+      metrics: metricIds.size,
+      scenarios: scenarioCount,
+      calls: agent.counts.total,
+      cost,
+      tools,
+    }
+  })
+  const order: AgentColumn[] = ['metrics', 'scenarios', 'calls', 'cost', 'tools']
+  const shown = order.filter((column) => columns.includes(column))
+  return (
+    <section className="rounded-xl border border-gray-200 bg-white shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-4 py-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Table</p>
+          <h3 className="text-sm font-semibold text-gray-900">Agents</h3>
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {order.map((column) => (
+            <button
+              key={column}
+              type="button"
+              onClick={() => toggle(column)}
+              className={`rounded-full px-2.5 py-1 text-xs font-medium ${columns.includes(column) ? 'bg-gray-900 text-white' : 'text-gray-500 hover:bg-gray-50'}`}
+            >
+              {labels[column]}
+            </button>
+          ))}
+        </div>
+      </div>
+      <table className="w-full text-left text-sm">
+        <thead className="text-xs text-gray-400">
+          <tr>
+            <th className="px-4 py-2 font-medium">Agents</th>
+            {shown.map((column) => (
+              <th key={column} className="px-4 py-2 text-right font-medium">{labels[column]}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => (
+            <tr key={row.id} className="border-t border-gray-100">
+              <td className="px-4 py-2.5">
+                <button type="button" onClick={() => onOpenAgent(row.id)} className="inline-flex items-center gap-2 font-medium text-gray-900 hover:text-primary-700">
+                  <span className="h-2 w-2 rounded-full" style={{ backgroundColor: AGENT_DOTS[index % AGENT_DOTS.length] }} />
+                  {row.name}
+                </button>
+              </td>
+              {shown.map((column) => (
+                <td key={column} className="px-4 py-2.5 text-right text-gray-700">
+                  {column === 'cost' ? formatUsd(row.cost) : row[column].toLocaleString()}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  )
+}
+
+function DurationSummary({ results }: { results: EvaluatorResultRow[] }) {
+  const values = results.map((row) => row.duration_seconds).filter((value): value is number => value != null)
+  if (!values.length) return null
+  const average = values.reduce((sum, value) => sum + value, 0) / values.length
+  return (
+    <p className="mt-2 text-sm text-gray-500">
+      Avg {formatDuration(average)} · shortest {formatDuration(Math.min(...values))} · longest {formatDuration(Math.max(...values))}
+    </p>
+  )
+}
+
+function DurationBreakdown({ results }: { results: EvaluatorResultRow[] }) {
+  const values = results.map((row) => row.duration_seconds).filter((value): value is number => value != null)
+  const edges = [0, 60, 90, 120, 150, 180, 240]
+  const buckets = edges.slice(0, -1).map((start, index) => {
+    const end = edges[index + 1]
+    const count = values.filter((value) => value >= start && value < end).length
+    return { name: `${start}–${end}s`, count }
+  }).filter((bucket) => bucket.count > 0)
+  const max = Math.max(...buckets.map((bucket) => bucket.count), 1)
+  const byScenario = new Map<string, { total: number; failed: number }>()
+  for (const row of results) {
+    const name = row.scenario?.name
+    if (!name) continue
+    const bucket = byScenario.get(name) ?? { total: 0, failed: 0 }
+    bucket.total += 1
+    if (row.status === 'failed') bucket.failed += 1
+    byScenario.set(name, bucket)
+  }
+  const scenarios = Array.from(byScenario.entries()).sort((a, b) => b[1].total - a[1].total)
+  return (
+    <div className="mt-4 space-y-4">
+      <div>
+        <h3 className="text-sm font-semibold text-gray-900">Distribution</h3>
+        <ul className="mt-3 space-y-2">
+          {buckets.map((bucket) => (
+            <li key={bucket.name} className="grid grid-cols-[7rem_minmax(0,1fr)_2rem] items-center gap-3 text-xs text-gray-600">
+              <span>{bucket.name}</span>
+              <span className="h-2 overflow-hidden rounded-full bg-gray-100">
+                <span className="block h-full rounded-full bg-gray-900" style={{ width: `${(bucket.count / max) * 100}%` }} />
+              </span>
+              <span className="text-right">{bucket.count}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div>
+        <h3 className="text-sm font-semibold text-gray-900">By scenario</h3>
+        <ul className="mt-2 divide-y divide-gray-100">
+          {scenarios.map(([name, stats]) => (
+            <li key={name} className="flex items-center justify-between py-2 text-sm text-gray-700">
+              <span className="truncate pr-3">{name}</span>
+              <span className="shrink-0 text-xs text-gray-500">
+                {stats.total} · {stats.total ? Math.round((stats.failed / stats.total) * 100) : 0}% fail
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   )
 }
@@ -1740,25 +1949,56 @@ function PlatformCard({
   )
 }
 
+function drillCallsFromResults(rows: EvaluatorResultRow[]): DashboardDrillCall[] {
+  return rows.map((row) => {
+    const raw = row.call_data?.tool_calls
+    const uses = Array.isArray(raw)
+      ? raw.flatMap((item) => {
+        if (!item || typeof item !== 'object') return []
+        const call = item as { tool?: string; provider?: string; side?: string; status?: string }
+        if (call.side && call.side !== 'production') return []
+        return [{ tool: String(call.tool || 'tool'), provider: String(call.provider || 'unknown'), failed: call.status === 'error' }]
+      })
+      : []
+    return {
+      at: row.timestamp,
+      agent: row.agent?.name || 'Agent',
+      title: row.name || row.result_id,
+      durationSeconds: row.duration_seconds ?? 0,
+      costUsd: 0,
+      tokens: 0,
+      model: '',
+      tool: uses[0]?.tool ?? '',
+      provider: uses[0]?.provider ?? '',
+      uses,
+      resultId: row.result_id || row.id,
+    }
+  })
+}
+
 function PlatformDetail({
   section,
   ops,
+  calls,
   onBack,
   onOpenRuns,
+  onOpenResult,
 }: {
   section: 'usage' | 'tool_calls' | 'tools'
   ops: EvaluatorResultsDashboardOpsResponse | undefined
+  calls: DashboardDrillCall[]
   onBack: () => void
   onOpenRuns: () => void
+  onOpenResult: (resultId: string) => void
 }) {
   const views = section === 'usage'
     ? [
-      { id: 'stt', label: 'STT' },
-      { id: 'tts', label: 'TTS' },
-      { id: 'llm', label: 'LLM' },
-      ...(usageHasS2S(ops) ? [{ id: 's2s', label: 'S2S' }] : []),
+      { id: 'stt', label: 'STT models' },
+      { id: 'tts', label: 'TTS models' },
+      { id: 'llm', label: 'LLM models' },
+      ...(usageHasS2S(ops) ? [{ id: 's2s', label: 'S2S models' }] : []),
       { id: 'price_minute', label: 'Price / minute' },
-      { id: 'price_million', label: 'Price / 1M' },
+      { id: 'price_million', label: 'Price / 1M tokens' },
     ]
     : section === 'tool_calls'
       ? [
@@ -1773,6 +2013,7 @@ function PlatformDetail({
       ]
   const [viewId, setViewId] = useState(views[0]?.id ?? 'main')
   const [focus, setFocus] = useState<string | null>(null)
+  const [leaf, setLeaf] = useState<{ kind: 'model' | 'use_case' | 'product'; name: string } | null>(null)
   const activeId = views.some((view) => view.id === viewId) ? viewId : views[0]?.id
   const chart = section === 'usage'
     ? usageDetail(ops, activeId, focus)
@@ -1782,9 +2023,35 @@ function PlatformDetail({
   const spend = section === 'usage' ? usageFacts(ops) : null
   const products = section === 'tools' ? toolFacts(ops) : null
   const title = section === 'usage' ? 'Usage' : section === 'tool_calls' ? 'Tool calls' : 'Tools'
-  const primary = views.slice(0, 3)
-  const extra = views.slice(3)
-  const extraActive = extra.some((view) => view.id === activeId)
+  const openLeaf = (name: string) => {
+    if (section === 'usage' && activeId !== 'price_minute' && activeId !== 'price_million') {
+      setLeaf({ kind: 'model', name })
+      return
+    }
+    if (section === 'tool_calls' && activeId === 'use_cases') {
+      setLeaf({ kind: 'use_case', name })
+      return
+    }
+    if (section === 'tools' && activeId === 'share') {
+      setLeaf({ kind: 'product', name })
+      return
+    }
+    setFocus(name)
+  }
+
+  if (leaf) {
+    return (
+      <ChartLeaf
+        kind={leaf.kind}
+        name={leaf.name}
+        ops={ops}
+        calls={calls}
+        onBack={() => setLeaf(null)}
+        onOpenRelated={(next) => setLeaf(next)}
+        onOpenResult={onOpenResult}
+      />
+    )
+  }
 
   return (
     <div className="space-y-4">
@@ -1800,8 +2067,8 @@ function PlatformDetail({
             {chart.caption && <p className="mt-1 text-sm text-gray-500">{chart.caption}</p>}
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center rounded-lg bg-gray-100 p-0.5">
-              {primary.map((view) => (
+            <div className="flex flex-wrap items-center gap-0.5 rounded-lg border border-gray-200 bg-gray-50 p-0.5">
+              {views.map((view) => (
                 <button
                   key={view.id}
                   type="button"
@@ -1809,29 +2076,16 @@ function PlatformDetail({
                     setFocus(null)
                     setViewId(view.id)
                   }}
-                  className={`rounded-md px-2.5 py-1 text-xs font-medium ${activeId === view.id ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}
+                  className={`rounded-md px-2.5 py-1 text-xs font-medium ${activeId === view.id
+                    ? 'border border-primary-200 bg-white text-primary-800 shadow-sm'
+                    : 'border border-transparent text-gray-600 hover:text-gray-900'
+                    }`}
                 >
                   {view.label}
                 </button>
               ))}
             </div>
-            {extra.length > 0 && (
-              <select
-                value={extraActive ? activeId : ''}
-                onChange={(event) => {
-                  if (!event.target.value) return
-                  setFocus(null)
-                  setViewId(event.target.value)
-                }}
-                className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700"
-              >
-                <option value="">More</option>
-                {extra.map((view) => (
-                  <option key={view.id} value={view.id}>{view.label}</option>
-                ))}
-              </select>
-            )}
-            <button type="button" onClick={onOpenRuns} className="rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-medium text-white">
+            <button type="button" onClick={onOpenRuns} className="rounded-md bg-primary-700 px-2.5 py-1 text-xs font-medium text-white hover:bg-primary-800">
               View runs
             </button>
           </div>
@@ -1840,13 +2094,13 @@ function PlatformDetail({
         {chart.data.length > 0 && (
           <div className="mt-4 h-[320px] cursor-pointer [&_.recharts-surface]:cursor-pointer">
             <PanelChart
-              display={chart.horizontal ? 'bar' : 'line'}
+              display={chart.stacked || chart.horizontal ? 'bar' : 'line'}
               data={chart.data}
               series={chart.series}
-              layout={chart.horizontal ? 'vertical' : 'horizontal'}
+              layout={chart.stacked ? 'stacked' : chart.horizontal ? 'vertical' : 'horizontal'}
               listClassName="max-h-[320px]"
               onPoint={() => undefined}
-              onCategory={(name) => setFocus(name)}
+              onCategory={openLeaf}
             />
           </div>
         )}
@@ -1856,6 +2110,183 @@ function PlatformDetail({
           </button>
         )}
       </section>
+    </div>
+  )
+}
+
+function callUses(call: DashboardDrillCall): Array<{ tool: string; provider: string; failed: boolean }> {
+  if (call.uses?.length) return call.uses
+  if (!call.tool && !call.provider) return []
+  return [{ tool: call.tool, provider: call.provider, failed: false }]
+}
+
+function ChartLeaf({
+  kind,
+  name,
+  ops,
+  calls,
+  onBack,
+  onOpenRelated,
+  onOpenResult,
+}: {
+  kind: 'model' | 'use_case' | 'product'
+  name: string
+  ops: EvaluatorResultsDashboardOpsResponse | undefined
+  calls: DashboardDrillCall[]
+  onBack: () => void
+  onOpenRelated: (next: { kind: 'model' | 'use_case' | 'product'; name: string }) => void
+  onOpenResult: (resultId: string) => void
+}) {
+  const layer = ops?.model_layers.find((row) => row.model === name)
+  const matched = calls.filter((call) => {
+    const uses = callUses(call)
+    if (kind === 'model') return call.model === name
+    if (kind === 'use_case') return uses.some((use) => use.tool === name) || call.tool === name
+    return uses.some((use) => use.provider === name) || call.provider === name
+  })
+  const rows = (matched.length ? matched : []).slice().sort((a, b) => b.tokens - a.tokens || b.costUsd - a.costUsd)
+  const byDay = new Map<string, number>()
+  for (const call of rows) {
+    const day = call.at.slice(0, 10)
+    const uses = callUses(call).filter((use) => kind === 'product' ? use.provider === name : kind === 'use_case' ? use.tool === name : true)
+    byDay.set(day, (byDay.get(day) ?? 0) + (kind === 'model' ? call.costUsd : Math.max(uses.length, 1)))
+  }
+  const series = Array.from(byDay.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([day, value]) => ({
+    day: new Date(`${day}T12:00:00`).toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' }),
+    value: Number(value.toFixed(3)),
+  }))
+  const unit = layer?.usd_per_minute ? '$ / minute' : layer?.usd_per_million_tokens ? '$ / 1M tokens' : 'usage'
+  const useCaseCounts = new Map<string, { calls: number; failed: number }>()
+  const hostCounts = new Map<string, number>()
+  for (const call of rows) {
+    for (const use of callUses(call)) {
+      if (kind === 'product' && use.provider === name) {
+        const bucket = useCaseCounts.get(use.tool) ?? { calls: 0, failed: 0 }
+        bucket.calls += 1
+        if (use.failed) bucket.failed += 1
+        useCaseCounts.set(use.tool, bucket)
+      }
+      if (kind === 'use_case' && use.tool === name) {
+        hostCounts.set(use.provider, (hostCounts.get(use.provider) ?? 0) + 1)
+      }
+    }
+  }
+  const useCases = Array.from(useCaseCounts.entries()).sort((a, b) => b[1].calls - a[1].calls)
+  const host = Array.from(hostCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0]
+  const eyebrow = kind === 'model' ? 'Model' : kind === 'use_case' ? 'Use case' : 'Tool'
+  const subtitle = kind === 'model' ? `${(layer?.usage_kind || 'model').toUpperCase()} · ${unit}` : kind === 'use_case' ? 'What the agent asked the tool to do' : 'Product the agents connect to'
+  const listTitle = kind === 'product' ? 'Calls using this tool' : kind === 'use_case' ? 'Calls using this use case' : 'Calls · most tokens first'
+
+  return (
+    <div className="space-y-4">
+      <button type="button" onClick={onBack} className="inline-flex items-center gap-1 text-sm font-medium text-gray-600 hover:text-gray-900">
+        <ArrowLeft className="h-4 w-4" />
+        Back
+      </button>
+      <div>
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">{eyebrow}</p>
+        <h2 className="text-lg font-semibold text-gray-900">{name}</h2>
+        <p className="mt-1 text-sm text-gray-500">{subtitle}</p>
+        {kind === 'use_case' && host && (
+          <button type="button" onClick={() => onOpenRelated({ kind: 'product', name: host })} className="mt-1 text-sm font-medium text-primary-700 hover:underline">
+            Runs on {host}
+          </button>
+        )}
+      </div>
+      {useCases.length > 0 && (
+        <section className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+          <h3 className="text-sm font-semibold text-gray-900">Use cases on this tool</h3>
+          <ul className="mt-3 divide-y divide-gray-100">
+            {useCases.map(([tool, stats]) => (
+              <li key={tool}>
+                <button type="button" onClick={() => onOpenRelated({ kind: 'use_case', name: tool })} className="flex w-full items-center justify-between py-2 text-left text-sm text-gray-800 hover:text-primary-700">
+                  <span>{tool}</span>
+                  <span className="text-xs text-gray-500">{stats.calls} uses{stats.failed ? ` · ${stats.failed} failed` : ''}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      <section className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+        <p className="mb-2 text-sm font-medium text-gray-900">Usage over time</p>
+        {series.length > 0 && (
+          <div className="h-64">
+            <PanelChart
+              display="area"
+              data={series}
+              series={[{ key: 'value', color: PRIMARY }]}
+              layout="horizontal"
+              onPoint={() => undefined}
+              onCategory={() => undefined}
+            />
+          </div>
+        )}
+      </section>
+      <section className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-gray-900">{listTitle}</h3>
+        <ul className="mt-3 divide-y divide-gray-100">
+          {rows.map((call) => {
+            const uses = callUses(call).filter((use) => kind === 'product' ? use.provider === name : kind === 'use_case' ? use.tool === name : true)
+            const failed = uses.filter((use) => use.failed).length
+            const names = Array.from(new Set(uses.map((use) => use.tool).filter(Boolean)))
+            const detail = uses.length
+              ? `${uses.length} use${uses.length === 1 ? '' : 's'}${failed ? ` · ${failed} failed` : ''}${kind === 'product' && names.length ? ` · ${names.join(', ')}` : ''}`
+              : null
+            return (
+              <li key={`${call.at}-${call.agent}-${call.title}`}>
+                <button
+                  type="button"
+                  onClick={() => call.resultId && onOpenResult(call.resultId)}
+                  className="flex w-full flex-wrap items-center justify-between gap-3 py-2 text-left text-sm text-gray-700 hover:text-gray-900"
+                >
+                  <span className="min-w-0">
+                    <span className="block text-xs text-gray-500">{formatCallTime(call.at)} · {call.agent}</span>
+                    <span className="block truncate font-medium text-gray-900">{call.title}</span>
+                    {detail && <span className="block text-xs text-gray-500">{detail}</span>}
+                  </span>
+                  <span className="shrink-0 text-xs text-gray-500">
+                    {formatDuration(call.durationSeconds)}
+                    {call.costUsd ? ` · ${formatUsd(call.costUsd)}` : ''}
+                    {call.tokens ? ` · ${call.tokens.toLocaleString()} tok` : ''}
+                  </span>
+                </button>
+              </li>
+            )
+          })}
+        </ul>
+      </section>
+    </div>
+  )
+}
+
+function formatCallTime(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return iso
+  return date.toLocaleString(undefined, { day: '2-digit', month: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+function BreakdownTooltip({
+  active,
+  payload,
+  label,
+}: {
+  active?: boolean
+  payload?: Array<{ name?: string; value?: number | string; color?: string }>
+  label?: string | number
+}) {
+  if (!active || !payload?.length) return null
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs shadow-md">
+      <p className="mb-1 font-semibold text-gray-900">{label}</p>
+      {payload.map((item) => {
+        const value = typeof item.value === 'number' ? item.value.toFixed(2) : item.value
+        return (
+          <p key={item.name} className="font-medium" style={{ color: item.color ?? '#374151' }}>
+            {item.name}: {value}
+          </p>
+        )
+      })}
     </div>
   )
 }

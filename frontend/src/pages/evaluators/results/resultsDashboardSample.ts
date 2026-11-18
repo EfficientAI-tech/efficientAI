@@ -51,8 +51,13 @@ export const SAMPLE_OPS: EvaluatorResultsDashboardOpsResponse = {
     simulator_usd: 0.18 + index * 0.04,
     judge_usd: 0.12 + index * 0.03,
     models: [
-      { model: 'gpt-4.1', role: 'agent', cost_usd: 0.9 - index * 0.15 },
-      { model: 'whisper', role: 'agent', cost_usd: 0.2 },
+      { model: 'whisper', role: 'agent', cost_usd: [60.48, 9, 15.25][index] ?? 10 },
+      { model: 'nova-2', role: 'agent', cost_usd: [22, 31, 8][index] ?? 10 },
+      { model: 'eleven-flash', role: 'agent', cost_usd: [28, 14, 19][index] ?? 10 },
+      { model: 'cartesia', role: 'agent', cost_usd: [11, 24, 16][index] ?? 8 },
+      { model: 'gpt-4.1', role: 'agent', cost_usd: [48, 21, 17][index] ?? 12 },
+      { model: 'gpt-4o-mini', role: 'agent', cost_usd: [18, 36, 9][index] ?? 8 },
+      { model: 'gpt-4o-realtime', role: 'agent', cost_usd: [6, 27, 4][index] ?? 5 },
     ],
   })).map((row) => ({
     ...row,
@@ -100,6 +105,14 @@ export const SAMPLE_OPS: EvaluatorResultsDashboardOpsResponse = {
     { model: 'gpt-4o-mini', usage_kind: 'llm', cost_usd: 0.24, usd_per_minute: null, usd_per_million_tokens: 0.15 },
     { model: 'gpt-4o-realtime', usage_kind: 's2s', cost_usd: 1.15, usd_per_minute: 0.06, usd_per_million_tokens: 5 },
   ],
+  price_by_day: DAYS.flatMap((day, index) => [
+    { day, model: 'whisper', usd_per_minute: wave(index, 0.006, 0.001), usd_per_million_tokens: null },
+    { day, model: 'nova-2', usd_per_minute: wave(index + 1, 0.004, 0.0008), usd_per_million_tokens: null },
+    { day, model: 'eleven-flash', usd_per_minute: wave(index + 2, 0.12, 0.01), usd_per_million_tokens: null },
+    { day, model: 'gpt-4.1', usd_per_minute: null, usd_per_million_tokens: wave(index, 2, 0.15) },
+    { day, model: 'gpt-4o-mini', usd_per_minute: null, usd_per_million_tokens: wave(index + 1, 0.15, 0.02) },
+    { day, model: 'gpt-4o-realtime', usd_per_minute: wave(index + 3, 0.06, 0.008), usd_per_million_tokens: wave(index + 2, 5, 0.2) },
+  ]),
   tool_calls_by_agent_day: DAYS.flatMap((day, index) =>
     AGENTS.map((agent, agentIndex) => ({
       day,
@@ -170,6 +183,10 @@ export const SAMPLE_RESULTS: EvaluatorResultRow[] = DAYS.flatMap((day, dayIndex)
           [METRICS.outcome]: { value: outcome, type: 'classification', metric_name: 'Call outcome', chosen_child_name: outcome },
         }) as EvaluatorResultRow['metric_scores'],
       agent: { id: agent.id, name: agent.name },
+      scenario: {
+        id: `${agent.id}-scenario`,
+        name: ['Refund request after failed delivery', 'Identity verification fails twice', 'Product demo follow-up', 'Plan upgrade with discount question', 'Frustrated caller, repeated issue'][(dayIndex + agentIndex) % 5],
+      },
     }
   }),
 )
@@ -287,3 +304,53 @@ export const SAMPLE_AGENTS: EvaluatorResultsAgentSummary[] = [
 ]
 
 export const SAMPLE_COMPLETED = SAMPLE_RESULTS.filter((row) => row.status === 'completed').length
+
+const CALL_TITLES = [
+  'Plan upgrade with discount question',
+  'Identity verification fails twice',
+  'Frustrated caller, repeated issue',
+  'Product demo follow-up',
+  'Refund request after failed delivery',
+]
+
+export type DashboardDrillCall = {
+  at: string
+  agent: string
+  title: string
+  durationSeconds: number
+  costUsd: number
+  tokens: number
+  model: string
+  tool: string
+  provider: string
+  uses?: Array<{ tool: string; provider: string; failed: boolean }>
+  resultId?: string
+}
+
+export const SAMPLE_DRILL_CALLS: DashboardDrillCall[] = DAYS.flatMap((day, dayIndex) =>
+  AGENTS.map((agent, agentIndex) => {
+    const models = ['whisper', 'nova-2', 'eleven-flash', 'gpt-4.1', 'gpt-4o-mini', 'gpt-4o-realtime']
+    const tools = ['lookup_order', 'process_refund', 'verify_identity', 'check_balance', 'schedule_callback', 'apply_discount']
+    const providers = ['postgres', 'stripe', 'zendesk', 'slack']
+    const tokens = 5500 - dayIndex * 280 - agentIndex * 420
+    const provider = providers[(dayIndex + agentIndex * 2) % providers.length]
+    const tool = tools[(dayIndex + agentIndex) % tools.length]
+    const uses = [0, 1, 2].slice(0, 1 + ((dayIndex + agentIndex) % 3)).map((offset) => ({
+      tool: tools[(dayIndex + agentIndex + offset) % tools.length],
+      provider: offset === 0 ? provider : providers[(dayIndex + offset) % providers.length],
+      failed: offset === 2 && dayIndex % 2 === 0,
+    }))
+    return {
+      at: `${day}T${String(8 + agentIndex).padStart(2, '0')}:${String((dayIndex * 7) % 60).padStart(2, '0')}:00.000Z`,
+      agent: agent.name,
+      title: CALL_TITLES[(dayIndex + agentIndex) % CALL_TITLES.length],
+      durationSeconds: 130 + dayIndex * 6 + agentIndex * 11,
+      costUsd: Math.round((0.08 + (tokens / 20000)) * 1000) / 1000,
+      tokens,
+      model: models[(dayIndex + agentIndex) % models.length],
+      tool,
+      provider,
+      uses,
+    }
+  }),
+)
