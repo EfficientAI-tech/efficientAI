@@ -664,6 +664,16 @@ export function toolsDetail(
     }
   }
   if (view === 'by_agent') {
+    if (mode === 'errors') {
+      const ranked = toolAgentTotals(ops, 'errors')
+      return {
+        headline: ranked.reduce((sum, row) => sum + row.errors, 0).toLocaleString(),
+        caption: 'Tool failures by agent',
+        data: ranked.map((row) => ({ name: row.agent_name, errors: row.errors })),
+        series: [{ key: 'errors', color: '#dc2626' }],
+        horizontal: true,
+      }
+    }
     const rows = (ops?.provider_by_agent ?? []).filter((row) => !focus || row.provider === focus || row.agent_name === focus || row.agent_id === focus)
     const byAgent = new Map<string, Record<string, number>>()
     const keys = new Set<string>()

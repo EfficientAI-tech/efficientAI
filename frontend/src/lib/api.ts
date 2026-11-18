@@ -5046,6 +5046,7 @@ class ApiClient {
   async getEvaluatorResultsOverview(params?: {
     agentId?: string
     suiteId?: string
+    scenarioId?: string
     since?: string
     until?: string
     playground?: boolean
@@ -5053,6 +5054,7 @@ class ApiClient {
     const query: Record<string, string> = {}
     if (params?.agentId) query.agent_id = params.agentId
     if (params?.suiteId) query.suite_id = params.suiteId
+    if (params?.scenarioId) query.scenario_id = params.scenarioId
     if (params?.since) query.since = params.since
     if (params?.until) query.until = params.until
     if (params?.playground !== undefined) query.playground = String(params.playground)

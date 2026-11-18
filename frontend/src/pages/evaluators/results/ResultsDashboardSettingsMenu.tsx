@@ -1,5 +1,19 @@
 import { useEffect, useRef, type ReactNode } from 'react'
-import { Plus, RotateCcw, Settings2 } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
+import {
+  BarChart3,
+  Check,
+  Clock,
+  Coins,
+  Grid3x3,
+  LineChart,
+  PieChart,
+  Plus,
+  RotateCcw,
+  Settings2,
+  TrendingDown,
+  Wrench,
+} from 'lucide-react'
 import type { CallImportMetricAggregate } from '../../../types/api'
 import {
   ADDABLE_WIDGETS,
@@ -10,6 +24,20 @@ import {
 import { resultsScopeTheme } from './resultsScopeTheme'
 
 type SourceMode = 'simulation' | 'live'
+
+const WIDGET_PICKER_META: Partial<
+  Record<ResultsWidgetType, { icon: LucideIcon; blurb: string }>
+> = {
+  total_calls: { icon: BarChart3, blurb: 'Run counts per agent' },
+  tools: { icon: Wrench, blurb: 'Products, share, and use cases' },
+  usage: { icon: Coins, blurb: 'Pre-prod LLM spend in window' },
+  completion: { icon: PieChart, blurb: 'Completed vs failed over time' },
+  avg_duration: { icon: Clock, blurb: 'Mean call length by day' },
+  metric_usage: { icon: LineChart, blurb: 'Which agents scored metrics' },
+  lowest_metrics: { icon: TrendingDown, blurb: 'Bottom mean scores' },
+  scenarios_by_agent: { icon: Grid3x3, blurb: 'Stacked scenarios per agent' },
+  metric_trend: { icon: LineChart, blurb: 'Daily average for one metric' },
+}
 
 type ResultsDashboardSettingsMenuProps = {
   open: boolean
@@ -54,14 +82,22 @@ export default function ResultsDashboardSettingsMenu({
     return () => document.removeEventListener('mousedown', onDoc)
   }, [open, onOpenChange, setAddOpen])
 
+  const isWidgetVisible = (type: ResultsWidgetType, metricId?: string) =>
+    widgets.some(
+      (widget) =>
+        widget.type === type
+        && !widget.hidden
+        && (metricId == null || widget.metricId === metricId),
+    )
+
   return (
     <div ref={rootRef} className="relative">
       <button
         type="button"
         onClick={() => onOpenChange(!open)}
         className={`inline-flex max-w-full items-center gap-2 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors ${settingsActive
-            ? theme.pillActive
-            : 'border-gray-200 bg-white text-gray-600 hover:bg-[#fefce8] hover:text-[#854d0e]'
+          ? theme.pillActive
+          : 'border-gray-200 bg-white text-gray-600 hover:bg-[#fefce8] hover:text-[#854d0e]'
           }`}
         aria-expanded={open}
       >
@@ -74,7 +110,7 @@ export default function ResultsDashboardSettingsMenu({
 
       {open ? (
         <div
-          className={`absolute right-0 top-full z-50 mt-1.5 w-[min(100vw-2rem,20rem)] rounded-xl border border-gray-200 bg-white p-3 shadow-xl ring-1 ring-[#fde047]/40 ${theme.focusRing}`}
+          className={`absolute right-0 top-full z-50 mt-1.5 w-[min(100vw-2rem,22rem)] rounded-xl border border-gray-200 bg-white p-3 shadow-xl ring-1 ring-[#fde047]/40 ${theme.focusRing}`}
           role="dialog"
           aria-label="Dashboard settings"
         >
@@ -88,8 +124,8 @@ export default function ResultsDashboardSettingsMenu({
                   type="button"
                   onClick={() => onSourceChange(item)}
                   className={`rounded-md px-2 py-0.5 text-[11px] font-medium ${source === item
-                      ? 'bg-white text-gray-900 shadow-sm'
-                      : 'text-gray-500 hover:text-gray-800'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-800'
                     }`}
                 >
                   {item === 'simulation' ? 'Simulations' : 'Live'}
@@ -105,6 +141,7 @@ export default function ResultsDashboardSettingsMenu({
                 onClick={() => setAddOpen((value) => !value)}
                 className={`inline-flex flex-1 items-center justify-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${addOpen ? theme.pillActive : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
                   }`}
+                aria-expanded={addOpen}
               >
                 <Plus className="h-3.5 w-3.5" />
                 Add chart
@@ -123,59 +160,60 @@ export default function ResultsDashboardSettingsMenu({
             </div>
 
             {addOpen ? (
-              <div className="mt-2 max-h-48 overflow-y-auto rounded-lg border border-gray-100 bg-[#fefce8]/40 p-1">
-                <p className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400">Charts</p>
-                <div className="space-y-0.5">
+              <div className="mt-2.5 rounded-xl border border-[#fde047]/50 bg-gradient-to-b from-[#fefce8]/80 to-white p-2 shadow-inner">
+                <p className="px-1 pb-1.5 text-[10px] leading-snug text-gray-500">
+                  Pick a chart to drop on the grid. Options already on the dashboard are dimmed.
+                </p>
+                <div className="max-h-52 space-y-1 overflow-y-auto pr-0.5">
                   {ADDABLE_WIDGETS.flatMap((type) => {
                     if (type === 'metric_trend') {
                       if (!metrics.length) {
-                        return (
-                          <button
-                            key={type}
-                            type="button"
+                        return [
+                          <ChartPickerRow
+                            key="metric_trend_empty"
+                            label="Metric trend"
+                            blurb="Add metrics to your workspace first"
+                            icon={LineChart}
                             disabled
-                            className="block w-full rounded-md px-2 py-1.5 text-left text-xs text-gray-300"
-                          >
-                            Metric trend
-                          </button>
-                        )
+                          />,
+                        ]
                       }
                       return [
-                        <p
-                          key="metric-trend-label"
-                          className="px-2 pb-0.5 pt-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400"
-                        >
-                          Metric trend
-                        </p>,
-                        ...metrics.map((metric) => {
-                          const alreadyVisible = widgets.some(
-                            (widget) => widget.type === 'metric_trend' && widget.metricId === metric.metric_id && !widget.hidden,
-                          )
-                          return (
-                            <button
-                              key={metric.metric_id}
-                              type="button"
-                              disabled={alreadyVisible}
-                              onClick={() => onAddWidget('metric_trend', metric.metric_id)}
-                              className="block w-full rounded-md px-2 py-1.5 text-left text-xs text-gray-700 hover:bg-white disabled:text-gray-300"
-                            >
-                              {metric.metric_name}
-                            </button>
-                          )
-                        }),
+                        <div key="metric-trend-heading" className="pt-1">
+                          <p className="px-1 pb-1 text-[10px] font-semibold uppercase tracking-wide text-[#854d0e]/70">
+                            Metric trend
+                          </p>
+                          <div className="space-y-1">
+                            {metrics.map((metric) => {
+                              const added = isWidgetVisible('metric_trend', metric.metric_id)
+                              return (
+                                <ChartPickerRow
+                                  key={metric.metric_id}
+                                  label={metric.metric_name}
+                                  blurb="Daily score trend"
+                                  icon={LineChart}
+                                  disabled={added}
+                                  added={added}
+                                  onClick={() => onAddWidget('metric_trend', metric.metric_id)}
+                                />
+                              )
+                            })}
+                          </div>
+                        </div>,
                       ]
                     }
-                    const alreadyVisible = widgets.some((widget) => widget.type === type && !widget.hidden)
+                    const added = isWidgetVisible(type)
+                    const meta = WIDGET_PICKER_META[type]
                     return (
-                      <button
+                      <ChartPickerRow
                         key={type}
-                        type="button"
-                        disabled={alreadyVisible}
+                        label={WIDGET_LABELS[type]}
+                        blurb={meta?.blurb ?? 'Dashboard chart'}
+                        icon={meta?.icon ?? BarChart3}
+                        disabled={added}
+                        added={added}
                         onClick={() => onAddWidget(type)}
-                        className="block w-full rounded-md px-2 py-1.5 text-left text-xs text-gray-700 hover:bg-white disabled:text-gray-300"
-                      >
-                        {WIDGET_LABELS[type]}
-                      </button>
+                      />
                     )
                   })}
                 </div>
@@ -185,6 +223,62 @@ export default function ResultsDashboardSettingsMenu({
         </div>
       ) : null}
     </div>
+  )
+}
+
+function ChartPickerRow({
+  label,
+  blurb,
+  icon: Icon,
+  disabled,
+  added,
+  onClick,
+}: {
+  label: string
+  blurb: string
+  icon: LucideIcon
+  disabled?: boolean
+  added?: boolean
+  onClick?: () => void
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={`group flex w-full items-center gap-2 rounded-md border px-1.5 py-1.5 text-left transition-all ${disabled
+        ? 'cursor-not-allowed border-transparent bg-gray-50/80'
+        : 'border-gray-200/80 bg-white hover:border-primary-300 hover:bg-primary-50/40'
+        }`}
+    >
+      <span
+        className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md ${disabled ? 'bg-gray-100 text-gray-400' : 'bg-primary-100 text-primary-900'
+          }`}
+      >
+        <Icon className="h-3 w-3" aria-hidden />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex flex-wrap items-center gap-1">
+          <span className={`text-xs font-medium leading-tight ${disabled ? 'text-gray-400' : 'text-gray-900'}`}>
+            {label}
+          </span>
+          {added ? (
+            <span className="inline-flex items-center gap-0.5 rounded-full bg-gray-200/80 px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-gray-600">
+              <Check className="h-2 w-2" aria-hidden />
+              On board
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-0.5 rounded-full bg-primary-100 px-1 py-px text-[9px] font-semibold text-primary-900 opacity-0 transition-opacity group-hover:opacity-100">
+              <Plus className="h-2 w-2" aria-hidden />
+              Add
+            </span>
+          )}
+        </span>
+        <span className={`mt-px block text-[10px] leading-snug ${disabled ? 'text-gray-400' : 'text-gray-500'}`}>
+          {blurb}
+        </span>
+      </span>
+    </button>
   )
 }
 

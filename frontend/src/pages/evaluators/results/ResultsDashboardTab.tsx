@@ -1269,14 +1269,35 @@ function buildDetailViews(
     const completed = days.reduce((sum, day) => sum + day.completed, 0)
     const failed = days.reduce((sum, day) => sum + day.failed, 0)
     return [
-      { id: 'both', label: 'Both', headline: model.headline, caption: 'Completed and failed', data: model.data, series: model.series },
+      {
+        id: 'both',
+        label: 'Both',
+        headline: model.headline,
+        caption: 'Completed and failed',
+        data: days.map((day) => ({ day: day.day, sortKey: day.sortKey, completed: day.completed, failed: day.failed })),
+        series: model.series,
+      },
       { id: 'completed', label: 'Completed', headline: formatHeadline(completed), caption: 'Completed runs', data: days.map((day) => ({ day: day.day, sortKey: day.sortKey, completed: day.completed })), series: [{ key: 'completed', color: PRIMARY }] },
       { id: 'failed', label: 'Failed', headline: formatHeadline(failed), caption: 'Failed runs', data: days.map((day) => ({ day: day.day, sortKey: day.sortKey, failed: day.failed })), series: [{ key: 'failed', color: FAIL }] },
     ]
   }
   if (type === 'completion') {
     return [
-      { id: 'rate', label: 'Rate', headline: model.headline, caption: 'Completion rate', data: model.data, series: model.series },
+      {
+        id: 'rate',
+        label: 'Rate',
+        headline: model.headline,
+        caption: 'Completion rate',
+        data: days.map((day) => {
+          const denom = day.completed + day.failed
+          return {
+            day: day.day,
+            sortKey: day.sortKey,
+            rate: denom ? Math.round((day.completed / denom) * 100) : 0,
+          }
+        }),
+        series: model.series,
+      },
       { id: 'counts', label: 'Counts', headline: formatHeadline(days.reduce((sum, day) => sum + day.completed + day.failed, 0)), caption: 'Completed and failed counts', data: days.map((day) => ({ day: day.day, sortKey: day.sortKey, completed: day.completed, failed: day.failed })), series: [{ key: 'completed', color: PRIMARY, stack: 'runs' }, { key: 'failed', color: FAIL, stack: 'runs' }] },
     ]
   }
@@ -1540,9 +1561,31 @@ function ResultsDetailView({
   }, [drillCalls, focusId, widget?.type])
   const runInsight = usesRunInsightLayout(widget?.type) || detail.kind === 'agent'
   const drillDayActive = Boolean(drillSortKey || drillScenarioId)
-  const scopedRunTotal = detail.kind === 'agent' && agent
-    ? agent.total
-    : aggregateTotal
+  const scenarioCountsFromSample = drillDayActive
+  const scopedRunTotal = useMemo(() => {
+    if (detail.kind === 'agent' && agent) return agent.total
+    if (runListBase.scenarioId) {
+      const match = scenarioRows.find((row) => row.scenarioId === runListBase.scenarioId)
+      if (match) return match.count
+    }
+    if (runListBase.agentId) {
+      const match = agentRows.find((row) => row.id === runListBase.agentId)
+      if (match) return match.total
+    }
+    if (runListBase.suiteId && !runListBase.agentId) {
+      const suiteTotal = scenarioRows
+        .filter((row) => row.suiteId === runListBase.suiteId)
+        .reduce((sum, row) => sum + row.count, 0)
+      if (suiteTotal > 0) return suiteTotal
+    }
+    return aggregateTotal
+  }, [detail.kind, agent, runListBase, scenarioRows, agentRows, aggregateTotal])
+  const trendChartData = useMemo(() => {
+    if (!active?.data?.length) return []
+    if (!trendUsesDays || !drillSortKey) return active.data
+    const filtered = active.data.filter((point) => String(point.sortKey ?? '') === drillSortKey)
+    return filtered.length ? filtered : active.data
+  }, [active, trendUsesDays, drillSortKey])
   const scoreMetricId =
     metric?.metric_id ?? (detail.kind === 'metric' ? detail.metricId : undefined)
   const breakdownAgents = agentRows.map((row) => ({
@@ -1622,15 +1665,11 @@ function ResultsDetailView({
           </dl>
         )}
         {widget?.type === 'avg_duration' && <DurationSummary results={sliceResults} />}
-        {active && active.data.length > 0 && (
+        {active && trendChartData.length > 0 && (
           <div className="mt-4 h-[320px] cursor-pointer [&_.recharts-surface]:cursor-pointer">
             <PanelChart
               display={widget?.type === 'avg_duration' ? durationDisplay : widget?.display ?? 'bar'}
-              data={
-                drillSortKey && trendUsesDays
-                  ? active.data.filter((point) => String(point.sortKey ?? '') === drillSortKey)
-                  : active.data
-              }
+              data={trendChartData}
               series={active.series}
               layout={active.horizontal ? 'vertical' : 'horizontal'}
               listClassName="max-h-[320px]"
@@ -1767,7 +1806,7 @@ function ResultsDetailView({
             scenarioRows={scenarioRows.filter((row) => row.agentId === detail.agentId)}
             agentRows={[{ id: agent.id, name: agent.name }]}
             agentRunRows={breakdownAgents.filter((row) => row.id === detail.agentId)}
-            drillDayActive={drillDayActive}
+            scenarioCountsFromSample={scenarioCountsFromSample}
             windowRunTotal={scopedRunTotal}
             sampleSize={results.length}
             windowDurationBuckets={ops?.duration_buckets}
@@ -1797,7 +1836,7 @@ function ResultsDetailView({
             scenarioRows={scenarioRows}
             agentRows={agentRows.map((row) => ({ id: row.id, name: row.name }))}
             agentRunRows={breakdownAgents}
-            drillDayActive={drillDayActive}
+            scenarioCountsFromSample={scenarioCountsFromSample}
             windowRunTotal={scopedRunTotal}
             sampleSize={results.length}
             windowDurationBuckets={ops?.duration_buckets}
@@ -1822,7 +1861,7 @@ function ResultsDetailView({
           scenarioRows={scenarioRows}
           agentRows={agentRows.map((row) => ({ id: row.id, name: row.name }))}
           agentRunRows={breakdownAgents}
-          drillDayActive={drillDayActive}
+          scenarioCountsFromSample={scenarioCountsFromSample}
           windowRunTotal={scopedRunTotal}
           sampleSize={results.length}
           windowDurationBuckets={ops?.duration_buckets}

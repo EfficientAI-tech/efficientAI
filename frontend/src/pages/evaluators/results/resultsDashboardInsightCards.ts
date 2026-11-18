@@ -53,7 +53,12 @@ export function buildInsightCardModel(widget: ResultsWidget, source: InsightPane
     return {
       headline: formatDashboardHeadline(source.aggregateTotal),
       caption: 'Runs in window',
-      data: terminalDays.map((day) => ({ day: day.day, completed: day.completed, failed: day.failed })),
+      data: terminalDays.map((day) => ({
+        day: day.day,
+        sortKey: day.sortKey,
+        completed: day.completed,
+        failed: day.failed,
+      })),
       series: [
         { key: 'completed', color: PRIMARY, stack: 'runs' },
         { key: 'failed', color: FAIL, stack: 'runs' },
@@ -67,7 +72,11 @@ export function buildInsightCardModel(widget: ResultsWidget, source: InsightPane
       caption: 'Completed runs',
       data: terminalDays.map((day) => {
         const denom = day.completed + day.failed
-        return { day: day.day, rate: denom ? Math.round((day.completed / denom) * 100) : 0 }
+        return {
+          day: day.day,
+          sortKey: day.sortKey,
+          rate: denom ? Math.round((day.completed / denom) * 100) : 0,
+        }
       }),
       series: [{ key: 'rate', color: PRIMARY }],
     }

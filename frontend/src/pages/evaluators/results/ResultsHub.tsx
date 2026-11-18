@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { RefreshCw } from 'lucide-react'
 
-import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useIsFetching, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { apiClient } from '../../../lib/api'
 import { itemsOf } from '../../../lib/safeData'
@@ -39,6 +40,14 @@ import {
 
 import { dateRangeToSinceUntil, isoToDateInput } from './resultsDateRange'
 
+import {
+  hubSearchHasDateScope,
+  mergePersistedHubScope,
+  persistResultsHubQueryString,
+  readPersistedResultsHubQueryString,
+  resultsDetailHref,
+} from './resultsHubNavigation'
+
 import type {
   EvaluatorResultsAgentSummary,
   EvaluatorResultsScenarioSummary,
@@ -63,6 +72,7 @@ export default function ResultsHub() {
   const navigate = useNavigate()
 
   const queryClient = useQueryClient()
+  const runsListFetching = useIsFetching({ queryKey: ['evaluator-results'] }) > 0
 
   const [searchParams, setSearchParams] = useSearchParams()
 
@@ -74,8 +84,7 @@ export default function ResultsHub() {
 
   const [generateModalOpen, setGenerateModalOpen] = useState(false)
   const [scopeFiltersOpen, setScopeFiltersOpen] = useState(false)
-
-
+  const restoredHubScopeRef = useRef(false)
 
   const agentId = searchParams.get('agent') ?? ''
 
@@ -117,6 +126,22 @@ export default function ResultsHub() {
 
       : 'all'
 
+  useEffect(() => {
+    const qs = searchParams.toString()
+    if (qs) persistResultsHubQueryString(qs)
+  }, [searchParams])
+
+  useEffect(() => {
+    if (restoredHubScopeRef.current) return
+    restoredHubScopeRef.current = true
+    const persisted = readPersistedResultsHubQueryString()
+    if (!persisted) return
+    const saved = new URLSearchParams(persisted)
+    if (!hubSearchHasDateScope(saved)) return
+    if (hubSearchHasDateScope(searchParams)) return
+    setSearchParams(mergePersistedHubScope(searchParams, saved), { replace: true })
+  }, [searchParams, setSearchParams])
+
   const tabParam = searchParams.get('tab')
 
   const activeTab: HubTab =
@@ -151,10 +176,11 @@ export default function ResultsHub() {
     () => ({
       ...(agentId ? { agentId } : {}),
       ...(suiteId ? { suiteId } : {}),
+      ...(scenarioId ? { scenarioId } : {}),
       ...(dateBounds ? { since: dateBounds.since, until: dateBounds.until } : {}),
       playground: playgroundScope,
     }),
-    [agentId, suiteId, dateBounds, playgroundScope],
+    [agentId, suiteId, scenarioId, dateBounds, playgroundScope],
   )
 
 
@@ -167,7 +193,7 @@ export default function ResultsHub() {
 
     queryFn: () => apiClient.getEvaluatorResultsOverview(overviewParams),
 
-    enabled: activeTab !== 'dashboard' && (showScopeFilters || generateModalOpen),
+    enabled: showScopeFilters || generateModalOpen,
 
     staleTime: 60_000,
 
@@ -913,6 +939,19 @@ export default function ResultsHub() {
                 id={RESULTS_DASHBOARD_TOOLBAR_SLOT_ID}
                 className="ml-auto flex shrink-0 items-center justify-end"
               />
+            ) : activeTab === 'runs' ? (
+              <button
+                type="button"
+                onClick={() => {
+                  void queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })
+                  void queryClient.invalidateQueries({ queryKey: ['evaluator-results-overview'] })
+                }}
+                disabled={runsListFetching}
+                className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${runsListFetching ? 'animate-spin' : ''}`} aria-hidden />
+                Refresh
+              </button>
             ) : null}
           </div>
           {scopeFiltersOpen ? (
@@ -1005,11 +1044,7 @@ export default function ResultsHub() {
           onOpenRuns={() => setTab('runs')}
 
           onOpenResult={(resultId) => {
-
-            const qs = searchParams.toString()
-
-            navigate(`/results/${resultId}${qs ? `?from=${encodeURIComponent(`/results?${qs}`)}` : ''}`)
-
+            navigate(resultsDetailHref(resultId, searchParams.toString()))
           }}
 
           onDashboardAgents={setDashboardAgents}
@@ -1027,9 +1062,9 @@ export default function ResultsHub() {
 
             embedded
 
-            title="Evaluation runs"
+            compactHeader
 
-            subtitle="Newest first across the current filter"
+            title="Evaluation runs"
 
             listParams={listParams}
 
@@ -1044,11 +1079,7 @@ export default function ResultsHub() {
             showScenarioColumn={!scenarioId}
 
             onResultClick={(resultId) => {
-
-              const qs = searchParams.toString()
-
-              navigate(`/results/${resultId}${qs ? `?from=${encodeURIComponent(`/results?${qs}`)}` : ''}`)
-
+              navigate(resultsDetailHref(resultId, searchParams.toString()))
             }}
 
           />

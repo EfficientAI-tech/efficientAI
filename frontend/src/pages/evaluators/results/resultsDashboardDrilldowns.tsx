@@ -80,6 +80,20 @@ export function PaginatedRunsTable({
 }) {
   const currency = displayCurrency ?? readUsageDisplayCurrency()
   const [page, setPage] = useState(0)
+  const runScopeKey = useMemo(
+    () =>
+      JSON.stringify({
+        agentId: filterAgentId || base.agentId || undefined,
+        suiteId: base.suiteId || undefined,
+        scenarioId: filterScenarioId || base.scenarioId || undefined,
+        since: base.since,
+        until: base.until,
+        playground: base.playground,
+        metricId: metricId || undefined,
+        sampleOn: base.sampleOn,
+      }),
+    [base, filterAgentId, filterScenarioId, metricId],
+  )
   const listParams = useMemo(
     () => ({
       agentId: filterAgentId || base.agentId || undefined,
@@ -92,7 +106,7 @@ export function PaginatedRunsTable({
       skip: page * PAGE_SIZE,
       limit: PAGE_SIZE,
     }),
-    [base, filterAgentId, filterScenarioId, metricId, page],
+    [runScopeKey, page, base, filterAgentId, filterScenarioId, metricId],
   )
   const { data, isLoading } = useQuery({
     queryKey: ['evaluator-results-drill-runs', listParams, metricId],
@@ -120,7 +134,7 @@ export function PaginatedRunsTable({
   const useRich = rich || callLookup.size > 0
   useEffect(() => {
     setPage(0)
-  }, [listParams])
+  }, [runScopeKey])
 
   return (
     <section className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">

@@ -71,6 +71,24 @@ def _is_unassigned(result: EvaluatorResult, suite_by_evaluator: Dict[UUID, Optio
     return suite_id is None
 
 
+def _result_matches_scope(
+    result: SimpleNamespace,
+    suite_by_evaluator: Dict[UUID, Optional[UUID]],
+    *,
+    agent_id: Optional[UUID],
+    suite_id: Optional[UUID],
+    scenario_id: Optional[UUID],
+) -> bool:
+    if agent_id is not None and result.agent_id != agent_id:
+        return False
+    ev_suite_id = suite_by_evaluator.get(result.evaluator_id) if result.evaluator_id else None
+    if suite_id is not None and ev_suite_id != suite_id:
+        return False
+    if scenario_id is not None and result.scenario_id != scenario_id:
+        return False
+    return True
+
+
 def build_evaluator_results_overview(
     db: Session,
     *,
@@ -78,6 +96,7 @@ def build_evaluator_results_overview(
     workspace_id: UUID,
     agent_id: Optional[UUID] = None,
     suite_id: Optional[UUID] = None,
+    scenario_id: Optional[UUID] = None,
     since: Optional[datetime] = None,
     until: Optional[datetime] = None,
     playground: Optional[bool] = None,
@@ -155,6 +174,14 @@ def build_evaluator_results_overview(
     scenario_counts: Dict[tuple, _MutableCounts] = defaultdict(_MutableCounts)
 
     for result in rows:
+        if not _result_matches_scope(
+            result,
+            suite_by_evaluator,
+            agent_id=agent_id,
+            suite_id=suite_id,
+            scenario_id=scenario_id,
+        ):
+            continue
         workspace_counts.observe(result)
         if _is_unassigned(result, suite_by_evaluator):
             unassigned_counts.observe(result)

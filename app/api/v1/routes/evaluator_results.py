@@ -328,6 +328,7 @@ def _resolve_transcription(result: EvaluatorResult, segments: Optional[List[Dict
 def get_evaluator_results_overview(
     agent_id: Optional[str] = Query(None, description="When set, return suites for this agent"),
     suite_id: Optional[str] = Query(None, description="When set, return scenarios for this suite"),
+    scenario_id: Optional[str] = Query(None, description="When set, counts are limited to this scenario"),
     since: Optional[datetime] = Query(None),
     until: Optional[datetime] = Query(None),
     playground: Optional[bool] = Query(
@@ -341,6 +342,7 @@ def get_evaluator_results_overview(
     """Workspace rollups for agent → suite → scenario navigation."""
     agent_uuid: Optional[UUID] = None
     suite_uuid: Optional[UUID] = None
+    scenario_uuid: Optional[UUID] = None
     if agent_id:
         try:
             agent_uuid = UUID(agent_id)
@@ -351,6 +353,11 @@ def get_evaluator_results_overview(
             suite_uuid = UUID(suite_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid suite_id")
+    if scenario_id:
+        try:
+            scenario_uuid = UUID(scenario_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid scenario_id")
 
     return cached_evaluator_results_overview(
         db,
@@ -358,6 +365,7 @@ def get_evaluator_results_overview(
         workspace_id=workspace_id,
         agent_id=agent_uuid,
         suite_id=suite_uuid,
+        scenario_id=scenario_uuid,
         since=since,
         until=until,
         playground=playground,

@@ -121,7 +121,7 @@ export function RunInsightBreakdown({
   activeScenarioId,
   onScenarioClick,
   title = 'Break down',
-  drillDayActive = false,
+  scenarioCountsFromSample = false,
   windowRunTotal,
   sampleSize,
   windowDurationBuckets,
@@ -134,15 +134,15 @@ export function RunInsightBreakdown({
   activeScenarioId?: string | null
   onScenarioClick?: (scenarioId: string) => void
   title?: string
-  /** When set, scenario/run counts use dashboard-ops (full window), not the run sample. */
-  drillDayActive?: boolean
+  /** When set, scenario counts are computed from the loaded run slice (e.g. day drill), not full-window ops rollups. */
+  scenarioCountsFromSample?: boolean
   windowRunTotal?: number
   sampleSize?: number
   windowDurationBuckets?: Array<{ start_seconds: number; end_seconds: number; count: number }>
 }) {
   const [openAgents, setOpenAgents] = useState<Set<string> | null>(null)
 
-  const useWindowDuration = !drillDayActive && (windowDurationBuckets?.length ?? 0) > 0
+  const useWindowDuration = !scenarioCountsFromSample && (windowDurationBuckets?.length ?? 0) > 0
   const values = results.map((row) => row.duration_seconds).filter((value): value is number => value != null)
   const edges = [0, 60, 90, 120, 150, 180, 240]
   const buckets = useWindowDuration
@@ -182,7 +182,7 @@ export function RunInsightBreakdown({
     }))
     .sort((a, b) => b.runs - a.runs)
 
-  const scenarios = drillDayActive
+  const scenarios = scenarioCountsFromSample
     ? (() => {
       const byScenario = new Map<string, { total: number; failed: number }>()
       for (const row of results) {
@@ -201,7 +201,7 @@ export function RunInsightBreakdown({
   const scenarioMax = Math.max(...scenarios.map((s) => s.total), 1)
   const sampleNote =
     !useWindowDuration
-      && !drillDayActive
+      && !scenarioCountsFromSample
       && windowRunTotal != null
       && sampleSize != null
       && sampleSize < windowRunTotal
@@ -224,12 +224,20 @@ export function RunInsightBreakdown({
 
   const toggleAgent = (name: string) => {
     setOpenAgents((prev) => {
-      const base = prev === null
-        ? new Set(agentScenarioGroups.map(([agent]) => agent).filter((agent) => agent !== name))
-        : new Set(prev)
-      if (base.has(name)) base.delete(name)
-      else base.add(name)
-      return base
+      const defaultOpen = agentScenarioGroups[0]?.[0] === name
+      const isOpen = prev === null ? defaultOpen : prev.has(name)
+      if (prev === null) {
+        const next = new Set<string>()
+        for (const [agent] of agentScenarioGroups) {
+          const open = agent === name ? !isOpen : agentScenarioGroups[0]?.[0] === agent
+          if (open) next.add(agent)
+        }
+        return next
+      }
+      const next = new Set(prev)
+      if (isOpen) next.delete(name)
+      else next.add(name)
+      return next
     })
   }
 
@@ -301,7 +309,7 @@ export function RunInsightBreakdown({
         </div>
       </div>
 
-      {!drillDayActive && (agentRunRows?.length ?? 0) > 1 ? (
+      {!scenarioCountsFromSample && (agentRunRows?.length ?? 0) > 1 ? (
         <div className="mt-6">
           <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">By agent</h4>
           <div className="mt-2 divide-y divide-gray-100 rounded-lg border border-gray-100">
