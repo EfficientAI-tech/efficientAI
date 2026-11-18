@@ -188,11 +188,10 @@ export default function ResultsRunsList({
                 key={key}
                 type="button"
                 onClick={() => updateStatusFilter(key)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-lg ${
-                  statusFilter === key
+                className={`px-3 py-1.5 text-xs font-medium rounded-lg ${statusFilter === key
                     ? 'bg-primary-100 text-primary-800 border border-primary-300'
                     : 'text-gray-600 hover:bg-gray-100'
-                }`}
+                  }`}
               >
                 {label}
               </button>
@@ -210,11 +209,10 @@ export default function ResultsRunsList({
                 key={key}
                 type="button"
                 onClick={() => setRunMediumFilter(key)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-lg ${
-                  runMediumFilter === key
+                className={`px-3 py-1.5 text-xs font-medium rounded-lg ${runMediumFilter === key
                     ? 'bg-violet-100 text-violet-900 border border-violet-200'
                     : 'text-gray-600 hover:bg-gray-100'
-                }`}
+                  }`}
               >
                 {label}
               </button>

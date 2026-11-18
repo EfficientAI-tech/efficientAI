@@ -1003,7 +1003,7 @@ function PanelChart({
     const detail = (state.activePayload ?? [])
       .map((item) => `${item.name}: ${item.value ?? 0}`)
       .join(' · ')
-  if (categoryKey === 'name') {
+    if (categoryKey === 'name') {
       onCategory(label)
       return
     }
