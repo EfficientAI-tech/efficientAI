@@ -2420,6 +2420,26 @@ export interface DashboardOpsPriceDay {
   usd_per_million_tokens?: number | null
 }
 
+export interface DashboardOpsRunDay {
+  day: string
+  completed: number
+  failed: number
+  duration_seconds: number
+  duration_count: number
+}
+
+export interface DashboardOpsScoreDay {
+  day: string
+  metric_id: string
+  score_sum: number
+  score_count: number
+}
+
+export interface DashboardOpsAgentMetricCount {
+  agent_id: string
+  metric_count: number
+}
+
 export interface EvaluatorResultsDashboardOpsResponse {
   cost_by_agent: DashboardOpsCostByAgent[]
   cost_by_model_day: DashboardOpsModelDay[]
@@ -2433,6 +2453,14 @@ export interface EvaluatorResultsDashboardOpsResponse {
   provider_by_day: DashboardOpsProviderDay[]
   provider_by_agent: DashboardOpsProviderAgent[]
   calls_with_no_tools: number
+  run_days?: DashboardOpsRunDay[]
+  score_days?: DashboardOpsScoreDay[]
+  total_rows?: number
+  completed_rows?: number
+  failed_rows?: number
+  metrics?: CallImportMetricAggregate[]
+  agents?: EvaluatorResultsAgentSummary[]
+  agent_metric_counts?: DashboardOpsAgentMetricCount[]
 }
 
 export interface CallImportInsightsRunPoint {

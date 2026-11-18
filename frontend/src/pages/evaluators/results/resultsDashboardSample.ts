@@ -39,35 +39,64 @@ function wave(index: number, base: number, swing: number): number {
   return Math.round((base + Math.sin(index / 1.7) * swing) * 100) / 100
 }
 
+const SAMPLE_LAYERS = [
+  { model: 'whisper', usage_kind: 'stt', cost_usd: 0.82, usd_per_minute: 0.006, usd_per_million_tokens: null },
+  { model: 'nova-2', usage_kind: 'stt', cost_usd: 0.31, usd_per_minute: 0.0043, usd_per_million_tokens: null },
+  { model: 'eleven-flash', usage_kind: 'tts', cost_usd: 0.94, usd_per_minute: 0.12, usd_per_million_tokens: null },
+  { model: 'cartesia', usage_kind: 'tts', cost_usd: 0.27, usd_per_minute: 0.05, usd_per_million_tokens: null },
+  { model: 'gpt-4.1', usage_kind: 'llm', cost_usd: 2.4, usd_per_minute: null, usd_per_million_tokens: 2 },
+  { model: 'gpt-4o-mini', usage_kind: 'llm', cost_usd: 0.24, usd_per_minute: null, usd_per_million_tokens: 0.15 },
+  { model: 'gpt-4o-realtime', usage_kind: 's2s', cost_usd: 1.15, usd_per_minute: 0.06, usd_per_million_tokens: 5 },
+] as const
+
+const AGENT_WEIGHTS = [0.55, 0.3, 0.15]
+
+function money(value: number): number {
+  return Math.round(value * 10000) / 10000
+}
+
+function spreadAcrossDays(total: number): number[] {
+  const raw = DAYS.map((_, index) => 1 + Math.sin(index / 1.7) * 0.35)
+  const scale = total / raw.reduce((sum, value) => sum + value, 0)
+  const amounts = raw.map((value) => money(value * scale))
+  const drift = money(total - amounts.reduce((sum, value) => sum + value, 0))
+  amounts[amounts.length - 1] = money(amounts[amounts.length - 1] + drift)
+  return amounts
+}
+
 export const SAMPLE_OPS: EvaluatorResultsDashboardOpsResponse = {
-  cost_by_agent: AGENTS.map((agent, index) => ({
-    agent_id: agent.id,
-    agent_name: agent.name,
-    llm_usd: wave(index, 1.4, 0.4),
-    stt_usd: wave(index + 1, 0.35, 0.1),
-    tts_usd: wave(index + 2, 0.22, 0.08),
-    total_usd: 0,
-    agent_usd: wave(index, 1.1, 0.3),
-    simulator_usd: 0.18 + index * 0.04,
-    judge_usd: 0.12 + index * 0.03,
-    models: [
-      { model: 'whisper', role: 'agent', cost_usd: [60.48, 9, 15.25][index] ?? 10 },
-      { model: 'nova-2', role: 'agent', cost_usd: [22, 31, 8][index] ?? 10 },
-      { model: 'eleven-flash', role: 'agent', cost_usd: [28, 14, 19][index] ?? 10 },
-      { model: 'cartesia', role: 'agent', cost_usd: [11, 24, 16][index] ?? 8 },
-      { model: 'gpt-4.1', role: 'agent', cost_usd: [48, 21, 17][index] ?? 12 },
-      { model: 'gpt-4o-mini', role: 'agent', cost_usd: [18, 36, 9][index] ?? 8 },
-      { model: 'gpt-4o-realtime', role: 'agent', cost_usd: [6, 27, 4][index] ?? 5 },
-    ],
-  })).map((row) => ({
-    ...row,
-    total_usd: Math.round((row.llm_usd + row.stt_usd + row.tts_usd) * 100) / 100,
-  })),
-  cost_by_model_day: DAYS.flatMap((day, index) => [
-    { day, model: 'gpt-4.1', cost_usd: wave(index, 0.42, 0.12) },
-    { day, model: 'gpt-4o-mini', cost_usd: wave(index + 1, 0.16, 0.05) },
-    { day, model: 'whisper', cost_usd: wave(index + 2, 0.08, 0.03) },
-  ]),
+  cost_by_agent: AGENTS.map((agent, index) => {
+    const models = SAMPLE_LAYERS.map((layer) => ({
+      model: layer.model,
+      role: 'agent' as const,
+      cost_usd: index === AGENTS.length - 1
+        ? money(layer.cost_usd - money(layer.cost_usd * AGENT_WEIGHTS[0]) - money(layer.cost_usd * AGENT_WEIGHTS[1]))
+        : money(layer.cost_usd * AGENT_WEIGHTS[index]),
+    }))
+    const spend = (kind: string) => money(models
+      .filter((item) => SAMPLE_LAYERS.find((layer) => layer.model === item.model)?.usage_kind === kind)
+      .reduce((sum, item) => sum + item.cost_usd, 0))
+    const total = money(models.reduce((sum, item) => sum + item.cost_usd, 0))
+    return {
+      agent_id: agent.id,
+      agent_name: agent.name,
+      llm_usd: spend('llm'),
+      stt_usd: spend('stt'),
+      tts_usd: spend('tts'),
+      total_usd: total,
+      agent_usd: total,
+      simulator_usd: 0,
+      judge_usd: 0,
+      models,
+    }
+  }),
+  cost_by_model_day: SAMPLE_LAYERS.flatMap((layer) => (
+    spreadAcrossDays(layer.cost_usd).map((cost, index) => ({
+      day: DAYS[index],
+      model: layer.model,
+      cost_usd: cost,
+    }))
+  )),
   cost_by_agent_day: DAYS.flatMap((day, index) =>
     AGENTS.flatMap((agent, agentIndex) => [
       {
@@ -96,23 +125,7 @@ export const SAMPLE_OPS: EvaluatorResultsDashboardOpsResponse = {
       },
     ]),
   ),
-  model_layers: [
-    { model: 'whisper', usage_kind: 'stt', cost_usd: 0.82, usd_per_minute: 0.006, usd_per_million_tokens: null },
-    { model: 'nova-2', usage_kind: 'stt', cost_usd: 0.31, usd_per_minute: 0.0043, usd_per_million_tokens: null },
-    { model: 'eleven-flash', usage_kind: 'tts', cost_usd: 0.94, usd_per_minute: 0.12, usd_per_million_tokens: null },
-    { model: 'cartesia', usage_kind: 'tts', cost_usd: 0.27, usd_per_minute: 0.05, usd_per_million_tokens: null },
-    { model: 'gpt-4.1', usage_kind: 'llm', cost_usd: 2.4, usd_per_minute: null, usd_per_million_tokens: 2 },
-    { model: 'gpt-4o-mini', usage_kind: 'llm', cost_usd: 0.24, usd_per_minute: null, usd_per_million_tokens: 0.15 },
-    { model: 'gpt-4o-realtime', usage_kind: 's2s', cost_usd: 1.15, usd_per_minute: 0.06, usd_per_million_tokens: 5 },
-  ],
-  price_by_day: DAYS.flatMap((day, index) => [
-    { day, model: 'whisper', usd_per_minute: wave(index, 0.006, 0.001), usd_per_million_tokens: null },
-    { day, model: 'nova-2', usd_per_minute: wave(index + 1, 0.004, 0.0008), usd_per_million_tokens: null },
-    { day, model: 'eleven-flash', usd_per_minute: wave(index + 2, 0.12, 0.01), usd_per_million_tokens: null },
-    { day, model: 'gpt-4.1', usd_per_minute: null, usd_per_million_tokens: wave(index, 2, 0.15) },
-    { day, model: 'gpt-4o-mini', usd_per_minute: null, usd_per_million_tokens: wave(index + 1, 0.15, 0.02) },
-    { day, model: 'gpt-4o-realtime', usd_per_minute: wave(index + 3, 0.06, 0.008), usd_per_million_tokens: wave(index + 2, 5, 0.2) },
-  ]),
+  model_layers: SAMPLE_LAYERS.map((layer) => ({ ...layer })),
   tool_calls_by_agent_day: DAYS.flatMap((day, index) =>
     AGENTS.map((agent, agentIndex) => ({
       day,
@@ -160,10 +173,26 @@ export const SAMPLE_OPS: EvaluatorResultsDashboardOpsResponse = {
 
 const OUTCOMES = ['Resolved', 'Escalated', 'Abandoned']
 
+const AGENT_SCENARIOS: Record<string, Array<{ id: string; name: string }>> = {
+  'sample-support': [
+    { id: 'sample-refund', name: 'Refund request' },
+    { id: 'sample-order', name: 'Order status' },
+  ],
+  'sample-sales': [
+    { id: 'sample-pitch', name: 'Outbound pitch' },
+    { id: 'sample-followup', name: 'Follow up' },
+  ],
+  'sample-billing': [
+    { id: 'sample-invoice', name: 'Invoice question' },
+    { id: 'sample-dispute', name: 'Dispute' },
+  ],
+}
+
 export const SAMPLE_RESULTS: EvaluatorResultRow[] = DAYS.flatMap((day, dayIndex) =>
   AGENTS.map((agent, agentIndex) => {
     const failed = dayIndex === 2 && agentIndex === 2
     const outcome = OUTCOMES[(dayIndex + agentIndex) % OUTCOMES.length]
+    const scenario = AGENT_SCENARIOS[agent.id][dayIndex % 2]
     return {
       id: `sample-${day}-${agent.id}`,
       result_id: `R${dayIndex}${agentIndex}`,
@@ -183,10 +212,7 @@ export const SAMPLE_RESULTS: EvaluatorResultRow[] = DAYS.flatMap((day, dayIndex)
           [METRICS.outcome]: { value: outcome, type: 'classification', metric_name: 'Call outcome', chosen_child_name: outcome },
         }) as EvaluatorResultRow['metric_scores'],
       agent: { id: agent.id, name: agent.name },
-      scenario: {
-        id: `${agent.id}-scenario`,
-        name: ['Refund request after failed delivery', 'Identity verification fails twice', 'Product demo follow-up', 'Plan upgrade with discount question', 'Frustrated caller, repeated issue'][(dayIndex + agentIndex) % 5],
-      },
+      scenario: { id: scenario.id, name: scenario.name },
     }
   }),
 )
@@ -197,6 +223,26 @@ function numericMetric(
   mean: number,
   count: number,
 ): CallImportMetricAggregate {
+  if (count === 0) {
+    return {
+      metric_id: id,
+      metric_name: name,
+      metric_type: 'number',
+      count: 0,
+      skipped_count: 0,
+      error_count: 0,
+      mean: null,
+      median: null,
+      p25: null,
+      p75: null,
+      p95: null,
+      min: null,
+      max: null,
+      stddev: null,
+      histogram_buckets: [],
+      value_counts: [],
+    }
+  }
   return {
     metric_id: id,
     metric_name: name,
@@ -222,6 +268,8 @@ function numericMetric(
 }
 
 export const SAMPLE_METRICS: CallImportMetricAggregate[] = [
+  numericMetric('sample-unused', 'Hold time', 0, 0),
+  numericMetric('sample-transfer', 'Transfer offer', 0, 0),
   numericMetric(METRICS.closing, 'Closing quality', 4.2, 18),
   numericMetric(METRICS.accuracy, 'Answer accuracy', 0.81, 16),
   numericMetric(METRICS.empathy, 'Empathy', 3.05, 11),
@@ -305,6 +353,91 @@ export const SAMPLE_AGENTS: EvaluatorResultsAgentSummary[] = [
 
 export const SAMPLE_COMPLETED = SAMPLE_RESULTS.filter((row) => row.status === 'completed').length
 
+function dayInRange(day: string, start: string | null, end: string | null): boolean {
+  const key = day.slice(0, 10)
+  if (start && key < start) return false
+  if (end && key > end) return false
+  return true
+}
+
+export function scopeSampleOps(
+  ops: EvaluatorResultsDashboardOpsResponse,
+  agentId: string,
+  start: string | null,
+  end: string | null,
+): EvaluatorResultsDashboardOpsResponse {
+  const agents = agentId ? ops.cost_by_agent.filter((row) => row.agent_id === agentId) : ops.cost_by_agent
+  const shareDenom = ops.cost_by_agent.reduce((sum, row) => sum + row.total_usd, 0)
+  const share = agentId
+    ? (agents.reduce((sum, row) => sum + row.total_usd, 0) / (shareDenom || 1))
+    : 1
+  const scale = (value: number) => money(value * share)
+  const dailyModels = ops.cost_by_model_day.filter((row) => dayInRange(row.day, start, end))
+  const layerTotals = new Map<string, number>()
+  for (const row of dailyModels) layerTotals.set(row.model, (layerTotals.get(row.model) ?? 0) + row.cost_usd)
+  return {
+    ...ops,
+    cost_by_agent: agents,
+    cost_by_agent_day: ops.cost_by_agent_day.filter((row) => (!agentId || row.agent_id === agentId) && dayInRange(row.day, start, end)),
+    cost_by_model_day: dailyModels.map((row) => ({ ...row, cost_usd: scale(row.cost_usd) })),
+    model_layers: ops.model_layers.map((layer) => ({
+      ...layer,
+      cost_usd: scale(layerTotals.get(layer.model) ?? 0),
+    })),
+    tool_calls_by_agent_day: ops.tool_calls_by_agent_day.filter((row) => (!agentId || row.agent_id === agentId) && dayInRange(row.day, start, end)),
+    tool_calls_by_tool: ops.tool_calls_by_tool.filter((row) => !agentId || row.agent_id === agentId),
+    tool_calls_per_run: ops.tool_calls_per_run.filter((row) => !agentId || row.agent_id === agentId),
+    provider_by_day: ops.provider_by_day.filter((row) => dayInRange(row.day, start, end)),
+    provider_by_agent: ops.provider_by_agent.filter((row) => !agentId || row.agent_id === agentId),
+  }
+}
+
+export function sampleMetricsFor(rows: EvaluatorResultRow[]): CallImportMetricAggregate[] {
+  const scored = [
+    { id: METRICS.closing, name: 'Closing quality' },
+    { id: METRICS.accuracy, name: 'Answer accuracy' },
+    { id: METRICS.empathy, name: 'Empathy' },
+  ].map((spec) => {
+    const values = rows.flatMap((row) => {
+      const score = row.metric_scores?.[spec.id]
+      return typeof score?.value === 'number' ? [score.value] : []
+    })
+    const mean = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0
+    return numericMetric(spec.id, spec.name, Number(mean.toFixed(2)), values.length)
+  })
+  const outcomes = new Map<string, number>()
+  for (const row of rows) {
+    const score = row.metric_scores?.[METRICS.outcome]
+    const label = typeof score?.value === 'string' ? score.value : ''
+    if (!label) continue
+    outcomes.set(label, (outcomes.get(label) ?? 0) + 1)
+  }
+  const outcomeCount = Array.from(outcomes.values()).reduce((sum, count) => sum + count, 0)
+  return [
+    numericMetric('sample-unused', 'Hold time', 0, 0),
+    numericMetric('sample-transfer', 'Transfer offer', 0, 0),
+    ...scored,
+    {
+      metric_id: METRICS.outcome,
+      metric_name: 'Call outcome',
+      metric_type: 'classification',
+      count: outcomeCount,
+      skipped_count: 0,
+      error_count: 0,
+      mean: null,
+      median: null,
+      p25: null,
+      p75: null,
+      p95: null,
+      min: null,
+      max: null,
+      stddev: null,
+      histogram_buckets: [],
+      value_counts: Array.from(outcomes.entries()).map(([label, count]) => ({ label, count })),
+    },
+  ]
+}
+
 const CALL_TITLES = [
   'Plan upgrade with discount question',
   'Identity verification fails twice',
@@ -351,6 +484,7 @@ export const SAMPLE_DRILL_CALLS: DashboardDrillCall[] = DAYS.flatMap((day, dayIn
       tool,
       provider,
       uses,
+      resultId: `R${dayIndex}${agentIndex}`,
     }
   }),
 )

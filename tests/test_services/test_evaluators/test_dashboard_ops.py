@@ -258,3 +258,80 @@ def test_rollup_tool_calls_counts_production_side_and_kb_fallback():
     assert rolled.per_run[0].avg_per_run == 1.5
     assert {item.provider: item.calls for item in rolled.providers} == {"postgres": 2, "unknown": 1}
     assert rolled.provider_agents[0].provider in {"postgres", "unknown"}
+
+
+def test_dashboard_routes_import():
+    from app.api.v1.routes.evaluator_results import (
+        get_evaluator_results_aggregate,
+        get_evaluator_results_dashboard_ops,
+        get_evaluator_results_overview,
+    )
+
+    assert get_evaluator_results_dashboard_ops
+    assert get_evaluator_results_aggregate
+    assert get_evaluator_results_overview
+
+
+def test_daily_rollup_groups_finished_runs_by_day_agent_and_score():
+    from app.services.evaluators.evaluator_result_daily import DailySource, fold_daily_buckets
+
+    agent_id = uuid4()
+    scenario_id = uuid4()
+    when = datetime(2026, 11, 16, 18, 30, tzinfo=timezone.utc)
+    rows = [
+        DailySource(
+            result_id=uuid4(),
+            agent_id=agent_id,
+            scenario_id=scenario_id,
+            evaluator_id=uuid4(),
+            timestamp=when,
+            status="completed",
+            duration_seconds=12,
+            metric_scores={"m1": {"value": 4, "type": "rating"}},
+            is_live=False,
+        ),
+        DailySource(
+            result_id=uuid4(),
+            agent_id=agent_id,
+            scenario_id=scenario_id,
+            evaluator_id=uuid4(),
+            timestamp=when,
+            status="failed",
+            duration_seconds=3,
+            metric_scores={"m1": {"value": 1, "type": "rating"}},
+            is_live=False,
+        ),
+        DailySource(
+            result_id=uuid4(),
+            agent_id=agent_id,
+            scenario_id=scenario_id,
+            evaluator_id=None,
+            timestamp=when,
+            status="completed",
+            duration_seconds=8,
+            metric_scores={"m1": {"value": 2, "type": "rating"}},
+            is_live=True,
+        ),
+        DailySource(
+            result_id=uuid4(),
+            agent_id=agent_id,
+            scenario_id=scenario_id,
+            evaluator_id=uuid4(),
+            timestamp=when,
+            status="evaluating",
+            duration_seconds=1,
+            metric_scores=None,
+            is_live=False,
+        ),
+    ]
+    buckets = {(item.is_live): item for item in fold_daily_buckets(rows)}
+    simulation = buckets[False]
+    assert simulation.day == when.date()
+    assert simulation.completed == 1
+    assert simulation.failed == 1
+    assert simulation.duration_seconds == 15
+    assert simulation.duration_count == 2
+    assert simulation.score["m1"] == {"sum": 4.0, "count": 1}
+    assert simulation.metric_ids == {"m1"}
+    assert buckets[True].completed == 1
+    assert buckets[True].score["m1"]["sum"] == 2.0

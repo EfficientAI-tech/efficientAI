@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Dict, List, Optional, Set
 from uuid import UUID
 
@@ -95,7 +96,27 @@ def build_evaluator_results_overview(
         query = query.filter(EvaluatorResult.timestamp >= since)
     if until is not None:
         query = query.filter(EvaluatorResult.timestamp <= until)
-    rows = query.all()
+    loaded = query.with_entities(
+        EvaluatorResult.result_id,
+        EvaluatorResult.evaluator_id,
+        EvaluatorResult.agent_id,
+        EvaluatorResult.scenario_id,
+        EvaluatorResult.timestamp,
+        EvaluatorResult.status,
+        EvaluatorResult.metric_scores,
+    ).all()
+    rows = [
+        SimpleNamespace(
+            result_id=result_id,
+            evaluator_id=evaluator_id,
+            agent_id=agent_id,
+            scenario_id=scenario_id,
+            timestamp=timestamp,
+            status=status,
+            metric_scores=metric_scores,
+        )
+        for result_id, evaluator_id, agent_id, scenario_id, timestamp, status, metric_scores in loaded
+    ]
 
     evaluator_ids: Set[UUID] = {r.evaluator_id for r in rows if r.evaluator_id}
     evaluators = (

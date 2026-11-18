@@ -8,6 +8,7 @@ type Mode = 'relative' | 'absolute'
 type ResultsDateRangePickerProps = {
   start: string | null
   end: string | null
+  allTime?: boolean
   onApply: (start: string | null, end: string | null) => void
 }
 
@@ -18,7 +19,7 @@ const QUICK_RANGES = [
   { label: '90d', days: 90 },
 ] as const
 
-export default function ResultsDateRangePicker({ start, end, onApply }: ResultsDateRangePickerProps) {
+export default function ResultsDateRangePicker({ start, end, allTime = false, onApply }: ResultsDateRangePickerProps) {
   const [open, setOpen] = useState(false)
   const [mode, setMode] = useState<Mode>('absolute')
   const [draftStart, setDraftStart] = useState(start ?? '')
@@ -51,10 +52,9 @@ export default function ResultsDateRangePicker({ start, end, onApply }: ResultsD
   }, [])
 
   const pillClass = (active: boolean) =>
-    `rounded-md px-2.5 py-1 text-xs font-medium transition-colors border ${
-      active
-        ? 'border-primary-300 bg-primary-50 text-primary-800'
-        : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
+    `rounded-md px-2.5 py-1 text-xs font-medium transition-colors border ${active
+      ? 'border-primary-300 bg-primary-50 text-primary-800'
+      : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
     }`
 
   const applyAbsolute = () => {
@@ -66,7 +66,7 @@ export default function ResultsDateRangePicker({ start, end, onApply }: ResultsD
   return (
     <div ref={rootRef} className="relative flex flex-wrap items-center gap-2 min-w-0">
       <div className="flex items-center gap-0.5 rounded-lg border border-gray-200 bg-white p-0.5">
-        <button type="button" onClick={() => onApply(null, null)} className={pillClass(!hasRange)}>
+        <button type="button" onClick={() => onApply(null, null)} className={pillClass(allTime)}>
           All time
         </button>
         {QUICK_RANGES.map((q) => (
@@ -77,7 +77,7 @@ export default function ResultsDateRangePicker({ start, end, onApply }: ResultsD
               const r = rangeForDays(q.days)
               onApply(r.start, r.end)
             }}
-            className={pillClass(activeQuick === q.label)}
+            className={pillClass(activeQuick === q.label || (!hasRange && !allTime && q.label === '7d'))}
           >
             {q.label}
           </button>

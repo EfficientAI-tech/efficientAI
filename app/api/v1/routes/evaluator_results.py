@@ -25,10 +25,13 @@ from app.services.evaluators.evaluator_results_query import (
     build_evaluator_results_query,
     list_evaluator_results_page,
 )
-from app.services.evaluators.evaluator_results_overview import build_evaluator_results_overview
-from app.services.evaluators.evaluator_results_aggregate import compute_evaluator_results_aggregate
 from app.services.evaluators.evaluator_results_dashboard_ops import (
+    cache_dashboard_ops,
+    cached_evaluator_results_aggregate,
+    cached_evaluator_results_overview,
     compute_evaluator_results_dashboard_ops,
+    dashboard_ops_cache_key,
+    get_cached_dashboard_ops,
 )
 from app.services.evaluators.evaluator_result_status import (
     effective_evaluator_result_status,
@@ -349,7 +352,7 @@ def get_evaluator_results_overview(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid suite_id")
 
-    return build_evaluator_results_overview(
+    return cached_evaluator_results_overview(
         db,
         organization_id=organization_id,
         workspace_id=workspace_id,
@@ -397,7 +400,7 @@ def get_evaluator_results_aggregate(
             raise HTTPException(status_code=400, detail="Invalid scenario_id")
 
     try:
-        return compute_evaluator_results_aggregate(
+        return cached_evaluator_results_aggregate(
             db,
             organization_id=organization_id,
             workspace_id=workspace_id,
@@ -427,7 +430,7 @@ def get_evaluator_results_dashboard_ops(
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """Cost by agent and layer, model cost per day, and tool calls for the dashboard."""
+    """One dashboard payload: cost, tool calls, daily run series, scores, and the agent tree."""
     suite_uuid: Optional[UUID] = None
     agent_uuid: Optional[UUID] = None
     scenario_uuid: Optional[UUID] = None
@@ -447,8 +450,21 @@ def get_evaluator_results_dashboard_ops(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid scenario_id")
 
+    cache_key = dashboard_ops_cache_key(
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        suite_id=suite_uuid,
+        agent_id=agent_uuid,
+        scenario_id=scenario_uuid,
+        since=since,
+        until=until,
+        playground=playground,
+    )
+    cached = get_cached_dashboard_ops(cache_key)
+    if cached is not None:
+        return cached
     try:
-        return compute_evaluator_results_dashboard_ops(
+        result = compute_evaluator_results_dashboard_ops(
             db,
             organization_id=organization_id,
             workspace_id=workspace_id,
@@ -461,6 +477,8 @@ def get_evaluator_results_dashboard_ops(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    cache_dashboard_ops(cache_key, result.model_dump(mode="json"), until=until)
+    return result
 
 
 @router.get("", response_model=EvaluatorResultListResponse)

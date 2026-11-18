@@ -33,9 +33,19 @@ class EvaluatorInputUnavailableError(ValueError):
     """Permanent failure: no audio or transcript available for evaluation."""
 
 
+def _record_daily_rollup(db, result) -> None:
+    try:
+        from app.services.evaluators.evaluator_result_daily import record_evaluator_result_daily
+
+        record_evaluator_result_daily(db, result)
+    except Exception as exc:
+        logger.warning(f"[EvaluatorResult] Daily rollup skipped: {exc}")
+
+
 def _commit_evaluator_result(db, result) -> None:
     from app.services.live_entity_storage import sync_evaluator_result
 
+    _record_daily_rollup(db, result)
     sync_evaluator_result(db, result)
     db.commit()
 
@@ -1072,6 +1082,7 @@ def process_evaluator_result_task(self, result_id: str):
                     if failed_result:
                         failed_result.status = EvaluatorResultStatus.FAILED.value
                         failed_result.error_message = str(e)
+                        _record_daily_rollup(db, failed_result)
                         db.commit()
                 except Exception as persist_err:
                     db.rollback()
@@ -1092,6 +1103,7 @@ def process_evaluator_result_task(self, result_id: str):
             if failed_result:
                 failed_result.status = EvaluatorResultStatus.FAILED.value
                 failed_result.error_message = str(exc)
+                _record_daily_rollup(db, failed_result)
                 db.commit()
         except Exception as persist_err:
             db.rollback()

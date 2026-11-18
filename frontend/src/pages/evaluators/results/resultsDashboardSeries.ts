@@ -43,6 +43,10 @@ export function isCategoricalMetric(metric: CallImportMetricAggregate): boolean 
   return (metric.value_counts?.length ?? 0) > 0 && metric.mean == null
 }
 
+export function roundCost(value: number): number {
+  return Math.round(value * 10000) / 10000
+}
+
 export function formatUsd(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return '—'
   return value.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })
@@ -451,25 +455,21 @@ export function usageDetail(
   const layers = ops?.model_layers ?? []
   if (view === 'price_minute' || view === 'price_million') {
     const rateKey = view === 'price_minute' ? 'usd_per_minute' : 'usd_per_million_tokens'
-    const history = (ops?.price_by_day ?? []).filter((row) => {
-      const rate = row[rateKey]
-      if (rate == null || rate <= 0) return false
-      return !focus || row.model === focus
-    })
+    const priced = new Set(
+      layers.filter((row) => (row[rateKey] ?? 0) > 0).map((row) => row.model),
+    )
+    const history = (ops?.cost_by_model_day ?? []).filter((row) => priced.has(row.model) && (!focus || row.model === focus))
     const models = Array.from(new Set(history.map((row) => row.model)))
     const byDay = new Map<string, Record<string, number>>()
     for (const row of history) {
       const bucket = byDay.get(row.day) ?? {}
-      bucket[row.model] = row[rateKey] ?? 0
+      bucket[row.model] = roundCost((bucket[row.model] ?? 0) + row.cost_usd)
       byDay.set(row.day, bucket)
     }
-    const latest = models.map((model) => {
-      const points = history.filter((row) => row.model === model)
-      return points[points.length - 1]?.[rateKey] ?? 0
-    })
+    const spent = history.reduce((sum, row) => sum + row.cost_usd, 0)
     return {
-      headline: formatUsd(latest.length ? Math.max(...latest) : 0),
-      caption: view === 'price_minute' ? 'Price / minute going forward' : 'Price / 1M tokens going forward',
+      headline: formatUsd(spent),
+      caption: view === 'price_minute' ? 'Daily spend, priced per minute' : 'Daily spend, priced per 1M tokens',
       data: Array.from(byDay.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([day, values]) => ({
         day: formatDayLabel(day),
         ...values,
@@ -477,18 +477,22 @@ export function usageDetail(
       series: models.map((model, index) => ({ key: model, color: AGENT_BAR_COLORS[index % AGENT_BAR_COLORS.length] })),
     }
   }
-  const models = layers.filter((row) => row.usage_kind === view && (!focus || row.model === focus))
+  const models = layers.filter((row) => row.usage_kind === view && row.cost_usd > 0 && (!focus || row.model === focus))
   const agents = ops?.cost_by_agent ?? []
   const data = models.map((model) => {
     const point: Record<string, string | number> = { name: model.model }
     for (const agent of agents) {
-      point[agent.agent_name] = agent.models
+      point[agent.agent_name] = roundCost(agent.models
         .filter((spend) => spend.model === model.model)
-        .reduce((sum, spend) => sum + spend.cost_usd, 0)
+        .reduce((sum, spend) => sum + spend.cost_usd, 0))
     }
     return point
   })
-  const total = models.reduce((sum, row) => sum + row.cost_usd, 0)
+  const stacked = data.reduce((sum, point) => (
+    sum + agents.reduce((agentSum, agent) => agentSum + (Number(point[agent.agent_name]) || 0), 0)
+  ), 0)
+  const layerTotal = models.reduce((sum, row) => sum + row.cost_usd, 0)
+  const total = stacked > 0 ? stacked : layerTotal
   return {
     headline: formatUsd(total),
     caption: `${view.toUpperCase()} models`,

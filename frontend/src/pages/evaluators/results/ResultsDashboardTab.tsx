@@ -21,6 +21,8 @@ import { apiClient } from '../../../lib/api'
 import { itemsOf } from '../../../lib/safeData'
 import type {
   CallImportMetricAggregate,
+  DashboardOpsRunDay,
+  DashboardOpsScoreDay,
   EvaluatorResultRow,
   EvaluatorResultsAgentSummary,
   EvaluatorResultsDashboardOpsResponse,
@@ -28,9 +30,9 @@ import type {
 import { dateRangeToSinceUntil, rangeForDays } from './resultsDateRange'
 import {
   CHART_TYPE_LABELS,
+  ADDABLE_WIDGETS,
   DEFAULT_RESULTS_WIDGETS,
   MAX_VISIBLE_WIDGETS,
-  PLATFORM_WIDGETS,
   WIDGET_LABELS,
   copyResultsWidgets,
   readResultsDashboardLayout,
@@ -42,11 +44,11 @@ import {
 } from './resultsDashboardLayout'
 import {
   SAMPLE_AGENTS,
-  SAMPLE_COMPLETED,
   SAMPLE_DRILL_CALLS,
-  SAMPLE_METRICS,
   SAMPLE_OPS,
   SAMPLE_RESULTS,
+  sampleMetricsFor,
+  scopeSampleOps,
   type DashboardDrillCall,
 } from './resultsDashboardSample'
 import {
@@ -88,11 +90,13 @@ interface ResultsDashboardTabProps {
   scenarioId: string
   startDate: string | null
   endDate: string | null
+  allTime?: boolean
   agents: EvaluatorResultsAgentSummary[]
   onSelectAgent: (agentId: string) => void
   onSelectScenario: (suiteId: string, scenarioId: string, agentId: string) => void
   onOpenRuns: () => void
   onOpenResult: (resultId: string) => void
+  onDashboardAgents?: (agents: EvaluatorResultsAgentSummary[]) => void
 }
 
 interface DayPoint {
@@ -135,17 +139,108 @@ function formatHeadline(value: number | null, suffix = ''): string {
   return `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })}${suffix}`
 }
 
+function scopeSample(
+  agentId: string,
+  suiteId: string,
+  scenarioId: string,
+  start: string | null,
+  end: string | null,
+) {
+  const suites = SAMPLE_AGENTS.flatMap((agent) => agent.suites ?? [])
+  const suite = suites.find((item) => item.suite_id === suiteId)
+  const scenarioOwner = SAMPLE_AGENTS.find((agent) => (
+    (agent.suites ?? []).some((item) => (item.scenarios ?? []).some((scenario) => scenario.scenario_id === scenarioId))
+  ))
+  const agentFilter = agentId || suite?.agent_id || scenarioOwner?.agent_id || ''
+  const scenarioIds = scenarioId
+    ? new Set([scenarioId])
+    : suite
+      ? new Set((suite.scenarios ?? []).map((scenario) => scenario.scenario_id))
+      : null
+  const filtered = SAMPLE_RESULTS.filter((row) => {
+    if (agentFilter && row.agent_id !== agentFilter) return false
+    if (scenarioIds && !scenarioIds.has(row.scenario?.id ?? '')) return false
+    const day = row.timestamp.slice(0, 10)
+    if (start && day < start) return false
+    if (end && day > end) return false
+    return true
+  })
+  return { results: filtered, ops: scopeSampleOps(SAMPLE_OPS, agentFilter, start, end) }
+}
+
+function sampleDrillCalls(agentId: string, start: string | null, end: string | null): DashboardDrillCall[] {
+  const agentName = SAMPLE_AGENTS.find((agent) => agent.agent_id === agentId)?.agent_name
+  return SAMPLE_DRILL_CALLS.filter((call) => {
+    if (agentName && call.agent !== agentName) return false
+    const day = call.at.slice(0, 10)
+    if (start && day < start) return false
+    if (end && day > end) return false
+    return true
+  })
+}
+
+function narrowAgents(
+  source: EvaluatorResultsAgentSummary[],
+  agentId: string,
+  suiteId: string,
+  scenarioId: string,
+): EvaluatorResultsAgentSummary[] {
+  return source
+    .filter((agent) => !agentId || agent.agent_id === agentId)
+    .map((agent) => ({
+      ...agent,
+      suites: (agent.suites ?? [])
+        .filter((suite) => !suiteId || suite.suite_id === suiteId)
+        .map((suite) => ({
+          ...suite,
+          scenarios: (suite.scenarios ?? []).filter((scenario) => !scenarioId || scenario.scenario_id === scenarioId),
+        })),
+    }))
+    .filter((agent) => !suiteId || (agent.suites ?? []).length > 0)
+}
+
+function withUnusedMetrics(
+  scored: CallImportMetricAggregate[],
+  catalog: Array<{ id?: string; name?: string; parent_metric_id?: string | null; metric_type?: string | null }>,
+): CallImportMetricAggregate[] {
+  const seen = new Set(scored.map((metric) => metric.metric_id))
+  const unused = catalog.flatMap((metric) => {
+    if (!metric.id || !metric.name || metric.parent_metric_id || seen.has(metric.id)) return []
+    return [{
+      metric_id: metric.id,
+      metric_name: metric.name,
+      metric_type: metric.metric_type ?? 'number',
+      count: 0,
+      skipped_count: 0,
+      error_count: 0,
+      mean: null,
+      median: null,
+      p25: null,
+      p75: null,
+      p95: null,
+      min: null,
+      max: null,
+      stddev: null,
+      histogram_buckets: [],
+      value_counts: [],
+    }]
+  })
+  return [...scored, ...unused]
+}
+
 export default function ResultsDashboardTab({
   agentId,
   suiteId,
   scenarioId,
   startDate,
   endDate,
+  allTime = false,
   agents,
   onSelectAgent,
   onSelectScenario,
   onOpenRuns,
   onOpenResult,
+  onDashboardAgents,
 }: ResultsDashboardTabProps) {
   const [widgets, setWidgets] = useState<ResultsWidget[]>(readResultsDashboardLayout)
   const [addOpen, setAddOpen] = useState(false)
@@ -166,12 +261,17 @@ export default function ResultsDashboardTab({
   }, [widgets])
 
   const effectiveDateRange = useMemo(() => {
+    if (allTime) return null
     if (startDate && endDate) return { start: startDate, end: endDate }
     return rangeForDays(7)
-  }, [startDate, endDate])
+  }, [allTime, startDate, endDate])
 
   const dateBounds = useMemo(
-    () => dateRangeToSinceUntil(effectiveDateRange.start, effectiveDateRange.end),
+    () => (
+      effectiveDateRange
+        ? dateRangeToSinceUntil(effectiveDateRange.start, effectiveDateRange.end)
+        : { since: undefined, until: undefined }
+    ),
     [effectiveDateRange],
   )
 
@@ -188,25 +288,15 @@ export default function ResultsDashboardTab({
     [agentId, suiteId, scenarioId, dateBounds, playground],
   )
 
-  const { data: aggregate, isLoading: loadingAggregate } = useQuery({
-    queryKey: ['evaluator-results-aggregate', listParams],
-    queryFn: () =>
-      apiClient.getEvaluatorResultsAggregate({
-        agentId: agentId || undefined,
-        suiteId: suiteId || undefined,
-        scenarioId: scenarioId || undefined,
-        since: dateBounds.since,
-        until: dateBounds.until,
-        playground,
-      }),
-  })
-
-  const { data: listResponse, isLoading: loadingResults } = useQuery({
+  const dashboardQueryOptions = { enabled: !sampleOn, staleTime: 60_000 }
+  const { data: listResponse } = useQuery({
     queryKey: ['evaluator-results-dashboard', listParams],
     queryFn: () => apiClient.listEvaluatorResults(listParams),
+    enabled: !sampleOn && detail !== null,
+    staleTime: 60_000,
   })
 
-  const { data: liveOps } = useQuery({
+  const { data: liveOps, isLoading: loadingOps } = useQuery({
     queryKey: ['evaluator-results-dashboard-ops', listParams],
     queryFn: () =>
       apiClient.getEvaluatorResultsDashboardOps({
@@ -217,31 +307,29 @@ export default function ResultsDashboardTab({
         until: dateBounds.until,
         playground,
       }),
-  })
-
-  const overviewRange = startDate && endDate ? dateBounds : undefined
-  const { data: chartOverview } = useQuery({
-    queryKey: ['evaluator-results-overview', 'dashboard-charts', overviewRange?.since, overviewRange?.until, playground],
-    queryFn: () =>
-      apiClient.getEvaluatorResultsOverview({
-        since: overviewRange?.since,
-        until: overviewRange?.until,
-        playground,
-      }),
+    ...dashboardQueryOptions,
   })
 
   const { data: metricsCatalog = [] } = useQuery({
     queryKey: ['metrics', 'agent', 'dashboard'],
     queryFn: () => apiClient.listMetrics('agent'),
+    enabled: !sampleOn,
+    staleTime: 5 * 60_000,
   })
 
-  const ops = sampleOn ? SAMPLE_OPS : liveOps
-  const results = sampleOn ? SAMPLE_RESULTS : itemsOf<EvaluatorResultRow>(listResponse)
-  const totalInRange = sampleOn ? SAMPLE_RESULTS.length : listResponse?.total ?? aggregate?.total_rows ?? 0
-  const truncated = !sampleOn && totalInRange > TRENDS_PAGE_LIMIT
+  const scopedSample = useMemo(
+    () => scopeSample(agentId, suiteId, scenarioId, effectiveDateRange?.start ?? null, effectiveDateRange?.end ?? null),
+    [agentId, suiteId, scenarioId, effectiveDateRange],
+  )
+  const ops = sampleOn ? scopedSample.ops : liveOps
+  const results = sampleOn ? scopedSample.results : itemsOf<EvaluatorResultRow>(listResponse)
+  const aggregateTotal = sampleOn ? scopedSample.results.length : liveOps?.total_rows ?? 0
+  const aggregateCompleted = sampleOn
+    ? scopedSample.results.filter((row) => row.status === 'completed').length
+    : liveOps?.completed_rows ?? 0
   const metrics = useMemo(
-    () => (sampleOn ? SAMPLE_METRICS : aggregate?.metrics ?? []),
-    [sampleOn, aggregate],
+    () => (sampleOn ? sampleMetricsFor(scopedSample.results) : withUnusedMetrics(liveOps?.metrics ?? [], metricsCatalog)),
+    [sampleOn, scopedSample.results, liveOps, metricsCatalog],
   )
   const primaryMetric = useMemo(
     () =>
@@ -251,10 +339,22 @@ export default function ResultsDashboardTab({
     [metrics],
   )
 
-  const days = useMemo(() => buildDays(results), [results])
-  const callDays = useMemo(() => buildCallDays(results), [results])
-  const duration = useMemo(() => buildDuration(results), [results])
-  const scoreSeries = useMemo(() => buildScoreSeries(results, metrics), [results, metrics])
+  const days = useMemo(
+    () => (sampleOn ? buildDays(scopedSample.results) : daysFromRunDays(liveOps?.run_days)),
+    [sampleOn, scopedSample.results, liveOps],
+  )
+  const callDays = useMemo(
+    () => (sampleOn ? buildCallDays(scopedSample.results) : callDaysFromRunDays(liveOps?.run_days)),
+    [sampleOn, scopedSample.results, liveOps],
+  )
+  const duration = useMemo(
+    () => (sampleOn ? buildDuration(scopedSample.results) : durationFromRunDays(liveOps?.run_days)),
+    [sampleOn, scopedSample.results, liveOps],
+  )
+  const scoreSeries = useMemo(
+    () => (sampleOn ? buildScoreSeries(scopedSample.results, sampleMetricsFor(scopedSample.results)) : scoreSeriesFromDays(liveOps?.score_days)),
+    [sampleOn, scopedSample.results, liveOps],
+  )
   const lowest = useMemo(() => {
     return metrics
       .filter((metric) => isNumericMetric(metric) && metric.mean != null)
@@ -270,9 +370,17 @@ export default function ResultsDashboardTab({
   }, [metrics])
 
   const chartAgents = useMemo(
-    () => (sampleOn ? SAMPLE_AGENTS : chartOverview?.agents ?? (playground ? [] : agents)),
-    [sampleOn, chartOverview, playground, agents],
+    () => narrowAgents(sampleOn ? SAMPLE_AGENTS : liveOps?.agents ?? agents, agentId, suiteId, scenarioId),
+    [sampleOn, liveOps, agents, agentId, suiteId, scenarioId],
   )
+  useEffect(() => {
+    if (!onDashboardAgents) return
+    if (sampleOn) {
+      onDashboardAgents(SAMPLE_AGENTS)
+      return
+    }
+    if (liveOps) onDashboardAgents(liveOps.agents ?? [])
+  }, [onDashboardAgents, sampleOn, liveOps])
   const scenarioMatrix = useMemo(() => buildScenarioMatrix(chartAgents), [chartAgents])
   const { childIdsByParent, childNamesById } = useMemo(() => {
     const childIdsByParent = new Map<string, string[]>()
@@ -314,7 +422,7 @@ export default function ResultsDashboardTab({
 
   const shown = visibleWidgets(widgets)
   const visibleCount = widgets.filter((widget) => !widget.hidden).length
-  const loading = loadingAggregate || loadingResults
+  const loading = !sampleOn && loadingOps && !liveOps
 
   const update = (next: ResultsWidget[]) => setWidgets(next)
 
@@ -391,7 +499,7 @@ export default function ResultsDashboardTab({
     update(widgets.map((widget) => (widget.id === id ? { ...widget, metricId } : widget)))
   }
 
-  if (loading && !aggregate && !results.length) {
+  if (loading) {
     return (
       <div className="flex items-center justify-center py-16 text-gray-500">
         <Loader className="mr-2 h-5 w-5 animate-spin" />
@@ -405,7 +513,7 @@ export default function ResultsDashboardTab({
       <PlatformDetail
         section={detail.section}
         ops={ops}
-        calls={sampleOn ? SAMPLE_DRILL_CALLS : drillCallsFromResults(results)}
+        calls={sampleOn ? sampleDrillCalls(agentId, effectiveDateRange?.start ?? null, effectiveDateRange?.end ?? null) : drillCallsFromResults(results)}
         onBack={() => setDetail(null)}
         onOpenRuns={onOpenRuns}
         onOpenResult={onOpenResult}
@@ -431,8 +539,8 @@ export default function ResultsDashboardTab({
         scenarioRows={scenarioRows}
         primaryMetric={primaryMetric}
         results={results}
-        aggregateTotal={sampleOn ? SAMPLE_RESULTS.length : aggregate?.total_rows ?? results.length}
-        aggregateCompleted={sampleOn ? SAMPLE_COMPLETED : aggregate?.completed_rows ?? 0}
+        aggregateTotal={aggregateTotal}
+        aggregateCompleted={aggregateCompleted}
         onBack={() => setDetail(null)}
         onOpenMetric={(metricId) => setDetail({ kind: 'metric', metricId })}
         onSelectAgent={(id) => {
@@ -445,6 +553,9 @@ export default function ResultsDashboardTab({
         }}
         onOpenRuns={onOpenRuns}
         onOpenResult={onOpenResult}
+        onMetric={(metricId) => {
+          if (detail.kind === 'widget') setMetric(detail.widgetId, metricId)
+        }}
       />
     )
   }
@@ -453,15 +564,19 @@ export default function ResultsDashboardTab({
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-xs text-gray-500">
-          {startDate && endDate
-            ? `${effectiveDateRange.start} → ${effectiveDateRange.end}`
-            : `Last 7 days (${effectiveDateRange.start} → ${effectiveDateRange.end})`}
-          {truncated ? ` · trends use the newest ${TRENDS_PAGE_LIMIT.toLocaleString()} of ${totalInRange.toLocaleString()} runs` : ''}
+          {effectiveDateRange ? `${effectiveDateRange.start} → ${effectiveDateRange.end}` : 'All time'}
         </p>
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => setSampleOn((on) => !on)}
+            onClick={() => {
+              setSampleOn((on) => {
+                if (on && (agentId.startsWith('sample-') || suiteId.startsWith('sample-') || scenarioId.startsWith('sample-'))) {
+                  onSelectAgent('')
+                }
+                return !on
+              })
+            }}
             className={`rounded-lg border px-2.5 py-1 text-xs font-medium ${sampleOn ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-gray-200 bg-white text-gray-600'}`}
           >
             {sampleOn ? 'Sample data on' : 'Sample data'}
@@ -491,8 +606,7 @@ export default function ResultsDashboardTab({
             </button>
             {addOpen && (
               <div className="absolute right-0 z-20 mt-1 max-h-80 w-56 overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
-                {(Object.keys(WIDGET_LABELS) as ResultsWidgetType[]).flatMap((type) => {
-                  if (PLATFORM_WIDGETS.includes(type)) return []
+                {ADDABLE_WIDGETS.flatMap((type) => {
                   if (type === 'metric_trend') {
                     if (!metrics.length) {
                       return [(
@@ -596,8 +710,8 @@ export default function ResultsDashboardTab({
                   agentRows={agentRows}
                   scenarioRows={scenarioRows}
                   primaryMetric={primaryMetric}
-                  aggregateTotal={sampleOn ? SAMPLE_RESULTS.length : aggregate?.total_rows ?? results.length}
-                  aggregateCompleted={sampleOn ? SAMPLE_COMPLETED : aggregate?.completed_rows ?? 0}
+                  aggregateTotal={aggregateTotal}
+                  aggregateCompleted={aggregateCompleted}
                   onDisplay={(display) => setDisplay(widget.id, display)}
                   onHide={() => hideWidget(widget.id)}
                   onMove={(direction) => moveWidget(widget.id, direction)}
@@ -618,6 +732,66 @@ export default function ResultsDashboardTab({
       />
     </div>
   )
+}
+
+function labelDay(iso: string): { day: string; sortKey: string } {
+  const sortKey = iso.slice(0, 10)
+  const [year, month, date] = sortKey.split('-').map(Number)
+  const local = new Date(year, (month || 1) - 1, date || 1)
+  return {
+    day: local.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+    sortKey,
+  }
+}
+
+function daysFromRunDays(rows: DashboardOpsRunDay[] | undefined): DayPoint[] {
+  return (rows ?? [])
+    .map((row) => {
+      const labeled = labelDay(row.day)
+      return { day: labeled.day, sortKey: labeled.sortKey, completed: row.completed, failed: row.failed }
+    })
+    .sort((a, b) => a.sortKey.localeCompare(b.sortKey))
+}
+
+function callDaysFromRunDays(rows: DashboardOpsRunDay[] | undefined): Array<{ day: string; calls: number }> {
+  return daysFromRunDays(rows).map((row) => ({ day: row.day, calls: row.completed + row.failed }))
+}
+
+function durationFromRunDays(rows: DashboardOpsRunDay[] | undefined): { average: number | null; points: Array<{ day: string; value: number }> } {
+  let sum = 0
+  let count = 0
+  const points = [...(rows ?? [])]
+    .sort((a, b) => a.day.localeCompare(b.day))
+    .map((row) => {
+      sum += row.duration_seconds
+      count += row.duration_count
+      return {
+        day: labelDay(row.day).day,
+        value: row.duration_count ? Number((row.duration_seconds / row.duration_count).toFixed(1)) : 0,
+      }
+    })
+  return { average: count ? sum / count : null, points }
+}
+
+function scoreSeriesFromDays(rows: DashboardOpsScoreDay[] | undefined) {
+  const series = new Map<string, Array<{ day: string; value: number; sortKey: string }>>()
+  for (const row of rows ?? []) {
+    if (!row.score_count) continue
+    const labeled = labelDay(row.day)
+    const points = series.get(row.metric_id) ?? []
+    points.push({
+      day: labeled.day,
+      sortKey: labeled.sortKey,
+      value: Number((row.score_sum / row.score_count).toFixed(2)),
+    })
+    series.set(row.metric_id, points)
+  }
+  const out = new Map<string, Array<{ day: string; value: number }>>()
+  for (const [metricId, points] of series) {
+    points.sort((a, b) => a.sortKey.localeCompare(b.sortKey))
+    out.set(metricId, points.map(({ day, value }) => ({ day, value })))
+  }
+  return out
 }
 
 function buildCallDays(results: EvaluatorResultRow[]): Array<{ day: string; calls: number }> {
@@ -887,39 +1061,11 @@ function DashboardPanel({
       </div>
 
       {widget.type === 'metric_usage' && (
-        <div className="mb-3 flex flex-wrap items-center gap-1">
-          <button
-            type="button"
-            onClick={() => {
-              const ranked = [...metrics].filter((metric) => metric.count > 0).sort((a, b) => b.count - a.count)
-              if (ranked[0]) onMetric(ranked[0].metric_id)
-            }}
-            className="rounded-full border border-gray-200 px-2 py-0.5 text-[11px] text-gray-600 hover:bg-gray-50"
-          >
-            Most used
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              const ranked = [...metrics].filter((metric) => metric.count > 0).sort((a, b) => a.count - b.count)
-              if (ranked[0]) onMetric(ranked[0].metric_id)
-            }}
-            className="rounded-full border border-gray-200 px-2 py-0.5 text-[11px] text-gray-600 hover:bg-gray-50"
-          >
-            Least used
-          </button>
-          <select
-            value={trendMetric?.metric_id ?? ''}
-            onChange={(event) => onMetric(event.target.value)}
-            className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700"
-          >
-            {metrics.map((metric) => (
-              <option key={metric.metric_id} value={metric.metric_id}>
-                {metric.metric_name}
-              </option>
-            ))}
-          </select>
-        </div>
+        <MetricUsageFilters
+          metrics={metrics}
+          selectedId={trendMetric?.metric_id ?? null}
+          onSelect={onMetric}
+        />
       )}
 
       {widget.type === 'metric_trend' && (
@@ -941,6 +1087,8 @@ function DashboardPanel({
           <AgentTable rows={agentRows} onSelect={onOpenAgent} />
           <span className="mt-2 block text-[11px] font-medium text-gray-400">Show details</span>
         </div>
+      ) : widget.type === 'metric_usage' && trendMetric && trendMetric.count === 0 ? (
+        <UnusedMetricList metrics={metrics} selectedId={trendMetric.metric_id} onSelect={onMetric} />
       ) : model.data.length === 0 ? (
         <button type="button" onClick={onOpenDetail} className="flex flex-1 flex-col items-center justify-center gap-2 text-sm text-gray-400">
           <span>No data in this window</span>
@@ -993,9 +1141,9 @@ function panelModel(
   if (widget.type === 'model_cost') return modelCostCard(source.ops)
   if (widget.type === 'tool_calls') return toolCallCard(source.ops, widget.display)
   if (widget.type === 'total_calls') {
-    const total = source.callDays.reduce((sum, day) => sum + day.calls, 0)
+    const loaded = source.callDays.reduce((sum, day) => sum + day.calls, 0)
     return {
-      headline: formatHeadline(total),
+      headline: formatHeadline(source.aggregateTotal || loaded),
       caption: 'Calls in window',
       data: source.callDays.map((day) => ({ day: day.day, calls: day.calls })),
       series: [{ key: 'calls', color: PRIMARY }],
@@ -1035,14 +1183,30 @@ function panelModel(
   }
   if (widget.type === 'avg_score' || widget.type === 'metric_trend' || widget.type === 'metric_usage') {
     const metric = widget.type === 'avg_score' ? source.primaryMetric : source.trendMetric
+    if (metric && metric.count === 0 && widget.type !== 'avg_score') {
+      return {
+        headline: 'Never scored',
+        caption: metric.metric_name,
+        data: [],
+        series: [{ key: 'value', color: PRIMARY }],
+      }
+    }
     if (metric && widget.type !== 'avg_score' && isCategoricalMetric(metric)) {
       const category = source.categorySeries.get(metric.metric_id)
-      const labels = category?.labels ?? metric.value_counts.map((count) => count.label)
+      if (category?.data.length) {
+        return {
+          headline: formatHeadline(metric.count),
+          caption: metric.metric_name,
+          data: category.data,
+          series: categoryColors(category.labels),
+        }
+      }
       return {
         headline: formatHeadline(metric.count),
         caption: metric.metric_name,
-        data: category?.data ?? [],
-        series: categoryColors(labels),
+        data: metric.value_counts.map((count) => ({ name: count.label, count: count.count })),
+        series: [{ key: 'count', color: PRIMARY }],
+        horizontal: true,
       }
     }
     const points = metric ? source.scoreSeries.get(metric.metric_id) ?? [] : []
@@ -1371,6 +1535,7 @@ function ResultsDetailView({
   onSelectScenario,
   onOpenRuns,
   onOpenResult,
+  onMetric,
 }: {
   detail: { kind: 'widget'; widgetId: string } | { kind: 'metric'; metricId: string } | { kind: 'agent'; agentId: string }
   widgets: ResultsWidget[]
@@ -1395,6 +1560,7 @@ function ResultsDetailView({
   onSelectScenario: (suiteId: string, scenarioId: string, agentId: string) => void
   onOpenRuns: () => void
   onOpenResult: (resultId: string) => void
+  onMetric: (metricId: string) => void
 }) {
   const widget = detail.kind === 'widget' ? widgets.find((item) => item.id === detail.widgetId) : null
   const metric = detail.kind === 'metric'
@@ -1484,13 +1650,13 @@ function ResultsDetailView({
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {views.length > 1 && (
-              <div className="flex items-center rounded-lg bg-gray-100 p-0.5">
+              <div className="flex items-center rounded-lg border border-gray-200 bg-gray-50 p-0.5">
                 {views.map((view) => (
                   <button
                     key={view.id}
                     type="button"
                     onClick={() => setViewId(view.id)}
-                    className={`rounded-md px-2.5 py-1 text-xs font-medium ${active?.id === view.id ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}
+                    className={`rounded-md border px-2.5 py-1 text-xs font-medium ${active?.id === view.id ? 'border-primary-200 bg-white text-primary-800 shadow-sm' : 'border-transparent text-gray-600 hover:text-gray-900'}`}
                   >
                     {view.label}
                   </button>
@@ -1498,24 +1664,32 @@ function ResultsDetailView({
               </div>
             )}
             {widget?.type === 'avg_duration' && (
-              <div className="flex items-center rounded-lg border border-gray-200 bg-white p-0.5">
+              <div className="flex items-center rounded-lg border border-gray-200 bg-gray-50 p-0.5">
                 {(['line', 'area', 'bar'] as ResultsChartType[]).map((type) => (
                   <button
                     key={type}
                     type="button"
                     onClick={() => setDurationDisplay(type)}
-                    className={`rounded-md px-3 py-1.5 text-xs font-semibold ${durationDisplay === type ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-50'}`}
+                    className={`rounded-md border px-2.5 py-1 text-xs font-medium ${durationDisplay === type ? 'border-primary-200 bg-white text-primary-800 shadow-sm' : 'border-transparent text-gray-600 hover:text-gray-900'}`}
                   >
                     {CHART_TYPE_LABELS[type]}
                   </button>
                 ))}
               </div>
             )}
-            <button type="button" onClick={onOpenRuns} className="rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-medium text-white">
+            <button type="button" onClick={onOpenRuns} className="rounded-md bg-primary-700 px-2.5 py-1 text-xs font-medium text-white hover:bg-primary-800">
               View runs
             </button>
           </div>
         </div>
+        {widget?.type === 'metric_usage' && (
+          <div className="mt-4">
+            <MetricUsageFilters metrics={metrics} selectedId={metric?.metric_id ?? null} onSelect={onMetric} />
+            {metric && metric.count === 0 && (
+              <UnusedMetricList metrics={metrics} selectedId={metric.metric_id} onSelect={onMetric} />
+            )}
+          </div>
+        )}
         {metric && (
           <dl className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
             <Stat label="Mean" value={formatHeadline(metric.mean)} />
@@ -1634,7 +1808,10 @@ function ResultsDetailView({
             </ul>
           </div>
         )}
-        {widget?.type === 'avg_duration' && <DurationBreakdown results={results} />}
+        {(widget?.type === 'avg_duration' || widget?.type === 'total_calls' || widget?.type === 'scenarios_by_agent') && (
+          <DurationBreakdown results={results} />
+        )}
+        {widget?.type === 'metric_usage' && metric && <MetricScenarioScores results={results} metricId={metric.metric_id} />}
         {agent && (
           <div className="mt-4 flex flex-wrap gap-2">
             <button type="button" onClick={() => onSelectAgent(agent.id)} className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50">
@@ -1723,6 +1900,7 @@ function MetricAgentsTable({
     for (const run of runs) {
       for (const id of Object.keys(run.metric_scores ?? {})) metricIds.add(id)
     }
+    const rolledUp = ops?.agent_metric_counts?.find((row) => row.agent_id === agent.agent_id)?.metric_count
     const scenarioCount = (agent.suites ?? []).reduce((sum, suite) => sum + (suite.scenarios?.length ?? 0), 0)
     const cost = ops?.cost_by_agent.find((row) => row.agent_id === agent.agent_id)?.total_usd ?? 0
     const tools = (ops?.tool_calls_per_run ?? []).find((row) => row.agent_id === agent.agent_id)?.calls
@@ -1730,7 +1908,7 @@ function MetricAgentsTable({
     return {
       id: agent.agent_id,
       name: agent.agent_name,
-      metrics: metricIds.size,
+      metrics: rolledUp ?? metricIds.size,
       scenarios: scenarioCount,
       calls: agent.counts.total,
       cost,
@@ -1752,7 +1930,7 @@ function MetricAgentsTable({
               key={column}
               type="button"
               onClick={() => toggle(column)}
-              className={`rounded-full px-2.5 py-1 text-xs font-medium ${columns.includes(column) ? 'bg-gray-900 text-white' : 'text-gray-500 hover:bg-gray-50'}`}
+              className={`rounded-full border px-2.5 py-1 text-xs font-medium ${columns.includes(column) ? 'border-primary-200 bg-primary-50 text-primary-800' : 'border-transparent text-gray-500 hover:bg-gray-50'}`}
             >
               {labels[column]}
             </button>
@@ -1787,6 +1965,128 @@ function MetricAgentsTable({
         </tbody>
       </table>
     </section>
+  )
+}
+
+type MetricUsageMode = 'most' | 'least' | 'never'
+
+function metricsForMode(metrics: CallImportMetricAggregate[], mode: MetricUsageMode): CallImportMetricAggregate[] {
+  if (mode === 'never') return metrics.filter((metric) => metric.count === 0)
+  return [...metrics].filter((metric) => metric.count > 0).sort((a, b) => (mode === 'most' ? b.count - a.count : a.count - b.count))
+}
+
+function MetricUsageFilters({
+  metrics,
+  selectedId,
+  onSelect,
+}: {
+  metrics: CallImportMetricAggregate[]
+  selectedId: string | null
+  onSelect: (metricId: string) => void
+}) {
+  const [mode, setMode] = useState<MetricUsageMode>('most')
+  const choose = (next: MetricUsageMode) => {
+    setMode(next)
+    const match = metricsForMode(metrics, next)[0]
+    if (match) onSelect(match.metric_id)
+  }
+  const options = metricsForMode(metrics, mode)
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-2">
+      <div className="flex items-center rounded-lg border border-gray-200 bg-gray-50 p-0.5">
+        {(['most', 'least', 'never'] as MetricUsageMode[]).map((item) => (
+          <button
+            key={item}
+            type="button"
+            onClick={() => choose(item)}
+            className={`rounded-md border px-2.5 py-1 text-xs font-medium ${mode === item ? 'border-primary-200 bg-white text-primary-800 shadow-sm' : 'border-transparent text-gray-600 hover:text-gray-900'}`}
+          >
+            {item === 'most' ? 'Most used' : item === 'least' ? 'Least used' : 'Never used'}
+          </button>
+        ))}
+      </div>
+      <select
+        value={selectedId ?? ''}
+        onChange={(event) => onSelect(event.target.value)}
+        className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700"
+      >
+        {options.length === 0 && <option value="">{mode === 'never' ? 'No unused metrics' : 'No scored metrics'}</option>}
+        {options.map((metric) => (
+          <option key={metric.metric_id} value={metric.metric_id}>
+            {metric.metric_name}{metric.count === 0 ? ' · never scored' : ''}
+          </option>
+        ))}
+      </select>
+    </div>
+  )
+}
+
+function UnusedMetricList({
+  metrics,
+  selectedId,
+  onSelect,
+}: {
+  metrics: CallImportMetricAggregate[]
+  selectedId: string
+  onSelect: (metricId: string) => void
+}) {
+  const unused = metrics.filter((metric) => metric.count === 0)
+  if (!unused.length) {
+    return <p className="text-sm text-gray-400">Every metric was scored in this window.</p>
+  }
+  return (
+    <div className="min-h-0 flex-1 overflow-auto">
+      <p className="mb-2 text-xs text-gray-500">{unused.length} metrics were not scored in this window</p>
+      <ul className="divide-y divide-gray-100">
+        {unused.map((metric) => (
+          <li key={metric.metric_id}>
+            <button
+              type="button"
+              onClick={() => onSelect(metric.metric_id)}
+              className={`flex w-full items-center justify-between py-1.5 text-left text-sm ${metric.metric_id === selectedId ? 'font-medium text-primary-800' : 'text-gray-700 hover:text-gray-900'}`}
+            >
+              <span className="truncate pr-3">{metric.metric_name}</span>
+              <span className="shrink-0 text-xs text-gray-400">Never scored</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function MetricScenarioScores({ results, metricId }: { results: EvaluatorResultRow[]; metricId: string }) {
+  const groups = new Map<string, { sum: number; count: number; failed: number }>()
+  for (const row of results) {
+    const name = row.scenario?.name
+    if (!name) continue
+    const score = row.metric_scores?.[metricId]
+    const bucket = groups.get(name) ?? { sum: 0, count: 0, failed: 0 }
+    if (row.status === 'failed') bucket.failed += 1
+    const value = typeof score?.value === 'number' ? score.value : Number(score?.value)
+    if (!Number.isNaN(value) && score) {
+      bucket.sum += value
+      bucket.count += 1
+    }
+    groups.set(name, bucket)
+  }
+  const rows = Array.from(groups.entries()).sort((a, b) => b[1].count - a[1].count)
+  if (!rows.length) return <p className="mt-4 text-sm text-gray-400">No scored runs for this metric.</p>
+  return (
+    <div className="mt-4">
+      <h3 className="text-sm font-semibold text-gray-900">By scenario</h3>
+      <ul className="mt-2 divide-y divide-gray-100">
+        {rows.map(([name, stats]) => (
+          <li key={name} className="flex items-center justify-between py-2 text-sm text-gray-700">
+            <span className="truncate pr-3">{name}</span>
+            <span className="shrink-0 text-xs text-gray-500">
+              {stats.count ? `avg ${(stats.sum / stats.count).toFixed(2)}` : 'never scored'}
+              {` · ${stats.failed} failed`}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
   )
 }
 
@@ -1829,7 +2129,7 @@ function DurationBreakdown({ results }: { results: EvaluatorResultRow[] }) {
             <li key={bucket.name} className="grid grid-cols-[7rem_minmax(0,1fr)_2rem] items-center gap-3 text-xs text-gray-600">
               <span>{bucket.name}</span>
               <span className="h-2 overflow-hidden rounded-full bg-gray-100">
-                <span className="block h-full rounded-full bg-gray-900" style={{ width: `${(bucket.count / max) * 100}%` }} />
+                <span className="block h-full rounded-full bg-primary-600" style={{ width: `${(bucket.count / max) * 100}%` }} />
               </span>
               <span className="text-right">{bucket.count}</span>
             </li>
@@ -1885,9 +2185,9 @@ function OverviewStats({
     <dl className="mt-4 grid grid-cols-3 gap-2">
       {spend && (
         <>
-          <Stat label="Most used" value={spend.most} />
-          <Stat label="Least used" value={spend.least} />
-          <Stat label="Highest cost" value={spend.highest} />
+          <Stat label="Highest spend" value={spend.most} />
+          <Stat label="Lowest spend" value={spend.least} />
+          <Stat label="Top model cost" value={spend.highest} />
         </>
       )}
       {products && (
@@ -2102,6 +2402,20 @@ function PlatformDetail({
               onPoint={() => undefined}
               onCategory={openLeaf}
             />
+          </div>
+        )}
+        {section === 'usage' && (activeId === 'price_minute' || activeId === 'price_million') && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {chart.series.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => setLeaf({ kind: 'model', name: item.key })}
+                className="rounded-full border border-gray-200 px-2.5 py-1 text-xs font-medium text-gray-700 hover:border-primary-300 hover:text-primary-800"
+              >
+                {item.key}
+              </button>
+            ))}
           </div>
         )}
         {focus && (

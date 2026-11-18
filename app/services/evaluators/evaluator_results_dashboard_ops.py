@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from uuid import UUID
 
@@ -13,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.models.database import Agent, Evaluator, EvaluatorResult, LLMUsageDaily, VoiceBundle
 from app.models.schemas import (
     DashboardOpsAgentDay,
+    DashboardOpsAgentMetricCount,
     DashboardOpsCostByAgent,
     DashboardOpsModelDay,
     DashboardOpsModelLayer,
@@ -20,6 +23,8 @@ from app.models.schemas import (
     DashboardOpsProviderAgent,
     DashboardOpsProviderDay,
     DashboardOpsProviderTotal,
+    DashboardOpsRunDay,
+    DashboardOpsScoreDay,
     DashboardOpsToolAgentDay,
     DashboardOpsToolByTool,
     DashboardOpsToolCallsPerRun,
@@ -30,6 +35,9 @@ from app.services.usage.context import LIVE_USAGE_SECTIONS, resolve_usage_role
 
 _LAYER_KINDS = ("llm", "stt", "tts")
 _MICRO = 1_000_000
+_OPS_CACHE_TTL_SECONDS = 90
+_OPS_CACHE_HISTORICAL_TTL_SECONDS = 900
+_ops_redis_client = None
 
 
 @dataclass
@@ -404,6 +412,27 @@ def _usage_day(value: Optional[datetime]) -> Optional[date]:
     return value.date()
 
 
+def _json_value(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return None
+    return value
+
+
+def _tool_payload(tool_calls: Any, knowledge_calls: Any) -> Dict[str, Any]:
+    """Keep the tool name, provider, and status. Leave the transcript behind."""
+    payload: Dict[str, Any] = {}
+    tools = _json_value(tool_calls)
+    knowledge = _json_value(knowledge_calls)
+    if tools is not None:
+        payload["tool_calls"] = tools
+    if knowledge is not None:
+        payload["knowledge_base_tool_calls"] = knowledge
+    return payload
+
+
 def compute_evaluator_results_dashboard_ops(
     db: Session,
     *,
@@ -454,11 +483,16 @@ def compute_evaluator_results_dashboard_ops(
         playground=playground,
     )
     tool_rows = [
-        ToolCallSource(agent_id=agent_id, timestamp=timestamp, call_data=call_data)
-        for agent_id, timestamp, call_data in result_query.with_entities(
+        ToolCallSource(
+            agent_id=row_agent_id,
+            timestamp=timestamp,
+            call_data=_tool_payload(tool_calls, knowledge_calls),
+        )
+        for row_agent_id, timestamp, tool_calls, knowledge_calls in result_query.with_entities(
             EvaluatorResult.agent_id,
             EvaluatorResult.timestamp,
-            EvaluatorResult.call_data,
+            EvaluatorResult.call_data["tool_calls"],
+            EvaluatorResult.call_data["knowledge_base_tool_calls"],
         ).all()
     ]
 
@@ -488,6 +522,37 @@ def compute_evaluator_results_dashboard_ops(
     model_layers = _with_s2s_models(db, agent_ids, model_layers)
     model_layers = _attach_catalog_rates(db, organization_id, model_layers)
     tools = rollup_tool_calls(tool_rows, agent_names=agent_names)
+    from app.services.evaluators.evaluator_result_daily import load_dashboard_series
+
+    series = load_dashboard_series(
+        db,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        agent_id=agent_id,
+        scenario_ids=scenario_ids,
+        since=since,
+        until=until,
+        playground=playground,
+    )
+    aggregate = cached_evaluator_results_aggregate(
+        db,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        suite_id=suite_id,
+        agent_id=agent_id,
+        scenario_id=scenario_id,
+        since=since,
+        until=until,
+        playground=playground,
+    )
+    overview = cached_evaluator_results_overview(
+        db,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        since=since,
+        until=until,
+        playground=playground,
+    )
     return EvaluatorResultsDashboardOpsResponse(
         cost_by_agent=cost_by_agent,
         cost_by_model_day=cost_by_model_day,
@@ -500,6 +565,34 @@ def compute_evaluator_results_dashboard_ops(
         provider_by_day=tools.provider_days,
         provider_by_agent=tools.provider_agents,
         calls_with_no_tools=tools.calls_with_no_tools,
+        run_days=[
+            DashboardOpsRunDay(
+                day=row.day,
+                completed=row.completed,
+                failed=row.failed,
+                duration_seconds=row.duration_seconds,
+                duration_count=row.duration_count,
+            )
+            for row in series.run_days
+        ],
+        score_days=[
+            DashboardOpsScoreDay(
+                day=row.day,
+                metric_id=row.metric_id,
+                score_sum=row.score_sum,
+                score_count=row.score_count,
+            )
+            for row in series.score_days
+        ],
+        total_rows=aggregate.total_rows,
+        completed_rows=aggregate.completed_rows,
+        failed_rows=aggregate.failed_rows,
+        metrics=aggregate.metrics,
+        agents=overview.agents,
+        agent_metric_counts=[
+            DashboardOpsAgentMetricCount(agent_id=row.agent_id, metric_count=row.metric_count)
+            for row in series.agent_metric_counts
+        ],
     )
 
 
@@ -568,3 +661,177 @@ def _attach_catalog_rates(
             )
         )
     return rated
+
+
+def results_cache_key(
+    kind: str,
+    *,
+    organization_id: UUID,
+    workspace_id: UUID,
+    suite_id: Optional[UUID] = None,
+    agent_id: Optional[UUID] = None,
+    scenario_id: Optional[UUID] = None,
+    since: Optional[datetime] = None,
+    until: Optional[datetime] = None,
+    playground: Optional[bool] = None,
+) -> str:
+    payload = {
+        "organization_id": str(organization_id),
+        "workspace_id": str(workspace_id),
+        "suite_id": str(suite_id) if suite_id else None,
+        "agent_id": str(agent_id) if agent_id else None,
+        "scenario_id": str(scenario_id) if scenario_id else None,
+        "since": since.isoformat() if since else None,
+        "until": until.isoformat() if until else None,
+        "playground": playground,
+    }
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:32]
+    return f"results:{kind}:{organization_id}:{workspace_id}:{digest}"
+
+
+def dashboard_ops_cache_key(
+    *,
+    organization_id: UUID,
+    workspace_id: UUID,
+    suite_id: Optional[UUID],
+    agent_id: Optional[UUID],
+    scenario_id: Optional[UUID],
+    since: Optional[datetime],
+    until: Optional[datetime],
+    playground: Optional[bool],
+) -> str:
+    return results_cache_key(
+        "dashboard_ops",
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        suite_id=suite_id,
+        agent_id=agent_id,
+        scenario_id=scenario_id,
+        since=since,
+        until=until,
+        playground=playground,
+    )
+
+
+def _ops_redis():
+    global _ops_redis_client
+    if _ops_redis_client is None:
+        import redis
+        from app.config import settings
+
+        _ops_redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+    return _ops_redis_client
+
+
+def get_cached_dashboard_ops(cache_key: str) -> Optional[dict]:
+    try:
+        raw = _ops_redis().get(cache_key)
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def cache_dashboard_ops(
+    cache_key: str,
+    payload: dict,
+    *,
+    until: Optional[datetime],
+) -> None:
+    today = datetime.now(timezone.utc).date()
+    historical = until is not None and until.date() < today
+    ttl = _OPS_CACHE_HISTORICAL_TTL_SECONDS if historical else _OPS_CACHE_TTL_SECONDS
+    try:
+        _ops_redis().set(cache_key, json.dumps(payload, default=str), ex=ttl)
+    except Exception:
+        return
+
+
+def cached_evaluator_results_aggregate(
+    db: Session,
+    *,
+    organization_id: UUID,
+    workspace_id: UUID,
+    suite_id: Optional[UUID] = None,
+    agent_id: Optional[UUID] = None,
+    scenario_id: Optional[UUID] = None,
+    since: Optional[datetime] = None,
+    until: Optional[datetime] = None,
+    playground: Optional[bool] = None,
+):
+    from app.models.schemas import EvaluatorResultsAggregateResponse
+    from app.services.evaluators.evaluator_results_aggregate import compute_evaluator_results_aggregate
+
+    cache_key = results_cache_key(
+        "aggregate",
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        suite_id=suite_id,
+        agent_id=agent_id,
+        scenario_id=scenario_id,
+        since=since,
+        until=until,
+        playground=playground,
+    )
+    cached = get_cached_dashboard_ops(cache_key)
+    if cached is not None:
+        return EvaluatorResultsAggregateResponse.model_validate(cached)
+    result = compute_evaluator_results_aggregate(
+        db,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        suite_id=suite_id,
+        agent_id=agent_id,
+        scenario_id=scenario_id,
+        since=since,
+        until=until,
+        playground=playground,
+    )
+    cache_dashboard_ops(cache_key, result.model_dump(mode="json"), until=until)
+    return result
+
+
+def cached_evaluator_results_overview(
+    db: Session,
+    *,
+    organization_id: UUID,
+    workspace_id: UUID,
+    agent_id: Optional[UUID] = None,
+    suite_id: Optional[UUID] = None,
+    since: Optional[datetime] = None,
+    until: Optional[datetime] = None,
+    playground: Optional[bool] = None,
+):
+    from app.models.schemas import EvaluatorResultsOverviewResponse
+    from app.services.evaluators.evaluator_results_overview import build_evaluator_results_overview
+
+    cache_key = results_cache_key(
+        "overview",
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        agent_id=agent_id,
+        suite_id=suite_id,
+        since=since,
+        until=until,
+        playground=playground,
+    )
+    cached = get_cached_dashboard_ops(cache_key)
+    if cached is not None:
+        return EvaluatorResultsOverviewResponse.model_validate(cached)
+    result = build_evaluator_results_overview(
+        db,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        agent_id=agent_id,
+        suite_id=suite_id,
+        since=since,
+        until=until,
+        playground=playground,
+    )
+    cache_dashboard_ops(cache_key, result.model_dump(mode="json"), until=until)
+    return result

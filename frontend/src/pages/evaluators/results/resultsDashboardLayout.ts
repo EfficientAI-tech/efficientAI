@@ -53,7 +53,16 @@ export const CHART_TYPE_LABELS: Record<ResultsChartType, string> = {
   area: 'Area',
 }
 
-const STORAGE_KEY = 'resultsDashboardLayout.v3'
+const STORAGE_KEY = 'resultsDashboardLayout.v4'
+
+export const ADDABLE_WIDGETS: ResultsWidgetType[] = [
+  'total_calls',
+  'completion',
+  'avg_duration',
+  'metric_usage',
+  'lowest_metrics',
+  'scenarios_by_agent',
+]
 
 function seed(type: ResultsWidgetType, display: ResultsChartType): ResultsWidget {
   return { id: type, type, display }
@@ -61,8 +70,10 @@ function seed(type: ResultsWidgetType, display: ResultsChartType): ResultsWidget
 
 export const DEFAULT_RESULTS_WIDGETS: ResultsWidget[] = [
   seed('total_calls', 'bar'),
+  seed('completion', 'line'),
   seed('avg_duration', 'line'),
   seed('metric_usage', 'line'),
+  seed('lowest_metrics', 'bar'),
   seed('scenarios_by_agent', 'bar'),
 ]
 

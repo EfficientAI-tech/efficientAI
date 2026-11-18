@@ -38,6 +38,7 @@ import {
 import { dateRangeToSinceUntil, isoToDateInput } from './resultsDateRange'
 
 import type {
+  EvaluatorResultsAgentSummary,
   EvaluatorResultsScenarioSummary,
   EvaluatorResultsSuiteSummary,
   ListEvaluatorResultsParams,
@@ -155,19 +156,29 @@ export default function ResultsHub() {
 
 
 
+  const [dashboardAgents, setDashboardAgents] = useState<EvaluatorResultsAgentSummary[] | null>(null)
+
   const { data: overview, isLoading: loadingOverview } = useQuery({
 
     queryKey: ['evaluator-results-overview', activeWorkspaceId, overviewParams],
 
     queryFn: () => apiClient.getEvaluatorResultsOverview(overviewParams),
 
-    enabled: showScopeFilters || generateModalOpen,
+    enabled: activeTab !== 'dashboard' && (showScopeFilters || generateModalOpen),
+
+    staleTime: 60_000,
 
   })
 
 
 
-  const agents = overview?.agents ?? []
+  const agents = useMemo(
+
+    () => (activeTab === 'dashboard' && dashboardAgents ? dashboardAgents : (overview?.agents ?? [])),
+
+    [activeTab, dashboardAgents, overview],
+
+  )
 
 
 
@@ -622,6 +633,8 @@ export default function ResultsHub() {
 
       end,
 
+      dates: start && end ? null : 'all',
+
     })
 
   }
@@ -787,7 +800,7 @@ export default function ResultsHub() {
 
 
 
-      {showScopeFilters && (loadingOverview || !overview) ? (
+      {activeTab !== 'dashboard' && showScopeFilters && (loadingOverview || !overview) ? (
 
         <p className="text-gray-500">Loading overview…</p>
 
@@ -815,6 +828,7 @@ export default function ResultsHub() {
             <ResultsDateRangePicker
               start={startDate}
               end={endDate}
+              allTime={searchParams.get('dates') === 'all'}
               onApply={setDateRange}
             />
             <button
@@ -971,6 +985,8 @@ export default function ResultsHub() {
 
           endDate={endDate}
 
+          allTime={searchParams.get('dates') === 'all'}
+
           agents={agents}
 
           onSelectAgent={(id) => setFilter('agent', id)}
@@ -994,6 +1010,8 @@ export default function ResultsHub() {
             navigate(`/results/${resultId}${qs ? `?from=${encodeURIComponent(`/results?${qs}`)}` : ''}`)
 
           }}
+
+          onDashboardAgents={setDashboardAgents}
 
         />
 

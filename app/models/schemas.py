@@ -5591,8 +5591,28 @@ class DashboardOpsModelLayer(BaseModel):
     usd_per_million_tokens: Optional[float] = None
 
 
+class DashboardOpsRunDay(BaseModel):
+    day: date
+    completed: int = 0
+    failed: int = 0
+    duration_seconds: float = 0
+    duration_count: int = 0
+
+
+class DashboardOpsScoreDay(BaseModel):
+    day: date
+    metric_id: str
+    score_sum: float = 0
+    score_count: int = 0
+
+
+class DashboardOpsAgentMetricCount(BaseModel):
+    agent_id: UUID
+    metric_count: int = 0
+
+
 class EvaluatorResultsDashboardOpsResponse(BaseModel):
-    """Cost, model, and tool-call series for the evaluation results dashboard."""
+    """Cost, tool calls, daily run series, score summaries, and the agent tree."""
 
     cost_by_agent: List[DashboardOpsCostByAgent] = Field(default_factory=list)
     cost_by_model_day: List[DashboardOpsModelDay] = Field(default_factory=list)
@@ -5605,6 +5625,14 @@ class EvaluatorResultsDashboardOpsResponse(BaseModel):
     provider_by_day: List[DashboardOpsProviderDay] = Field(default_factory=list)
     provider_by_agent: List[DashboardOpsProviderAgent] = Field(default_factory=list)
     calls_with_no_tools: int = 0
+    run_days: List[DashboardOpsRunDay] = Field(default_factory=list)
+    score_days: List[DashboardOpsScoreDay] = Field(default_factory=list)
+    total_rows: int = 0
+    completed_rows: int = 0
+    failed_rows: int = 0
+    metrics: List[CallImportMetricAggregate] = Field(default_factory=list)
+    agents: List[EvaluatorResultsAgentSummary] = Field(default_factory=list)
+    agent_metric_counts: List[DashboardOpsAgentMetricCount] = Field(default_factory=list)
 
 
 # --- LLM-generated TLDR for the Visualizations tab ---
