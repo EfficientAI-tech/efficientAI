@@ -357,7 +357,7 @@ export function toolCallDetail(
   const total = rows.reduce((sum, row) => sum + (mode === 'errors' ? row.errors : row.calls), 0)
   return {
     headline: total.toLocaleString(),
-    caption: mode === 'errors' ? 'Tool errors over time' : 'Tool calls over time',
+    caption: mode === 'errors' ? 'Tool failures over time' : 'Tool calls over time',
     data: Array.from(byDay.entries())
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([day, values]) => ({ day: formatDayLabel(day), ...values })),
@@ -532,10 +532,44 @@ export function toolFacts(ops: EvaluatorResultsDashboardOpsResponse | undefined)
   }
 }
 
+export type ToolInsightMode = 'calls' | 'errors'
+
+function resolveToolAgentFocusId(
+  ops: EvaluatorResultsDashboardOpsResponse | undefined,
+  focus: string | null,
+): string | null {
+  if (!focus) return null
+  const row = ops?.tool_calls_by_agent_day.find(
+    (item) => item.agent_id === focus || item.agent_name === focus,
+  )
+  return row?.agent_id ?? null
+}
+
+export function toolErrorsByUseCase(
+  ops: EvaluatorResultsDashboardOpsResponse | undefined,
+  focus: string | null,
+): ChartModel {
+  const totals = new Map<string, number>()
+  for (const row of ops?.tool_calls_by_tool ?? []) {
+    if (focus && row.tool !== focus && row.agent_id !== focus && row.agent_name !== focus) continue
+    totals.set(row.tool, (totals.get(row.tool) ?? 0) + row.errors)
+  }
+  const ranked = Array.from(totals.entries()).sort((a, b) => b[1] - a[1])
+  const total = ranked.reduce((sum, item) => sum + item[1], 0)
+  return {
+    headline: total.toLocaleString(),
+    caption: 'Tool failures by use case',
+    data: ranked.map(([name, errors]) => ({ name, errors })),
+    series: [{ key: 'errors', color: '#dc2626' }],
+    horizontal: true,
+  }
+}
+
 export function platformToolDetail(
   ops: EvaluatorResultsDashboardOpsResponse | undefined,
   view: string,
   focus: string | null,
+  mode: ToolInsightMode = 'calls',
 ): ChartModel {
   if (view === 'per_call') {
     const rows = (ops?.tool_calls_per_run ?? []).filter((row) => !focus || row.agent_id === focus || row.agent_name === focus)
@@ -549,6 +583,7 @@ export function platformToolDetail(
     }
   }
   if (view === 'use_cases') {
+    if (mode === 'errors') return toolErrorsByUseCase(ops, focus)
     const totals = new Map<string, number>()
     for (const row of ops?.tool_calls_by_tool ?? []) {
       if (focus && row.tool !== focus && row.agent_id !== focus && row.agent_name !== focus) continue
@@ -566,16 +601,17 @@ export function platformToolDetail(
   const rows = (ops?.tool_calls_by_agent_day ?? []).filter((row) => !focus || row.agent_id === focus || row.agent_name === focus)
   const byDay = new Map<string, Record<string, number>>()
   const keys = new Set<string>()
+  const metricKey = mode === 'errors' ? 'errors' : 'calls'
   for (const row of rows) {
     const bucket = byDay.get(row.day) ?? {}
-    bucket[row.agent_name] = (bucket[row.agent_name] ?? 0) + row.calls
+    bucket[row.agent_name] = (bucket[row.agent_name] ?? 0) + row[metricKey]
     byDay.set(row.day, bucket)
     keys.add(row.agent_name)
   }
   const seriesKeys = Array.from(keys)
   return {
-    headline: rows.reduce((sum, row) => sum + row.calls, 0).toLocaleString(),
-    caption: 'Usage over time by agent',
+    headline: rows.reduce((sum, row) => sum + row[metricKey], 0).toLocaleString(),
+    caption: mode === 'errors' ? 'Tool failures over time by agent' : 'Usage over time by agent',
     data: Array.from(byDay.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([day, values]) => ({
       day: formatDayLabel(day),
       ...values,
@@ -588,7 +624,9 @@ export function toolsDetail(
   ops: EvaluatorResultsDashboardOpsResponse | undefined,
   view: string,
   focus: string | null,
+  mode: ToolInsightMode = 'calls',
 ): ChartModel {
+  if (mode === 'errors' && view === 'share') return toolErrorsByUseCase(ops, focus)
   if (view === 'over_time') {
     const rows = (ops?.provider_by_day ?? []).filter((row) => !focus || row.provider === focus)
     const byDay = new Map<string, Record<string, number>>()
@@ -745,17 +783,41 @@ export function mergedToolsDetail(
   ops: EvaluatorResultsDashboardOpsResponse | undefined,
   view: MergedToolsViewId,
   focus: string | null,
+  mode: ToolInsightMode = 'calls',
 ): ChartModel {
-  if (view === 'per_call') return platformToolDetail(ops, 'per_call', focus)
-  if (view === 'use_cases') return platformToolDetail(ops, 'use_cases', focus)
-  if (view === 'over_time') {
-    const agentSeries = platformToolDetail(ops, 'over_time', focus)
-    if (agentSeries.data.length) return agentSeries
-    return toolsDetail(ops, 'over_time', focus)
+  if (mode === 'errors') {
+    if (view === 'per_call') {
+      return {
+        headline: '—',
+        caption: 'Per-call averages are call-volume only · switch to Calls',
+        data: [],
+        series: [],
+      }
+    }
+    if (view === 'use_cases' || view === 'share') {
+      return view === 'use_cases'
+        ? platformToolDetail(ops, 'use_cases', focus, mode)
+        : toolErrorsByUseCase(ops, focus)
+    }
+    const agentId = resolveToolAgentFocusId(ops, focus)
+    if (view === 'over_time' || view === 'by_agent') {
+      return toolCallDetail(ops, 'errors', agentId)
+    }
   }
-  if (view === 'share') return toolsDetail(ops, 'share', focus)
-  if (view === 'by_agent') return toolsDetail(ops, 'by_agent', focus)
-  return platformToolDetail(ops, 'over_time', focus)
+  if (view === 'per_call') return platformToolDetail(ops, 'per_call', focus, mode)
+  if (view === 'use_cases') return platformToolDetail(ops, 'use_cases', focus, mode)
+  if (view === 'over_time') {
+    const agentSeries = platformToolDetail(ops, 'over_time', focus, mode)
+    if (agentSeries.data.length) return agentSeries
+    return toolsDetail(ops, 'over_time', focus, mode)
+  }
+  if (view === 'share') return toolsDetail(ops, 'share', focus, mode)
+  if (view === 'by_agent') return toolsDetail(ops, 'by_agent', focus, mode)
+  return platformToolDetail(ops, 'over_time', focus, mode)
+}
+
+export function totalToolErrors(ops: EvaluatorResultsDashboardOpsResponse | undefined): number {
+  return (ops?.tool_calls_by_agent_day ?? []).reduce((sum, row) => sum + row.errors, 0)
 }
 
 /** Daily mean scores for the metric using score_days already scoped to the dashboard date filter. */

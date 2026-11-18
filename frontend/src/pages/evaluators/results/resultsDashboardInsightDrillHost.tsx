@@ -34,6 +34,7 @@ export type InsightDrillHostProps = InsightDrillBaseProps & {
   catalog: MetricRow[]
   scoreDays: DashboardOpsScoreDay[] | undefined
   dateRange: { start: string; end: string } | null
+  allTime?: boolean
   results: EvaluatorResultRow[]
   agentRows: Array<{ id: string; name: string; total: number }>
   callDays: Array<{ day: string; calls: number }>
@@ -54,6 +55,7 @@ export function InsightDrillHost({
   catalog,
   scoreDays,
   dateRange,
+  allTime,
   results,
   agentRows,
   callDays,
@@ -69,6 +71,8 @@ export function InsightDrillHost({
           ops={ops}
           calls={calls}
           runListBase={runListBase}
+          dateRange={dateRange}
+          allTime={allTime}
           onBack={onBack}
           onOpenResult={onOpenResult}
         />
@@ -81,6 +85,8 @@ export function InsightDrillHost({
           ops={ops}
           calls={calls}
           runListBase={runListBase}
+          dateRange={dateRange}
+          allTime={allTime}
           onBack={onBack}
           onOpenResult={onOpenResult}
         />
@@ -95,6 +101,7 @@ export function InsightDrillHost({
           catalog={catalog}
           scoreDays={scoreDays}
           dateRange={dateRange}
+          allTime={allTime}
           results={results}
           runListBase={runListBase}
           agentId={detail.agentId}
@@ -114,6 +121,8 @@ export function InsightDrillHost({
           callDays={callDays}
           runListBase={runListBase}
           aggregateTotal={aggregateTotal}
+          dateRange={dateRange}
+          allTime={allTime}
           agentId={detail.agentId}
           onBack={onBack}
           onNavigate={onTotalCallsNavigate}
@@ -134,6 +143,7 @@ export function InsightDrillHost({
     catalog,
     scoreDays,
     dateRange,
+    allTime,
     results,
     agentRows,
     callDays,

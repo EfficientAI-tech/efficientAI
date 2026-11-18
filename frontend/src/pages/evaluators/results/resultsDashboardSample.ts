@@ -5,7 +5,7 @@ import type {
   EvaluatorResultsDashboardOpsResponse,
 } from '../../../types/api'
 
-/** Temporary sample so every dashboard chart can be reviewed. Delete this module to remove it. */
+/** Local dev fixtures (not wired in prod). Import manually when testing the dashboard UI offline. */
 
 const AGENTS = [
   { id: 'sample-support', name: 'Support' },

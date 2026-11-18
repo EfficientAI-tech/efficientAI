@@ -14,8 +14,6 @@ type SourceMode = 'simulation' | 'live'
 type ResultsDashboardSettingsMenuProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
-  sampleOn: boolean
-  onToggleSample: () => void
   source: SourceMode
   onSourceChange: (source: SourceMode) => void
   metrics: CallImportMetricAggregate[]
@@ -29,8 +27,6 @@ type ResultsDashboardSettingsMenuProps = {
 export default function ResultsDashboardSettingsMenu({
   open,
   onOpenChange,
-  sampleOn,
-  onToggleSample,
   source,
   onSourceChange,
   metrics,
@@ -43,11 +39,8 @@ export default function ResultsDashboardSettingsMenu({
   const rootRef = useRef<HTMLDivElement>(null)
   const theme = resultsScopeTheme
 
-  const settingsActive = open || sampleOn || source === 'live'
-  const summaryParts = [
-    sampleOn ? 'Sample' : null,
-    source === 'simulation' ? 'Simulations' : 'Live',
-  ].filter(Boolean)
+  const settingsActive = open || source === 'live'
+  const summaryParts = [source === 'simulation' ? 'Simulations' : 'Live']
 
   useEffect(() => {
     if (!open) return
@@ -86,22 +79,6 @@ export default function ResultsDashboardSettingsMenu({
           aria-label="Dashboard settings"
         >
           <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Dashboard</p>
-
-          <MotionRow
-            label="Sample data"
-            hint="Demo agents and ops when exploring the grid"
-          >
-            <button
-              type="button"
-              onClick={onToggleSample}
-              className={`rounded-lg border px-2.5 py-1 text-xs font-medium ${sampleOn
-                  ? 'border-amber-300 bg-amber-50 text-amber-900'
-                  : 'border-gray-200 bg-gray-50 text-gray-600 hover:bg-white'
-                }`}
-            >
-              {sampleOn ? 'On' : 'Off'}
-            </button>
-          </MotionRow>
 
           <MotionRow label="Data source" hint="Simulations vs live playground runs">
             <div className="flex items-center rounded-lg bg-gray-100 p-0.5">

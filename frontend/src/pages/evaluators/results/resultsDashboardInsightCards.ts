@@ -43,7 +43,7 @@ export function buildInsightCardModel(widget: ResultsWidget, source: InsightPane
   if (widget.type === 'avg_duration') {
     return {
       headline: formatDuration(source.duration.average),
-      caption: 'Average call length',
+      caption: 'Avg duration / call',
       data: source.duration.points,
       series: [{ key: 'value', color: PRIMARY }],
     }

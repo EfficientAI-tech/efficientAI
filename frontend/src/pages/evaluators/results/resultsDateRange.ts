@@ -33,3 +33,21 @@ export function formatResultsDateRange(start: string, end: string): string {
   if (start === end) return start
   return `${start} → ${end}`
 }
+
+export function dayCountInRange(start: string, end: string): number {
+  const a = new Date(`${start}T12:00:00`)
+  const b = new Date(`${end}T12:00:00`)
+  if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) return 1
+  return Math.max(1, Math.round((b.getTime() - a.getTime()) / 86_400_000) + 1)
+}
+
+/** Shown on grid cards and drill headers — matches Hub date filter (default last 7 days). */
+export function formatDashboardWindowLabel(
+  range: { start: string; end: string } | null,
+  allTime?: boolean,
+): string {
+  if (allTime || !range) return 'All time'
+  const days = dayCountInRange(range.start, range.end)
+  const span = formatResultsDateRange(range.start, range.end)
+  return days === 1 ? span : `${span} · ${days} days`
+}

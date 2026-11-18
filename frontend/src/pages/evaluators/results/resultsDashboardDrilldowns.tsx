@@ -24,7 +24,9 @@ import {
   formatDuration,
   scoreTrendForWindow,
   mergedToolsDetail,
+  totalToolErrors,
   toolFacts,
+  type ToolInsightMode,
   usageDetail,
   usageFacts,
   usageHasS2S,
@@ -33,6 +35,7 @@ import { DrillChartPanel, DrillTrendChart } from './resultsDashboardDrillCharts'
 import { isGoldenMetric, type MetricRow } from '../../simulations/simulationMetricScope'
 import type { ListEvaluatorResultsParams } from '../../../types/api'
 import type { RunListBase } from './resultsDashboardInsightDrill'
+import { formatDashboardWindowLabel } from './resultsDateRange'
 
 export type { RunListBase } from './resultsDashboardInsightDrill'
 
@@ -54,6 +57,7 @@ export function PaginatedRunsTable({
   filterAgentId,
   filterScenarioId,
   metricId,
+  scoreMetricId,
   title = 'Runs',
   onOpenResult,
   callsByResultId,
@@ -65,6 +69,8 @@ export function PaginatedRunsTable({
   filterAgentId?: string
   filterScenarioId?: string
   metricId?: string
+  /** When set, list rows show this metric's score (still paginates all runs in the window). */
+  scoreMetricId?: string
   title?: string
   onOpenResult: (resultId: string) => void
   callsByResultId?: DashboardDrillCall[]
@@ -114,8 +120,8 @@ export function PaginatedRunsTable({
 
   return (
     <section className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="text-sm font-semibold text-gray-900">{title}</h3>
+      <div className={`flex items-center justify-between gap-3 ${title ? '' : 'sr-only'}`}>
+        {title ? <h3 className="text-sm font-semibold text-gray-900">{title}</h3> : <span />}
         <div className="flex items-center gap-2 text-xs text-gray-500">
           <button
             type="button"
@@ -198,6 +204,9 @@ export function PaginatedRunsTable({
               >
                 <span className="min-w-0 truncate font-medium text-gray-900">{row.name || row.result_id}</span>
                 <span className="shrink-0 text-xs text-gray-500">
+                  {scoreMetricId && row.metric_scores?.[scoreMetricId] != null
+                    ? `${String(row.metric_scores[scoreMetricId]?.value ?? row.metric_scores[scoreMetricId])} · `
+                    : ''}
                   {new Date(row.timestamp).toLocaleString(undefined, { month: 'short', day: 'numeric' })}
                   {row.duration_seconds != null ? ` · ${Math.round(row.duration_seconds)}s` : ''}
                 </span>
@@ -207,6 +216,97 @@ export function PaginatedRunsTable({
           {!items.length && <li className="py-4 text-sm text-gray-400">No runs in this slice.</li>}
         </ul>
       )}
+    </section>
+  )
+}
+
+/** Paginate pre-loaded drill calls (e.g. model cost focus) when API has no model filter. */
+export function PaginatedCallRunsTable({
+  calls,
+  title = 'Runs',
+  onOpenResult,
+  inrRate = 95,
+  displayCurrency,
+}: {
+  calls: DashboardDrillCall[]
+  title?: string
+  onOpenResult: (resultId: string) => void
+  inrRate?: number
+  displayCurrency?: UsageDisplayCurrency
+}) {
+  const currency = displayCurrency ?? readUsageDisplayCurrency()
+  const [page, setPage] = useState(0)
+  const sorted = useMemo(
+    () => [...calls].sort((a, b) => b.at.localeCompare(a.at)),
+    [calls],
+  )
+  const total = sorted.length
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const pageCalls = sorted.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE)
+
+  return (
+    <section className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+      <div className={`flex items-center justify-between gap-3 ${title ? '' : 'sr-only'}`}>
+        {title ? <h3 className="text-sm font-semibold text-gray-900">{title}</h3> : <span />}
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          <button
+            type="button"
+            disabled={page <= 0}
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+            className="rounded border border-gray-200 p-1 disabled:opacity-30"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+          <span>
+            {total ? page + 1 : 0} / {pages}
+          </span>
+          <button
+            type="button"
+            disabled={page >= pages - 1}
+            onClick={() => setPage((p) => Math.min(pages - 1, p + 1))}
+            className="rounded border border-gray-200 p-1 disabled:opacity-30"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+      <div className="mt-3 overflow-x-auto">
+        <table className="w-full min-w-[36rem] text-left text-sm">
+          <thead className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+            <tr>
+              <th className="pb-2 pr-3">When</th>
+              <th className="pb-2 pr-3">Run</th>
+              <th className="pb-2 pr-3">Agent</th>
+              <th className="pb-2 pr-3 text-right">Duration</th>
+              <th className="pb-2 pr-3 text-right">Cost</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {pageCalls.map((call) => (
+              <tr key={`${call.at}-${call.resultId}`} className="group">
+                <td className="py-2.5 pr-3 text-xs text-gray-500">{formatCallTime(call.at)}</td>
+                <td className="py-2.5 pr-3">
+                  <button
+                    type="button"
+                    onClick={() => call.resultId && onOpenResult(call.resultId)}
+                    className="max-w-[14rem] truncate text-left font-medium text-gray-900 group-hover:text-primary-800"
+                  >
+                    {call.title || call.resultId || 'Run'}
+                  </button>
+                </td>
+                <td className="py-2.5 pr-3 text-gray-700">{call.agent}</td>
+                <td className="py-2.5 pr-3 text-right tabular-nums text-gray-600">
+                  {formatDuration(call.durationSeconds)}
+                </td>
+                <td className="py-2.5 text-right text-xs tabular-nums text-gray-600">
+                  {call.costUsd ? formatCostCell(call.costUsd, currency, inrRate) : '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!pageCalls.length && <p className="py-4 text-sm text-gray-400">No runs in this slice.</p>}
+      </div>
     </section>
   )
 }
@@ -394,15 +494,20 @@ export function UsageWidgetDetail({
   ops,
   calls,
   runListBase,
+  dateRange,
+  allTime,
   onBack,
   onOpenResult,
 }: {
   ops: EvaluatorResultsDashboardOpsResponse | undefined
   calls: DashboardDrillCall[]
   runListBase: RunListBase
+  dateRange: { start: string; end: string } | null
+  allTime?: boolean
   onBack: () => void
   onOpenResult: (resultId: string) => void
 }) {
+  const windowLabel = formatDashboardWindowLabel(dateRange, allTime)
   const views = [
     { id: 'stt', label: 'STT models' },
     { id: 'tts', label: 'TTS models' },
@@ -454,7 +559,9 @@ export function UsageWidgetDetail({
             <h2 className="text-lg font-semibold tabular-nums text-gray-900" title={formatUsageCostExactUsd(totalUsd, displayCurrency, inrRate)}>
               {spendHeadline}
             </h2>
-            <p className="mt-1 text-sm text-gray-500">Simulated and live pre-prod runs only — not org-wide Usage</p>
+            <p className="mt-1 text-sm text-gray-500">
+              {windowLabel} · simulated and live pre-prod runs only
+            </p>
           </div>
           <UsageDisplayCurrencyPicker compact value={displayCurrency} onChange={setDisplayCurrency} />
         </div>
@@ -524,25 +631,36 @@ export function ToolsMergedDetail({
   ops,
   calls,
   runListBase,
+  dateRange,
+  allTime,
   onBack,
   onOpenResult,
 }: {
   ops: EvaluatorResultsDashboardOpsResponse | undefined
   calls: DashboardDrillCall[]
   runListBase: RunListBase
+  dateRange: { start: string; end: string } | null
+  allTime?: boolean
   onBack: () => void
   onOpenResult: (resultId: string) => void
 }) {
   const [viewId, setViewId] = useState<(typeof MERGED_TOOLS_VIEWS)[number]['id']>('over_time')
+  const [insightMode, setInsightMode] = useState<ToolInsightMode>('calls')
   const [focus, setFocus] = useState<string | null>(null)
   const [leaf, setLeaf] = useState<{ kind: 'use_case' | 'product'; name: string } | null>(null)
-  const chart = mergedToolsDetail(ops, viewId, focus)
+  const chart = mergedToolsDetail(ops, viewId, focus, insightMode)
   const products = toolFacts(ops)
+  const totalErrors = totalToolErrors(ops)
 
   if (leaf) {
     const filtered = calls.filter((call) => {
-      if (leaf.kind === 'product') return callUses(call).some((use) => use.provider === leaf.name)
-      return callUses(call).some((use) => use.tool === leaf.name)
+      const matchesLeaf =
+        leaf.kind === 'product'
+          ? callUses(call).some((use) => use.provider === leaf.name)
+          : callUses(call).some((use) => use.tool === leaf.name)
+      if (!matchesLeaf) return false
+      if (insightMode === 'errors') return callUses(call).some((use) => use.failed)
+      return true
     })
     return (
       <div className="space-y-4">
@@ -551,7 +669,11 @@ export function ToolsMergedDetail({
           Back
         </button>
         <h2 className="text-lg font-semibold text-gray-900">{leaf.name}</h2>
-        <PaginatedRunsTable base={runListBase} title="Calls" onOpenResult={onOpenResult} />
+        <PaginatedRunsTable
+          base={runListBase}
+          title={insightMode === 'errors' ? 'Runs with tool failures' : 'Calls'}
+          onOpenResult={onOpenResult}
+        />
         {filtered.length > 0 && (
           <ul className="divide-y divide-gray-100 rounded-xl border border-gray-200 bg-white p-4 text-sm">
             {filtered.slice(0, 8).map((call) => (
@@ -573,27 +695,51 @@ export function ToolsMergedDetail({
       </button>
       <header className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
         <h2 className="text-lg font-semibold text-gray-900">Tools</h2>
-        <p className="text-sm text-gray-500">Tool calls and products in pre-prod runs</p>
-        <dl className="mt-3 grid grid-cols-3 gap-2 text-sm">
+        <p className="text-sm text-gray-500">
+          Tool calls and products · {formatDashboardWindowLabel(dateRange, allTime)}
+        </p>
+        <dl className="mt-3 grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
           <MotionStat label="Most used" value={products.most} />
           <MotionStat label="Least used" value={products.least} />
           <MotionStat label="Calls with no tools" value={products.empty} />
+          <MotionStat label="Tool failures" value={totalErrors.toLocaleString()} />
         </dl>
       </header>
-      <div className="flex flex-wrap gap-1 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
-        {MERGED_TOOLS_VIEWS.map((view) => (
-          <button
-            key={view.id}
-            type="button"
-            onClick={() => {
-              setViewId(view.id)
-              setFocus(null)
-            }}
-            className={`rounded-md border px-2.5 py-1 text-xs font-medium ${viewId === view.id ? 'border-primary-200 bg-primary-50 text-primary-800' : 'border-transparent text-gray-600'}`}
-          >
-            {view.label}
-          </button>
-        ))}
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
+        <div className="flex flex-wrap gap-1">
+          <div className="mr-2 flex items-center rounded-lg border border-gray-200 bg-gray-50 p-0.5">
+            {(['calls', 'errors'] as ToolInsightMode[]).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => {
+                  setInsightMode(mode)
+                  setFocus(null)
+                  setLeaf(null)
+                }}
+                className={`rounded-md border px-2.5 py-1 text-xs font-medium ${insightMode === mode
+                  ? 'border-primary-200 bg-white text-primary-800 shadow-sm'
+                  : 'border-transparent text-gray-600'
+                  }`}
+              >
+                {mode === 'calls' ? 'Calls' : 'Failures'}
+              </button>
+            ))}
+          </div>
+          {MERGED_TOOLS_VIEWS.map((view) => (
+            <button
+              key={view.id}
+              type="button"
+              onClick={() => {
+                setViewId(view.id)
+                setFocus(null)
+              }}
+              className={`rounded-md border px-2.5 py-1 text-xs font-medium ${viewId === view.id ? 'border-primary-200 bg-primary-50 text-primary-800' : 'border-transparent text-gray-600'}`}
+            >
+              {view.label}
+            </button>
+          ))}
+        </div>
       </div>
       {focus && (
         <div className="space-y-2">
@@ -627,9 +773,11 @@ export function ToolsMergedDetail({
               : 'bar'
         }
         onCategory={(name) => {
-          if (viewId === 'use_cases') setLeaf({ kind: 'use_case', name })
-          else if (viewId === 'share') setLeaf({ kind: 'product', name })
-          else if (viewId === 'by_agent' || viewId === 'per_call') {
+          if (viewId === 'use_cases' || (viewId === 'share' && insightMode === 'errors')) {
+            setLeaf({ kind: 'use_case', name })
+          } else if (viewId === 'share') {
+            setLeaf({ kind: 'product', name })
+          } else if (viewId === 'by_agent' || viewId === 'per_call') {
             setFocus((prev) => (prev === name ? null : name))
           }
         }}
@@ -650,6 +798,7 @@ export function MetricUsageDrill({
   catalog,
   scoreDays,
   dateRange,
+  allTime,
   results,
   runListBase,
   agentId,
@@ -664,6 +813,7 @@ export function MetricUsageDrill({
   catalog: MetricRow[]
   scoreDays: DashboardOpsScoreDay[] | undefined
   dateRange: { start: string; end: string } | null
+  allTime?: boolean
   results: EvaluatorResultRow[]
   runListBase: RunListBase
   agentId?: string
@@ -673,6 +823,7 @@ export function MetricUsageDrill({
   onNavigate: (next: { agentId?: string; metricId?: string; scenarioId?: string }) => void
   onOpenResult: (resultId: string) => void
 }) {
+  const windowLabel = formatDashboardWindowLabel(dateRange, allTime)
   const [scope, setScope] = useState<MetricScopeFilter>('all')
   const selectedAgent = agents.find((agent) => agent.agent_id === agentId)
   const catalogById = useMemo(() => new Map(catalog.map((row) => [row.id, row])), [catalog])
@@ -696,13 +847,14 @@ export function MetricUsageDrill({
 
   const scenarios = useMemo(() => {
     if (!agentId || !metricId) return []
-    const groups = new Map<string, { count: number; sum: number; scored: number }>()
+    const groups = new Map<string, { count: number; sum: number; scored: number; failed: number }>()
     for (const row of results) {
       if (row.agent_id !== agentId) continue
       const name = row.scenario?.name
       if (!name) continue
-      const bucket = groups.get(name) ?? { count: 0, sum: 0, scored: 0 }
+      const bucket = groups.get(name) ?? { count: 0, sum: 0, scored: 0, failed: 0 }
       bucket.count += 1
+      if (row.status === 'failed') bucket.failed += 1
       const score = row.metric_scores?.[metricId]
       const value = typeof score?.value === 'number' ? score.value : Number(score?.value)
       if (!Number.isNaN(value) && score) {
@@ -716,6 +868,7 @@ export function MetricUsageDrill({
         name,
         scenarioId: results.find((row) => row.scenario?.name === name)?.scenario?.id,
         count: stats.count,
+        failed: stats.failed,
         avg: stats.scored ? stats.sum / stats.scored : null,
       }))
       .sort((a, b) => b.count - a.count)
@@ -729,7 +882,7 @@ export function MetricUsageDrill({
           Back to dashboard
         </button>
         <h2 className="text-lg font-semibold text-gray-900">Metric usage</h2>
-        <p className="text-sm text-gray-500">Runs by agent in this window — click a bar to see metrics.</p>
+        <p className="text-sm text-gray-500">{windowLabel} · click an agent to see metrics</p>
         <DrillChartPanel
           model={{
             headline: agents.reduce((sum, agent) => sum + agent.counts.total, 0).toLocaleString(),
@@ -809,19 +962,36 @@ export function MetricUsageDrill({
           <p className="rounded-xl border border-gray-200 bg-white p-5 text-sm text-gray-400">No scored trend in this window.</p>
         )}
         {scenarios.length > 0 && (
-          <DrillChartPanel
-            model={{
-              headline: formatChartNumber(metric?.mean),
-              caption: 'Runs by scenario (bar length = run count)',
-              data: scenarios.map((row) => ({ name: row.name, count: row.count })),
-              series: [{ key: 'count', color: LAYER_LLM }],
-              horizontal: true,
-            }}
-            onCategory={(name) => {
-              const row = scenarios.find((item) => item.name === name)
-              if (row) onNavigate({ agentId, metricId, scenarioId: row.scenarioId ?? row.name })
-            }}
-          />
+          <>
+            <DrillChartPanel
+              model={{
+                headline: formatChartNumber(metric?.mean),
+                caption: 'Runs by scenario (bar length = run count)',
+                data: scenarios.map((row) => ({ name: row.name, count: row.count })),
+                series: [{ key: 'count', color: LAYER_LLM }],
+                horizontal: true,
+              }}
+              onCategory={(name) => {
+                const row = scenarios.find((item) => item.name === name)
+                if (row) onNavigate({ agentId, metricId, scenarioId: row.scenarioId ?? row.name })
+              }}
+            />
+            <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+              <h3 className="text-sm font-semibold text-gray-900">By scenario</h3>
+              <ul className="mt-2 divide-y divide-gray-100">
+                {scenarios.map((row) => (
+                  <li key={row.name} className="flex items-center justify-between gap-3 py-2 text-sm text-gray-700">
+                    <span className="truncate pr-3">{row.name}</span>
+                    <span className="shrink-0 text-xs text-gray-500">
+                      {row.count}
+                      {row.avg != null ? ` · avg ${formatChartNumber(row.avg)}` : ''}
+                      {` · ${row.count ? Math.round((row.failed / row.count) * 100) : 0}% fail`}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          </>
         )}
       </div>
     )
@@ -856,6 +1026,8 @@ export function TotalCallsDrill({
   runListBase,
   aggregateTotal,
   agentId,
+  dateRange,
+  allTime,
   onBack,
   onNavigate,
   onOpenResult,
@@ -865,10 +1037,13 @@ export function TotalCallsDrill({
   runListBase: RunListBase
   aggregateTotal: number
   agentId?: string
+  dateRange: { start: string; end: string } | null
+  allTime?: boolean
   onBack: () => void
   onNavigate: (agentId?: string) => void
   onOpenResult: (resultId: string) => void
 }) {
+  const windowLabel = formatDashboardWindowLabel(dateRange, allTime)
   const agent = agentRows.find((row) => row.id === agentId)
 
   if (!agentId) {
@@ -879,10 +1054,11 @@ export function TotalCallsDrill({
           Back to dashboard
         </button>
         <h2 className="text-lg font-semibold text-gray-900">Total calls · {aggregateTotal.toLocaleString()}</h2>
+        <p className="text-sm text-gray-500">{windowLabel}</p>
         <DrillChartPanel
           model={{
             headline: aggregateTotal.toLocaleString(),
-            caption: 'Calls by agent',
+            caption: `Calls by agent · ${windowLabel}`,
             data: agentRows.map((row) => ({ name: row.name, total: row.total })),
             series: [{ key: 'total', color: LAYER_LLM }],
             horizontal: true,

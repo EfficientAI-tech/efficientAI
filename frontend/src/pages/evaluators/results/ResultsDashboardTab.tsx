@@ -28,7 +28,7 @@ import type {
   EvaluatorResultsAgentSummary,
   EvaluatorResultsDashboardOpsResponse,
 } from '../../../types/api'
-import { dateRangeToSinceUntil, rangeForDays } from './resultsDateRange'
+import { dateRangeToSinceUntil, formatDashboardWindowLabel, rangeForDays } from './resultsDateRange'
 import {
   CHART_TYPE_LABELS,
   DEFAULT_RESULTS_WIDGETS,
@@ -41,16 +41,7 @@ import {
   type ResultsWidget,
   type ResultsWidgetType,
 } from './resultsDashboardLayout'
-import {
-  SAMPLE_AGENTS,
-  SAMPLE_DRILL_CALLS,
-  SAMPLE_METRIC_CATALOG,
-  SAMPLE_OPS,
-  SAMPLE_RESULTS,
-  sampleMetricsFor,
-  scopeSampleOps,
-  type DashboardDrillCall,
-} from './resultsDashboardSample'
+import type { DashboardDrillCall } from './resultsDashboardSample'
 import {
   agentCostDetail,
   buildCategorySeries,
@@ -66,7 +57,13 @@ import {
   toolCallDetail,
   type ChartModel,
 } from './resultsDashboardSeries'
-import { PaginatedRunsTable } from './resultsDashboardDrilldowns'
+import { PaginatedCallRunsTable, PaginatedRunsTable } from './resultsDashboardDrilldowns'
+import {
+  RunInsightBreakdown,
+  RunInsightFilterBar,
+  RunInsightRunsSection,
+  usesRunInsightLayout,
+} from './resultsDashboardRunInsightDrill'
 import { InsightDrillHost } from './resultsDashboardInsightDrillHost'
 import { buildRegisteredInsightCard } from './resultsDashboardInsights'
 import type { MetricRow } from '../../simulations/simulationMetricScope'
@@ -81,7 +78,9 @@ const PRIMARY = '#ca8a04'
 const SERIES_MUTED = '#9ca3af'
 const FAIL = '#dc2626'
 const GRID = '#e5e7eb'
+/** Prefetch for breakdowns + cost call join when a detail view is open (paginated table still uses API pages). */
 const TRENDS_PAGE_LIMIT = 500
+const DETAIL_PREFETCH_LIMIT = 2000
 
 interface ResultsDashboardTabProps {
   agentId: string
@@ -105,22 +104,6 @@ interface DayPoint {
   failed: number
 }
 
-function metricNumericValue(value: unknown, type: string): number | null {
-  const kind = type.toLowerCase()
-  if (kind === 'number' || kind === 'rating') {
-    if (typeof value === 'number' && !Number.isNaN(value)) return value
-    if (typeof value === 'string' && value.trim() !== '') {
-      const parsed = Number(value)
-      return Number.isNaN(parsed) ? null : parsed
-    }
-  }
-  if (kind === 'boolean') {
-    if (value === true || value === 'true' || value === 1 || value === '1') return 1
-    if (value === false || value === 'false' || value === 0 || value === '0') return 0
-  }
-  return null
-}
-
 function dayKey(iso: string): { day: string; sortKey: string } {
   const date = new Date(iso)
   return {
@@ -136,46 +119,6 @@ function isNumericMetric(metric: CallImportMetricAggregate): boolean {
 function formatHeadline(value: number | null, suffix = ''): string {
   if (value == null || Number.isNaN(value)) return '—'
   return `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })}${suffix}`
-}
-
-function scopeSample(
-  agentId: string,
-  suiteId: string,
-  scenarioId: string,
-  start: string | null,
-  end: string | null,
-) {
-  const suites = SAMPLE_AGENTS.flatMap((agent) => agent.suites ?? [])
-  const suite = suites.find((item) => item.suite_id === suiteId)
-  const scenarioOwner = SAMPLE_AGENTS.find((agent) => (
-    (agent.suites ?? []).some((item) => (item.scenarios ?? []).some((scenario) => scenario.scenario_id === scenarioId))
-  ))
-  const agentFilter = agentId || suite?.agent_id || scenarioOwner?.agent_id || ''
-  const scenarioIds = scenarioId
-    ? new Set([scenarioId])
-    : suite
-      ? new Set((suite.scenarios ?? []).map((scenario) => scenario.scenario_id))
-      : null
-  const filtered = SAMPLE_RESULTS.filter((row) => {
-    if (agentFilter && row.agent_id !== agentFilter) return false
-    if (scenarioIds && !scenarioIds.has(row.scenario?.id ?? '')) return false
-    const day = row.timestamp.slice(0, 10)
-    if (start && day < start) return false
-    if (end && day > end) return false
-    return true
-  })
-  return { results: filtered, ops: scopeSampleOps(SAMPLE_OPS, agentFilter, start, end) }
-}
-
-function sampleDrillCalls(agentId: string, start: string | null, end: string | null): DashboardDrillCall[] {
-  const agentName = SAMPLE_AGENTS.find((agent) => agent.agent_id === agentId)?.agent_name
-  return SAMPLE_DRILL_CALLS.filter((call) => {
-    if (agentName && call.agent !== agentName) return false
-    const day = call.at.slice(0, 10)
-    if (start && day < start) return false
-    if (end && day > end) return false
-    return true
-  })
 }
 
 function narrowAgents(
@@ -246,7 +189,6 @@ export default function ResultsDashboardTab({
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [toolbarSlot, setToolbarSlot] = useState<HTMLElement | null>(null)
   const [source, setSource] = useState<'simulation' | 'live'>('simulation')
-  const [sampleOn, setSampleOn] = useState(true)
   const [usageDisplayCurrency, setUsageDisplayCurrency] = useState<UsageDisplayCurrency>(readUsageDisplayCurrency)
   const playground = source === 'live'
   const { data: usageFxRate } = useQuery({
@@ -307,16 +249,16 @@ export default function ResultsDashboardTab({
       since: dateBounds.since,
       until: dateBounds.until,
       playground,
-      limit: TRENDS_PAGE_LIMIT,
+      limit: detail !== null ? DETAIL_PREFETCH_LIMIT : TRENDS_PAGE_LIMIT,
     }),
-    [agentId, suiteId, scenarioId, dateBounds, playground],
+    [agentId, suiteId, scenarioId, dateBounds, playground, detail],
   )
 
-  const dashboardQueryOptions = { enabled: !sampleOn, staleTime: 60_000 }
+  const dashboardQueryOptions = { staleTime: 60_000 }
   const { data: listResponse } = useQuery({
     queryKey: ['evaluator-results-dashboard', listParams],
     queryFn: () => apiClient.listEvaluatorResults(listParams),
-    enabled: !sampleOn && detail !== null,
+    enabled: detail !== null,
     staleTime: 60_000,
   })
 
@@ -337,23 +279,16 @@ export default function ResultsDashboardTab({
   const { data: metricsCatalog = [] } = useQuery({
     queryKey: ['metrics', 'agent', 'dashboard'],
     queryFn: () => apiClient.listMetrics('agent'),
-    enabled: !sampleOn,
     staleTime: 5 * 60_000,
   })
 
-  const scopedSample = useMemo(
-    () => scopeSample(agentId, suiteId, scenarioId, effectiveDateRange?.start ?? null, effectiveDateRange?.end ?? null),
-    [agentId, suiteId, scenarioId, effectiveDateRange],
-  )
-  const ops = sampleOn ? scopedSample.ops : liveOps
-  const results = sampleOn ? scopedSample.results : itemsOf<EvaluatorResultRow>(listResponse)
-  const aggregateTotal = sampleOn ? scopedSample.results.length : liveOps?.total_rows ?? 0
-  const aggregateCompleted = sampleOn
-    ? scopedSample.results.filter((row) => row.status === 'completed').length
-    : liveOps?.completed_rows ?? 0
+  const ops = liveOps
+  const results = itemsOf<EvaluatorResultRow>(listResponse)
+  const aggregateTotal = liveOps?.total_rows ?? 0
+  const aggregateCompleted = liveOps?.completed_rows ?? 0
   const metrics = useMemo(
-    () => (sampleOn ? sampleMetricsFor(scopedSample.results) : withUnusedMetrics(liveOps?.metrics ?? [], metricsCatalog)),
-    [sampleOn, scopedSample.results, liveOps, metricsCatalog],
+    () => withUnusedMetrics(liveOps?.metrics ?? [], metricsCatalog),
+    [liveOps, metricsCatalog],
   )
   const primaryMetric = useMemo(
     () =>
@@ -363,22 +298,10 @@ export default function ResultsDashboardTab({
     [metrics],
   )
 
-  const days = useMemo(
-    () => (sampleOn ? buildDays(scopedSample.results) : daysFromRunDays(liveOps?.run_days)),
-    [sampleOn, scopedSample.results, liveOps],
-  )
-  const callDays = useMemo(
-    () => (sampleOn ? buildCallDays(scopedSample.results) : callDaysFromRunDays(liveOps?.run_days)),
-    [sampleOn, scopedSample.results, liveOps],
-  )
-  const duration = useMemo(
-    () => (sampleOn ? buildDuration(scopedSample.results) : durationFromRunDays(liveOps?.run_days)),
-    [sampleOn, scopedSample.results, liveOps],
-  )
-  const scoreSeries = useMemo(
-    () => (sampleOn ? buildScoreSeries(scopedSample.results, sampleMetricsFor(scopedSample.results)) : scoreSeriesFromDays(liveOps?.score_days)),
-    [sampleOn, scopedSample.results, liveOps],
-  )
+  const days = useMemo(() => daysFromRunDays(liveOps?.run_days), [liveOps])
+  const callDays = useMemo(() => callDaysFromRunDays(liveOps?.run_days), [liveOps])
+  const duration = useMemo(() => durationFromRunDays(liveOps?.run_days), [liveOps])
+  const scoreSeries = useMemo(() => scoreSeriesFromDays(liveOps?.score_days), [liveOps])
   const lowest = useMemo(() => {
     return metrics
       .filter((metric) => isNumericMetric(metric) && metric.mean != null)
@@ -394,17 +317,13 @@ export default function ResultsDashboardTab({
   }, [metrics])
 
   const chartAgents = useMemo(
-    () => narrowAgents(sampleOn ? SAMPLE_AGENTS : liveOps?.agents ?? agents, agentId, suiteId, scenarioId),
-    [sampleOn, liveOps, agents, agentId, suiteId, scenarioId],
+    () => narrowAgents(liveOps?.agents ?? agents, agentId, suiteId, scenarioId),
+    [liveOps, agents, agentId, suiteId, scenarioId],
   )
   useEffect(() => {
-    if (!onDashboardAgents) return
-    if (sampleOn) {
-      onDashboardAgents(SAMPLE_AGENTS)
-      return
-    }
-    if (liveOps) onDashboardAgents(liveOps.agents ?? [])
-  }, [onDashboardAgents, sampleOn, liveOps])
+    if (!onDashboardAgents || !liveOps) return
+    onDashboardAgents(liveOps.agents ?? [])
+  }, [onDashboardAgents, liveOps])
   const scenarioMatrix = useMemo(() => buildScenarioMatrix(chartAgents), [chartAgents])
   const { childIdsByParent, childNamesById } = useMemo(() => {
     const childIdsByParent = new Map<string, string[]>()
@@ -445,7 +364,7 @@ export default function ResultsDashboardTab({
   }, [chartAgents, agentId])
 
   const shown = visibleWidgets(widgets)
-  const loading = !sampleOn && loadingOps && !liveOps
+  const loading = loadingOps && !liveOps
 
   const update = (next: ResultsWidget[]) => setWidgets(next)
 
@@ -522,18 +441,16 @@ export default function ResultsDashboardTab({
   }
 
   const metricCatalogRows = useMemo(
-    () => (sampleOn ? SAMPLE_METRIC_CATALOG : (metricsCatalog as MetricRow[])).map((row) => ({
+    () => (metricsCatalog as MetricRow[]).map((row) => ({
       id: row.id,
       name: row.name,
       agent_ids: row.agent_ids,
       scenario_ids: row.scenario_ids,
       parent_metric_id: row.parent_metric_id,
     })),
-    [sampleOn, metricsCatalog],
+    [metricsCatalog],
   )
-  const drillCalls = sampleOn
-    ? sampleDrillCalls(agentId, effectiveDateRange?.start ?? null, effectiveDateRange?.end ?? null)
-    : drillCallsFromResults(results)
+  const drillCalls = drillCallsFromResults(results)
   const runListBase = {
     agentId: agentId || undefined,
     suiteId: suiteId || undefined,
@@ -541,20 +458,11 @@ export default function ResultsDashboardTab({
     since: dateBounds.since,
     until: dateBounds.until,
     playground,
-    sampleOn,
-    sampleRows: scopedSample.results,
+    sampleOn: false,
+    sampleRows: [] as EvaluatorResultRow[],
   }
   const openWidgetDetail = (widget: ResultsWidget) => {
     setDetail(resolveInsightDetail(widget) ?? { kind: 'widget', widgetId: widget.id })
-  }
-
-  const toggleSample = () => {
-    setSampleOn((on) => {
-      if (on && (agentId.startsWith('sample-') || suiteId.startsWith('sample-') || scenarioId.startsWith('sample-'))) {
-        onSelectAgent('')
-      }
-      return !on
-    })
   }
 
   const dashboardSettingsPortal = toolbarSlot
@@ -562,8 +470,6 @@ export default function ResultsDashboardTab({
       <ResultsDashboardSettingsMenu
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
-        sampleOn={sampleOn}
-        onToggleSample={toggleSample}
         source={source}
         onSourceChange={setSource}
         metrics={metrics}
@@ -611,6 +517,7 @@ export default function ResultsDashboardTab({
           catalog={metricCatalogRows}
           scoreDays={ops?.score_days}
           dateRange={effectiveDateRange}
+          allTime={allTime}
           results={results}
           agentRows={agentRows.map((row) => ({ id: row.id, name: row.name, total: row.total }))}
           callDays={callDays}
@@ -630,6 +537,8 @@ export default function ResultsDashboardTab({
           detail={detail}
           widgets={widgets}
           metrics={metrics}
+          dateRange={effectiveDateRange}
+          allTime={allTime}
           days={days}
           duration={duration}
           scenarioMatrix={scenarioMatrix}
@@ -656,6 +565,7 @@ export default function ResultsDashboardTab({
           onOpenRuns={onOpenRuns}
           onOpenResult={onOpenResult}
           runListBase={runListBase}
+          drillCalls={drillCalls}
           onMetric={(metricId) => {
             if (detail.kind === 'widget') setMetric(detail.widgetId, metricId)
           }}
@@ -790,41 +700,6 @@ function scoreSeriesFromDays(rows: DashboardOpsScoreDay[] | undefined) {
   return out
 }
 
-function buildCallDays(results: EvaluatorResultRow[]): Array<{ day: string; calls: number }> {
-  const buckets = new Map<string, { day: string; sortKey: string; calls: number }>()
-  for (const row of results) {
-    const { day, sortKey } = dayKey(row.timestamp)
-    const bucket = buckets.get(sortKey) ?? { day, sortKey, calls: 0 }
-    bucket.calls += 1
-    buckets.set(sortKey, bucket)
-  }
-  return Array.from(buckets.values())
-    .sort((a, b) => a.sortKey.localeCompare(b.sortKey))
-    .map(({ day, calls }) => ({ day, calls }))
-}
-
-function buildDuration(results: EvaluatorResultRow[]): { average: number | null; points: Array<{ day: string; value: number }> } {
-  const buckets = new Map<string, { day: string; sortKey: string; sum: number; count: number }>()
-  let sum = 0
-  let count = 0
-  for (const row of results) {
-    if (row.duration_seconds == null) continue
-    sum += row.duration_seconds
-    count += 1
-    const { day, sortKey } = dayKey(row.timestamp)
-    const bucket = buckets.get(sortKey) ?? { day, sortKey, sum: 0, count: 0 }
-    bucket.sum += row.duration_seconds
-    bucket.count += 1
-    buckets.set(sortKey, bucket)
-  }
-  return {
-    average: count ? sum / count : null,
-    points: Array.from(buckets.values())
-      .sort((a, b) => a.sortKey.localeCompare(b.sortKey))
-      .map((bucket) => ({ day: bucket.day, value: Number((bucket.sum / bucket.count).toFixed(1)) })),
-  }
-}
-
 function buildScenarioMatrix(agents: EvaluatorResultsAgentSummary[]): Array<{ agentName: string; scenarioName: string; count: number }> {
   const rows: Array<{ agentName: string; scenarioName: string; count: number }> = []
   for (const agent of agents) {
@@ -839,44 +714,6 @@ function buildScenarioMatrix(agents: EvaluatorResultsAgentSummary[]): Array<{ ag
     }
   }
   return rows
-}
-
-function buildDays(results: EvaluatorResultRow[]): DayPoint[] {
-  const buckets = new Map<string, DayPoint>()
-  for (const row of results) {
-    const { day, sortKey } = dayKey(row.timestamp)
-    const bucket = buckets.get(sortKey) ?? { day, sortKey, completed: 0, failed: 0 }
-    if (row.status === 'completed') bucket.completed += 1
-    else if (row.status === 'failed') bucket.failed += 1
-    buckets.set(sortKey, bucket)
-  }
-  return Array.from(buckets.values()).sort((a, b) => a.sortKey.localeCompare(b.sortKey))
-}
-
-function buildScoreSeries(results: EvaluatorResultRow[], metrics: CallImportMetricAggregate[]) {
-  const series = new Map<string, Array<{ day: string; value: number }>>()
-  for (const metric of metrics.filter(isNumericMetric)) {
-    const buckets = new Map<string, { day: string; sortKey: string; sum: number; count: number }>()
-    for (const row of results) {
-      const score = row.metric_scores?.[metric.metric_id]
-      const numeric = score
-        ? metricNumericValue(score.value, score.type || metric.metric_type || '')
-        : null
-      if (numeric == null) continue
-      const { day, sortKey } = dayKey(row.timestamp)
-      const bucket = buckets.get(sortKey) ?? { day, sortKey, sum: 0, count: 0 }
-      bucket.sum += numeric
-      bucket.count += 1
-      buckets.set(sortKey, bucket)
-    }
-    series.set(
-      metric.metric_id,
-      Array.from(buckets.values())
-        .sort((a, b) => a.sortKey.localeCompare(b.sortKey))
-        .map((bucket) => ({ day: bucket.day, value: Number((bucket.sum / bucket.count).toFixed(2)) })),
-    )
-  }
-  return series
 }
 
 function collectScenarios(
@@ -1463,10 +1300,54 @@ function buildDetailViews(
   ]
 }
 
+function usesPaginatedRunLeaf(
+  detail: { kind: 'widget'; widgetId: string } | { kind: 'metric'; metricId: string } | { kind: 'agent'; agentId: string },
+  widget: ResultsWidget | null | undefined,
+): boolean {
+  if (detail.kind === 'agent' || detail.kind === 'metric') return true
+  if (detail.kind !== 'widget' || !widget) return false
+  return [
+    'completion',
+    'avg_duration',
+    'total_calls',
+    'scenarios',
+    'scenarios_by_agent',
+    'volume',
+    'metric_trend',
+    'avg_score',
+    'agent_cost',
+  ].includes(widget.type)
+}
+
+function usesCallRunLeaf(widget: ResultsWidget | null | undefined): boolean {
+  return widget?.type === 'model_cost'
+}
+
+function runTableTitle({
+  windowLabel,
+  drillDayLabel,
+  activeScenarioName,
+  agentName,
+}: {
+  windowLabel: string
+  drillDayLabel: string | null
+  activeScenarioName: string | null
+  agentName?: string
+}): string {
+  const parts = ['Runs']
+  if (agentName) parts.push(agentName)
+  if (activeScenarioName) parts.push(activeScenarioName)
+  if (drillDayLabel) parts.push(drillDayLabel)
+  if (parts.length === 1) parts.push(windowLabel)
+  return parts.join(' · ')
+}
+
 function ResultsDetailView({
   detail,
   widgets,
   metrics,
+  dateRange,
+  allTime,
   days,
   duration,
   scenarioMatrix,
@@ -1487,11 +1368,14 @@ function ResultsDetailView({
   onOpenRuns,
   onOpenResult,
   runListBase,
+  drillCalls,
   onMetric,
 }: {
   detail: { kind: 'widget'; widgetId: string } | { kind: 'metric'; metricId: string } | { kind: 'agent'; agentId: string }
   widgets: ResultsWidget[]
   metrics: CallImportMetricAggregate[]
+  dateRange: { start: string; end: string } | null
+  allTime?: boolean
   days: DayPoint[]
   duration: { average: number | null; points: Array<{ day: string; value: number }> }
   scenarioMatrix: Array<{ agentName: string; scenarioName: string; count: number }>
@@ -1521,6 +1405,7 @@ function ResultsDetailView({
     sampleOn: boolean
     sampleRows: EvaluatorResultRow[]
   }
+  drillCalls: DashboardDrillCall[]
   onMetric: (metricId: string) => void
 }) {
   const widget = detail.kind === 'widget' ? widgets.find((item) => item.id === detail.widgetId) : null
@@ -1564,11 +1449,43 @@ function ResultsDetailView({
         horizontal: false,
       }
       : null
+  const windowLabel = formatDashboardWindowLabel(dateRange, allTime)
+  const dayLabelToSortKey = useMemo(() => new Map(days.map((day) => [day.day, day.sortKey])), [days])
+  const [drillDayLabel, setDrillDayLabel] = useState<string | null>(null)
+  const [drillScenarioId, setDrillScenarioId] = useState<string | null>(null)
+  const drillSortKey = drillDayLabel ? dayLabelToSortKey.get(drillDayLabel) ?? null : null
+  const scenarioIdByName = useMemo(
+    () => new Map(scenarioRows.map((row) => [row.name, row.scenarioId])),
+    [scenarioRows],
+  )
+  const activeScenarioName = drillScenarioId
+    ? scenarioRows.find((row) => row.scenarioId === drillScenarioId)?.name ?? null
+    : null
+  useEffect(() => {
+    setDrillDayLabel(null)
+    setDrillScenarioId(null)
+  }, [dateRange?.start, dateRange?.end, allTime])
+  const agentSliceResults = useMemo(() => {
+    if (detail.kind !== 'agent') return []
+    return results.filter(
+      (row) => row.agent_id === detail.agentId || row.agent?.id === detail.agentId,
+    )
+  }, [detail, results])
+  const sliceResults = useMemo(() => {
+    if (!drillSortKey) return results
+    return results.filter((row) => dayKey(row.timestamp).sortKey === drillSortKey)
+  }, [results, drillSortKey])
+  const tableBase = useMemo(() => {
+    if (!drillSortKey) return runListBase
+    const bounds = dateRangeToSinceUntil(drillSortKey, drillSortKey)
+    return { ...runListBase, since: bounds.since, until: bounds.until }
+  }, [runListBase, drillSortKey])
   const recent = metric
-    ? results.filter((row) => row.metric_scores?.[metric.metric_id]).slice(0, 12)
-    : results.slice(0, 12)
+    ? sliceResults.filter((row) => row.metric_scores?.[metric.metric_id]).slice(0, 12)
+    : sliceResults.slice(0, 12)
   const [focusId, setFocusId] = useState<string | null>(null)
   const [durationDisplay, setDurationDisplay] = useState<ResultsChartType>(widget?.display ?? 'line')
+  const trendUsesDays = widget?.type === 'avg_duration' || widget?.type === 'total_calls' || widget?.type === 'completion' || widget?.type === 'volume'
   const category = metric ? categorySeries.get(metric.metric_id) : undefined
   const categorical = Boolean(metric && isCategoricalMetric(metric) && (widget?.type === 'metric_trend' || widget?.type === 'metric_usage' || detail.kind === 'metric'))
   const baseViews = categorical && category
@@ -1587,7 +1504,7 @@ function ResultsDetailView({
       : widget?.type === 'tool_calls'
         ? (['calls', 'errors'] as const).map((mode) => {
           const chart = toolCallDetail(ops, mode, focusId)
-          return { id: mode, label: mode === 'calls' ? 'Calls' : 'Errors', ...chart }
+          return { id: mode, label: mode === 'calls' ? 'Calls' : 'Failures', ...chart }
         })
         : baseViews
   const [viewId, setViewId] = useState(views[0]?.id ?? 'main')
@@ -1595,6 +1512,22 @@ function ResultsDetailView({
   const costRole = widget?.type === 'agent_cost' && active?.id !== 'all' ? active?.id ?? null : null
   const focusedAgent = ops?.cost_by_agent.find((agent) => agent.agent_id === focusId)
   const focusedModels = modelsForAgent(focusedAgent, widget?.type === 'agent_cost' ? costRole : null)
+  const modelCostCalls = useMemo(() => {
+    if (widget?.type !== 'model_cost') return []
+    const withCost = drillCalls.filter((call) => call.costUsd > 0)
+    if (!focusId) return withCost
+    return withCost.filter((call) => call.model === focusId)
+  }, [drillCalls, focusId, widget?.type])
+  const runInsight = usesRunInsightLayout(widget?.type) || detail.kind === 'agent'
+  const drillDayActive = Boolean(drillSortKey)
+  const scoreMetricId =
+    metric?.metric_id ?? (detail.kind === 'metric' ? detail.metricId : undefined)
+  const breakdownAgents = agentRows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    total: row.total,
+    failed: row.failed,
+  }))
 
   return (
     <div className="space-y-4">
@@ -1606,8 +1539,14 @@ function ResultsDetailView({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
+            <p className="mt-0.5 text-sm text-gray-500">{windowLabel}</p>
             <p className="mt-1 text-3xl font-semibold tracking-tight text-gray-900">{active?.headline ?? model?.headline ?? '—'}</p>
-            {active?.caption && <p className="mt-1 text-sm text-gray-500">{active.caption}</p>}
+            {active?.caption && (
+              <p className="mt-1 text-sm text-gray-500">
+                {active.caption}
+                {trendUsesDays ? ` · ${windowLabel}` : ''}
+              </p>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {views.length > 1 && (
@@ -1659,7 +1598,7 @@ function ResultsDetailView({
             <Stat label="Skipped" value={formatHeadline(metric.skipped_count)} />
           </dl>
         )}
-        {widget?.type === 'avg_duration' && <DurationSummary results={results} />}
+        {widget?.type === 'avg_duration' && <DurationSummary results={sliceResults} />}
         {active && active.data.length > 0 && (
           <div className="mt-4 h-[320px] cursor-pointer [&_.recharts-surface]:cursor-pointer">
             <PanelChart
@@ -1668,7 +1607,9 @@ function ResultsDetailView({
               series={active.series}
               layout={active.horizontal ? 'vertical' : 'horizontal'}
               listClassName="max-h-[320px]"
-              onPoint={() => undefined}
+              onPoint={(label) => {
+                if (trendUsesDays) setDrillDayLabel((prev) => (prev === label ? null : label))
+              }}
               onCategory={(name) => {
                 if (widget?.type === 'scenarios') {
                   const match = scenarioRows.find((row) => row.name === name)
@@ -1769,9 +1710,6 @@ function ResultsDetailView({
             </ul>
           </div>
         )}
-        {(widget?.type === 'avg_duration' || widget?.type === 'total_calls' || widget?.type === 'scenarios_by_agent') && (
-          <DurationBreakdown results={results} />
-        )}
         {widget?.type === 'metric_usage' && metric && <MetricScenarioScores results={results} metricId={metric.metric_id} />}
         {agent && (
           <div className="mt-4 flex flex-wrap gap-2">
@@ -1781,27 +1719,124 @@ function ResultsDetailView({
           </div>
         )}
       </section>
-      {detail.kind === 'agent' && (
-        <section className="rounded-xl border border-gray-200 bg-white p-5">
-          <h3 className="text-sm font-semibold text-gray-900">Scenarios</h3>
-          <ul className="mt-3 divide-y divide-gray-100">
-            {scenarioRows.filter((row) => row.agentId === detail.agentId).map((row) => (
-              <li key={row.scenarioId}>
-                <button
-                  type="button"
-                  onClick={() => onSelectScenario(row.suiteId, row.scenarioId, row.agentId)}
-                  className="flex w-full items-center justify-between py-2 text-left text-sm text-gray-800 hover:text-primary-700"
-                >
-                  <span>{row.name}</span>
-                  <span className="text-xs text-gray-500">{row.count} runs</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </section>
+      {detail.kind === 'agent' && agent && (
+        <>
+          <RunInsightFilterBar
+            dayLabel={drillDayLabel}
+            scenarioName={activeScenarioName}
+            onClearDay={() => setDrillDayLabel(null)}
+            onClearScenario={() => setDrillScenarioId(null)}
+            onClearAll={() => {
+              setDrillDayLabel(null)
+              setDrillScenarioId(null)
+            }}
+          />
+          <RunInsightBreakdown
+            results={agentSliceResults}
+            scenarioRows={scenarioRows.filter((row) => row.agentId === detail.agentId)}
+            agentRows={[{ id: agent.id, name: agent.name }]}
+            agentRunRows={breakdownAgents.filter((row) => row.id === detail.agentId)}
+            drillDayActive={drillDayActive}
+            windowRunTotal={aggregateTotal}
+            sampleSize={results.length}
+            activeScenarioName={activeScenarioName}
+            title={`${agent.name} · scenarios`}
+            onScenarioClick={(name) => {
+              const id = scenarioIdByName.get(name)
+              if (id) setDrillScenarioId((prev) => (prev === id ? null : id))
+            }}
+          />
+        </>
       )}
-      {widget?.type === 'completion' || widget?.type === 'avg_duration' ? (
-        <PaginatedRunsTable base={runListBase} title="Runs in window" onOpenResult={onOpenResult} />
+      {runInsight && widget && (
+        <>
+          <RunInsightFilterBar
+            dayLabel={drillDayLabel}
+            scenarioName={activeScenarioName}
+            onClearDay={() => setDrillDayLabel(null)}
+            onClearScenario={() => setDrillScenarioId(null)}
+            onClearAll={() => {
+              setDrillDayLabel(null)
+              setDrillScenarioId(null)
+            }}
+          />
+          <RunInsightBreakdown
+            results={sliceResults}
+            scenarioRows={scenarioRows}
+            agentRows={agentRows.map((row) => ({ id: row.id, name: row.name }))}
+            agentRunRows={breakdownAgents}
+            drillDayActive={drillDayActive}
+            windowRunTotal={aggregateTotal}
+            sampleSize={results.length}
+            activeScenarioName={activeScenarioName}
+            title={
+              widget.type === 'scenarios_by_agent'
+                ? 'Scenarios across agents'
+                : widget.type === 'scenarios'
+                  ? 'Scenario runs'
+                  : 'Call duration'
+            }
+            onScenarioClick={(name) => {
+              const id = scenarioIdByName.get(name)
+              if (id) setDrillScenarioId((prev) => (prev === id ? null : id))
+            }}
+          />
+        </>
+      )}
+      {(widget?.type === 'total_calls' || widget?.type === 'volume' || widget?.type === 'completion') && (
+        <RunInsightBreakdown
+          results={sliceResults}
+          scenarioRows={scenarioRows}
+          agentRows={agentRows.map((row) => ({ id: row.id, name: row.name }))}
+          agentRunRows={breakdownAgents}
+          drillDayActive={drillDayActive}
+          windowRunTotal={aggregateTotal}
+          sampleSize={results.length}
+          activeScenarioName={activeScenarioName}
+          title="Runs in window"
+          onScenarioClick={(name) => {
+            const id = scenarioIdByName.get(name)
+            if (id) setDrillScenarioId((prev) => (prev === id ? null : id))
+          }}
+        />
+      )}
+      {usesCallRunLeaf(widget) ? (
+        <RunInsightRunsSection
+          title={focusId ? `Runs · ${focusId}` : `Runs with model cost · ${windowLabel}`}
+        >
+          <PaginatedCallRunsTable
+            calls={modelCostCalls}
+            title=""
+            onOpenResult={onOpenResult}
+          />
+        </RunInsightRunsSection>
+      ) : usesPaginatedRunLeaf(detail, widget) ? (
+        <RunInsightRunsSection title={runTableTitle({
+          windowLabel,
+          drillDayLabel,
+          activeScenarioName,
+          agentName: detail.kind === 'agent' ? agent?.name : detail.kind === 'widget' && widget?.type === 'agent_cost' && focusId
+            ? ops?.cost_by_agent.find((row) => row.agent_id === focusId)?.agent_name
+            : undefined,
+        })}
+        >
+          <PaginatedRunsTable
+            base={tableBase}
+            filterAgentId={
+              detail.kind === 'agent'
+                ? detail.agentId
+                : widget?.type === 'agent_cost' && focusId
+                  ? focusId
+                  : undefined
+            }
+            filterScenarioId={drillScenarioId ?? undefined}
+            scoreMetricId={scoreMetricId}
+            callsByResultId={widget?.type === 'agent_cost' ? drillCalls : undefined}
+            rich={widget?.type === 'agent_cost'}
+            title=""
+            onOpenResult={onOpenResult}
+          />
+        </RunInsightRunsSection>
       ) : (
         <section className="rounded-xl border border-gray-200 bg-white p-5">
           <h3 className="text-sm font-semibold text-gray-900">{metric ? 'Recent scored runs' : 'Recent runs'}</h3>
@@ -2063,58 +2098,6 @@ function DurationSummary({ results }: { results: EvaluatorResultRow[] }) {
     <p className="mt-2 text-sm text-gray-500">
       Avg {formatDuration(average)} · shortest {formatDuration(Math.min(...values))} · longest {formatDuration(Math.max(...values))}
     </p>
-  )
-}
-
-function DurationBreakdown({ results }: { results: EvaluatorResultRow[] }) {
-  const values = results.map((row) => row.duration_seconds).filter((value): value is number => value != null)
-  const edges = [0, 60, 90, 120, 150, 180, 240]
-  const buckets = edges.slice(0, -1).map((start, index) => {
-    const end = edges[index + 1]
-    const count = values.filter((value) => value >= start && value < end).length
-    return { name: `${start}–${end}s`, count }
-  }).filter((bucket) => bucket.count > 0)
-  const max = Math.max(...buckets.map((bucket) => bucket.count), 1)
-  const byScenario = new Map<string, { total: number; failed: number }>()
-  for (const row of results) {
-    const name = row.scenario?.name
-    if (!name) continue
-    const bucket = byScenario.get(name) ?? { total: 0, failed: 0 }
-    bucket.total += 1
-    if (row.status === 'failed') bucket.failed += 1
-    byScenario.set(name, bucket)
-  }
-  const scenarios = Array.from(byScenario.entries()).sort((a, b) => b[1].total - a[1].total)
-  return (
-    <div className="mt-4 space-y-4">
-      <div>
-        <h3 className="text-sm font-semibold text-gray-900">Distribution</h3>
-        <ul className="mt-3 space-y-2">
-          {buckets.map((bucket) => (
-            <li key={bucket.name} className="grid grid-cols-[7rem_minmax(0,1fr)_2rem] items-center gap-3 text-xs text-gray-600">
-              <span>{bucket.name}</span>
-              <span className="h-2 overflow-hidden rounded-full bg-gray-100">
-                <span className="block h-full rounded-full bg-primary-600" style={{ width: `${(bucket.count / max) * 100}%` }} />
-              </span>
-              <span className="text-right">{bucket.count}</span>
-            </li>
-          ))}
-        </ul>
-      </div>
-      <div>
-        <h3 className="text-sm font-semibold text-gray-900">By scenario</h3>
-        <ul className="mt-2 divide-y divide-gray-100">
-          {scenarios.map(([name, stats]) => (
-            <li key={name} className="flex items-center justify-between py-2 text-sm text-gray-700">
-              <span className="truncate pr-3">{name}</span>
-              <span className="shrink-0 text-xs text-gray-500">
-                {stats.total} · {stats.total ? Math.round((stats.failed / stats.total) * 100) : 0}% fail
-              </span>
-            </li>
-          ))}
-        </ul>
-      </div>
-    </div>
   )
 }
 
