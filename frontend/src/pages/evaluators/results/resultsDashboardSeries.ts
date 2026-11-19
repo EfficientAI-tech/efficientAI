@@ -561,7 +561,15 @@ export function resolveToolAgentFocusId(
   const fromTotals = toolAgentTotals(ops, 'errors').find(
     (item) => item.agent_id === focus || item.agent_name === focus,
   )
-  return fromTotals?.agent_id ?? null
+  if (fromTotals?.agent_id) return fromTotals.agent_id
+  const fromPerRun = ops?.tool_calls_per_run?.find(
+    (item) => item.agent_id === focus || item.agent_name === focus,
+  )
+  if (fromPerRun?.agent_id) return fromPerRun.agent_id
+  const fromProviders = ops?.provider_by_agent?.find(
+    (item) => item.agent_id === focus || item.agent_name === focus,
+  )
+  return fromProviders?.agent_id ?? null
 }
 
 export function toolErrorsByUseCase(
@@ -633,6 +641,7 @@ export function platformToolDetail(
     caption: mode === 'errors' ? 'Tool failures over time by agent' : 'Usage over time by agent',
     data: Array.from(byDay.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([day, values]) => ({
       day: formatDayLabel(day),
+      sortKey: String(day).slice(0, 10),
       ...values,
     })),
     series: seriesKeys.map((key, index) => ({ key, color: MODEL_COLORS[index % MODEL_COLORS.length] })),
@@ -662,6 +671,7 @@ export function toolsDetail(
       caption: 'Usage over time',
       data: Array.from(byDay.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([day, values]) => ({
         day: formatDayLabel(day),
+        sortKey: String(day).slice(0, 10),
         ...values,
       })),
       series: seriesKeys.map((key, index) => ({ key, color: MODEL_COLORS[index % MODEL_COLORS.length] })),

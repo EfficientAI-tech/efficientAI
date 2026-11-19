@@ -215,6 +215,7 @@ export interface ListEvaluatorResultsParams {
   toolUse?: string
   toolProduct?: string
   toolFailuresOnly?: boolean
+  hasToolCalls?: boolean
 }
 
 export interface APIKey {

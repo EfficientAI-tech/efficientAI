@@ -37,7 +37,7 @@ import { DrillChartPanel, DrillTrendChart } from './resultsDashboardDrillCharts'
 import { isGoldenMetric, type MetricRow } from '../../simulations/simulationMetricScope'
 import type { ListEvaluatorResultsParams } from '../../../types/api'
 import type { RunListBase } from './resultsDashboardInsightDrill'
-import { formatChartDayLabel, formatDashboardWindowLabel, resultLocalDayKey } from './resultsDateRange'
+import { dateRangeToSinceUntil, formatChartDayLabel, formatDashboardWindowLabel } from './resultsDateRange'
 import { evaluatorResultOpenId } from './ResultsRunDetailDrawer'
 
 export type { RunListBase } from './resultsDashboardInsightDrill'
@@ -72,6 +72,7 @@ export function PaginatedRunsTable({
   toolUse,
   toolProduct,
   toolFailuresOnly,
+  hasToolCalls,
 }: {
   base: RunListBase
   filterAgentId?: string
@@ -92,6 +93,7 @@ export function PaginatedRunsTable({
   toolUse?: string
   toolProduct?: string
   toolFailuresOnly?: boolean
+  hasToolCalls?: boolean
 }) {
   const currency = displayCurrency ?? readUsageDisplayCurrency()
   const [page, setPage] = useState(0)
@@ -110,9 +112,10 @@ export function PaginatedRunsTable({
         toolUse: toolUse || undefined,
         toolProduct: toolProduct || undefined,
         toolFailuresOnly: toolFailuresOnly || undefined,
+        hasToolCalls: hasToolCalls || undefined,
         sampleOn: base.sampleOn,
       }),
-    [base, filterAgentId, filterScenarioId, metricId, usageModel, usageRole, toolUse, toolProduct, toolFailuresOnly],
+    [base, filterAgentId, filterScenarioId, metricId, usageModel, usageRole, toolUse, toolProduct, toolFailuresOnly, hasToolCalls],
   )
   const listParams = useMemo(
     () => ({
@@ -127,10 +130,11 @@ export function PaginatedRunsTable({
       toolUse: toolUse || undefined,
       toolProduct: toolProduct || undefined,
       toolFailuresOnly: toolFailuresOnly || undefined,
+      hasToolCalls: hasToolCalls || undefined,
       skip: page * PAGE_SIZE,
       limit: PAGE_SIZE,
     }),
-    [runScopeKey, page, base, filterAgentId, filterScenarioId, metricId, usageModel, usageRole, toolUse, toolProduct, toolFailuresOnly],
+    [runScopeKey, page, base, filterAgentId, filterScenarioId, metricId, usageModel, usageRole, toolUse, toolProduct, toolFailuresOnly, hasToolCalls],
   )
   const { data, isLoading } = useQuery({
     queryKey: ['evaluator-results-drill-runs', listParams, metricId, usageModel, usageRole],
@@ -627,6 +631,19 @@ function MotionStat({ label, value }: { label: string; value: string }) {
   )
 }
 
+type ToolDrillLeaf =
+  | { kind: 'named_tool'; useKind: 'use_case' | 'product'; name: string }
+  | { kind: 'agent_runs'; agentId: string; agentName: string; dayKey?: string }
+
+function toolsRunListBase(
+  base: RunListBase,
+  dayKey: string | undefined,
+): RunListBase {
+  if (!dayKey) return base
+  const bounds = dateRangeToSinceUntil(dayKey, dayKey)
+  return { ...base, since: bounds.since, until: bounds.until }
+}
+
 function DrillFocusBar({
   label,
   onClear,
@@ -672,7 +689,7 @@ export function ToolsMergedDetail({
   const [focus, setFocus] = useState<string | null>(null)
   /** Failures → By agent keeps agent selection separate from tool-bar clicks. */
   const [agentFocus, setAgentFocus] = useState<string | null>(null)
-  const [leaf, setLeaf] = useState<{ kind: 'use_case' | 'product'; name: string } | null>(null)
+  const [drillLeaf, setDrillLeaf] = useState<ToolDrillLeaf | null>(null)
   const chartFocus = viewId === 'by_agent' && insightMode === 'errors' ? agentFocus : focus
   const chart = mergedToolsDetail(ops, viewId, chartFocus, insightMode)
   const agentFocusResolved =
@@ -682,23 +699,50 @@ export function ToolsMergedDetail({
   const products = toolFacts(ops)
   const totalErrors = totalToolErrors(ops)
 
-  if (leaf) {
+  const openAgentToolRuns = (agentName: string, dayKey?: string) => {
+    const agentId = resolveToolAgentFocusId(ops, agentName)
+    if (!agentId) return
+    setDrillLeaf({ kind: 'agent_runs', agentId, agentName, dayKey })
+  }
+
+  if (drillLeaf) {
+    const title =
+      drillLeaf.kind === 'named_tool'
+        ? drillLeaf.name
+        : drillLeaf.dayKey
+          ? `${drillLeaf.agentName} · ${formatChartDayLabel(drillLeaf.dayKey, false)}`
+          : drillLeaf.agentName
     return (
       <div className="space-y-4">
-        <button type="button" onClick={() => setLeaf(null)} className="inline-flex items-center gap-1 text-sm font-medium text-gray-600 hover:text-gray-900">
+        <button type="button" onClick={() => setDrillLeaf(null)} className="inline-flex items-center gap-1 text-sm font-medium text-gray-600 hover:text-gray-900">
           <ArrowLeft className="h-4 w-4" />
           Back
         </button>
-        <h2 className="text-lg font-semibold text-gray-900">{leaf.name}</h2>
+        <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
+        <p className="text-sm text-gray-500">
+          {insightMode === 'errors' ? 'Runs with tool failures in this slice' : 'Pre-prod runs where production tools were invoked'}
+        </p>
         <PaginatedRunsTable
-          base={runListBase}
-          filterAgentId={agentFocusResolved ?? undefined}
-          toolUse={leaf.kind === 'use_case' ? leaf.name : undefined}
-          toolProduct={leaf.kind === 'product' ? leaf.name : undefined}
-          toolFailuresOnly={insightMode === 'errors'}
-          title={insightMode === 'errors' ? 'Runs with tool failures' : 'Calls using this tool'}
+          base={
+            drillLeaf.kind === 'agent_runs'
+              ? toolsRunListBase(runListBase, drillLeaf.dayKey)
+              : runListBase
+          }
+          filterAgentId={
+            drillLeaf.kind === 'agent_runs'
+              ? drillLeaf.agentId
+              : agentFocusResolved ?? undefined
+          }
+          toolUse={drillLeaf.kind === 'named_tool' && drillLeaf.useKind === 'use_case' ? drillLeaf.name : undefined}
+          toolProduct={drillLeaf.kind === 'named_tool' && drillLeaf.useKind === 'product' ? drillLeaf.name : undefined}
+          hasToolCalls={drillLeaf.kind === 'agent_runs'}
+          toolFailuresOnly={
+            insightMode === 'errors'
+            && (drillLeaf.kind === 'named_tool' || drillLeaf.kind === 'agent_runs')
+          }
+          title={insightMode === 'errors' ? 'Runs with tool failures' : 'Runs with tool calls'}
           onOpenResult={onOpenResult}
-          rich={false}
+          rich
         />
       </div>
     )
@@ -733,7 +777,7 @@ export function ToolsMergedDetail({
                   setInsightMode(mode)
                   setFocus(null)
                   setAgentFocus(null)
-                  setLeaf(null)
+                  setDrillLeaf(null)
                 }}
                 className={`rounded-md border px-2.5 py-1 text-xs font-medium ${insightMode === mode
                   ? 'border-primary-200 bg-white text-primary-800 shadow-sm'
@@ -805,28 +849,28 @@ export function ToolsMergedDetail({
               ? 'area'
               : 'bar'
         }
+        onSeriesPoint={(point) => {
+          if (viewId !== 'over_time' && viewId !== 'per_call') return
+          openAgentToolRuns(point.series, point.sortKey)
+        }}
         onCategory={(name) => {
           if (viewId === 'use_cases' || (viewId === 'share' && insightMode === 'errors')) {
-            setLeaf({ kind: 'use_case', name })
+            setDrillLeaf({ kind: 'named_tool', useKind: 'use_case', name })
           } else if (viewId === 'share') {
-            setLeaf({ kind: 'product', name })
+            setDrillLeaf({ kind: 'named_tool', useKind: 'product', name })
           } else if (viewId === 'by_agent' && insightMode === 'errors') {
             if (agentFocusResolved) {
-              setLeaf({ kind: 'use_case', name })
+              setDrillLeaf({ kind: 'named_tool', useKind: 'use_case', name })
               return
             }
             setAgentFocus((prev) => (prev === name ? null : name))
           } else if (viewId === 'by_agent' || (viewId === 'per_call' && insightMode === 'calls')) {
-            setFocus((prev) => (prev === name ? null : name))
+            openAgentToolRuns(name)
           }
         }}
       />
     </div>
   )
-}
-
-function callUses(call: DashboardDrillCall): Array<{ tool: string; provider: string; failed: boolean }> {
-  return call.uses ?? [{ tool: call.tool, provider: call.provider, failed: false }]
 }
 
 type MetricScopeFilter = 'all' | 'global' | 'local' | 'never'
@@ -1099,7 +1143,7 @@ export function MetricUsageDrill({
 export function TotalCallsDrill({
   agentRows,
   callDays,
-  results,
+  results: _results,
   runListBase,
   aggregateTotal,
   agentId,

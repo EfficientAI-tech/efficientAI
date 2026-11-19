@@ -103,6 +103,7 @@ export function DrillChartPanel({
   height = 280,
   className = '',
   onCategory,
+  onSeriesPoint,
   valueFormat = 'number',
   inrRate = 95,
   displayCurrency = 'USD',
@@ -112,6 +113,8 @@ export function DrillChartPanel({
   height?: number
   className?: string
   onCategory?: (label: string) => void
+  /** Line/area multi-series: agent (series key) + optional calendar day. */
+  onSeriesPoint?: (point: { series: string; sortKey?: string; dayLabel: string }) => void
   /** Pre-prod usage charts pass USD amounts from dashboard-ops. */
   valueFormat?: 'currency' | 'number'
   inrRate?: number
@@ -133,7 +136,7 @@ export function DrillChartPanel({
     )
   }
 
-  const drillable = Boolean(onCategory)
+  const drillable = Boolean(onCategory || onSeriesPoint)
   const grid = <CartesianGrid stroke={GRID} vertical={false} />
   const tooltip = (
     <Tooltip
@@ -232,6 +235,23 @@ export function DrillChartPanel({
                 fill={item.color}
                 fillOpacity={0.12}
                 strokeWidth={1.75}
+                dot={onSeriesPoint ? { r: 3, strokeWidth: 1, fill: item.color } : false}
+                activeDot={
+                  onSeriesPoint
+                    ? {
+                        r: 5,
+                        onClick: (_event, dot) => {
+                          const payload = (dot as { payload?: Record<string, unknown> })?.payload
+                          if (!payload) return
+                          onSeriesPoint({
+                            series: item.key,
+                            sortKey: typeof payload.sortKey === 'string' ? payload.sortKey : undefined,
+                            dayLabel: String(payload.day ?? ''),
+                          })
+                        },
+                      }
+                    : undefined
+                }
               />
             ))}
           </AreaChart>
@@ -248,7 +268,30 @@ export function DrillChartPanel({
             <YAxis tick={{ fontSize: 11, fill: '#6b7280' }} axisLine={false} tickLine={false} width={40} />
             {tooltip}
             {series.map((item) => (
-              <Line key={item.key} type="monotone" dataKey={item.key} stroke={item.color} strokeWidth={1.75} dot={false} />
+              <Line
+                key={item.key}
+                type="monotone"
+                dataKey={item.key}
+                stroke={item.color}
+                strokeWidth={1.75}
+                dot={onSeriesPoint ? { r: 3, strokeWidth: 1, fill: item.color } : false}
+                activeDot={
+                  onSeriesPoint
+                    ? {
+                        r: 5,
+                        onClick: (_event, dot) => {
+                          const payload = (dot as { payload?: Record<string, unknown> })?.payload
+                          if (!payload) return
+                          onSeriesPoint({
+                            series: item.key,
+                            sortKey: typeof payload.sortKey === 'string' ? payload.sortKey : undefined,
+                            dayLabel: String(payload.day ?? ''),
+                          })
+                        },
+                      }
+                    : undefined
+                }
+              />
             ))}
           </LineChart>
         </ResponsiveContainer>
@@ -293,7 +336,9 @@ export function DrillChartPanel({
       {drillable && (
         <p className="mt-2 flex items-center gap-1.5 text-[11px] font-medium text-primary-800/90">
           <span className="inline-block h-3.5 w-3.5 rounded-sm border border-primary-300 bg-primary-50" aria-hidden />
-          Hover a bar — pointer shows where you can click to drill in
+          {catKey === 'day' && onSeriesPoint
+            ? 'Click a point on the line to see runs with tool calls for that agent and day'
+            : 'Click a bar or point to drill in'}
         </p>
       )}
     </section>

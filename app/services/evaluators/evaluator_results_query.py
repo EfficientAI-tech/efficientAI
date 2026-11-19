@@ -131,13 +131,19 @@ def build_evaluator_results_query(
     tool_use: Optional[str] = None,
     tool_product: Optional[str] = None,
     tool_failures_only: Optional[bool] = None,
+    has_tool_calls: Optional[bool] = None,
 ) -> Query:
     query = db.query(EvaluatorResult).filter(
         EvaluatorResult.organization_id == organization_id,
         EvaluatorResult.workspace_id == workspace_id,
     )
 
-    tool_filter = bool((tool_use or "").strip() or (tool_product or "").strip() or tool_failures_only)
+    tool_filter = bool(
+        (tool_use or "").strip()
+        or (tool_product or "").strip()
+        or tool_failures_only
+        or has_tool_calls
+    )
     if not usage_model and not tool_filter:
         query = apply_playground_scope_filter(
             query,
@@ -233,6 +239,7 @@ def build_evaluator_results_query(
         tool_use=tool_use,
         tool_product=tool_product,
         failures_only=bool(tool_failures_only),
+        has_tool_calls=bool(has_tool_calls),
     )
 
     if status:

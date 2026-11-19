@@ -526,6 +526,10 @@ def list_evaluator_results(
         None,
         description="When true with tool_use, only runs where that tool call status is error",
     ),
+    has_tool_calls: Optional[bool] = Query(
+        None,
+        description="When true, only runs with at least one production tool call in call_data",
+    ),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
@@ -556,6 +560,7 @@ def list_evaluator_results(
             tool_use=tool_use,
             tool_product=tool_product,
             tool_failures_only=tool_failures_only,
+            has_tool_calls=has_tool_calls,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

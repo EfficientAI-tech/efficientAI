@@ -554,7 +554,6 @@ export default function ResultsDashboardTab({
     })),
     [metricsCatalog],
   )
-  const drillCalls = drillCallsFromResults(results)
   const runListBase = {
     agentId: agentId || undefined,
     suiteId: suiteId || undefined,
@@ -685,7 +684,6 @@ export default function ResultsDashboardTab({
           onOpenRuns={onOpenRuns}
           onOpenResult={onOpenResult}
           runListBase={runListBase}
-          drillCalls={drillCalls}
           onMetric={(metricId) => {
             if (detail.kind === 'widget') setMetric(detail.widgetId, metricId)
           }}
@@ -1510,7 +1508,6 @@ function ResultsDetailView({
   onOpenRuns,
   onOpenResult,
   runListBase,
-  drillCalls,
   onMetric,
 }: {
   detail: { kind: 'widget'; widgetId: string } | { kind: 'metric'; metricId: string } | { kind: 'agent'; agentId: string }
@@ -1547,7 +1544,6 @@ function ResultsDetailView({
     sampleOn: boolean
     sampleRows: EvaluatorResultRow[]
   }
-  drillCalls: DashboardDrillCall[]
   onMetric: (metricId: string) => void
 }) {
   const widget = detail.kind === 'widget' ? widgets.find((item) => item.id === detail.widgetId) : null
