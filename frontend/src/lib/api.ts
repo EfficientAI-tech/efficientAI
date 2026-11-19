@@ -5038,6 +5038,10 @@ class ApiClient {
       if (p.playground !== undefined) params.playground = p.playground
       if (p.testAgentsOnly !== undefined) params.test_agents_only = p.testAgentsOnly
       if (p.metricId) params.metric_id = p.metricId
+      if (p.usageModel) params.usage_model = p.usageModel
+      if (p.toolUse) params.tool_use = p.toolUse
+      if (p.toolProduct) params.tool_product = p.toolProduct
+      if (p.toolFailuresOnly) params.tool_failures_only = true
     }
     const response = await this.client.get('/api/v1/evaluator-results', { params })
     return response.data

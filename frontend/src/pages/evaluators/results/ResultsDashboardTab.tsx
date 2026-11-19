@@ -48,6 +48,7 @@ import {
   type ResultsWidgetType,
 } from './resultsDashboardLayout'
 import type { DashboardDrillCall } from './resultsDashboardSample'
+import { usageFromEvaluatorCallData } from './evaluatorDrillUsage'
 import {
   agentCostDetail,
   buildCategorySeries,
@@ -63,7 +64,7 @@ import {
   toolCallDetail,
   type ChartModel,
 } from './resultsDashboardSeries'
-import { PaginatedCallRunsTable, PaginatedRunsTable } from './resultsDashboardDrilldowns'
+import { PaginatedRunsTable } from './resultsDashboardDrilldowns'
 import {
   RunInsightBreakdown,
   RunInsightFilterBar,
@@ -639,6 +640,7 @@ export default function ResultsDashboardTab({
           results={resultsForInsight}
           agentRows={insightAgentRows}
           callDays={insightDrillAgentId ? callDaysForInsight : callDays}
+          scenarioRows={scenarioRows}
           aggregateTotal={aggregateTotalForInsight}
           onMetricNavigate={(next) => setDetail({ kind: 'metric_flow', widgetId: detail.widgetId, ...next })}
           onTotalCallsNavigate={(agentId) => setDetail({ kind: 'total_calls_flow', widgetId: detail.widgetId, agentId })}
@@ -1456,11 +1458,8 @@ function usesPaginatedRunLeaf(
     'metric_trend',
     'avg_score',
     'agent_cost',
+    'model_cost',
   ].includes(widget.type)
-}
-
-function usesCallRunLeaf(widget: ResultsWidget | null | undefined): boolean {
-  return widget?.type === 'model_cost'
 }
 
 function runTableTitle({
@@ -1468,13 +1467,16 @@ function runTableTitle({
   drillDayLabel,
   activeScenarioName,
   agentName,
+  modelName,
 }: {
   windowLabel: string
   drillDayLabel: string | null
   activeScenarioName: string | null
   agentName?: string
+  modelName?: string
 }): string {
   const parts = ['Runs']
+  if (modelName) parts.push(modelName)
   if (agentName) parts.push(agentName)
   if (activeScenarioName) parts.push(activeScenarioName)
   if (drillDayLabel) parts.push(drillDayLabel)
@@ -1657,12 +1659,6 @@ function ResultsDetailView({
   const costRole = widget?.type === 'agent_cost' && active?.id !== 'all' ? active?.id ?? null : null
   const focusedAgent = ops?.cost_by_agent.find((agent) => agent.agent_id === focusId)
   const focusedModels = modelsForAgent(focusedAgent, widget?.type === 'agent_cost' ? costRole : null)
-  const modelCostCalls = useMemo(() => {
-    if (widget?.type !== 'model_cost') return []
-    const withCost = drillCalls.filter((call) => call.costUsd > 0)
-    if (!focusId) return withCost
-    return withCost.filter((call) => call.model === focusId)
-  }, [drillCalls, focusId, widget?.type])
   const runInsight = usesRunInsightLayout(widget?.type) || detail.kind === 'agent'
   const drillDayActive = Boolean(drillSortKey || drillScenarioId)
   const scenarioCountsFromSample = drillDayActive
@@ -1991,17 +1987,7 @@ function ResultsDetailView({
           }}
         />
       )}
-      {usesCallRunLeaf(widget) ? (
-        <RunInsightRunsSection
-          title={focusId ? `Runs · ${focusId}` : `Runs with model cost · ${windowLabel}`}
-        >
-          <PaginatedCallRunsTable
-            calls={modelCostCalls}
-            title=""
-            onOpenResult={onOpenResult}
-          />
-        </RunInsightRunsSection>
-      ) : usesPaginatedRunLeaf(detail, widget) ? (
+      {usesPaginatedRunLeaf(detail, widget) ? (
         <RunInsightRunsSection title={runTableTitle({
           windowLabel,
           drillDayLabel,
@@ -2009,6 +1995,7 @@ function ResultsDetailView({
           agentName: detail.kind === 'agent' ? agent?.name : detail.kind === 'widget' && widget?.type === 'agent_cost' && focusId
             ? ops?.cost_by_agent.find((row) => row.agent_id === focusId)?.agent_name
             : undefined,
+          modelName: detail.kind === 'widget' && widget?.type === 'model_cost' && focusId ? focusId : undefined,
         })}
         >
           <PaginatedRunsTable
@@ -2023,8 +2010,15 @@ function ResultsDetailView({
             filterScenarioId={drillScenarioId ?? undefined}
             metricId={scoreMetricId}
             scoreMetricId={scoreMetricId}
-            callsByResultId={widget?.type === 'agent_cost' ? drillCalls : undefined}
-            rich={widget?.type === 'agent_cost'}
+            usageModel={
+              widget?.type === 'model_cost' && focusId ? focusId : undefined
+            }
+            usageRole={
+              widget?.type === 'agent_cost' && costRole && typeof costRole === 'string'
+                ? costRole
+                : undefined
+            }
+            rich={widget?.type === 'agent_cost' || widget?.type === 'model_cost'}
             title=""
             onOpenResult={onOpenResult}
           />
@@ -2331,15 +2325,29 @@ function drillCallsFromResults(rows: EvaluatorResultRow[]): DashboardDrillCall[]
         return [{ tool: String(call.tool || 'tool'), provider: String(call.provider || 'unknown'), failed: call.status === 'error' }]
       })
       : []
+    const usage = usageFromEvaluatorCallData(row.call_data, row.provider_platform)
+    const byModelRaw = row.call_data?.usage_by_model as
+      | Record<string, { total_tokens?: number; total_cost_usd?: number }>
+      | undefined
+    const usageByModel: Record<string, { tokens: number; costUsd: number }> = {}
+    if (byModelRaw && typeof byModelRaw === 'object') {
+      for (const [name, entry] of Object.entries(byModelRaw)) {
+        const tokens = Number(entry?.total_tokens) || 0
+        const costUsd = Number(entry?.total_cost_usd) || 0
+        if (tokens > 0 || costUsd > 0) usageByModel[name] = { tokens, costUsd }
+      }
+    }
     return {
       at: row.timestamp,
       agent: row.agent?.name || 'Agent',
       agentId: row.agent_id ?? row.agent?.id ?? undefined,
       title: row.name || row.result_id,
       durationSeconds: row.duration_seconds ?? 0,
-      costUsd: 0,
-      tokens: 0,
-      model: '',
+      costUsd: usage.costUsd,
+      tokens: usage.tokens,
+      model: usage.model || Object.keys(usageByModel)[0] || '',
+      usageModels: Object.keys(usageByModel),
+      usageByModel,
       tool: uses[0]?.tool ?? '',
       provider: uses[0]?.provider ?? '',
       uses,

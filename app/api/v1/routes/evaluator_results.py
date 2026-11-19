@@ -510,6 +510,22 @@ def list_evaluator_results(
     playground: Optional[bool] = Query(None, description="If true, only return playground test results (evaluator_id is NULL). If false, exclude playground results. If not provided, exclude playground results by default."),
     test_agents_only: Optional[bool] = Query(None, description="If true, only return Test Agent results (no provider_platform). If false, include all playground results."),
     metric_id: Optional[str] = Query(None, description="Only runs that have a score entry for this metric id"),
+    usage_model: Optional[str] = Query(
+        None,
+        description="Only runs with pre-prod usage logged for this model name (from usage ledger)",
+    ),
+    tool_use: Optional[str] = Query(
+        None,
+        description="Only runs whose production tool_calls include this tool name",
+    ),
+    tool_product: Optional[str] = Query(
+        None,
+        description="Only runs with a production tool call from this provider/product name",
+    ),
+    tool_failures_only: Optional[bool] = Query(
+        None,
+        description="When true with tool_use, only runs where that tool call status is error",
+    ),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
@@ -536,6 +552,10 @@ def list_evaluator_results(
             test_agents_only=test_agents_only,
             unassigned_only=unassigned_only,
             metric_id=metric_id,
+            usage_model=usage_model,
+            tool_use=tool_use,
+            tool_product=tool_product,
+            tool_failures_only=tool_failures_only,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -546,6 +566,8 @@ def list_evaluator_results(
         skip=skip,
         limit=limit,
         resolve_speaker_segments=_resolve_speaker_segments,
+        usage_since=since,
+        usage_until=until,
     )
     return EvaluatorResultListResponse(items=items, total=total)
 

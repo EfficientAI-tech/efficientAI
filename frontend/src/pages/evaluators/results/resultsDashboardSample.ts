@@ -501,6 +501,8 @@ export type DashboardDrillCall = {
   provider: string
   uses?: Array<{ tool: string; provider: string; failed: boolean }>
   resultId?: string
+  usageModels?: string[]
+  usageByModel?: Record<string, { tokens: number; costUsd: number }>
 }
 
 export const SAMPLE_DRILL_CALLS: DashboardDrillCall[] = DAYS.flatMap((day, dayIndex) =>

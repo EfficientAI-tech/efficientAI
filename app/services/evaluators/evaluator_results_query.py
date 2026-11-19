@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from uuid import UUID
 
 from sqlalchemy.orm import Session, Query
-from sqlalchemy import String, and_, cast, or_
+from sqlalchemy import String, and_, cast, false, or_
 from sqlalchemy.dialects.postgresql import JSONB
 
 from app.models.database import EvaluatorResult, Evaluator, Agent, VoiceBundle, Scenario, Persona, CallRecording, CallRecordingSource
@@ -19,6 +19,12 @@ from app.models.schemas import (
     EvaluatorResponse,
 )
 from app.services.evaluators.evaluator_result_telephony import enrich_evaluator_result_live_telephony
+from app.services.evaluators.evaluator_result_tool_query import apply_tool_call_filters
+from app.services.evaluators.evaluator_result_usage_enrichment import (
+    enrich_call_data_for_usage_display,
+    evaluator_result_ids_with_usage_model,
+    usage_enrichment_caches_for_results,
+)
 from app.services.evaluators.evaluator_result_status import (
     EVALUATION_FATAL_SCORE_ERRORS,
     effective_evaluator_result_status,
@@ -121,18 +127,24 @@ def build_evaluator_results_query(
     test_agents_only: Optional[bool] = None,
     unassigned_only: Optional[bool] = None,
     metric_id: Optional[str] = None,
+    usage_model: Optional[str] = None,
+    tool_use: Optional[str] = None,
+    tool_product: Optional[str] = None,
+    tool_failures_only: Optional[bool] = None,
 ) -> Query:
     query = db.query(EvaluatorResult).filter(
         EvaluatorResult.organization_id == organization_id,
         EvaluatorResult.workspace_id == workspace_id,
     )
 
-    query = apply_playground_scope_filter(
-        query,
-        db,
-        playground=playground,
-        test_agents_only=test_agents_only,
-    )
+    tool_filter = bool((tool_use or "").strip() or (tool_product or "").strip() or tool_failures_only)
+    if not usage_model and not tool_filter:
+        query = apply_playground_scope_filter(
+            query,
+            db,
+            playground=playground,
+            test_agents_only=test_agents_only,
+        )
 
     if unassigned_only:
         query = query.outerjoin(
@@ -196,6 +208,33 @@ def build_evaluator_results_query(
                 cast(EvaluatorResult.metric_scores, JSONB).has_key(metric_key),
             )
 
+    if usage_model:
+        model_key = str(usage_model).strip()
+        if model_key:
+            result_ids = evaluator_result_ids_with_usage_model(
+                db,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                model=model_key,
+                since=since,
+                until=until,
+                playground=playground,
+            )
+            if result_ids:
+                # Ledger attribution already respects Simulations vs Live via usage rows;
+                # do not re-apply playground recording filter (judge spend often links
+                # playground-linked runs that still appear under Simulations usage).
+                query = query.filter(EvaluatorResult.id.in_(result_ids))
+            else:
+                query = query.filter(false())
+
+    query = apply_tool_call_filters(
+        query,
+        tool_use=tool_use,
+        tool_product=tool_product,
+        failures_only=bool(tool_failures_only),
+    )
+
     if status:
         normalized = status.strip().lower()
         completed_sql = or_(
@@ -235,11 +274,43 @@ def build_evaluator_results_query(
     return query
 
 
+def _call_data_for_list_row(
+    db: Session,
+    result: EvaluatorResult,
+    *,
+    recording_by_result_id: Optional[Dict[UUID, Any]],
+    usage_rollup_by_result_id: Optional[Dict[str, Tuple[int, int]]],
+    usage_rollup_by_model: Optional[Dict[str, Dict[str, Tuple[int, int]]]],
+    usage_rollup_by_role: Optional[Dict[str, Dict[str, Tuple[int, int]]]] = None,
+) -> Dict[str, Any]:
+    call_data = enrich_evaluator_result_live_telephony(db, result, result.call_data)
+    recording = (recording_by_result_id or {}).get(result.id)
+    rec_data = (
+        recording.call_data
+        if recording and isinstance(recording.call_data, dict)
+        else None
+    )
+    rollup = (usage_rollup_by_result_id or {}).get(str(result.id))
+    rollup_models = (usage_rollup_by_model or {}).get(str(result.id))
+    rollup_roles = (usage_rollup_by_role or {}).get(str(result.id))
+    return enrich_call_data_for_usage_display(
+        call_data if isinstance(call_data, dict) else None,
+        recording_call_data=rec_data,
+        rollup=rollup,
+        rollup_by_model=rollup_models,
+        rollup_by_role=rollup_roles,
+    )
+
+
 def serialize_evaluator_result_row(
     db: Session,
     result: EvaluatorResult,
     *,
     resolve_speaker_segments,
+    recording_by_result_id: Optional[Dict[UUID, Any]] = None,
+    usage_rollup_by_result_id: Optional[Dict[str, Tuple[int, int]]] = None,
+    usage_rollup_by_model: Optional[Dict[str, Dict[str, Tuple[int, int]]]] = None,
+    usage_rollup_by_role: Optional[Dict[str, Dict[str, Tuple[int, int]]]] = None,
 ) -> EvaluatorResultResponse:
     repair_evaluator_result_failed_status_if_needed(db, result)
     repair_evaluator_result_status_if_needed(db, result)
@@ -286,7 +357,14 @@ def serialize_evaluator_result_row(
         "call_event": result.call_event,
         "provider_call_id": result.provider_call_id,
         "provider_platform": result.provider_platform,
-        "call_data": enrich_evaluator_result_live_telephony(db, result, result.call_data),
+        "call_data": _call_data_for_list_row(
+            db,
+            result,
+            recording_by_result_id=recording_by_result_id,
+            usage_rollup_by_result_id=usage_rollup_by_result_id,
+            usage_rollup_by_model=usage_rollup_by_model,
+            usage_rollup_by_role=usage_rollup_by_role,
+        ),
         "synthetic_call_trace_id": result.synthetic_call_trace_id,
         "created_at": result.created_at,
         "updated_at": result.updated_at,
@@ -356,6 +434,8 @@ def list_evaluator_results_page(
     skip: int,
     limit: int,
     resolve_speaker_segments,
+    usage_since: Optional[datetime] = None,
+    usage_until: Optional[datetime] = None,
 ) -> Tuple[List[EvaluatorResultResponse], int]:
     total = query.count()
     results = (
@@ -364,8 +444,22 @@ def list_evaluator_results_page(
     from app.services.live_entity_storage import hydrate_evaluator_results
 
     hydrate_evaluator_results(results)
+    recordings, rollups, rollups_by_model, rollups_by_role = usage_enrichment_caches_for_results(
+        db,
+        results,
+        usage_since=usage_since.date() if usage_since else None,
+        usage_until=usage_until.date() if usage_until else None,
+    )
     items = [
-        serialize_evaluator_result_row(db, row, resolve_speaker_segments=resolve_speaker_segments)
+        serialize_evaluator_result_row(
+            db,
+            row,
+            resolve_speaker_segments=resolve_speaker_segments,
+            recording_by_result_id=recordings,
+            usage_rollup_by_result_id=rollups,
+            usage_rollup_by_model=rollups_by_model,
+            usage_rollup_by_role=rollups_by_role,
+        )
         for row in results
     ]
     return items, total

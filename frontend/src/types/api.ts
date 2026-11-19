@@ -146,6 +146,7 @@ export interface EvaluatorResultRow {
   status: EvaluatorResultStatus
   metric_scores: Record<string, EvaluatorResultMetricScore> | null
   error_message: string | null
+  provider_platform?: string | null
   call_data?: Record<string, unknown> | null
   agent?: { id: string; name: string; call_medium?: string | null } | null
   persona?: { id: string; name: string } | null
@@ -210,6 +211,10 @@ export interface ListEvaluatorResultsParams {
   playground?: boolean
   testAgentsOnly?: boolean
   metricId?: string
+  usageModel?: string
+  toolUse?: string
+  toolProduct?: string
+  toolFailuresOnly?: boolean
 }
 
 export interface APIKey {

@@ -25,6 +25,21 @@ def test_build_and_parse_context_roundtrip():
     assert "agent_id" in parsed
 
 
+def test_pre_prod_evaluator_result_id_is_kept_in_context():
+    result_id = uuid4()
+    ctx = build_bucket_context(
+        resource_id=uuid4(),
+        resource_type="evaluator",
+        extra={
+            "synthetic_testing": "pre_prod",
+            "evaluator_result_id": str(result_id),
+            "call_short_id": "should-not-appear",
+        },
+    )
+    assert ctx["evaluator_result_id"] == str(result_id)
+    assert "call_short_id" not in ctx
+
+
 def test_extra_rejects_metric_keys():
     ctx = build_bucket_context(
         resource_id=uuid4(),

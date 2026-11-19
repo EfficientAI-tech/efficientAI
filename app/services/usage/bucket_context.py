@@ -69,11 +69,16 @@ def build_bucket_context(
         ctx["resource_id"] = str(resource_id)
     if resource_type:
         ctx["resource_type"] = resource_type
+    pre_prod_result = extra and str(extra.get("synthetic_testing") or "") == "pre_prod"
     if extra:
         for key, value in extra.items():
             if value is None or key in ctx:
                 continue
-            if key in _FORBIDDEN_CONTEXT_KEYS or key in _HIGH_CARDINALITY_EXTRA_KEYS:
+            if key in _FORBIDDEN_CONTEXT_KEYS:
+                continue
+            if key in _HIGH_CARDINALITY_EXTRA_KEYS:
+                if key == "evaluator_result_id" and pre_prod_result and value:
+                    ctx[key] = str(value)
                 continue
             ctx[key] = str(value)
     return ctx

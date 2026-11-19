@@ -17,6 +17,7 @@ import type {
   EvaluatorResultsDashboardOpsResponse,
 } from '../../../types/api'
 import type { DashboardDrillCall } from './resultsDashboardSample'
+import { usageFromEvaluatorCallData } from './evaluatorDrillUsage'
 import {
   LAYER_LLM,
   MERGED_TOOLS_VIEWS,
@@ -66,6 +67,11 @@ export function PaginatedRunsTable({
   inrRate = 95,
   displayCurrency,
   rich = false,
+  usageModel,
+  usageRole,
+  toolUse,
+  toolProduct,
+  toolFailuresOnly,
 }: {
   base: RunListBase
   filterAgentId?: string
@@ -79,6 +85,13 @@ export function PaginatedRunsTable({
   inrRate?: number
   displayCurrency?: UsageDisplayCurrency
   rich?: boolean
+  /** When set, paginate runs that consumed this model and show that model's tokens/cost. */
+  usageModel?: string
+  /** When set, show tokens/cost for this usage role (agent | simulator | judge). */
+  usageRole?: string
+  toolUse?: string
+  toolProduct?: string
+  toolFailuresOnly?: boolean
 }) {
   const currency = displayCurrency ?? readUsageDisplayCurrency()
   const [page, setPage] = useState(0)
@@ -92,9 +105,14 @@ export function PaginatedRunsTable({
         until: base.until,
         playground: base.playground,
         metricId: metricId || undefined,
+        usageModel: usageModel || undefined,
+        usageRole: usageRole || undefined,
+        toolUse: toolUse || undefined,
+        toolProduct: toolProduct || undefined,
+        toolFailuresOnly: toolFailuresOnly || undefined,
         sampleOn: base.sampleOn,
       }),
-    [base, filterAgentId, filterScenarioId, metricId],
+    [base, filterAgentId, filterScenarioId, metricId, usageModel, usageRole, toolUse, toolProduct, toolFailuresOnly],
   )
   const listParams = useMemo(
     () => ({
@@ -105,13 +123,17 @@ export function PaginatedRunsTable({
       until: base.until,
       playground: base.playground,
       metricId: metricId || undefined,
+      usageModel: usageModel || undefined,
+      toolUse: toolUse || undefined,
+      toolProduct: toolProduct || undefined,
+      toolFailuresOnly: toolFailuresOnly || undefined,
       skip: page * PAGE_SIZE,
       limit: PAGE_SIZE,
     }),
-    [runScopeKey, page, base, filterAgentId, filterScenarioId, metricId],
+    [runScopeKey, page, base, filterAgentId, filterScenarioId, metricId, usageModel, usageRole, toolUse, toolProduct, toolFailuresOnly],
   )
   const { data, isLoading } = useQuery({
-    queryKey: ['evaluator-results-drill-runs', listParams, metricId],
+    queryKey: ['evaluator-results-drill-runs', listParams, metricId, usageModel, usageRole],
     queryFn: () => apiClient.listEvaluatorResults(listParams as ListEvaluatorResultsParams),
     enabled: !base.sampleOn,
     staleTime: 60_000,
@@ -125,7 +147,7 @@ export function PaginatedRunsTable({
   }, [base.sampleRows, filterAgentId, filterScenarioId, metricId])
   const items = base.sampleOn ? sampleFiltered.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE) : itemsOf<EvaluatorResultRow>(data)
   const total = base.sampleOn ? sampleFiltered.length : data?.total ?? 0
-  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const pages = total ? Math.max(1, Math.ceil(total / PAGE_SIZE)) : 0
   const callLookup = useMemo(() => {
     const map = new Map<string, DashboardDrillCall>()
     for (const call of callsByResultId ?? []) {
@@ -183,6 +205,24 @@ export function PaginatedRunsTable({
             <tbody className="divide-y divide-gray-100">
               {items.map((row) => {
                 const call = callLookup.get(row.result_id || row.id)
+                const inlineUsage = usageFromEvaluatorCallData(
+                  row.call_data,
+                  row.provider_platform,
+                  usageModel,
+                  usageRole,
+                )
+                const prefetchSlice = usageModel
+                  ? call?.usageByModel?.[usageModel]
+                  ?? Object.entries(call?.usageByModel ?? {}).find(
+                    ([name]) => name.trim().toLowerCase() === usageModel.trim().toLowerCase(),
+                  )?.[1]
+                  : undefined
+                const tokens = usageModel
+                  ? (prefetchSlice?.tokens ?? inlineUsage.tokens)
+                  : (call?.tokens ?? inlineUsage.tokens)
+                const costUsd = usageModel
+                  ? (prefetchSlice?.costUsd ?? inlineUsage.costUsd)
+                  : (call?.costUsd ?? inlineUsage.costUsd)
                 return (
                   <tr key={row.id} className="group">
                     <td className="py-2.5 pr-3 text-xs text-gray-500">{formatCallTime(row.timestamp)}</td>
@@ -200,10 +240,10 @@ export function PaginatedRunsTable({
                       {formatDuration(call?.durationSeconds ?? row.duration_seconds ?? null)}
                     </td>
                     <td className="py-2.5 pr-3 text-right tabular-nums text-gray-600">
-                      {call?.tokens ? call.tokens.toLocaleString() : '—'}
+                      {tokens ? tokens.toLocaleString() : '—'}
                     </td>
                     <td className="py-2.5 pr-3 text-right text-xs tabular-nums text-gray-600">
-                      {call?.costUsd ? formatCostCell(call.costUsd, currency, inrRate) : '—'}
+                      {costUsd ? formatCostCell(costUsd, currency, inrRate) : '—'}
                     </td>
                     <td className="py-2.5 text-right text-xs capitalize text-gray-500">{row.status}</td>
                   </tr>
@@ -211,7 +251,13 @@ export function PaginatedRunsTable({
               })}
             </tbody>
           </table>
-          {!items.length && <p className="py-4 text-sm text-gray-400">No runs in this slice.</p>}
+          {!items.length && (
+            <p className="py-4 text-sm text-gray-400">
+              {usageModel
+                ? 'No runs attributed to this model in the current filter. Ledger spend may be judge/simulator usage matched by evaluator, agent, and run day.'
+                : 'No runs in this slice.'}
+            </p>
+          )}
         </div>
       ) : (
         <ul className="mt-3 divide-y divide-gray-100">
@@ -261,8 +307,15 @@ export function PaginatedCallRunsTable({
     [calls],
   )
   const total = sorted.length
-  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const pages = total ? Math.max(1, Math.ceil(total / PAGE_SIZE)) : 0
   const pageCalls = sorted.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE)
+  const callsScopeKey = useMemo(
+    () => `${calls.length}:${calls[0]?.resultId ?? ''}:${calls[calls.length - 1]?.resultId ?? ''}`,
+    [calls],
+  )
+  useEffect(() => {
+    setPage(0)
+  }, [callsScopeKey])
 
   return (
     <section className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
@@ -350,21 +403,30 @@ function UsageModelDrillLeaf({
   onBack: () => void
   onOpenResult: (resultId: string) => void
 }) {
-  const [page, setPage] = useState(0)
   const layer = ops?.model_layers.find((row) => row.model === model)
   const modelDays = (ops?.cost_by_model_day ?? []).filter((row) => row.model === model)
   const modelSpendUsd = modelDays.reduce((sum, row) => sum + row.cost_usd, 0)
-  const matchedCalls = useMemo(
-    () => calls
-      .filter((call) => call.model === model)
-      .slice()
-      .sort((a, b) => b.tokens - a.tokens || b.costUsd - a.costUsd),
-    [calls, model],
+  const runCountParams = useMemo(
+    () => ({
+      agentId: runListBase.agentId || undefined,
+      suiteId: runListBase.suiteId || undefined,
+      scenarioId: runListBase.scenarioId || undefined,
+      since: runListBase.since,
+      until: runListBase.until,
+      playground: runListBase.playground,
+      usageModel: model,
+      skip: 0,
+      limit: 1,
+    }),
+    [runListBase, model],
   )
-  const totalTokens = matchedCalls.reduce((sum, call) => sum + call.tokens, 0)
+  const { data: runCountData } = useQuery({
+    queryKey: ['evaluator-results-drill-runs-count', runCountParams],
+    queryFn: () => apiClient.listEvaluatorResults(runCountParams as ListEvaluatorResultsParams),
+    staleTime: 60_000,
+  })
+  const attributedRunCount = runCountData?.total ?? 0
   const spendHeadline = formatUsageCostUsd(modelSpendUsd, displayCurrency, inrRate)
-  const pages = Math.max(1, Math.ceil(matchedCalls.length / PAGE_SIZE))
-  const pageCalls = matchedCalls.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE)
   const unit =
     layer?.usd_per_minute != null
       ? `$${layer.usd_per_minute}/min`
@@ -386,25 +448,22 @@ function UsageModelDrillLeaf({
           {unit ? ` · ${unit}` : ''}
           {' · '}Pre-prod runs in the current filter
         </p>
-        <dl className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+        <dl className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
           <div>
             <dt className="text-xs text-gray-400">Spend in window</dt>
             <dd className="font-semibold tabular-nums text-gray-900" title={formatUsageCostExactUsd(modelSpendUsd, displayCurrency, inrRate)}>
               {spendHeadline}
             </dd>
+            <p className="mt-0.5 text-[11px] text-gray-400">Ledger total for this model (may differ from per-run split)</p>
           </div>
           <div>
-            <dt className="text-xs text-gray-400">Runs</dt>
-            <dd className="font-semibold text-gray-900">{matchedCalls.length || '—'}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-gray-400">Tokens (sample)</dt>
-            <dd className="font-semibold tabular-nums text-gray-900">
-              {totalTokens ? totalTokens.toLocaleString() : '—'}
+            <dt className="text-xs text-gray-400">Attributed runs</dt>
+            <dd className="font-semibold text-gray-900">
+              {attributedRunCount.toLocaleString()}
             </dd>
           </div>
           <div>
-            <dt className="text-xs text-gray-400">Layer</dt>
+            <dt className="text-xs text-gray-400">Model layer</dt>
             <dd className="font-semibold text-gray-900">{layer?.usage_kind?.toUpperCase() ?? '—'}</dd>
           </div>
         </dl>
@@ -423,83 +482,10 @@ function UsageModelDrillLeaf({
           displayCurrency={displayCurrency}
         />
       )}
-      <section className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h3 className="text-sm font-semibold text-gray-900">Calls using this model</h3>
-          {matchedCalls.length > PAGE_SIZE && (
-            <div className="flex items-center gap-2 text-xs text-gray-500">
-              <button
-                type="button"
-                disabled={page <= 0}
-                onClick={() => setPage((p) => Math.max(0, p - 1))}
-                className="rounded border border-gray-200 p-1 disabled:opacity-30"
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </button>
-              <span>
-                {page + 1} / {pages}
-              </span>
-              <button
-                type="button"
-                disabled={page >= pages - 1}
-                onClick={() => setPage((p) => Math.min(pages - 1, p + 1))}
-                className="rounded border border-gray-200 p-1 disabled:opacity-30"
-              >
-                <ChevronRight className="h-4 w-4" />
-              </button>
-            </div>
-          )}
-        </div>
-        {matchedCalls.length === 0 ? (
-          <p className="text-sm text-gray-400">
-            No per-run model breakdown in this filter. Open a run below for full usage on the detail page.
-          </p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[36rem] text-left text-sm">
-              <thead className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
-                <tr>
-                  <th className="pb-2 pr-3 font-semibold">When</th>
-                  <th className="pb-2 pr-3 font-semibold">Run</th>
-                  <th className="pb-2 pr-3 font-semibold">Agent</th>
-                  <th className="pb-2 pr-3 text-right font-semibold">Duration</th>
-                  <th className="pb-2 pr-3 text-right font-semibold">Tokens</th>
-                  <th className="pb-2 text-right font-semibold">Cost</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {pageCalls.map((call) => (
-                  <tr key={`${call.at}-${call.title}`} className="group">
-                    <td className="py-2.5 pr-3 text-xs text-gray-500">{formatCallTime(call.at)}</td>
-                    <td className="py-2.5 pr-3">
-                      <button
-                        type="button"
-                        onClick={() => call.resultId && onOpenResult(call.resultId)}
-                        className="max-w-[14rem] truncate text-left font-medium text-gray-900 group-hover:text-primary-800"
-                      >
-                        {call.title}
-                      </button>
-                    </td>
-                    <td className="py-2.5 pr-3 text-gray-700">{call.agent}</td>
-                    <td className="py-2.5 pr-3 text-right tabular-nums text-gray-600">
-                      {formatDuration(call.durationSeconds)}
-                    </td>
-                    <td className="py-2.5 pr-3 text-right tabular-nums text-gray-600">
-                      {call.tokens ? call.tokens.toLocaleString() : '—'}
-                    </td>
-                    <td className="py-2.5 text-right text-xs tabular-nums text-gray-600">
-                      {call.costUsd ? formatCostCell(call.costUsd, displayCurrency, inrRate) : '—'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
       <PaginatedRunsTable
         base={runListBase}
-        title="All runs in filter"
+        title="Runs using this model"
+        usageModel={model}
         onOpenResult={onOpenResult}
         callsByResultId={calls}
         inrRate={inrRate}
@@ -613,9 +599,19 @@ export function UsageWidgetDetail({
           const usesDayAxis = chart.data[0] != null && 'day' in chart.data[0]
           const priceView = activeId === 'price_minute' || activeId === 'price_million'
           if (usesDayAxis || priceView) return
-          if ((ops?.model_layers ?? []).some((layer) => layer.model === name)) {
-            setFocusModel(name)
+          const layers = ops?.model_layers ?? []
+          const exact = layers.find((layer) => layer.model === name)
+          if (exact) {
+            setFocusModel(exact.model)
+            return
           }
+          const needle = name.replace(/-+$/, '').trim().toLowerCase()
+          const fuzzy = layers.find(
+            (layer) =>
+              layer.model.toLowerCase() === needle
+              || layer.model.toLowerCase().startsWith(needle),
+          )
+          if (fuzzy) setFocusModel(fuzzy.model)
         }}
       />
     </div>
@@ -656,7 +652,8 @@ function DrillFocusBar({
 
 export function ToolsMergedDetail({
   ops,
-  calls,
+  calls: _calls,
+  runListBase,
   dateRange,
   allTime,
   onBack,
@@ -686,18 +683,6 @@ export function ToolsMergedDetail({
   const totalErrors = totalToolErrors(ops)
 
   if (leaf) {
-    const filtered = calls.filter((call) => {
-      if (agentFocusResolved && call.agentId !== agentFocusResolved) return false
-      const matchesLeaf =
-        leaf.kind === 'product'
-          ? callUses(call).some((use) => use.provider === leaf.name)
-          : callUses(call).some((use) => use.tool === leaf.name)
-      if (!matchesLeaf) return false
-      if (insightMode === 'errors') {
-        return callUses(call).some((use) => use.tool === leaf.name && use.failed)
-      }
-      return true
-    })
     return (
       <div className="space-y-4">
         <button type="button" onClick={() => setLeaf(null)} className="inline-flex items-center gap-1 text-sm font-medium text-gray-600 hover:text-gray-900">
@@ -705,20 +690,16 @@ export function ToolsMergedDetail({
           Back
         </button>
         <h2 className="text-lg font-semibold text-gray-900">{leaf.name}</h2>
-        <PaginatedCallRunsTable
-          calls={filtered}
-          title={insightMode === 'errors' ? 'Runs with tool failures' : 'Calls'}
+        <PaginatedRunsTable
+          base={runListBase}
+          filterAgentId={agentFocusResolved ?? undefined}
+          toolUse={leaf.kind === 'use_case' ? leaf.name : undefined}
+          toolProduct={leaf.kind === 'product' ? leaf.name : undefined}
+          toolFailuresOnly={insightMode === 'errors'}
+          title={insightMode === 'errors' ? 'Runs with tool failures' : 'Calls using this tool'}
           onOpenResult={onOpenResult}
+          rich={false}
         />
-        {filtered.length > 8 && (
-          <ul className="divide-y divide-gray-100 rounded-xl border border-gray-200 bg-white p-4 text-sm">
-            {filtered.slice(0, 8).map((call) => (
-              <li key={call.at} className="py-2">
-                {call.title} · {call.agent}
-              </li>
-            ))}
-          </ul>
-        )}
       </div>
     )
   }
@@ -855,6 +836,7 @@ export function MetricUsageDrill({
   metrics,
   catalog,
   scoreDays,
+  scenarioRows,
   dateRange,
   allTime,
   results,
@@ -870,6 +852,13 @@ export function MetricUsageDrill({
   metrics: CallImportMetricAggregate[]
   catalog: MetricRow[]
   scoreDays: DashboardOpsScoreDay[] | undefined
+  scenarioRows: Array<{
+    name: string
+    count: number
+    failed: number
+    scenarioId: string
+    agentId: string
+  }>
   dateRange: { start: string; end: string } | null
   allTime?: boolean
   results: EvaluatorResultRow[]
@@ -905,6 +894,35 @@ export function MetricUsageDrill({
 
   const scenarios = useMemo(() => {
     if (!agentId || !metricId) return []
+    const scoreStats = new Map<string, { sum: number; scored: number }>()
+    for (const row of results) {
+      if (row.agent_id !== agentId) continue
+      const name = row.scenario?.name
+      if (!name) continue
+      const score = row.metric_scores?.[metricId]
+      const value = typeof score?.value === 'number' ? score.value : Number(score?.value)
+      if (!Number.isNaN(value) && score) {
+        const bucket = scoreStats.get(name) ?? { sum: 0, scored: 0 }
+        bucket.sum += value
+        bucket.scored += 1
+        scoreStats.set(name, bucket)
+      }
+    }
+    const opsForAgent = scenarioRows.filter((row) => row.agentId === agentId)
+    if (opsForAgent.length > 0) {
+      return opsForAgent
+        .map((row) => {
+          const scored = scoreStats.get(row.name)
+          return {
+            name: row.name,
+            scenarioId: row.scenarioId,
+            count: row.count,
+            failed: row.failed,
+            avg: scored?.scored ? scored.sum / scored.scored : null,
+          }
+        })
+        .sort((a, b) => b.count - a.count)
+    }
     const groups = new Map<string, { count: number; sum: number; scored: number; failed: number }>()
     for (const row of results) {
       if (row.agent_id !== agentId) continue
@@ -924,13 +942,13 @@ export function MetricUsageDrill({
     return Array.from(groups.entries())
       .map(([name, stats]) => ({
         name,
-        scenarioId: results.find((row) => row.scenario?.name === name)?.scenario?.id,
+        scenarioId: results.find((r) => r.scenario?.name === name)?.scenario?.id,
         count: stats.count,
         failed: stats.failed,
         avg: stats.scored ? stats.sum / stats.scored : null,
       }))
       .sort((a, b) => b.count - a.count)
-  }, [results, agentId, metricId])
+  }, [results, agentId, metricId, scenarioRows])
 
   if (!agentId) {
     return (
@@ -1078,25 +1096,6 @@ export function MetricUsageDrill({
   )
 }
 
-function callDaysForAgent(
-  results: EvaluatorResultRow[],
-  agentId: string,
-): Array<{ day: string; calls: number }> {
-  const byDay = new Map<string, number>()
-  for (const row of results) {
-    const id = row.agent_id ?? row.agent?.id
-    if (id !== agentId) continue
-    const key = resultLocalDayKey(row.timestamp)
-    byDay.set(key, (byDay.get(key) ?? 0) + 1)
-  }
-  return Array.from(byDay.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([sortKey, calls]) => ({
-      day: formatChartDayLabel(sortKey, false),
-      calls,
-    }))
-}
-
 export function TotalCallsDrill({
   agentRows,
   callDays,
@@ -1124,7 +1123,7 @@ export function TotalCallsDrill({
 }) {
   const windowLabel = formatDashboardWindowLabel(dateRange, allTime)
   const agent = agentRows.find((row) => row.id === agentId)
-  const agentCallDays = agentId ? callDaysForAgent(results, agentId) : callDays
+  const agentCallDays = agentId ? callDays : callDays
 
   if (!agentId) {
     return (

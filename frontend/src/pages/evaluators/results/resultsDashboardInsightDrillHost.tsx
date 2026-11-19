@@ -37,6 +37,13 @@ export type InsightDrillHostProps = InsightDrillBaseProps & {
   allTime?: boolean
   results: EvaluatorResultRow[]
   agentRows: Array<{ id: string; name: string; total: number }>
+  scenarioRows: Array<{
+    name: string
+    count: number
+    failed: number
+    scenarioId: string
+    agentId: string
+  }>
   callDays: Array<{ day: string; calls: number }>
   aggregateTotal: number
   onMetricNavigate: (next: { agentId?: string; metricId?: string; scenarioId?: string }) => void
@@ -58,6 +65,7 @@ export function InsightDrillHost({
   allTime,
   results,
   agentRows,
+  scenarioRows,
   callDays,
   aggregateTotal,
   onMetricNavigate,
@@ -100,6 +108,7 @@ export function InsightDrillHost({
           metrics={metrics}
           catalog={catalog}
           scoreDays={scoreDays}
+          scenarioRows={scenarioRows}
           dateRange={dateRange}
           allTime={allTime}
           results={results}
@@ -147,6 +156,7 @@ export function InsightDrillHost({
     allTime,
     results,
     agentRows,
+    scenarioRows,
     callDays,
     aggregateTotal,
     onMetricNavigate,

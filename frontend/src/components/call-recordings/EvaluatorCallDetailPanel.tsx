@@ -471,23 +471,18 @@ export default function EvaluatorCallDetailPanel({
     personaTtsLine: callScope.personaTtsLine,
   }
 
+  const detailTitle = chatEval ? 'Chat transcript' : 'Call details'
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-gray-50">
-      <div className="shrink-0 border-b border-gray-200 bg-white px-5 py-4">
-        {fullDetailHref ? (
-          <Link
-            to={fullDetailHref}
-            className="mb-2 inline-block text-sm font-medium text-primary-600 hover:text-primary-800"
-          >
-            Open full evaluation detail →
-          </Link>
-        ) : null}
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="text-lg font-semibold text-gray-900">
-              {chatEval ? 'Chat transcript' : 'Call details'}
-            </h2>
-            <p className="mt-0.5 text-xs text-gray-500">
+      <div className="shrink-0 border-b border-gray-200 bg-white px-5 py-2.5">
+        <div className="flex items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <h2 className="shrink-0 text-sm font-semibold text-gray-900">{detailTitle}</h2>
+            <span className="hidden text-gray-300 sm:inline" aria-hidden>
+              ·
+            </span>
+            <p className="min-w-0 text-xs text-gray-500">
               Result{' '}
               <span className="font-mono font-medium text-primary-600">
                 {result?.result_id ?? evaluatorResultId}
@@ -500,21 +495,29 @@ export default function EvaluatorCallDetailPanel({
               ) : null}
             </p>
             {showProviderTab && providerRecording ? (
-              <div className="mt-3">
-                <ProviderSummaryChips recording={providerRecording} />
-              </div>
+              <ProviderSummaryChips recording={providerRecording} />
             ) : null}
           </div>
-          {onClose ? (
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Close"
-              className="rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-800"
-            >
-              <X className="h-5 w-5" />
-            </button>
-          ) : null}
+          <div className="flex shrink-0 items-center gap-1">
+            {fullDetailHref ? (
+              <Link
+                to={fullDetailHref}
+                className="whitespace-nowrap rounded-md px-2 py-1 text-xs font-medium text-primary-600 hover:bg-primary-50 hover:text-primary-800"
+              >
+                Full detail →
+              </Link>
+            ) : null}
+            {onClose ? (
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label="Close"
+                className="rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            ) : null}
+          </div>
         </div>
       </div>
 
