@@ -549,7 +549,7 @@ export function toolFacts(ops: EvaluatorResultsDashboardOpsResponse | undefined)
 
 export type ToolInsightMode = 'calls' | 'errors'
 
-function resolveToolAgentFocusId(
+export function resolveToolAgentFocusId(
   ops: EvaluatorResultsDashboardOpsResponse | undefined,
   focus: string | null,
 ): string | null {

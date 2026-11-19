@@ -24,6 +24,7 @@ import {
   formatDuration,
   scoreTrendForWindow,
   mergedToolsDetail,
+  resolveToolAgentFocusId,
   totalToolErrors,
   toolFacts,
   type ToolInsightMode,
@@ -671,19 +672,33 @@ export function ToolsMergedDetail({
   const [viewId, setViewId] = useState<(typeof MERGED_TOOLS_VIEWS)[number]['id']>('over_time')
   const [insightMode, setInsightMode] = useState<ToolInsightMode>('calls')
   const [focus, setFocus] = useState<string | null>(null)
+  /** Failures → By agent keeps agent selection separate from tool-bar clicks. */
+  const [agentFocus, setAgentFocus] = useState<string | null>(null)
   const [leaf, setLeaf] = useState<{ kind: 'use_case' | 'product'; name: string } | null>(null)
-  const chart = mergedToolsDetail(ops, viewId, focus, insightMode)
+  const chartFocus = viewId === 'by_agent' && insightMode === 'errors' ? agentFocus : focus
+  const chart = mergedToolsDetail(ops, viewId, chartFocus, insightMode)
+  const agentFocusResolved =
+    viewId === 'by_agent' && insightMode === 'errors' && agentFocus
+      ? resolveToolAgentFocusId(ops, agentFocus)
+      : null
   const products = toolFacts(ops)
   const totalErrors = totalToolErrors(ops)
 
   if (leaf) {
+    const focusedAgentName =
+      agentFocusResolved
+        ? ops?.tool_calls_by_agent_day.find((row) => row.agent_id === agentFocusResolved)?.agent_name
+        : null
     const filtered = calls.filter((call) => {
+      if (focusedAgentName && call.agent !== focusedAgentName) return false
       const matchesLeaf =
         leaf.kind === 'product'
           ? callUses(call).some((use) => use.provider === leaf.name)
           : callUses(call).some((use) => use.tool === leaf.name)
       if (!matchesLeaf) return false
-      if (insightMode === 'errors') return callUses(call).some((use) => use.failed)
+      if (insightMode === 'errors') {
+        return callUses(call).some((use) => use.tool === leaf.name && use.failed)
+      }
       return true
     })
     return (
@@ -739,6 +754,7 @@ export function ToolsMergedDetail({
                 onClick={() => {
                   setInsightMode(mode)
                   setFocus(null)
+                  setAgentFocus(null)
                   setLeaf(null)
                 }}
                 className={`rounded-md border px-2.5 py-1 text-xs font-medium ${insightMode === mode
@@ -757,6 +773,7 @@ export function ToolsMergedDetail({
               onClick={() => {
                 setViewId(view.id)
                 setFocus(null)
+                setAgentFocus(null)
               }}
               className={`rounded-md border px-2.5 py-1 text-xs font-medium ${viewId === view.id ? 'border-primary-200 bg-primary-50 text-primary-800' : 'border-transparent text-gray-600'}`}
             >
@@ -765,29 +782,43 @@ export function ToolsMergedDetail({
           ))}
         </div>
       </div>
-      {focus && (
+      {(focus || agentFocus) && (
         <div className="space-y-2">
           <button
             type="button"
-            onClick={() => setFocus(null)}
+            onClick={() => {
+              setFocus(null)
+              setAgentFocus(null)
+            }}
             className="inline-flex items-center gap-1 text-sm font-medium text-gray-600 hover:text-gray-900"
           >
             <ArrowLeft className="h-4 w-4" />
             {viewId === 'by_agent' || viewId === 'per_call' ? 'All agents' : 'Show full chart'}
           </button>
-          <DrillFocusBar label={focus} onClear={() => setFocus(null)} />
+          {agentFocus ? (
+            <DrillFocusBar label={agentFocus} onClear={() => setAgentFocus(null)} />
+          ) : focus ? (
+            <DrillFocusBar label={focus} onClear={() => setFocus(null)} />
+          ) : null}
         </div>
       )}
       <DrillChartPanel
         model={
-          focus
+          agentFocus
             ? {
               ...chart,
               caption: chart.caption
-                ? `${chart.caption} · filtered to ${focus}`
-                : `Filtered to ${focus}`,
+                ? `${chart.caption} · ${agentFocus}`
+                : `Filtered to ${agentFocus}`,
             }
-            : chart
+            : focus
+              ? {
+                ...chart,
+                caption: chart.caption
+                  ? `${chart.caption} · filtered to ${focus}`
+                  : `Filtered to ${focus}`,
+              }
+              : chart
         }
         display={
           viewId === 'over_time' || (chart.data[0] && 'day' in chart.data[0])
@@ -801,11 +832,13 @@ export function ToolsMergedDetail({
             setLeaf({ kind: 'use_case', name })
           } else if (viewId === 'share') {
             setLeaf({ kind: 'product', name })
-          } else if (
-            viewId === 'by_agent'
-            || (viewId === 'per_call' && insightMode === 'calls')
-          ) {
-            if (insightMode === 'errors' && viewId !== 'by_agent') return
+          } else if (viewId === 'by_agent' && insightMode === 'errors') {
+            if (agentFocusResolved) {
+              setLeaf({ kind: 'use_case', name })
+              return
+            }
+            setAgentFocus((prev) => (prev === name ? null : name))
+          } else if (viewId === 'by_agent' || (viewId === 'per_call' && insightMode === 'calls')) {
             setFocus((prev) => (prev === name ? null : name))
           }
         }}
