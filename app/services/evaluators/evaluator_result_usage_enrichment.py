@@ -507,15 +507,18 @@ def batch_llm_usage_rollups_for_results(
             continue
         share = _share_key_from_row(row)
         if share is not None:
-            agent_id, scenario_id, _model, usage_day = share
+            agent_id, scenario_id, _model, usage_day, share_evaluator_id = share
             if usage_day in page_days and agent_id in page_agent_ids:
-                if scenario_id is None or any(
+                needs_row_match = scenario_id is not None or share_evaluator_id is not None
+                row_match = any(
                     r.agent_id == agent_id
-                    and r.scenario_id == scenario_id
+                    and (share_evaluator_id is None or r.evaluator_id == share_evaluator_id)
+                    and (scenario_id is None or r.scenario_id == scenario_id)
                     and r.timestamp is not None
                     and r.timestamp.date() == usage_day
                     for r in rows
-                ):
+                )
+                if not needs_row_match or row_match:
                     usage_rows.append(row)
                     page_share_keys.add(share)
             continue
