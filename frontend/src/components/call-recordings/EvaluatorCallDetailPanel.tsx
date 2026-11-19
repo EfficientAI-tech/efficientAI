@@ -11,7 +11,11 @@ import {
   ListTree,
   BarChart3,
   Layers,
+  LayoutList,
 } from 'lucide-react'
+import PerCallMetricsPanel from './PerCallMetricsPanel'
+import { buildEvaluatorPerCallMetricsView } from './evaluatorPerCallMetrics'
+import { buildChildMetricIds } from '../../pages/metrics/utils/metricScoreFilters'
 import { isVoiceAiProviderPlatform } from '../../lib/callDetailRouting'
 import VoiceAiCallDetailPanel, {
   ProviderSummaryChips,
@@ -37,10 +41,22 @@ import {
   type EvaluatorCallScope,
 } from './callDetailScope'
 import { isChatEvalResult, isTranscriptOnlyEvalResult } from '../../lib/agentMedium'
+import {
+  isEvaluatorResultInProgress,
+  type EvaluatorResultStatus,
+} from '../../pages/evaluators/results/evaluatorResultStatus'
+
+function shouldPollEvaluatorResult(status: string | undefined): boolean {
+  if (!status) return false
+  const normalized = status.toLowerCase()
+  if (isEvaluatorResultInProgress(normalized as EvaluatorResultStatus)) return true
+  return normalized === 'call_started' || normalized === 'in_progress'
+}
 
 type DrawerTab =
   | 'transcript'
   | 'analysis'
+  | 'per_call_metrics'
   | 'cost'
   | 'latency'
   | 'logs'
@@ -142,10 +158,13 @@ function segmentsFromTraceTurns(turns: Array<Record<string, unknown>>): SpeakerS
 export default function EvaluatorCallDetailPanel({
   evaluatorResultId,
   onClose,
+  chartDrilldown = false,
   fullDetailHref,
 }: {
   evaluatorResultId: string
   onClose?: () => void
+  /** Chart hub drill-down only: Run metrics tab (global + evaluation scores). */
+  chartDrilldown?: boolean
   fullDetailHref?: string
 }) {
   const [tab, setTab] = useState<DrawerTab>('transcript')
@@ -158,7 +177,31 @@ export default function EvaluatorCallDetailPanel({
     enabled: Boolean(evaluatorResultId),
     placeholderData: () => getEvaluatorResultPlaceholder(queryClient, evaluatorResultId),
     staleTime: 30_000,
+    refetchInterval: (query) => {
+      const data = query.state.data as { status?: string } | undefined
+      return shouldPollEvaluatorResult(data?.status) ? 2000 : false
+    },
   })
+
+  const { data: metricCatalog = [] } = useQuery({
+    queryKey: ['metrics'],
+    queryFn: () => apiClient.listMetrics(),
+    enabled: chartDrilldown,
+    staleTime: 60_000,
+  })
+
+  const childMetricIds = useMemo(
+    () =>
+      buildChildMetricIds(
+        metricCatalog as Array<{ id?: string; parent_metric_id?: string | null; children?: unknown[] }>,
+      ),
+    [metricCatalog],
+  )
+
+  const perCallMetricsView = useMemo(() => {
+    if (!chartDrilldown || !result) return null
+    return buildEvaluatorPerCallMetricsView(result, childMetricIds)
+  }, [chartDrilldown, result, childMetricIds])
 
   const persistedSegments = (result?.speaker_segments ?? []) as SpeakerSegment[]
   const hasPersistedTranscript = Boolean(
@@ -232,10 +275,13 @@ export default function EvaluatorCallDetailPanel({
 
   const visibleTabs = useMemo(() => {
     const tabs = [...BASE_TABS]
+    if (chartDrilldown && perCallMetricsView) {
+      tabs.push({ id: 'per_call_metrics' as DrawerTab, label: 'Run metrics', icon: LayoutList })
+    }
     if (showProviderTab) tabs.push(...PROVIDER_METRIC_TABS)
     if (hasPipelineTrace) tabs.push(...PIPELINE_SUB_TABS)
     return tabs
-  }, [hasPipelineTrace, showProviderTab])
+  }, [chartDrilldown, hasPipelineTrace, perCallMetricsView, showProviderTab])
 
   useEffect(() => {
     if (PIPELINE_TAB_IDS.includes(tab as SyntheticTraceDetailTab) && !hasPipelineTrace) {
@@ -497,8 +543,8 @@ export default function EvaluatorCallDetailPanel({
                 type="button"
                 onClick={() => setTab(id)}
                 className={`inline-flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-2 text-sm font-medium transition-colors ${tab === id
-                    ? 'border-primary-500 text-primary-800'
-                    : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
+                  ? 'border-primary-500 text-primary-800'
+                  : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
                   }`}
               >
                 <Icon className="h-4 w-4" />
@@ -512,6 +558,10 @@ export default function EvaluatorCallDetailPanel({
           {tab !== 'cost' && tab !== 'latency' && tab !== 'logs' ? (
             <CallDetailScopeTags tags={tabScope.tags} hint={tabScope.hint} />
           ) : null}
+          {tab === 'per_call_metrics' && perCallMetricsView ? (
+            <PerCallMetricsPanel view={perCallMetricsView} />
+          ) : null}
+
           {tab === 'transcript' ? (
             transcriptLoading ? (
               <div className="space-y-3">

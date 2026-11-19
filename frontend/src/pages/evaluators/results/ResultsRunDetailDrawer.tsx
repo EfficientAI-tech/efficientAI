@@ -23,6 +23,7 @@ export default function ResultsRunDetailDrawer({
       open={Boolean(resultId)}
       evaluatorResultId={resultId}
       onClose={onClose}
+      chartDrilldown
       fullDetailHref={fullDetailHref}
     />
   )

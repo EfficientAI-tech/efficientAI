@@ -18,6 +18,7 @@ export default function TraceDetailDrawer({
   evaluatorResultId = null,
   callShortId = null,
   observabilityCallShortId = null,
+  chartDrilldown = false,
   fullDetailHref,
 }: {
   open: boolean
@@ -26,6 +27,7 @@ export default function TraceDetailDrawer({
   evaluatorResultId?: string | null
   callShortId?: string | null
   observabilityCallShortId?: string | null
+  chartDrilldown?: boolean
   /** When set (e.g. Results hub), show a link to the full evaluation result page. */
   fullDetailHref?: string
 }) {
@@ -108,6 +110,7 @@ export default function TraceDetailDrawer({
               <EvaluatorCallDetailPanel
                 evaluatorResultId={evaluatorResultId}
                 onClose={onClose}
+                chartDrilldown={chartDrilldown}
                 fullDetailHref={fullDetailHref}
               />
             ) : (
