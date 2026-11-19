@@ -35,7 +35,7 @@ import { DrillChartPanel, DrillTrendChart } from './resultsDashboardDrillCharts'
 import { isGoldenMetric, type MetricRow } from '../../simulations/simulationMetricScope'
 import type { ListEvaluatorResultsParams } from '../../../types/api'
 import type { RunListBase } from './resultsDashboardInsightDrill'
-import { formatDashboardWindowLabel } from './resultsDateRange'
+import { formatChartDayLabel, formatDashboardWindowLabel, resultLocalDayKey } from './resultsDateRange'
 
 export type { RunListBase } from './resultsDashboardInsightDrill'
 
@@ -801,7 +801,7 @@ export function ToolsMergedDetail({
             setLeaf({ kind: 'use_case', name })
           } else if (viewId === 'share') {
             setLeaf({ kind: 'product', name })
-          } else if (viewId === 'by_agent' || viewId === 'per_call') {
+          } else if (viewId === 'by_agent' || (viewId === 'per_call' && insightMode === 'calls')) {
             setFocus((prev) => (prev === name ? null : name))
           }
         }}
@@ -1044,9 +1044,29 @@ export function MetricUsageDrill({
   )
 }
 
+function callDaysForAgent(
+  results: EvaluatorResultRow[],
+  agentId: string,
+): Array<{ day: string; calls: number }> {
+  const byDay = new Map<string, number>()
+  for (const row of results) {
+    const id = row.agent_id ?? row.agent?.id
+    if (id !== agentId) continue
+    const key = resultLocalDayKey(row.timestamp)
+    byDay.set(key, (byDay.get(key) ?? 0) + 1)
+  }
+  return Array.from(byDay.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([sortKey, calls]) => ({
+      day: formatChartDayLabel(sortKey, false),
+      calls,
+    }))
+}
+
 export function TotalCallsDrill({
   agentRows,
   callDays,
+  results,
   runListBase,
   aggregateTotal,
   agentId,
@@ -1058,6 +1078,7 @@ export function TotalCallsDrill({
 }: {
   agentRows: Array<{ id: string; name: string; total: number }>
   callDays: Array<{ day: string; calls: number }>
+  results: EvaluatorResultRow[]
   runListBase: RunListBase
   aggregateTotal: number
   agentId?: string
@@ -1069,6 +1090,7 @@ export function TotalCallsDrill({
 }) {
   const windowLabel = formatDashboardWindowLabel(dateRange, allTime)
   const agent = agentRows.find((row) => row.id === agentId)
+  const agentCallDays = agentId ? callDaysForAgent(results, agentId) : callDays
 
   if (!agentId) {
     return (
@@ -1103,12 +1125,13 @@ export function TotalCallsDrill({
         By agent
       </button>
       <h2 className="text-lg font-semibold text-gray-900">{agent?.name ?? 'Agent'}</h2>
-      {callDays.length > 0 && (
+      <p className="text-sm text-gray-500">{agent?.total.toLocaleString() ?? '—'} calls · {windowLabel}</p>
+      {agentCallDays.length > 0 && (
         <DrillChartPanel
           model={{
-            headline: callDays.reduce((sum, day) => sum + day.calls, 0).toLocaleString(),
+            headline: (agent?.total ?? agentCallDays.reduce((sum, day) => sum + day.calls, 0)).toLocaleString(),
             caption: 'Calls over time',
-            data: callDays.map((day) => ({ day: day.day, calls: day.calls })),
+            data: agentCallDays.map((day) => ({ day: day.day, calls: day.calls })),
             series: [{ key: 'calls', color: LAYER_LLM }],
           }}
           display="area"

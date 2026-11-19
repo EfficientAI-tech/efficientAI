@@ -540,13 +540,7 @@ def load_dashboard_series(
     playground: Optional[bool],
 ) -> DashboardSeries:
     """Read the daily table. Rebuild the window when its totals are stale."""
-    use_exact_sources = (
-        suite_id is not None
-        or scenario_id is not None
-        or agent_id is not None
-        or since is not None
-        or until is not None
-    )
+    use_exact_sources = suite_id is not None or scenario_id is not None or agent_id is not None
     if use_exact_sources:
         sources = _scoped_window_sources(
             db,

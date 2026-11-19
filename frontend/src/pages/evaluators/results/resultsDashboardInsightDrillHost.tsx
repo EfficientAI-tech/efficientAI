@@ -119,6 +119,7 @@ export function InsightDrillHost({
         <TotalCallsDrill
           agentRows={agentRows}
           callDays={callDays}
+          results={results}
           runListBase={runListBase}
           aggregateTotal={aggregateTotal}
           dateRange={dateRange}

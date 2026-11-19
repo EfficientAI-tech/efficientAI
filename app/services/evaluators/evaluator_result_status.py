@@ -46,21 +46,27 @@ def repair_evaluator_result_status_if_needed(
     return True
 
 
+# Metric-level fallbacks (audio_failed, llm_failed) still complete the run; only fatal
+# scoring outcomes should surface as failed in filters and persisted status.
+EVALUATION_FATAL_SCORE_ERRORS = frozenset({"llm_parse_failed"})
+
+
 def _metric_scores_mark_failed(metric_scores: Any) -> bool:
     if not isinstance(metric_scores, dict) or not metric_scores:
         return False
     has_scored_value = False
-    has_error = False
+    has_fatal_error = False
     for entry in metric_scores.values():
         if not isinstance(entry, dict):
             continue
-        if entry.get("error"):
-            has_error = True
+        error = entry.get("error")
+        if error in EVALUATION_FATAL_SCORE_ERRORS:
+            has_fatal_error = True
         if entry.get("skipped"):
             continue
         if entry.get("value") is not None:
             has_scored_value = True
-    return has_error and not has_scored_value
+    return has_fatal_error and not has_scored_value
 
 
 def effective_evaluator_result_status(result: EvaluatorResult) -> str:

@@ -122,6 +122,7 @@ def usage_row_in_scope(
     playground: bool,
     agent_id: Optional[UUID],
     scenario_ids: Optional[Set[str]],
+    suite_agent_scenarios: Optional[Set[tuple[UUID, str]]] = None,
 ) -> bool:
     """Keep spend that belongs to the selected Simulations or Live mode."""
     context = _context_dict(row.context)
@@ -141,6 +142,10 @@ def usage_row_in_scope(
         scenario = str(context.get("scenario_id") or "")
         if not scenario or scenario not in scenario_ids:
             return False
+    if suite_agent_scenarios is not None:
+        scenario = str(context.get("scenario_id") or "")
+        if not scenario or (row_agent, scenario) not in suite_agent_scenarios:
+            return False
     return True
 
 
@@ -150,6 +155,7 @@ def rollup_usage(
     playground: bool,
     agent_id: Optional[UUID] = None,
     scenario_ids: Optional[Set[str]] = None,
+    suite_agent_scenarios: Optional[Set[tuple[UUID, str]]] = None,
     agent_names: Optional[Dict[UUID, str]] = None,
 ) -> Tuple[List[DashboardOpsCostByAgent], List[DashboardOpsModelDay], List[DashboardOpsAgentDay]]:
     names = agent_names or {}
@@ -165,6 +171,7 @@ def rollup_usage(
             playground=playground,
             agent_id=agent_id,
             scenario_ids=scenario_ids,
+            suite_agent_scenarios=suite_agent_scenarios,
         ):
             continue
         layer = _layer(row.usage_kind)
@@ -238,6 +245,7 @@ def rollup_model_layers(
     playground: bool,
     agent_id: Optional[UUID] = None,
     scenario_ids: Optional[Set[str]] = None,
+    suite_agent_scenarios: Optional[Set[tuple[UUID, str]]] = None,
 ) -> List[DashboardOpsModelLayer]:
     totals: Dict[Tuple[str, str], int] = defaultdict(int)
     for row in rows:
@@ -246,6 +254,7 @@ def rollup_model_layers(
             playground=playground,
             agent_id=agent_id,
             scenario_ids=scenario_ids,
+            suite_agent_scenarios=suite_agent_scenarios,
         ):
             continue
         layer = _layer(row.usage_kind)
@@ -406,6 +415,18 @@ def rollup_tool_calls(
     )
 
 
+def _suite_agent_scenario_pairs(query: Any) -> Set[tuple[UUID, str]]:
+    pairs: Set[tuple[UUID, str]] = set()
+    for owner, scenario_id in query.with_entities(
+        EvaluatorResult.agent_id,
+        EvaluatorResult.scenario_id,
+    ).distinct():
+        if owner is None or scenario_id is None:
+            continue
+        pairs.add((owner, str(scenario_id)))
+    return pairs
+
+
 def _scenario_ids_for_filter(
     db: Session,
     *,
@@ -533,11 +554,13 @@ def compute_evaluator_results_dashboard_ops(
             agent_names[agent.id] = agent.name or "Unknown agent"
 
     usage_scenario_scope = scenario_ids if suite_id is None else None
+    suite_usage_pairs = _suite_agent_scenario_pairs(result_query) if suite_id is not None else None
     cost_by_agent, cost_by_model_day, cost_by_agent_day = rollup_usage(
         usage_rows,
         playground=live,
         agent_id=agent_id,
         scenario_ids=usage_scenario_scope,
+        suite_agent_scenarios=suite_usage_pairs,
         agent_names=agent_names,
     )
     model_layers = rollup_model_layers(
@@ -545,6 +568,7 @@ def compute_evaluator_results_dashboard_ops(
         playground=live,
         agent_id=agent_id,
         scenario_ids=usage_scenario_scope,
+        suite_agent_scenarios=suite_usage_pairs,
     )
     model_layers = _with_s2s_models(db, agent_ids, model_layers)
     model_layers = _attach_catalog_rates(db, organization_id, model_layers)

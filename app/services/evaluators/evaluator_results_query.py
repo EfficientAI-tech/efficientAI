@@ -20,6 +20,7 @@ from app.models.schemas import (
 )
 from app.services.evaluators.evaluator_result_telephony import enrich_evaluator_result_live_telephony
 from app.services.evaluators.evaluator_result_status import (
+    EVALUATION_FATAL_SCORE_ERRORS,
     effective_evaluator_result_status,
     repair_evaluator_result_status_if_needed,
 )
@@ -203,10 +204,14 @@ def build_evaluator_results_query(
                 EvaluatorResult.status.in_(list(_IN_FLIGHT_STATUSES)),
             ),
         )
+        fatal_error_clauses = [
+            cast(EvaluatorResult.metric_scores, String).ilike(f'%"{error_key}"%')
+            for error_key in EVALUATION_FATAL_SCORE_ERRORS
+        ]
         error_only_scores = and_(
             EvaluatorResult.status == EvaluatorResultStatus.COMPLETED.value,
             EvaluatorResult.metric_scores.isnot(None),
-            cast(EvaluatorResult.metric_scores, String).ilike('%"error"%'),
+            or_(*fatal_error_clauses) if fatal_error_clauses else False,
         )
         if normalized == "completed":
             query = query.filter(completed_sql, ~error_only_scores)
