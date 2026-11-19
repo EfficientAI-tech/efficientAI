@@ -13,6 +13,35 @@ def test_merge_call_data_usage_fields_fills_missing_cost_breakdown():
     assert merged["source"] == "playground"
 
 
+def test_result_matches_usage_row_scope_limits_to_usage_day():
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from app.services.evaluators.evaluator_result_usage_enrichment import _result_matches_usage_row_scope
+
+    usage_day = datetime(2025, 10, 21, tzinfo=timezone.utc).date()
+    row = SimpleNamespace(
+        usage_date=usage_day,
+        context={"agent_id": "00000000-0000-0000-0000-000000000001"},
+    )
+    on_day = SimpleNamespace(
+        agent_id=__import__("uuid").UUID("00000000-0000-0000-0000-000000000001"),
+        scenario_id=None,
+        evaluator_id=None,
+        timestamp=datetime(2025, 10, 21, 12, 0, tzinfo=timezone.utc),
+    )
+    next_day = SimpleNamespace(
+        agent_id=__import__("uuid").UUID("00000000-0000-0000-0000-000000000001"),
+        scenario_id=None,
+        evaluator_id=None,
+        timestamp=datetime(2025, 10, 22, 12, 0, tzinfo=timezone.utc),
+    )
+    since = datetime(2025, 10, 1, tzinfo=timezone.utc)
+    until = datetime(2025, 10, 31, tzinfo=timezone.utc)
+    assert _result_matches_usage_row_scope(on_day, row=row, since=since, until=until)
+    assert not _result_matches_usage_row_scope(next_day, row=row, since=since, until=until)
+
+
 def test_enrich_call_data_applies_daily_rollup_when_provider_fields_missing():
     out = enrich_call_data_for_usage_display(
         {},

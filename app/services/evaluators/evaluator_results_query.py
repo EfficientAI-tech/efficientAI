@@ -138,13 +138,7 @@ def build_evaluator_results_query(
         EvaluatorResult.workspace_id == workspace_id,
     )
 
-    tool_filter = bool(
-        (tool_use or "").strip()
-        or (tool_product or "").strip()
-        or tool_failures_only
-        or has_tool_calls
-    )
-    if not usage_model and not tool_filter:
+    if not usage_model:
         query = apply_playground_scope_filter(
             query,
             db,
@@ -456,6 +450,8 @@ def list_evaluator_results_page(
         results,
         usage_since=usage_since.date() if usage_since else None,
         usage_until=usage_until.date() if usage_until else None,
+        window_since=usage_since,
+        window_until=usage_until,
     )
     items = [
         serialize_evaluator_result_row(
