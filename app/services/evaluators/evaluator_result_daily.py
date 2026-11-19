@@ -608,7 +608,7 @@ def load_dashboard_series(
             return _series_from_buckets(
                 fold_daily_buckets(sources, reporting_anchor=since),
                 agent_id=agent_id,
-                scenario_ids=scenario_ids,
+                scenario_ids=None if suite_id is not None else scenario_ids,
                 playground=playground,
             )
         except Exception:

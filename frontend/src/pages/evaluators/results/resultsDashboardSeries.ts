@@ -557,7 +557,11 @@ function resolveToolAgentFocusId(
   const row = ops?.tool_calls_by_agent_day.find(
     (item) => item.agent_id === focus || item.agent_name === focus,
   )
-  return row?.agent_id ?? null
+  if (row?.agent_id) return row.agent_id
+  const fromTotals = toolAgentTotals(ops, 'errors').find(
+    (item) => item.agent_id === focus || item.agent_name === focus,
+  )
+  return fromTotals?.agent_id ?? null
 }
 
 export function toolErrorsByUseCase(
@@ -665,11 +669,16 @@ export function toolsDetail(
   }
   if (view === 'by_agent') {
     if (mode === 'errors') {
-      const ranked = toolAgentTotals(ops, 'errors')
+      let ranked = toolAgentTotals(ops, 'errors')
+      if (focus) {
+        ranked = ranked.filter(
+          (row) => row.agent_name === focus || row.agent_id === focus,
+        )
+      }
       return {
         headline: ranked.reduce((sum, row) => sum + row.errors, 0).toLocaleString(),
         caption: 'Tool failures by agent',
-        data: ranked.map((row) => ({ name: row.agent_name, errors: row.errors })),
+        data: ranked.map((row) => ({ name: row.agent_name, errors: row.errors, sortKey: row.agent_id })),
         series: [{ key: 'errors', color: '#dc2626' }],
         horizontal: true,
       }
@@ -826,6 +835,9 @@ export function mergedToolsDetail(
     }
     const agentId = resolveToolAgentFocusId(ops, focus)
     if (view === 'by_agent') {
+      if (agentId) {
+        return toolCallDetail(ops, 'errors', agentId)
+      }
       return toolsDetail(ops, 'by_agent', focus, mode)
     }
     if (view === 'over_time') {

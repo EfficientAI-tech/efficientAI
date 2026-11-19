@@ -430,25 +430,11 @@ def _suite_agent_scenario_pairs(query: Any) -> Set[tuple[UUID, str]]:
 def _scenario_ids_for_filter(
     db: Session,
     *,
-    suite_id: Optional[UUID],
     scenario_id: Optional[UUID],
 ) -> Optional[Set[str]]:
-    if suite_id is None and scenario_id is None:
+    if scenario_id is None:
         return None
-    allowed: Set[str] = set()
-    if suite_id is not None:
-        rows = (
-            db.query(Evaluator.scenario_id)
-            .filter(Evaluator.suite_id == suite_id, Evaluator.scenario_id.isnot(None))
-            .all()
-        )
-        allowed.update(str(row[0]) for row in rows)
-    if scenario_id is not None:
-        scenario = str(scenario_id)
-        if suite_id is None:
-            return {scenario}
-        return {scenario} if scenario in allowed else set()
-    return allowed
+    return {str(scenario_id)}
 
 
 def _usage_day(value: Optional[datetime]) -> Optional[date]:
@@ -491,9 +477,7 @@ def compute_evaluator_results_dashboard_ops(
     playground: Optional[bool] = None,
 ) -> EvaluatorResultsDashboardOpsResponse:
     live = playground is True
-    scenario_ids = None if suite_id is not None else _scenario_ids_for_filter(
-        db, suite_id=suite_id, scenario_id=scenario_id
-    )
+    scenario_ids = None if suite_id is not None else _scenario_ids_for_filter(db, scenario_id=scenario_id)
     start_day = _usage_day(since)
     end_day = _usage_day(until)
 

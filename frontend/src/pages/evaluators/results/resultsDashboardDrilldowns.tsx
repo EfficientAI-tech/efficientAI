@@ -801,7 +801,11 @@ export function ToolsMergedDetail({
             setLeaf({ kind: 'use_case', name })
           } else if (viewId === 'share') {
             setLeaf({ kind: 'product', name })
-          } else if (viewId === 'by_agent' || (viewId === 'per_call' && insightMode === 'calls')) {
+          } else if (
+            viewId === 'by_agent'
+            || (viewId === 'per_call' && insightMode === 'calls')
+          ) {
+            if (insightMode === 'errors' && viewId !== 'by_agent') return
             setFocus((prev) => (prev === name ? null : name))
           }
         }}

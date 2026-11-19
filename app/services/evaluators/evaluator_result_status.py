@@ -25,6 +25,25 @@ def has_meaningful_metric_scores(metric_scores: Any) -> bool:
     return len(metric_scores) > 0
 
 
+def repair_evaluator_result_failed_status_if_needed(
+    db: Session,
+    result: EvaluatorResult,
+    *,
+    commit: bool = True,
+) -> bool:
+    """Align stored status with effective status when scores are fatal error-only."""
+    if result.status != EvaluatorResultStatus.COMPLETED.value:
+        return False
+    if not _metric_scores_mark_failed(result.metric_scores):
+        return False
+    result.status = EvaluatorResultStatus.FAILED.value
+    result.error_message = result.error_message or "Evaluation metrics could not be scored"
+    if commit:
+        db.commit()
+        db.refresh(result)
+    return True
+
+
 def repair_evaluator_result_status_if_needed(
     db: Session,
     result: EvaluatorResult,

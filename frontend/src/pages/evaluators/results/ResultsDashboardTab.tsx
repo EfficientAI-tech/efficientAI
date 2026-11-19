@@ -1606,7 +1606,11 @@ function ResultsDetailView({
           <div>
             <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
             <p className="mt-0.5 text-sm text-gray-500">{windowLabel}</p>
-            <p className="mt-1 text-3xl font-semibold tracking-tight text-gray-900">{active?.headline ?? model?.headline ?? '—'}</p>
+            <p className="mt-1 text-3xl font-semibold tracking-tight text-gray-900">
+              {detail.kind === 'agent' && agent
+                ? agent.total.toLocaleString()
+                : active?.headline ?? model?.headline ?? '—'}
+            </p>
             {active?.caption && (
               <p className="mt-1 text-sm text-gray-500">
                 {active.caption}
@@ -1697,14 +1701,17 @@ function ResultsDetailView({
           <div className="mt-4">
             <div className="mb-2 flex items-center justify-between">
               <h3 className="text-xs font-semibold text-gray-900">Agents</h3>
-              {focusId && (
+              {focusId && detail.kind !== 'agent' && (
                 <button type="button" onClick={() => setFocusId(null)} className="text-xs font-medium text-gray-500 hover:text-gray-800">
                   All agents
                 </button>
               )}
             </div>
             <ul className="divide-y divide-gray-100">
-              {ops?.cost_by_agent.map((agent) => (
+              {(detail.kind === 'agent'
+                ? ops?.cost_by_agent.filter((row) => row.agent_id === detail.agentId)
+                : ops?.cost_by_agent
+              )?.map((agent) => (
                 <li key={agent.agent_id}>
                   <button
                     type="button"

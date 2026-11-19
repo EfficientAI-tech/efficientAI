@@ -22,6 +22,7 @@ from app.services.evaluators.evaluator_result_telephony import enrich_evaluator_
 from app.services.evaluators.evaluator_result_status import (
     EVALUATION_FATAL_SCORE_ERRORS,
     effective_evaluator_result_status,
+    repair_evaluator_result_failed_status_if_needed,
     repair_evaluator_result_status_if_needed,
 )
 from app.models.enums import EvaluatorResultStatus
@@ -240,6 +241,7 @@ def serialize_evaluator_result_row(
     *,
     resolve_speaker_segments,
 ) -> EvaluatorResultResponse:
+    repair_evaluator_result_failed_status_if_needed(db, result)
     repair_evaluator_result_status_if_needed(db, result)
 
     suite_id: Optional[UUID] = None
