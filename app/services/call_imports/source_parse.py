@@ -27,7 +27,7 @@ from app.services.call_imports.audit import stamp_call_import_actor
 
 @dataclass(frozen=True)
 class CallImportParseSkip:
-    """One source row excluded during CSV/Excel parse (identity / recording URL)."""
+    """One source row excluded during CSV/Excel parse (missing/invalid required values)."""
 
     source_row: int
     reason: str
@@ -50,7 +50,7 @@ def parse_skips_to_json(skips: List[CallImportParseSkip]) -> List[Dict[str, Any]
         }
         for item in skips
     ]
-MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB upload cap (CSV or Excel)
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB upload cap (CSV or Excel)
 MAX_AUDIO_FILES_PER_REQUEST = 100
 MANUAL_AUDIO_BLOB_UPLOAD_WORKERS = 10
 
@@ -255,8 +255,30 @@ def _recording_url_cell_is_valid_http(raw: str) -> bool:
     return lower.startswith("http://") or lower.startswith("https://")
 
 
+def _empty_required_cell_message(source_row: int, param_name: str) -> str:
+    return (
+        f"Row {source_row}: no value in mapped column '{param_name}' "
+        "(required on schema)."
+    )
+
+
+def _missing_required_skip_reason(
+    param_type: CallImportParameterType,
+) -> str:
+    """Stable ``CallImportParseSkip.reason`` for empty required cells."""
+    if param_type == CallImportParameterType.CONVERSATION_ID:
+        return "missing_conversation_id"
+    if param_type == CallImportParameterType.RECORDING_URL:
+        return "missing_recording_url"
+    if param_type == CallImportParameterType.TRANSCRIPT:
+        return "missing_transcript"
+    if param_type == CallImportParameterType.RECORDING_DATE:
+        return "missing_recording_date"
+    return "missing_required_parameter"
+
+
 def _parameter_is_required(param: CallImportSchemaParameter) -> bool:
-    """Return whether a schema parameter must be mapped on every upload."""
+    """Return whether a parameter must be mapped and non-empty per imported row."""
     if param.is_required:
         return True
     try:
@@ -412,8 +434,8 @@ def _apply_schema_mapping(
                     source_row=source_row,
                     reason="missing_conversation_id",
                     message=(
-                        f"Row {source_row} is missing the '{conv_param.name}' "
-                        "(conversation_id) value."
+                        f"Row {source_row}: no value in mapped column "
+                        f"'{conv_param.name}' (conversation_id is always required)."
                     ),
                 )
             )
@@ -431,9 +453,8 @@ def _apply_schema_mapping(
                         CallImportParseSkip(
                             source_row=source_row,
                             reason="missing_recording_url",
-                            message=(
-                                f"Row {source_row} is missing the required "
-                                f"'{rec_url_param_name}' value."
+                            message=_empty_required_cell_message(
+                                source_row, rec_url_param_name
                             ),
                         )
                     )
@@ -490,26 +511,15 @@ def _apply_schema_mapping(
                 param_name=param.name,
             )
             if _parameter_is_required(param) and coerced is None:
-                if param_type == CallImportParameterType.RECORDING_URL:
-                    skipped.append(
-                        CallImportParseSkip(
-                            source_row=source_row,
-                            reason="missing_recording_url",
-                            message=(
-                                f"Row {source_row} is missing the required "
-                                f"'{param.name}' value."
-                            ),
-                        )
+                skipped.append(
+                    CallImportParseSkip(
+                        source_row=source_row,
+                        reason=_missing_required_skip_reason(param_type),
+                        message=_empty_required_cell_message(source_row, param.name),
                     )
-                    row_skipped = True
-                    break
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=(
-                        f"Row {source_row} is missing the required "
-                        f"'{param.name}' value."
-                    ),
                 )
+                row_skipped = True
+                break
             parameter_values[param.name] = coerced
         if row_skipped:
             continue
@@ -558,7 +568,7 @@ def _raise_if_no_importable_rows(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 f"No importable rows. {len(result.skipped)} row(s) skipped due "
-                "to missing or invalid conversation ID or recording URL."
+                "to missing or invalid required values."
             ),
         )
     raise HTTPException(

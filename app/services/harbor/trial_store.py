@@ -67,6 +67,12 @@ def llm_override(provider: Optional[str], model: Optional[str]) -> Optional[Reso
 
 
 def _commit(db: Session, result: EvaluatorResult) -> None:
+    try:
+        from app.services.evaluators.evaluator_result_daily import record_evaluator_result_daily
+
+        record_evaluator_result_daily(db, result)
+    except Exception as exc:
+        logger.warning("[Harbor] Daily rollup skipped: {}", exc)
     sync_evaluator_result(db, result)
     db.commit()
 
@@ -247,6 +253,7 @@ def run_trial_conversation(
             **ids,
             "synthetic_testing": "pre_prod",
             "simulation_leg": "production_agent",
+            "usage_role": "agent",
             "provider_platform": "internal",
         },
     )

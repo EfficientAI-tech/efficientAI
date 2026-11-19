@@ -39,6 +39,58 @@ class LLMUsageContext:
     extra: Optional[dict[str, str]] = None
 
 
+USAGE_ROLE_AGENT = "agent"
+USAGE_ROLE_SIMULATOR = "simulator"
+USAGE_ROLE_JUDGE = "judge"
+USAGE_ROLES = frozenset({USAGE_ROLE_AGENT, USAGE_ROLE_SIMULATOR, USAGE_ROLE_JUDGE})
+
+LIVE_USAGE_SECTIONS = frozenset(
+    {
+        LLMUsageProductSection.PLAYGROUND.value,
+        LLMUsageProductSection.VOICE_PLAYGROUND.value,
+    }
+)
+
+
+def resolve_usage_role(product_section: str, context: Optional[dict[str, Any]]) -> Optional[str]:
+    """Map a stored usage bucket to agent, simulator, or judge.
+
+    ``usage_role`` wins when present. Older rows are inferred from
+    ``simulation_leg`` and ``product_section``.
+    """
+    ctx = context or {}
+    explicit = str(ctx.get("usage_role") or "")
+    if explicit in USAGE_ROLES:
+        return explicit
+    if str(ctx.get("simulation_leg") or "") == "production_agent":
+        return USAGE_ROLE_AGENT
+    section = product_section or ""
+    if section == LLMUsageProductSection.TEST_AGENT.value:
+        return USAGE_ROLE_SIMULATOR
+    if section in LIVE_USAGE_SECTIONS:
+        return USAGE_ROLE_AGENT
+    if section == LLMUsageProductSection.EVALUATORS.value:
+        return USAGE_ROLE_JUDGE
+    if section == LLMUsageProductSection.METRICS.value and ctx.get("agent_id"):
+        return USAGE_ROLE_JUDGE
+    return None
+
+
+def usage_context_as_production_agent(ctx: LLMUsageContext) -> LLMUsageContext:
+    """Copy a context so production-agent spend is not billed as the judge."""
+    extra = dict(ctx.extra or {})
+    extra["usage_role"] = USAGE_ROLE_AGENT
+    extra["simulation_leg"] = "production_agent"
+    return LLMUsageContext(
+        organization_id=ctx.organization_id,
+        workspace_id=ctx.workspace_id,
+        product_section=ctx.product_section,
+        resource_id=ctx.resource_id,
+        resource_type=ctx.resource_type,
+        extra=extra,
+    )
+
+
 _usage_context_var: ContextVar[Optional[LLMUsageContext]] = ContextVar(
     "llm_usage_context", default=None
 )
@@ -210,6 +262,7 @@ def usage_context_for_evaluator_result(result: Any) -> LLMUsageContext:
     extra: dict[str, str] = {
         "evaluator_result_id": str(result.id),
         "synthetic_testing": "pre_prod",
+        "usage_role": USAGE_ROLE_JUDGE,
     }
     if getattr(result, "result_id", None):
         extra["result_short_id"] = str(result.result_id)
@@ -259,6 +312,7 @@ def usage_context_for_metric_studio_run(
         extra["metric_studio_result_id"] = str(result_row_id)
     if source_kind == "evaluator_result":
         extra["synthetic_testing"] = "pre_prod"
+        extra["usage_role"] = USAGE_ROLE_JUDGE
     return LLMUsageContext(
         organization_id=run.organization_id,
         workspace_id=run.workspace_id,
@@ -352,7 +406,10 @@ def usage_context_for_playground_voice_call(
     call_short_id: Optional[str] = None,
 ) -> LLMUsageContext:
     """Usage context for live playground Voice AI Agent provider sessions."""
-    extra: dict[str, str] = {"synthetic_testing": "pre_prod"}
+    extra: dict[str, str] = {
+        "synthetic_testing": "pre_prod",
+        "usage_role": USAGE_ROLE_AGENT,
+    }
     if agent_id:
         extra["agent_id"] = str(agent_id)
     if provider_platform:
@@ -382,7 +439,10 @@ def usage_context_for_test_agent_simulation(
     provider_platform: Optional[str] = None,
 ) -> LLMUsageContext:
     """Usage context for synthetic LLM-to-LLM simulation (caller / test-agent leg)."""
-    extra: dict[str, str] = {"simulation": "llm_to_llm"}
+    extra: dict[str, str] = {
+        "simulation": "llm_to_llm",
+        "usage_role": USAGE_ROLE_SIMULATOR,
+    }
     if agent_id:
         extra["agent_id"] = str(agent_id)
     if evaluator_id:

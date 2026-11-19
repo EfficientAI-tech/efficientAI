@@ -69,7 +69,7 @@ export default function OptimizeJudge({ datasetId }: { datasetId: string }) {
             <div>
               No LLM-capable AI providers configured.{' '}
               <Link
-                to="/integrations"
+                to="/settings/integrations"
                 className="font-medium underline hover:text-amber-900"
               >
                 Add one in Integrations
@@ -155,7 +155,7 @@ export default function OptimizeJudge({ datasetId }: { datasetId: string }) {
               Test samples: {lastResult.testCount}.
             </p>
             <Link
-              to="/prompt-optimization"
+              to="/prompts/optimization"
               className="mt-2 inline-flex items-center gap-1 text-sm font-medium text-green-800 hover:text-green-900 underline"
             >
               View progress in Prompt Optimization{' '}

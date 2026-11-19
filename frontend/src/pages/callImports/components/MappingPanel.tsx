@@ -70,7 +70,7 @@ export default function MappingPanel({
   )
   const [selectedSheetName, setSelectedSheetName] = useState<string>(
     callImport.sheet_name ||
-      (isXlsx ? usableSheets[0]?.name ?? '' : usableSheets[0]?.name ?? ''),
+    (isXlsx ? usableSheets[0]?.name ?? '' : usableSheets[0]?.name ?? ''),
   )
   const [mappingState, setMappingState] = useState<SheetMappingState>({
     parameterMapping: {},
@@ -204,8 +204,8 @@ export default function MappingPanel({
     onError: (err: any) => {
       setSubmitError(
         err?.response?.data?.detail ||
-          err?.message ||
-          'Failed to save mapping.',
+        err?.message ||
+        'Failed to save mapping.',
       )
     },
   })
@@ -226,23 +226,20 @@ export default function MappingPanel({
 
   return (
     <div
-      className={`bg-white shadow rounded-lg overflow-hidden ${
-        isMapped ? 'border border-green-200' : ''
-      }`}
+      className={`bg-white shadow rounded-lg overflow-hidden ${isMapped ? 'border border-green-200' : ''
+        }`}
     >
       <button
         type="button"
         onClick={() => isMapped && setCollapsed((prev) => !prev)}
-        className={`w-full flex items-start justify-between gap-3 p-6 text-left ${
-          isMapped ? 'hover:bg-gray-50 cursor-pointer' : 'cursor-default'
-        }`}
+        className={`w-full flex items-start justify-between gap-3 p-6 text-left ${isMapped ? 'hover:bg-gray-50 cursor-pointer' : 'cursor-default'
+          }`}
         aria-expanded={!collapsed}
       >
         <div className="flex items-start gap-3 min-w-0">
           <div
-            className={`h-10 w-10 rounded-full flex items-center justify-center flex-shrink-0 ${
-              isMapped ? 'bg-green-100 text-green-700' : 'bg-primary-50 text-primary-700'
-            }`}
+            className={`h-10 w-10 rounded-full flex items-center justify-center flex-shrink-0 ${isMapped ? 'bg-green-100 text-green-700' : 'bg-primary-50 text-primary-700'
+              }`}
           >
             {isMapped ? (
               <CheckCircle2 className="h-5 w-5" />
@@ -256,9 +253,8 @@ export default function MappingPanel({
             </h2>
             {collapsed && isMapped ? (
               <p
-                className={`text-sm mt-1 truncate ${
-                  justSaved ? 'text-green-700 font-medium' : 'text-gray-600'
-                }`}
+                className={`text-sm mt-1 truncate ${justSaved ? 'text-green-700 font-medium' : 'text-gray-600'
+                  }`}
               >
                 {justSaved
                   ? 'Saved — continue to Run Evaluation below.'
@@ -286,112 +282,124 @@ export default function MappingPanel({
 
       {!collapsed && (
         <div className="px-6 pb-6 space-y-5 border-t border-gray-100 pt-5">
-      {justSaved && (
-        <div className="rounded-md bg-green-50 border border-green-200 p-3">
-          <div className="flex items-start gap-2">
-            <CheckCircle2 className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
-            <p className="text-sm text-green-800">
-              Mapping saved. Continue to <strong>Run Evaluation</strong> below to
-              fetch recordings, diarize transcripts, and score each row.
-            </p>
-          </div>
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Input Parameter Schema <span className="text-red-500">*</span>
-          </label>
-          {schemas.length === 0 ? (
-            <div className="rounded-md bg-amber-50 border border-amber-200 p-3 text-sm text-amber-800 space-y-2">
-              <p>No Input Parameter schemas defined in this workspace yet.</p>
-              <Link
-                to="/call-imports/schemas"
-                className="inline-block font-medium text-amber-900 underline hover:text-amber-700"
-              >
-                Create your first schema &rarr;
-              </Link>
+          {justSaved && (
+            <div className="rounded-md bg-green-50 border border-green-200 p-3">
+              <div className="flex items-start gap-2">
+                <CheckCircle2 className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
+                <p className="text-sm text-green-800">
+                  Mapping saved. Continue to <strong>Run Evaluation</strong> below to
+                  fetch recordings, diarize transcripts, and score each row.
+                </p>
+              </div>
             </div>
-          ) : (
-            <select
-              value={selectedSchemaId}
-              onChange={(e) => setSelectedSchemaId(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
-            >
-              <option value="">Select schema</option>
-              {schemas.map((schema) => (
-                <option key={schema.id} value={schema.id}>
-                  {schema.name} · {schema.parameters.length} params
-                </option>
-              ))}
-            </select>
           )}
-        </div>
 
-        {isXlsx && usableSheets.length > 0 && (
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Worksheet <span className="text-red-500">*</span>
-            </label>
-            <select
-              value={selectedSheetName}
-              onChange={(e) => setSelectedSheetName(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
-            >
-              {usableSheets.map((sheet) => (
-                <option key={sheet.name} value={sheet.name}>
-                  {sheet.name} · {sheet.headers.length} cols · ~{sheet.row_count} rows
-                </option>
-              ))}
-            </select>
-            {sheets.length > usableSheets.length && (
-              <p className="mt-1 text-xs text-gray-500">
-                {sheets.length - usableSheets.length} sheet
-                {sheets.length - usableSheets.length === 1 ? '' : 's'} in this
-                workbook had no headers and aren't selectable.
-              </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Input Parameter Schema <span className="text-red-500">*</span>
+              </label>
+              {schemas.length === 0 ? (
+                <div className="rounded-md bg-amber-50 border border-amber-200 p-3 text-sm text-amber-800 space-y-2">
+                  <p>No Input Parameter schemas defined in this workspace yet.</p>
+                  <Link
+                    to="/call-imports/schemas"
+                    className="inline-block font-medium text-amber-900 underline hover:text-amber-700"
+                  >
+                    Create your first schema &rarr;
+                  </Link>
+                </div>
+              ) : (
+                <select
+                  value={selectedSchemaId}
+                  onChange={(e) => setSelectedSchemaId(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                >
+                  <option value="">Select schema</option>
+                  {schemas.map((schema) => (
+                    <option key={schema.id} value={schema.id}>
+                      {schema.name} · {schema.parameters.length} params
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+
+            {isXlsx && usableSheets.length > 0 && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Worksheet <span className="text-red-500">*</span>
+                </label>
+                <select
+                  value={selectedSheetName}
+                  onChange={(e) => setSelectedSheetName(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                >
+                  {usableSheets.map((sheet) => (
+                    <option key={sheet.name} value={sheet.name}>
+                      {sheet.name} · {sheet.headers.length} cols · ~{sheet.row_count} rows
+                    </option>
+                  ))}
+                </select>
+                {sheets.length > usableSheets.length && (
+                  <p className="mt-1 text-xs text-gray-500">
+                    {sheets.length - usableSheets.length} sheet
+                    {sheets.length - usableSheets.length === 1 ? '' : 's'} in this
+                    workbook had no headers and aren't selectable.
+                  </p>
+                )}
+              </div>
             )}
           </div>
-        )}
-      </div>
 
-      {selectedSchema && selectedSheet ? (
-        <ParameterMappingTable
-          sheet={selectedSheet}
-          parameters={selectedSchema.parameters}
-          state={mappingState}
-          onChange={setMappingState}
-          disabled={mappingMutation.isPending}
-        />
-      ) : (
-        <div className="rounded-md bg-gray-50 border border-gray-200 p-3 text-sm text-gray-600">
-          {!selectedSchema
-            ? 'Pick a schema above to start mapping columns.'
-            : 'Pick a worksheet above to start mapping columns.'}
-        </div>
-      )}
+          {selectedSchema && selectedSheet ? (
+            <ParameterMappingTable
+              sheet={selectedSheet}
+              parameters={selectedSchema.parameters}
+              state={mappingState}
+              onChange={setMappingState}
+              disabled={mappingMutation.isPending}
+            />
+          ) : (
+            <div className="rounded-md bg-gray-50 border border-gray-200 p-3 text-sm text-gray-600">
+              {!selectedSchema
+                ? 'Pick a schema above to start mapping columns.'
+                : 'Pick a worksheet above to start mapping columns.'}
+            </div>
+          )}
 
-      {submitError && (
-        <div className="rounded-md bg-red-50 border border-red-200 p-3">
-          <div className="flex items-start gap-2">
-            <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
-            <p className="text-sm text-red-800">{submitError}</p>
+          {validation && validation.missingRequired.length > 0 && (
+            <p className="text-xs text-gray-600">
+              <Link
+                to="/call-imports/schemas"
+                className="font-medium text-primary-700 underline hover:text-primary-800"
+              >
+                Manage schemas
+              </Link>{' '}
+              to change which parameters are required.
+            </p>
+          )}
+
+          {submitError && (
+            <div className="rounded-md bg-red-50 border border-red-200 p-3">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+                <p className="text-sm text-red-800">{submitError}</p>
+              </div>
+            </div>
+          )}
+
+          <div className="flex items-center justify-end gap-3">
+            <Button
+              variant="primary"
+              leftIcon={<Save className="h-4 w-4" />}
+              onClick={() => mappingMutation.mutate()}
+              isLoading={mappingMutation.isPending}
+              disabled={!canSubmit}
+            >
+              {isMapped ? 'Save mapping' : 'Save and continue'}
+            </Button>
           </div>
-        </div>
-      )}
-
-      <div className="flex items-center justify-end gap-3">
-        <Button
-          variant="primary"
-          leftIcon={<Save className="h-4 w-4" />}
-          onClick={() => mappingMutation.mutate()}
-          isLoading={mappingMutation.isPending}
-          disabled={!canSubmit}
-        >
-          {isMapped ? 'Save mapping' : 'Save and continue'}
-        </Button>
-      </div>
         </div>
       )}
     </div>

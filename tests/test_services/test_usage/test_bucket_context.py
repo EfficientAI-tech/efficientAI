@@ -25,6 +25,23 @@ def test_build_and_parse_context_roundtrip():
     assert "agent_id" in parsed
 
 
+def test_pre_prod_evaluator_result_id_is_not_bucketed():
+    """Per-run ids stay in LLMUsageContext.extra but must not split Redis/PG rollups."""
+    result_id = uuid4()
+    ctx = build_bucket_context(
+        resource_id=uuid4(),
+        resource_type="evaluator",
+        extra={
+            "synthetic_testing": "pre_prod",
+            "evaluator_result_id": str(result_id),
+            "call_short_id": "should-not-appear",
+        },
+    )
+    assert "evaluator_result_id" not in ctx
+    assert "call_short_id" not in ctx
+    assert ctx.get("synthetic_testing") == "pre_prod"
+
+
 def test_extra_rejects_metric_keys():
     ctx = build_bucket_context(
         resource_id=uuid4(),

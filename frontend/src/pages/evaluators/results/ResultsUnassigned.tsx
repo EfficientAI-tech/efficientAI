@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
 import ResultsRunsList from './ResultsRunsList'
+import { resultsHubHref } from './resultsHubNavigation'
 
 export default function ResultsUnassigned() {
   const { data: overview } = useQuery({
@@ -13,7 +14,7 @@ export default function ResultsUnassigned() {
       title="Unassigned runs"
       subtitle="Legacy or manual evaluations not linked to an evaluator suite"
       crumbs={[
-        { label: 'Evaluation Results', to: '/results' },
+        { label: 'Evaluation Results', to: resultsHubHref() },
         { label: 'Unassigned' },
       ]}
       listParams={{ unassignedOnly: true }}

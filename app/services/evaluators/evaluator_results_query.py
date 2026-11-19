@@ -7,7 +7,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from uuid import UUID
 
 from sqlalchemy.orm import Session, Query
-from sqlalchemy import and_, or_
+from sqlalchemy import String, and_, cast, false, or_
+from sqlalchemy.dialects.postgresql import JSONB
 
 from app.models.database import EvaluatorResult, Evaluator, Agent, VoiceBundle, Scenario, Persona, CallRecording, CallRecordingSource
 from app.models.schemas import (
@@ -18,8 +19,16 @@ from app.models.schemas import (
     EvaluatorResponse,
 )
 from app.services.evaluators.evaluator_result_telephony import enrich_evaluator_result_live_telephony
+from app.services.evaluators.evaluator_result_tool_query import apply_tool_call_filters
+from app.services.evaluators.evaluator_result_usage_enrichment import (
+    enrich_call_data_for_usage_display,
+    evaluator_result_ids_with_usage_model,
+    usage_enrichment_caches_for_results,
+)
 from app.services.evaluators.evaluator_result_status import (
+    EVALUATION_FATAL_SCORE_ERRORS,
     effective_evaluator_result_status,
+    repair_evaluator_result_failed_status_if_needed,
     repair_evaluator_result_status_if_needed,
 )
 from app.models.enums import EvaluatorResultStatus
@@ -32,6 +41,22 @@ _IN_FLIGHT_STATUSES = frozenset(
         EvaluatorResultStatus.FETCHING_DETAILS.value,
     }
 )
+
+_LIST_QUERY_META_ATTR = "_efficientai_evaluator_list_meta"
+
+
+def _list_query_meta(query: Query) -> Dict[str, Any]:
+    """ORM Query has no portable ``info`` bag — attach list response metadata here."""
+    meta = getattr(query, _LIST_QUERY_META_ATTR, None)
+    if not isinstance(meta, dict):
+        meta = {}
+        setattr(query, _LIST_QUERY_META_ATTR, meta)
+    return meta
+
+
+def list_query_usage_cost_usd(query: Query) -> Optional[float]:
+    value = _list_query_meta(query).get("usage_cost_usd")
+    return float(value) if value is not None else None
 
 
 def classify_display_status(result: EvaluatorResult) -> str:
@@ -117,6 +142,12 @@ def build_evaluator_results_query(
     playground: Optional[bool] = None,
     test_agents_only: Optional[bool] = None,
     unassigned_only: Optional[bool] = None,
+    metric_id: Optional[str] = None,
+    usage_model: Optional[str] = None,
+    tool_use: Optional[str] = None,
+    tool_product: Optional[str] = None,
+    tool_failures_only: Optional[bool] = None,
+    has_tool_calls: Optional[bool] = None,
 ) -> Query:
     query = db.query(EvaluatorResult).filter(
         EvaluatorResult.organization_id == organization_id,
@@ -179,10 +210,75 @@ def build_evaluator_results_query(
         if parsed_ids:
             query = query.filter(EvaluatorResult.scenario_id.in_(parsed_ids))
 
-    if since is not None:
+    if since is not None and not usage_model:
         query = query.filter(EvaluatorResult.timestamp >= since)
-    if until is not None:
+    if until is not None and not usage_model:
         query = query.filter(EvaluatorResult.timestamp <= until)
+
+    if metric_id:
+        metric_key = str(metric_id).strip()
+        if metric_key:
+            query = query.filter(
+                EvaluatorResult.metric_scores.isnot(None),
+                cast(EvaluatorResult.metric_scores, JSONB).has_key(metric_key),
+            )
+
+    if usage_model:
+        model_key = str(usage_model).strip()
+        if model_key:
+            scoped_agent: Optional[UUID] = None
+            scoped_scenario: Optional[UUID] = None
+            scoped_suite: Optional[UUID] = None
+            scoped_evaluator: Optional[UUID] = None
+            if agent_id:
+                try:
+                    scoped_agent = UUID(agent_id)
+                except ValueError:
+                    scoped_agent = None
+            if scenario_id:
+                try:
+                    scoped_scenario = UUID(scenario_id)
+                except ValueError:
+                    scoped_scenario = None
+            if suite_id:
+                try:
+                    scoped_suite = UUID(suite_id)
+                except ValueError:
+                    scoped_suite = None
+            if evaluator_id:
+                try:
+                    scoped_evaluator = UUID(evaluator_id)
+                except ValueError:
+                    scoped_evaluator = None
+            result_ids, usage_micro = evaluator_result_ids_with_usage_model(
+                db,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                model=model_key,
+                since=since,
+                until=until,
+                playground=playground,
+                agent_id=scoped_agent,
+                scenario_id=scoped_scenario,
+                suite_id=scoped_suite,
+                evaluator_id=scoped_evaluator,
+            )
+            _list_query_meta(query)["usage_cost_usd"] = usage_micro / 1_000_000
+            if result_ids:
+                # Ledger attribution already respects Simulations vs Live via usage rows;
+                # do not re-apply playground recording filter (judge spend often links
+                # playground-linked runs that still appear under Simulations usage).
+                query = query.filter(EvaluatorResult.id.in_(result_ids))
+            else:
+                query = query.filter(false())
+
+    query = apply_tool_call_filters(
+        query,
+        tool_use=tool_use,
+        tool_product=tool_product,
+        failures_only=bool(tool_failures_only),
+        has_tool_calls=has_tool_calls is True,
+    )
 
     if status:
         normalized = status.strip().lower()
@@ -193,14 +289,29 @@ def build_evaluator_results_query(
                 EvaluatorResult.status.in_(list(_IN_FLIGHT_STATUSES)),
             ),
         )
+        fatal_error_clauses = [
+            cast(EvaluatorResult.metric_scores, String).ilike(f'%"{error_key}"%')
+            for error_key in EVALUATION_FATAL_SCORE_ERRORS
+        ]
+        error_only_scores = and_(
+            EvaluatorResult.status == EvaluatorResultStatus.COMPLETED.value,
+            EvaluatorResult.metric_scores.isnot(None),
+            or_(*fatal_error_clauses) if fatal_error_clauses else False,
+        )
         if normalized == "completed":
-            query = query.filter(completed_sql)
+            query = query.filter(completed_sql, ~error_only_scores)
         elif normalized == "failed":
-            query = query.filter(EvaluatorResult.status == EvaluatorResultStatus.FAILED.value)
+            query = query.filter(
+                or_(
+                    EvaluatorResult.status == EvaluatorResultStatus.FAILED.value,
+                    error_only_scores,
+                )
+            )
         elif normalized in ("in_progress", "in-progress"):
             query = query.filter(
                 EvaluatorResult.status != EvaluatorResultStatus.FAILED.value,
                 ~completed_sql,
+                ~error_only_scores,
             )
         else:
             raise ValueError("Invalid status filter")
@@ -208,12 +319,48 @@ def build_evaluator_results_query(
     return query
 
 
+def _call_data_for_list_row(
+    db: Session,
+    result: EvaluatorResult,
+    *,
+    recording_by_result_id: Optional[Dict[UUID, Any]],
+    usage_rollup_by_result_id: Optional[Dict[str, Tuple[int, int]]],
+    usage_rollup_by_model: Optional[Dict[str, Dict[str, Tuple[int, int]]]],
+    usage_rollup_by_role: Optional[Dict[str, Dict[str, Tuple[int, int]]]] = None,
+    usage_days_by_result_id: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    call_data = enrich_evaluator_result_live_telephony(db, result, result.call_data)
+    recording = (recording_by_result_id or {}).get(result.id)
+    rec_data = (
+        recording.call_data
+        if recording and isinstance(recording.call_data, dict)
+        else None
+    )
+    rollup = (usage_rollup_by_result_id or {}).get(str(result.id))
+    rollup_models = (usage_rollup_by_model or {}).get(str(result.id))
+    rollup_roles = (usage_rollup_by_role or {}).get(str(result.id))
+    return enrich_call_data_for_usage_display(
+        call_data if isinstance(call_data, dict) else None,
+        recording_call_data=rec_data,
+        rollup=rollup,
+        rollup_by_model=rollup_models,
+        rollup_by_role=rollup_roles,
+        usage_on=(usage_days_by_result_id or {}).get(str(result.id)),
+    )
+
+
 def serialize_evaluator_result_row(
     db: Session,
     result: EvaluatorResult,
     *,
     resolve_speaker_segments,
+    recording_by_result_id: Optional[Dict[UUID, Any]] = None,
+    usage_rollup_by_result_id: Optional[Dict[str, Tuple[int, int]]] = None,
+    usage_rollup_by_model: Optional[Dict[str, Dict[str, Tuple[int, int]]]] = None,
+    usage_rollup_by_role: Optional[Dict[str, Dict[str, Tuple[int, int]]]] = None,
+    usage_days_by_result_id: Optional[Dict[str, str]] = None,
 ) -> EvaluatorResultResponse:
+    repair_evaluator_result_failed_status_if_needed(db, result)
     repair_evaluator_result_status_if_needed(db, result)
 
     suite_id: Optional[UUID] = None
@@ -258,7 +405,15 @@ def serialize_evaluator_result_row(
         "call_event": result.call_event,
         "provider_call_id": result.provider_call_id,
         "provider_platform": result.provider_platform,
-        "call_data": enrich_evaluator_result_live_telephony(db, result, result.call_data),
+        "call_data": _call_data_for_list_row(
+            db,
+            result,
+            recording_by_result_id=recording_by_result_id,
+            usage_rollup_by_result_id=usage_rollup_by_result_id,
+            usage_rollup_by_model=usage_rollup_by_model,
+            usage_rollup_by_role=usage_rollup_by_role,
+            usage_days_by_result_id=usage_days_by_result_id,
+        ),
         "synthetic_call_trace_id": result.synthetic_call_trace_id,
         "created_at": result.created_at,
         "updated_at": result.updated_at,
@@ -328,6 +483,8 @@ def list_evaluator_results_page(
     skip: int,
     limit: int,
     resolve_speaker_segments,
+    usage_since: Optional[datetime] = None,
+    usage_until: Optional[datetime] = None,
 ) -> Tuple[List[EvaluatorResultResponse], int]:
     total = query.count()
     results = (
@@ -336,8 +493,25 @@ def list_evaluator_results_page(
     from app.services.live_entity_storage import hydrate_evaluator_results
 
     hydrate_evaluator_results(results)
+    recordings, rollups, rollups_by_model, rollups_by_role, usage_days = usage_enrichment_caches_for_results(
+        db,
+        results,
+        usage_since=usage_since.date() if usage_since else None,
+        usage_until=usage_until.date() if usage_until else None,
+        window_since=usage_since,
+        window_until=usage_until,
+    )
     items = [
-        serialize_evaluator_result_row(db, row, resolve_speaker_segments=resolve_speaker_segments)
+        serialize_evaluator_result_row(
+            db,
+            row,
+            resolve_speaker_segments=resolve_speaker_segments,
+            recording_by_result_id=recordings,
+            usage_rollup_by_result_id=rollups,
+            usage_rollup_by_model=rollups_by_model,
+            usage_rollup_by_role=rollups_by_role,
+            usage_days_by_result_id=usage_days,
+        )
         for row in results
     ]
     return items, total

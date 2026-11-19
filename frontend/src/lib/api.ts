@@ -81,6 +81,7 @@ import type {
   EvaluatorResultListResponse,
   EvaluatorResultsOverviewResponse,
   EvaluatorResultsAggregateResponse,
+  EvaluatorResultsDashboardOpsResponse,
   ListEvaluatorResultsParams,
   CallImportTranscribeRequest,
   CallImportTranscribeResponse,
@@ -5036,6 +5037,12 @@ class ApiClient {
       if (p.unassignedOnly) params.unassigned_only = true
       if (p.playground !== undefined) params.playground = p.playground
       if (p.testAgentsOnly !== undefined) params.test_agents_only = p.testAgentsOnly
+      if (p.metricId) params.metric_id = p.metricId
+      if (p.usageModel) params.usage_model = p.usageModel
+      if (p.toolUse) params.tool_use = p.toolUse
+      if (p.toolProduct) params.tool_product = p.toolProduct
+      if (p.toolFailuresOnly) params.tool_failures_only = true
+      if (p.hasToolCalls) params.has_tool_calls = true
     }
     const response = await this.client.get('/api/v1/evaluator-results', { params })
     return response.data
@@ -5044,15 +5051,42 @@ class ApiClient {
   async getEvaluatorResultsOverview(params?: {
     agentId?: string
     suiteId?: string
+    scenarioId?: string
     since?: string
     until?: string
+    playground?: boolean
   }): Promise<EvaluatorResultsOverviewResponse> {
     const query: Record<string, string> = {}
     if (params?.agentId) query.agent_id = params.agentId
     if (params?.suiteId) query.suite_id = params.suiteId
+    if (params?.scenarioId) query.scenario_id = params.scenarioId
     if (params?.since) query.since = params.since
     if (params?.until) query.until = params.until
+    if (params?.playground !== undefined) query.playground = String(params.playground)
     const response = await this.client.get('/api/v1/evaluator-results/overview', { params: query })
+    return response.data
+  }
+
+  async getEvaluatorResultsDashboardOps(params: {
+    suiteId?: string
+    agentId?: string
+    scenarioId?: string
+    since?: string
+    until?: string
+    playground?: boolean
+    tz?: string
+    metricId?: string
+  }): Promise<EvaluatorResultsDashboardOpsResponse> {
+    const query: Record<string, string> = {}
+    if (params.suiteId) query.suite_id = params.suiteId
+    if (params.agentId) query.agent_id = params.agentId
+    if (params.scenarioId) query.scenario_id = params.scenarioId
+    if (params.since) query.since = params.since
+    if (params.until) query.until = params.until
+    if (params.playground !== undefined) query.playground = String(params.playground)
+    if (params.tz) query.tz = params.tz
+    if (params.metricId) query.metric_id = params.metricId
+    const response = await this.client.get('/api/v1/evaluator-results/dashboard-ops', { params: query })
     return response.data
   }
 
@@ -5062,6 +5096,7 @@ class ApiClient {
     scenarioId?: string
     since?: string
     until?: string
+    playground?: boolean
   }): Promise<EvaluatorResultsAggregateResponse> {
     const query: Record<string, string> = {}
     if (params.suiteId) query.suite_id = params.suiteId
@@ -5069,6 +5104,7 @@ class ApiClient {
     if (params.scenarioId) query.scenario_id = params.scenarioId
     if (params.since) query.since = params.since
     if (params.until) query.until = params.until
+    if (params.playground !== undefined) query.playground = String(params.playground)
     const response = await this.client.get('/api/v1/evaluator-results/aggregate', { params: query })
     return response.data
   }

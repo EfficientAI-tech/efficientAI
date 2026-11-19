@@ -283,10 +283,15 @@ export default function ParameterMappingTable({
                 state.parameterMapping[param.name] || NOT_USED
               const isLocked = param.type === 'conversation_id'
               const isRequired = isRequiredSchemaParameter(param)
+              const mappedHeader = (state.parameterMapping[param.name] || '').trim()
+              const missingRequiredMapping = isRequired && !mappedHeader
               return (
                 <div
                   key={param.name}
-                  className="grid grid-cols-[1fr_1fr] gap-2 items-start px-3 py-2"
+                  className={`grid grid-cols-[1fr_1fr] gap-2 items-start px-3 py-2 ${missingRequiredMapping
+                    ? 'bg-red-50/90 border-l-4 border-l-red-400'
+                    : ''
+                    }`}
                 >
                   <div className="text-sm text-gray-800 truncate flex items-start gap-1.5 pt-1.5">
                     <FileText className="h-3.5 w-3.5 text-gray-400 flex-shrink-0 mt-0.5" />
@@ -294,8 +299,11 @@ export default function ParameterMappingTable({
                       <div className="flex items-center gap-1.5">
                         <span className="truncate font-medium">{param.name}</span>
                         {isRequired && (
-                          <span className="text-[10px] uppercase tracking-wide text-red-600">
-                            required
+                          <span
+                            className="inline-flex shrink-0 items-center rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-900"
+                            title="Must map a source column; empty cells in that column skip the row at import."
+                          >
+                            Required
                           </span>
                         )}
                         {isLocked && (
@@ -317,7 +325,10 @@ export default function ParameterMappingTable({
                         setParameterHeader(param.name, e.target.value)
                       }
                       disabled={disabled}
-                      className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-primary-500 disabled:opacity-60"
+                      className={`w-full px-2 py-1.5 border rounded text-sm focus:ring-2 focus:ring-primary-500 disabled:opacity-60 ${missingRequiredMapping
+                        ? 'border-red-300 bg-white ring-1 ring-red-200'
+                        : 'border-gray-300'
+                        }`}
                     >
                       <option value={NOT_USED}>
                         {isRequired
@@ -339,12 +350,21 @@ export default function ParameterMappingTable({
       </div>
 
       <div className="border border-gray-200 rounded-lg overflow-hidden">
-        <div className="flex items-center justify-between bg-gray-50 px-3 py-2 text-xs font-medium text-gray-600 border-b border-gray-200">
-          <span>Unmapped source columns</span>
+        <div className="flex items-start justify-between gap-3 bg-gray-50 px-3 py-2 border-b border-gray-200">
+          <div className="min-w-0">
+            <div className="text-xs font-medium text-gray-600">
+              Unmapped source columns
+            </div>
+            <p className="mt-0.5 text-[11px] font-normal leading-snug text-gray-500">
+              Check <span className="font-medium text-gray-600">Skip</span> to
+              leave a column out of the import — its values won’t be loaded for
+              any row.
+            </p>
+          </div>
           {unmappedHeaders.length > 0 && (
             <button
               type="button"
-              className="text-[11px] text-primary-600 hover:text-primary-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              className="shrink-0 text-[11px] text-primary-600 hover:text-primary-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
               onClick={() => setAllUnmappedSkipped(!allUnmappedSkipped)}
               disabled={disabled}
             >
@@ -359,39 +379,38 @@ export default function ParameterMappingTable({
             </p>
           ) : (
             unmappedHeaders.map((header) => {
-                const isSkipped = !!state.skipped[header]
-                return (
-                  <label
-                    key={header}
-                    className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-gray-50"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={isSkipped}
-                      onChange={(e) =>
-                        setHeaderSkipped(header, e.target.checked)
-                      }
-                      disabled={disabled}
-                      className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                    />
-                    <span className="text-sm text-gray-800 truncate">
-                      {header}
-                    </span>
-                    <span className="text-xs text-gray-500 ml-auto">
-                      {isSkipped ? 'Will be skipped' : 'Needs decision'}
-                    </span>
-                  </label>
-                )
-              })
+              const isSkipped = !!state.skipped[header]
+              return (
+                <label
+                  key={header}
+                  className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-gray-50"
+                >
+                  <input
+                    type="checkbox"
+                    checked={isSkipped}
+                    onChange={(e) =>
+                      setHeaderSkipped(header, e.target.checked)
+                    }
+                    disabled={disabled}
+                    className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                  />
+                  <span className="text-sm text-gray-800 truncate">
+                    {header}
+                  </span>
+                  <span className="text-xs text-gray-500 ml-auto">
+                    {isSkipped ? 'Will be skipped' : 'Needs decision'}
+                  </span>
+                </label>
+              )
+            })
           )}
         </div>
       </div>
 
       <div className="space-y-1">
         {validation.missingRequired.length > 0 && (
-          <p className="text-xs text-red-600">
-            Required parameter
-            {validation.missingRequired.length > 1 ? 's' : ''} not mapped:{' '}
+          <p className="text-sm text-red-700 font-medium">
+            Cannot save until required parameters are mapped:{' '}
             <strong>{validation.missingRequired.join(', ')}</strong>.
           </p>
         )}
@@ -404,8 +423,8 @@ export default function ParameterMappingTable({
         {validation.unhandledHeaders.length > 0 && (
           <p className="text-xs text-red-600">
             Decide what to do with{' '}
-            <strong>{validation.unhandledHeaders.join(', ')}</strong> — map
-            to a parameter above or tick "Skip".
+            <strong>{validation.unhandledHeaders.join(', ')}</strong> — map to a
+            parameter above or check <strong>Skip</strong> next to the column name.
           </p>
         )}
       </div>

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime
 from statistics import mean, median, pstdev
+from types import SimpleNamespace
 from typing import Any, DefaultDict, Dict, List, Optional, Set
 from uuid import UUID
 
@@ -207,6 +208,7 @@ def compute_evaluator_results_aggregate(
     scenario_id: Optional[UUID] = None,
     since: Optional[datetime] = None,
     until: Optional[datetime] = None,
+    playground: Optional[bool] = None,
 ) -> EvaluatorResultsAggregateResponse:
     query = build_evaluator_results_query(
         db,
@@ -217,8 +219,10 @@ def compute_evaluator_results_aggregate(
         scenario_id=str(scenario_id) if scenario_id else None,
         since=since,
         until=until,
+        playground=playground,
     )
-    rows = query.all()
+    loaded = query.with_entities(EvaluatorResult.status, EvaluatorResult.metric_scores).all()
+    rows = [SimpleNamespace(status=status, metric_scores=scores) for status, scores in loaded]
 
     total_rows = len(rows)
     completed_rows = 0

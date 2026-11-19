@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { getEvaluatorResultPlaceholder } from '../../../lib/evaluatorResultQuery'
 import { apiClient } from '../../../lib/api'
 import { ArrowLeft, Clock, CheckCircle, XCircle, Loader, BarChart3, Brain, HelpCircle, Sparkles, AudioWaveform, RotateCcw, Activity } from 'lucide-react'
@@ -18,99 +18,103 @@ import {
   buildChildMetricIds,
   shouldHideMetricScore as hideMetricScore,
 } from '../../metrics/utils/metricScoreFilters'
+import {
+  resolveResultsHubBackPath,
+  resultsHubHrefWithScope,
+} from './resultsHubNavigation'
 
 // Comprehensive metric information with descriptions and ideal values
-const METRIC_INFO: Record<string, { 
+const METRIC_INFO: Record<string, {
   description: string
   ideal: string
   unit?: string
   category: 'acoustic' | 'ai_voice' | 'llm'
 }> = {
-  'Pitch Variance': { 
+  'Pitch Variance': {
     description: 'F0 variation measuring prosodic expressiveness. Higher values indicate more expressive speech.',
     ideal: '20-50 Hz (natural speech)',
     unit: 'Hz',
     category: 'acoustic'
   },
-  'Jitter': { 
+  'Jitter': {
     description: 'Cycle-to-cycle pitch period variation indicating vocal stability. Lower is better.',
     ideal: '< 1% (healthy voice)',
     unit: '%',
     category: 'acoustic'
   },
-  'Shimmer': { 
+  'Shimmer': {
     description: 'Amplitude perturbation measuring voice quality consistency. Lower is better.',
     ideal: '< 3% (clear voice)',
     unit: '%',
     category: 'acoustic'
   },
-  'HNR': { 
+  'HNR': {
     description: 'Harmonics-to-Noise Ratio measuring signal clarity. Higher indicates cleaner voice.',
     ideal: '> 20 dB (clear, non-breathy)',
     unit: 'dB',
     category: 'acoustic'
   },
-  'MOS Score': { 
+  'MOS Score': {
     description: 'Mean Opinion Score predicting human perception of audio quality (1-5 scale).',
     ideal: '4.0+ (studio quality), 3.0 (phone quality), <2.0 (poor/robotic)',
     category: 'ai_voice'
   },
-  'Emotion Category': { 
+  'Emotion Category': {
     description: 'Dominant emotion detected in the voice (angry, happy, sad, neutral, fearful, etc.).',
     ideal: 'Depends on context - should match expected tone',
     category: 'ai_voice'
   },
-  'Emotion Confidence': { 
+  'Emotion Confidence': {
     description: 'Confidence score for the detected emotion category.',
     ideal: '> 0.7 (high confidence)',
     category: 'ai_voice'
   },
-  'Valence': { 
+  'Valence': {
     description: 'Emotional positivity/negativity scale. Negative = sad/angry, Positive = happy/excited.',
     ideal: '-1.0 to +1.0 (context dependent)',
     category: 'ai_voice'
   },
-  'Arousal': { 
+  'Arousal': {
     description: 'Emotional intensity/energy level. Low = calm/sleepy, High = excited/energetic.',
     ideal: '0.3-0.6 (engaged but not agitated)',
     category: 'ai_voice'
   },
-  'Speaker Consistency': { 
+  'Speaker Consistency': {
     description: 'Voice identity stability throughout the call. Detects if voice changed mid-call (glitch).',
     ideal: '> 0.8 (same voice), < 0.5 indicates voice glitch',
     category: 'ai_voice'
   },
-  'Prosody Score': { 
+  'Prosody Score': {
     description: 'Expressiveness/drama score. Low = monotone/flat, High = expressive/dynamic.',
     ideal: '0.4-0.7 (natural expressiveness)',
     category: 'ai_voice'
   },
-  'Follow Instructions': { 
+  'Follow Instructions': {
     description: 'How well the agent followed the given instructions and guidelines.',
     ideal: '> 0.8 (80%+)',
     category: 'llm'
   },
-  'Problem Resolution': { 
+  'Problem Resolution': {
     description: 'Whether the agent successfully resolved the customer\'s problem or query.',
     ideal: '> 0.8 (80%+)',
     category: 'llm'
   },
-  'Professionalism': { 
+  'Professionalism': {
     description: 'Professional demeanor, appropriate language, and courteous behavior.',
     ideal: '> 0.85 (85%+)',
     category: 'llm'
   },
-  'Clarity and Empathy': { 
+  'Clarity and Empathy': {
     description: 'Clear communication combined with understanding and acknowledgment of customer feelings.',
     ideal: '> 0.8 (80%+)',
     category: 'llm'
   },
-  'Objective Achieved': { 
+  'Objective Achieved': {
     description: 'Whether the conversation\'s primary objective was successfully achieved.',
     ideal: 'Yes/True',
     category: 'llm'
   },
-  'Overall Quality': { 
+  'Overall Quality': {
     description: 'Holistic assessment of the entire conversation quality.',
     ideal: '> 0.8 (80%+)',
     category: 'llm'
@@ -134,9 +138,9 @@ const getAudioMetricInfo = (metricName: string) => {
 const MetricTooltip = ({ metricName }: { metricName: string }) => {
   const [isVisible, setIsVisible] = useState(false)
   const info = getMetricInfo(metricName)
-  
+
   if (!info) return null
-  
+
   return (
     <div className="relative inline-block ml-1.5">
       <button
@@ -149,7 +153,7 @@ const MetricTooltip = ({ metricName }: { metricName: string }) => {
       >
         <HelpCircle className="w-3.5 h-3.5" />
       </button>
-      
+
       <AnimatePresence>
         {isVisible && (
           <motion.div
@@ -247,36 +251,36 @@ function EvaluationStepper({
 
   const steps = isChat
     ? [
-        { key: 'queued', label: 'Queued', sublabel: 'Preparing simulation' },
-        {
-          key: 'transcribing',
-          label: 'Simulating chat',
-          sublabel: chatLlmToLlm ? 'LLM-to-LLM turns' : 'Test LLM vs production',
-        },
-        { key: 'evaluating', label: 'Evaluating', sublabel: 'Conversation metrics' },
-      ]
+      { key: 'queued', label: 'Queued', sublabel: 'Preparing simulation' },
+      {
+        key: 'transcribing',
+        label: 'Simulating chat',
+        sublabel: chatLlmToLlm ? 'LLM-to-LLM turns' : 'Test LLM vs production',
+      },
+      { key: 'evaluating', label: 'Evaluating', sublabel: 'Conversation metrics' },
+    ]
     : [
-        { key: 'queued', label: 'Queued', sublabel: 'Preparing worker' },
-        { key: 'transcribing', label: 'Analyzing Audio', sublabel: 'Acoustic & voice quality' },
-        { key: 'evaluating', label: 'Evaluating', sublabel: 'LLM conversation metrics' },
-      ]
+      { key: 'queued', label: 'Queued', sublabel: 'Preparing worker' },
+      { key: 'transcribing', label: 'Analyzing Audio', sublabel: 'Acoustic & voice quality' },
+      { key: 'evaluating', label: 'Evaluating', sublabel: 'LLM conversation metrics' },
+    ]
 
   const activeIdx = Math.max(0, steps.findIndex(s => s.key === status))
 
   const statusMessages: Record<string, string> = isChat
     ? {
-        queued: 'Preparing LLM chat simulation',
-        call_initiating: 'Running simulated chat turns',
-        call_connecting: 'Running simulated chat turns',
-        call_in_progress: 'Chat simulation in progress',
-        transcribing: 'Running simulated chat turns',
-        evaluating: 'Scoring conversation with evaluators',
-      }
+      queued: 'Preparing LLM chat simulation',
+      call_initiating: 'Running simulated chat turns',
+      call_connecting: 'Running simulated chat turns',
+      call_in_progress: 'Chat simulation in progress',
+      transcribing: 'Running simulated chat turns',
+      evaluating: 'Scoring conversation with evaluators',
+    }
     : {
-        queued: 'Downloading audio & preparing evaluation',
-        transcribing: 'Running acoustic analysis & voice quality metrics',
-        evaluating: 'Evaluating conversation quality with LLM',
-      }
+      queued: 'Downloading audio & preparing evaluation',
+      transcribing: 'Running acoustic analysis & voice quality metrics',
+      evaluating: 'Evaluating conversation quality with LLM',
+    }
 
   return (
     <div className="py-8 px-4">
@@ -354,6 +358,11 @@ export default function EvaluatorResultDetailPage({
   const { id: routeId } = useParams<{ id: string }>()
   const id = resultIdOverride ?? routeId
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const resultsHubBackPath = useMemo(
+    () => resolveResultsHubBackPath(searchParams.get('from')),
+    [searchParams],
+  )
   const queryClient = useQueryClient()
   const location = window.location.pathname
   const isFromPlayground = location.includes('/playground/test-agent-results')
@@ -393,15 +402,15 @@ export default function EvaluatorResultDetailPage({
     const agentId = resultData.agent_id ?? resultData.agent?.id
     const suiteId = resultData.suite_id ?? resultData.evaluator?.suite_id
     const scenarioId = resultData.scenario_id ?? resultData.scenario?.id
-    const crumbs: { label: string; to?: string }[] = [{ label: 'Evaluation Results', to: '/results' }]
-    const workspaceUrl = (suite?: string, scenario?: string) => {
-      const params = new URLSearchParams()
-      if (agentId) params.set('agent', String(agentId))
-      if (suite) params.set('suite', suite)
-      if (scenario) params.set('scenario', scenario)
-      const qs = params.toString()
-      return `/results${qs ? `?${qs}` : ''}`
-    }
+    const crumbs: { label: string; to?: string }[] = [
+      { label: 'Evaluation Results', to: resultsHubBackPath },
+    ]
+    const workspaceUrl = (suite?: string, scenario?: string) =>
+      resultsHubHrefWithScope(resultsHubBackPath, {
+        agentId: agentId ? String(agentId) : null,
+        suiteId: suite ?? null,
+        scenarioId: scenario ?? null,
+      })
     if (agentId && resultData.agent?.name) {
       crumbs.push({ label: resultData.agent.name, to: workspaceUrl() })
     }
@@ -419,7 +428,7 @@ export default function EvaluatorResultDetailPage({
     }
     crumbs.push({ label: resultData.result_id })
     return crumbs
-  }, [result, isFromPlayground])
+  }, [result, isFromPlayground, resultsHubBackPath])
 
   const shouldHideMetricScore = (
     metricId: string,
@@ -465,7 +474,7 @@ export default function EvaluatorResultDetailPage({
     const secs = Math.floor(seconds % 60)
     return `${mins}m ${secs}s`
   }
-  
+
   const getEffectiveDuration = (): number | null => {
     if (result?.call_data?.duration_ms) {
       return result.call_data.duration_ms / 1000
@@ -487,7 +496,7 @@ export default function EvaluatorResultDetailPage({
 
   const formatMetricValue = (value: any, type: string, metricName?: string): React.ReactNode => {
     if (value === null || value === undefined) return <span className="text-gray-300">--</span>
-    
+
     const normalizedType = type?.toLowerCase()
 
     if (normalizedType === 'category') {
@@ -498,7 +507,7 @@ export default function EvaluatorResultDetailPage({
         </span>
       )
     }
-    
+
     if (metricName === 'Emotion Category') {
       const emotion = String(value).toLowerCase()
       const emotionColors: Record<string, { bg: string; text: string }> = {
@@ -521,12 +530,12 @@ export default function EvaluatorResultDetailPage({
         </span>
       )
     }
-    
+
     if (normalizedType === 'boolean') {
       const boolValue = value === true || value === 1 || value === '1' || value === 'true'
       return <span className="block text-base font-semibold text-gray-900">{boolValue ? 'Yes' : 'No'}</span>
     }
-    
+
     if (normalizedType === 'rating') {
       if (typeof value === 'string' && isNaN(parseFloat(value))) {
         return (
@@ -535,21 +544,21 @@ export default function EvaluatorResultDetailPage({
           </span>
         )
       }
-      
+
       const numValue = typeof value === 'number' ? value : parseFloat(value)
       if (isNaN(numValue)) return <span className="text-gray-300">--</span>
-      
+
       const normalizedValue = Math.max(0, Math.min(1, numValue))
       const percentage = Math.round(normalizedValue * 100)
-      
+
       const getColor = (pct: number) => {
         if (pct >= 80) return { bar: 'bg-emerald-500', text: 'text-emerald-700', ring: 'text-emerald-500' }
         if (pct >= 60) return { bar: 'bg-amber-500', text: 'text-amber-700', ring: 'text-amber-500' }
         return { bar: 'bg-rose-500', text: 'text-rose-700', ring: 'text-rose-500' }
       }
-      
+
       const color = getColor(percentage)
-      
+
       return (
         <div className="flex flex-col gap-2">
           <div className="flex items-baseline gap-1">
@@ -557,7 +566,7 @@ export default function EvaluatorResultDetailPage({
             <span className="text-sm text-gray-400">%</span>
           </div>
           <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
-            <motion.div 
+            <motion.div
               className={`h-full rounded-full ${color.bar}`}
               initial={{ width: 0 }}
               animate={{ width: `${percentage}%` }}
@@ -567,11 +576,11 @@ export default function EvaluatorResultDetailPage({
         </div>
       )
     }
-    
+
     if (normalizedType === 'number') {
       const numValue = typeof value === 'number' ? value : parseFloat(value)
       if (isNaN(numValue)) return <span className="text-gray-300">--</span>
-      
+
       if (metricName && isAudioMetric(metricName)) {
         const audioInfo = getAudioMetricInfo(metricName)
         return (
@@ -581,7 +590,7 @@ export default function EvaluatorResultDetailPage({
           </div>
         )
       }
-      
+
       return <span className="text-2xl font-bold text-gray-900 tabular-nums">{numValue.toFixed(1)}</span>
     }
 
@@ -626,7 +635,7 @@ export default function EvaluatorResultDetailPage({
             {error?.message || 'Result not found'}
           </p>
           <Button
-            onClick={() => (embedded && onEmbeddedBack ? onEmbeddedBack() : navigate('/results'))}
+            onClick={() => (embedded && onEmbeddedBack ? onEmbeddedBack() : navigate(resultsHubBackPath))}
             variant="ghost"
             size="sm"
             className="mt-4"
@@ -658,8 +667,8 @@ export default function EvaluatorResultDetailPage({
   })
   const callDetailsInDrawer = Boolean(
     drawerTargets.callShortId ||
-      drawerTargets.observabilityCallShortId ||
-      drawerTargets.evaluatorResultId,
+    drawerTargets.observabilityCallShortId ||
+    drawerTargets.evaluatorResultId,
   )
 
   const callAnalysisSummary =
@@ -703,14 +712,14 @@ export default function EvaluatorResultDetailPage({
         ) : (
           <Button
             variant="outline"
-            onClick={() => navigate(isFromPlayground ? '/playground' : '/results')}
+            onClick={() => navigate(isFromPlayground ? '/playground' : resultsHubBackPath)}
             leftIcon={<ArrowLeft className="h-4 w-4" />}
             className="mb-4"
           >
             Back to {isFromPlayground ? 'Playground' : 'Results'}
           </Button>
         )}
-        
+
         <div className="bg-white shadow rounded-lg p-6">
           <div className="flex items-center justify-between">
             <div>
@@ -843,21 +852,21 @@ export default function EvaluatorResultDetailPage({
           <BarChart3 className="w-5 h-5 mr-2" />
           Evaluation Metrics
         </h2>
-        
+
         <div>
           {/* Stepper progress (re-evaluate or initial evaluation) */}
           {!reEvalInProgress && displayStatus === 'completed' && resultData.metric_scores && Object.keys(resultData.metric_scores).length > 0 ? null
-           : reEvalInProgress || ['evaluating', 'transcribing', 'queued'].includes(displayStatus) ? (
-            <EvaluationStepper
-              isChat={isChatRun}
-              chatLlmToLlm={chatLlmToLlm}
-              status={
-              reEvalInProgress && !['queued', 'transcribing', 'evaluating'].includes(resultData.status)
-                ? 'queued'
-                : displayStatus
-            }
-            />
-          ) : null}
+            : reEvalInProgress || ['evaluating', 'transcribing', 'queued'].includes(displayStatus) ? (
+              <EvaluationStepper
+                isChat={isChatRun}
+                chatLlmToLlm={chatLlmToLlm}
+                status={
+                  reEvalInProgress && !['queued', 'transcribing', 'evaluating'].includes(resultData.status)
+                    ? 'queued'
+                    : displayStatus
+                }
+              />
+            ) : null}
 
           {/* Error state */}
           {!reEvalInProgress && resultData.status === 'failed' && !resultData.metric_scores && (
@@ -866,7 +875,7 @@ export default function EvaluatorResultDetailPage({
               <p className="text-red-700">Evaluation failed. Please try re-evaluating.</p>
             </div>
           )}
-          
+
           {/* Show metrics when completed (hide during re-evaluation) */}
           {!reEvalInProgress && resultData.metric_scores && Object.keys(resultData.metric_scores).length > 0 &&
             (() => {
@@ -879,7 +888,7 @@ export default function EvaluatorResultDetailPage({
                 if (typeof val === 'string' && val.trim() === '') return false
                 return true
               }
-              
+
               const acousticMetrics = Object.entries(resultData.metric_scores).filter(
                 ([metricId, metric]) => {
                   if (!hasValidValue(metric)) return false
@@ -910,12 +919,12 @@ export default function EvaluatorResultDetailPage({
               const fallbackMetrics =
                 totalVisible === 0
                   ? Object.entries(resultData.metric_scores).filter(
-                      ([metricId, metric]) =>
-                        hasValidValue(metric) &&
-                        !hideMetricScore(metricId, metric, childMetricIds, {
-                          skipParentMetricIdOnScore: true,
-                        }),
-                    )
+                    ([metricId, metric]) =>
+                      hasValidValue(metric) &&
+                      !hideMetricScore(metricId, metric, childMetricIds, {
+                        skipParentMetricIdOnScore: true,
+                      }),
+                  )
                   : []
 
               const renderMetricCards = (
@@ -940,7 +949,7 @@ export default function EvaluatorResultDetailPage({
                   ))}
                 </div>
               )
-              
+
               return (
                 <div className="space-y-8">
                   {fallbackMetrics.length > 0 ? (
@@ -980,7 +989,7 @@ export default function EvaluatorResultDetailPage({
                       </div>
                     </div>
                   )}
-                  
+
                   {/* Acoustic Metrics */}
                   {!isChatRun && fallbackMetrics.length === 0 && acousticMetrics.length > 0 && (
                     <div>
@@ -1003,7 +1012,7 @@ export default function EvaluatorResultDetailPage({
                       </div>
                     </div>
                   )}
-                  
+
                   {/* LLM Conversation Metrics */}
                   {fallbackMetrics.length === 0 && llmMetrics.length > 0 && (
                     <div>
@@ -1029,7 +1038,7 @@ export default function EvaluatorResultDetailPage({
                 </div>
               )
             })()}
-          
+
           {/* No metrics available */}
           {resultData.status === 'completed' && (!resultData.metric_scores || Object.keys(resultData.metric_scores).length === 0) && (
             <div className="text-center py-8 text-gray-500">

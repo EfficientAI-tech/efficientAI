@@ -77,6 +77,19 @@ export function formatUsageCostExactUsd(
   return formatExactMoney(amount, currency)
 }
 
+/** Hover text for spend charts: explicit USD and INR from a USD amount. */
+export function formatUsdInrTooltipPair(
+  usd: number | null | undefined,
+  inrRate: number,
+): { usd: string; inr: string } | null {
+  const amount = Number(usd)
+  if (!Number.isFinite(amount)) return null
+  return {
+    usd: formatUsageCostExactUsd(amount, 'USD', 1),
+    inr: formatUsageCostExactUsd(amount, 'INR', inrRate),
+  }
+}
+
 export function formatFxRateHint(
   inrRate: number,
   asOf?: string | null,
