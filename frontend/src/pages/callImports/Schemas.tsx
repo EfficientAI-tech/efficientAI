@@ -24,9 +24,9 @@ import type {
 import Button from '../../components/Button'
 import InfoTooltip from '../../components/shared/InfoTooltip'
 
-const REQUIRED_COLUMN_TOOLTIP_TITLE = 'Required for mapping'
+const REQUIRED_COLUMN_TOOLTIP_TITLE = 'Required on import'
 const REQUIRED_COLUMN_TOOLTIP_BODY =
-  'When checked, every import must map a source column to this parameter—you can’t save column mapping while it’s unmapped. Uncheck if imports may leave this parameter as “not used.” conversation_id is always required.'
+  'When checked, every import must map a source column to this parameter, and each row must have a non-empty value in that column — blank rows are skipped and not imported. Uncheck if the column may be unmapped or rows may omit this field. conversation_id is always required.'
 
 const PARAMETER_TYPES: { value: CallImportSchemaParameterType; label: string }[] = [
   { value: 'recording_url', label: 'Recording URL' },
@@ -489,10 +489,10 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
                             } ${isSystemRequired ? 'cursor-default' : 'cursor-pointer hover:border-amber-300'}`}
                           title={
                             isSystemRequired
-                              ? 'conversation_id is always required and must be mapped.'
+                              ? 'Always required: must be mapped; rows without a value are skipped.'
                               : p.is_required
-                                ? 'Required: column mapping must assign a source column.'
-                                : 'Optional: mapping may leave this parameter unmapped.'
+                                ? 'Required: must map a column; rows with an empty cell are skipped.'
+                                : 'Optional: may be unmapped or empty per row.'
                           }
                         >
                           <input
@@ -538,8 +538,8 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
               <code className="bg-gray-100 px-1 rounded">recording_url</code>,{' '}
               <code className="bg-gray-100 px-1 rounded">recording_date</code>, or{' '}
               <code className="bg-gray-100 px-1 rounded">transcript</code> only when
-              your files include those columns — turn on <strong>Required</strong> if each
-              import must map a source column to that parameter.
+              your files include those columns — turn on <strong>Required</strong> when each
+              import must map that column and rows without a value should not be imported.
             </p>
           </div>
 

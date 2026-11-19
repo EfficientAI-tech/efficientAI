@@ -255,6 +255,13 @@ def _recording_url_cell_is_valid_http(raw: str) -> bool:
     return lower.startswith("http://") or lower.startswith("https://")
 
 
+def _empty_required_cell_message(source_row: int, param_name: str) -> str:
+    return (
+        f"Row {source_row}: no value in mapped column '{param_name}' "
+        "(required on schema)."
+    )
+
+
 def _missing_required_skip_reason(
     param_type: CallImportParameterType,
 ) -> str:
@@ -271,7 +278,7 @@ def _missing_required_skip_reason(
 
 
 def _parameter_is_required(param: CallImportSchemaParameter) -> bool:
-    """Return whether a schema parameter must be mapped on every upload."""
+    """Return whether a parameter must be mapped and non-empty per imported row."""
     if param.is_required:
         return True
     try:
@@ -427,8 +434,8 @@ def _apply_schema_mapping(
                     source_row=source_row,
                     reason="missing_conversation_id",
                     message=(
-                        f"Row {source_row} is missing the '{conv_param.name}' "
-                        "(conversation_id) value."
+                        f"Row {source_row}: no value in mapped column "
+                        f"'{conv_param.name}' (conversation_id is always required)."
                     ),
                 )
             )
@@ -446,9 +453,8 @@ def _apply_schema_mapping(
                         CallImportParseSkip(
                             source_row=source_row,
                             reason="missing_recording_url",
-                            message=(
-                                f"Row {source_row} is missing the required "
-                                f"'{rec_url_param_name}' value."
+                            message=_empty_required_cell_message(
+                                source_row, rec_url_param_name
                             ),
                         )
                     )
@@ -509,10 +515,7 @@ def _apply_schema_mapping(
                     CallImportParseSkip(
                         source_row=source_row,
                         reason=_missing_required_skip_reason(param_type),
-                        message=(
-                            f"Row {source_row} is missing the required "
-                            f"'{param.name}' value."
-                        ),
+                        message=_empty_required_cell_message(source_row, param.name),
                     )
                 )
                 row_skipped = True

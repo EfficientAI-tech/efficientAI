@@ -301,7 +301,7 @@ export default function ParameterMappingTable({
                         {isRequired && (
                           <span
                             className="inline-flex shrink-0 items-center rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-900"
-                            title="Column mapping must assign a source column to this parameter."
+                            title="Must map a source column; empty cells in that column skip the row at import."
                           >
                             Required
                           </span>

@@ -62,12 +62,65 @@ function isToolCallError(row: Record<string, unknown>): boolean {
   return String(row.status ?? '').toLowerCase() === 'error'
 }
 
-function toolCallDedupeKey(row: Record<string, unknown>): string {
+function toolCallRecordId(row: Record<string, unknown>): string | null {
+  for (const field of ['call_id', 'tool_call_id', 'id'] as const) {
+    const raw = row[field]
+    if (raw == null) continue
+    const id = String(raw).trim()
+    if (id) return id
+  }
+  return null
+}
+
+/** Fallback when ``call_id`` is missing — must not collapse distinct calls on the same turn. */
+function toolCallMirrorKey(row: Record<string, unknown>): string {
   const tool = String(row.tool ?? row.name ?? '')
-  const ts = String(row.timestamp ?? row.ts ?? '')
+  const ts = String(row.timestamp ?? row.ts ?? row.at ?? '')
   const turn = String(row.turn ?? row.turn_index ?? row.step ?? '')
   const query = String(row.query ?? '')
-  return [tool, ts, turn, query].join('|')
+  const status = String(row.status ?? '')
+  const err = String(row.error ?? '')
+  const latency = String(row.latency_ms ?? '')
+  const args = row.arguments ?? row.args
+  let argsKey = ''
+  if (args && typeof args === 'object') {
+    try {
+      argsKey = JSON.stringify(args)
+    } catch {
+      argsKey = String(args)
+    }
+  } else if (args != null) {
+    argsKey = String(args)
+  }
+  return [tool, ts, turn, query, status, err, latency, argsKey].join('\u0001')
+}
+
+function dedupeToolCallRecords(rows: Record<string, unknown>[]): Record<string, unknown>[] {
+  const seenIds = new Set<string>()
+  const seenMirrors = new Set<string>()
+  const unique: Record<string, unknown>[] = []
+  for (const row of rows) {
+    const id = toolCallRecordId(row)
+    if (id) {
+      if (seenIds.has(id)) continue
+      seenIds.add(id)
+      unique.push(row)
+      continue
+    }
+    const mirror = toolCallMirrorKey(row)
+    if (seenMirrors.has(mirror)) continue
+    seenMirrors.add(mirror)
+    unique.push(row)
+  }
+  return unique
+}
+
+function countToolCallFailures(rows: Record<string, unknown>[]): number {
+  let failures = 0
+  for (const row of dedupeToolCallRecords(rows)) {
+    if (isToolCallError(row)) failures += 1
+  }
+  return failures
 }
 
 function knowledgeBaseToolRecords(
@@ -103,39 +156,20 @@ function pickNumericMetric(
   return null
 }
 
-function countToolAndRagFailures(callData: Record<string, unknown> | null | undefined): {
-  tool: number
-  rag: number
-} {
-  let tool = 0
-  let rag = 0
-  if (!callData || typeof callData !== 'object') return { tool, rag }
-
-  const ragSeen = new Set<string>()
-  for (const row of knowledgeBaseToolRecords(callData)) {
-    const key = toolCallDedupeKey(row)
-    if (ragSeen.has(key)) continue
-    ragSeen.add(key)
-    if (isToolCallError(row)) rag += 1
-  }
-
-  const toolSeen = new Set<string>()
-  const noteToolFailure = (row: Record<string, unknown>) => {
-    const provider = String(row.provider ?? '').toLowerCase()
-    if (provider === 'knowledge_base') return
-    const key = toolCallDedupeKey(row)
-    if (toolSeen.has(key)) return
-    toolSeen.add(key)
-    if (isToolCallError(row)) tool += 1
-  }
-
+function collectNonKnowledgeBaseToolRecords(
+  callData: Record<string, unknown>,
+): Record<string, unknown>[] {
+  const rows: Record<string, unknown>[] = []
   const rootTools = callData.tool_calls
   if (Array.isArray(rootTools)) {
     for (const raw of rootTools) {
-      if (raw && typeof raw === 'object') noteToolFailure(raw as Record<string, unknown>)
+      if (!raw || typeof raw !== 'object') continue
+      const row = raw as Record<string, unknown>
+      const provider = String(row.provider ?? '').toLowerCase()
+      if (provider === 'knowledge_base') continue
+      rows.push(row)
     }
   }
-
   const messages = callData.messages
   if (Array.isArray(messages)) {
     for (const raw of messages) {
@@ -144,11 +178,24 @@ function countToolAndRagFailures(callData: Record<string, unknown> | null | unde
       const nested = msg.tool_calls ?? msg.toolCalls
       if (!Array.isArray(nested)) continue
       for (const t of nested) {
-        if (t && typeof t === 'object') noteToolFailure(t as Record<string, unknown>)
+        if (!t || typeof t !== 'object') continue
+        const row = t as Record<string, unknown>
+        const provider = String(row.provider ?? '').toLowerCase()
+        if (provider === 'knowledge_base') continue
+        rows.push(row)
       }
     }
   }
+  return rows
+}
 
+function countToolAndRagFailures(callData: Record<string, unknown> | null | undefined): {
+  tool: number
+  rag: number
+} {
+  if (!callData || typeof callData !== 'object') return { tool: 0, rag: 0 }
+  const rag = countToolCallFailures(knowledgeBaseToolRecords(callData))
+  const tool = countToolCallFailures(collectNonKnowledgeBaseToolRecords(callData))
   return { tool, rag }
 }
 

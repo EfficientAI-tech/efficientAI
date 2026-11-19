@@ -360,7 +360,7 @@ def test_raise_if_no_importable_rows_when_all_skipped():
             CallImportParseSkip(
                 source_row=2,
                 reason="missing_recording_url",
-                message="Row 2 is missing the required 'recording_url' value.",
+                message="Row 2: no value in mapped column 'recording_url' (required on schema).",
             )
         ],
     )

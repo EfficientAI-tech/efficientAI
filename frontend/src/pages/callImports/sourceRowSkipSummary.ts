@@ -3,7 +3,7 @@ import type { CallImportSourceRowSkip } from '../../types/api'
 const REASON_LABELS: Record<string, string> = {
   missing_conversation_id: 'missing conversation ID',
   missing_recording_url: 'missing recording URL',
-  missing_transcript: 'missing required transcript',
+  missing_transcript: 'no value in mapped transcript column',
   missing_recording_date: 'missing recording date',
   missing_required_parameter: 'missing required field',
   invalid_recording_url: 'invalid recording URL',
