@@ -226,6 +226,30 @@ def build_evaluator_results_query(
     if usage_model:
         model_key = str(usage_model).strip()
         if model_key:
+            scoped_agent: Optional[UUID] = None
+            scoped_scenario: Optional[UUID] = None
+            scoped_suite: Optional[UUID] = None
+            scoped_evaluator: Optional[UUID] = None
+            if agent_id:
+                try:
+                    scoped_agent = UUID(agent_id)
+                except ValueError:
+                    scoped_agent = None
+            if scenario_id:
+                try:
+                    scoped_scenario = UUID(scenario_id)
+                except ValueError:
+                    scoped_scenario = None
+            if suite_id:
+                try:
+                    scoped_suite = UUID(suite_id)
+                except ValueError:
+                    scoped_suite = None
+            if evaluator_id:
+                try:
+                    scoped_evaluator = UUID(evaluator_id)
+                except ValueError:
+                    scoped_evaluator = None
             result_ids, usage_micro = evaluator_result_ids_with_usage_model(
                 db,
                 organization_id=organization_id,
@@ -234,6 +258,10 @@ def build_evaluator_results_query(
                 since=since,
                 until=until,
                 playground=playground,
+                agent_id=scoped_agent,
+                scenario_id=scoped_scenario,
+                suite_id=scoped_suite,
+                evaluator_id=scoped_evaluator,
             )
             _list_query_meta(query)["usage_cost_usd"] = usage_micro / 1_000_000
             if result_ids:

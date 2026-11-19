@@ -531,24 +531,6 @@ def compute_evaluator_results_dashboard_ops(
     start_day = _usage_day(since)
     end_day = _usage_day(until)
 
-    playground_result_ids = {
-        rid
-        for (rid,) in db.query(CallRecording.evaluator_result_id).filter(
-            CallRecording.organization_id == organization_id,
-            CallRecording.workspace_id == workspace_id,
-            CallRecording.source == CallRecordingSource.PLAYGROUND,
-            CallRecording.evaluator_result_id.isnot(None),
-        ).all()
-    }
-    playground_result_ids.update(
-        rid
-        for (rid,) in db.query(EvaluatorResult.id).filter(
-            EvaluatorResult.organization_id == organization_id,
-            EvaluatorResult.workspace_id == workspace_id,
-            EvaluatorResult.evaluator_id.is_(None),
-        ).all()
-    )
-
     usage_query = db.query(LLMUsageDaily).filter(
         LLMUsageDaily.organization_id == organization_id,
         LLMUsageDaily.workspace_id == workspace_id,
@@ -597,6 +579,37 @@ def compute_evaluator_results_dashboard_ops(
         ).all()
     ]
 
+    playground_result_ids: Optional[Set[UUID]] = None
+    if playground is not None:
+        candidate_result_ids: Set[UUID] = {
+            rid for (rid,) in result_query.with_entities(EvaluatorResult.id).all()
+        }
+        for row in usage_rows:
+            explicit = _parse_uuid(_context_dict(row.context).get("evaluator_result_id"))
+            if explicit is not None:
+                candidate_result_ids.add(explicit)
+        playground_result_ids = set()
+        if candidate_result_ids:
+            playground_result_ids.update(
+                rid
+                for (rid,) in db.query(CallRecording.evaluator_result_id).filter(
+                    CallRecording.organization_id == organization_id,
+                    CallRecording.workspace_id == workspace_id,
+                    CallRecording.source == CallRecordingSource.PLAYGROUND,
+                    CallRecording.evaluator_result_id.in_(candidate_result_ids),
+                ).all()
+                if rid is not None
+            )
+            playground_result_ids.update(
+                rid
+                for (rid,) in db.query(EvaluatorResult.id).filter(
+                    EvaluatorResult.organization_id == organization_id,
+                    EvaluatorResult.workspace_id == workspace_id,
+                    EvaluatorResult.evaluator_id.is_(None),
+                    EvaluatorResult.id.in_(candidate_result_ids),
+                ).all()
+            )
+
     agent_ids = {row.agent_id for row in tool_rows if row.agent_id}
     for spend in usage_rows:
         parsed = _parse_uuid(_context_dict(spend.context).get("agent_id"))
@@ -643,6 +656,7 @@ def compute_evaluator_results_dashboard_ops(
         since=since,
         until=until,
         playground=playground,
+        tz_name=tz_name,
     )
     aggregate = cached_evaluator_results_aggregate(
         db,

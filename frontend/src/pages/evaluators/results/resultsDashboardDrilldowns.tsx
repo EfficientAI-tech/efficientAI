@@ -949,7 +949,16 @@ export function MetricUsageDrill({
     [metrics],
   )
   const { data: metricMeans } = useQuery({
-    queryKey: ['scenario-metric-means', agentId, metricId, runListBase.since, runListBase.until, runListBase.playground],
+    queryKey: [
+      'scenario-metric-means',
+      agentId,
+      metricId,
+      runListBase.since,
+      runListBase.until,
+      runListBase.playground,
+      runListBase.suiteId,
+      runListBase.scenarioId,
+    ],
     queryFn: () => apiClient.getEvaluatorResultsDashboardOps({
       agentId,
       suiteId: runListBase.suiteId,

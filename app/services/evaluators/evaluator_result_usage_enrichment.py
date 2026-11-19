@@ -198,7 +198,7 @@ def _intersect_window(
     return start, end
 
 
-ShareKey = Tuple[UUID, Optional[UUID], str, date]
+ShareKey = Tuple[UUID, Optional[UUID], str, date, Optional[UUID]]
 
 
 def _share_key_from_row(row: LLMUsageDaily) -> Optional[ShareKey]:
@@ -211,13 +211,20 @@ def _share_key_from_row(row: LLMUsageDaily) -> Optional[ShareKey]:
     usage_day = row.usage_date
     if usage_day is None:
         return None
-    return (agent_id, scenario_id, model_name, usage_day)
+    evaluator_id = _evaluator_id_from_context(ctx)
+    return (agent_id, scenario_id, model_name, usage_day, evaluator_id)
 
 
 def _result_share_key(result: EvaluatorResult, model_name: str) -> Optional[ShareKey]:
     if result.agent_id is None or result.timestamp is None:
         return None
-    return (result.agent_id, result.scenario_id, model_name, result.timestamp.date())
+    return (
+        result.agent_id,
+        result.scenario_id,
+        model_name,
+        result.timestamp.date(),
+        result.evaluator_id,
+    )
 
 
 def _count_results_in_share_scope(
@@ -227,6 +234,7 @@ def _count_results_in_share_scope(
     workspace_id: Optional[UUID],
     agent_id: UUID,
     scenario_id: Optional[UUID],
+    evaluator_id: Optional[UUID],
     usage_day: date,
     window_since: Optional[datetime],
     window_until: Optional[datetime],
@@ -242,6 +250,8 @@ def _count_results_in_share_scope(
         query = query.filter(EvaluatorResult.workspace_id == workspace_id)
     if scenario_id is not None:
         query = query.filter(EvaluatorResult.scenario_id == scenario_id)
+    if evaluator_id is not None:
+        query = query.filter(EvaluatorResult.evaluator_id == evaluator_id)
     return int(query.scalar() or 0)
 
 
@@ -276,11 +286,13 @@ def _result_matches_usage_row_scope(
     ctx = row.context if isinstance(row.context, dict) else {}
     agent_id = _parse_uuid(ctx.get("agent_id"))
     scenario_id = _parse_uuid(ctx.get("scenario_id"))
+    evaluator_id = _evaluator_id_from_context(ctx)
     if agent_id is not None:
         if result.agent_id != agent_id:
             return False
+        if evaluator_id is not None and result.evaluator_id != evaluator_id:
+            return False
     else:
-        evaluator_id = _evaluator_id_from_context(ctx)
         if evaluator_id is None or result.evaluator_id != evaluator_id:
             return False
     if scenario_id is not None and result.scenario_id != scenario_id:
@@ -341,6 +353,7 @@ def _result_ids_for_usage_row(
 
     agent_id = _parse_uuid(ctx.get("agent_id"))
     scenario_id = _parse_uuid(ctx.get("scenario_id"))
+    evaluator_id = _evaluator_id_from_context(ctx)
 
     result_query = db.query(EvaluatorResult.id).filter(
         EvaluatorResult.organization_id == organization_id,
@@ -351,8 +364,9 @@ def _result_ids_for_usage_row(
         result_query = result_query.filter(EvaluatorResult.workspace_id == workspace_id)
     if agent_id is not None:
         result_query = result_query.filter(EvaluatorResult.agent_id == agent_id)
+        if evaluator_id is not None:
+            result_query = result_query.filter(EvaluatorResult.evaluator_id == evaluator_id)
     else:
-        evaluator_id = _evaluator_id_from_context(ctx)
         if evaluator_id is None:
             return []
         result_query = result_query.filter(EvaluatorResult.evaluator_id == evaluator_id)
@@ -561,13 +575,14 @@ def batch_llm_usage_rollups_for_results(
     for share_key in share_buckets:
         if share_key in share_run_count:
             continue
-        agent_id, scenario_id, _model, usage_day = share_key
+        agent_id, scenario_id, _model, usage_day, evaluator_id = share_key
         share_run_count[share_key] = _count_results_in_share_scope(
             db,
             organization_id=organization_id,
             workspace_id=workspace_id,
             agent_id=agent_id,
             scenario_id=scenario_id,
+            evaluator_id=evaluator_id,
             usage_day=usage_day,
             window_since=window_since,
             window_until=window_until,
@@ -732,6 +747,36 @@ def _playground_result_ids(
     return ids
 
 
+def _scoped_evaluator_result_query(
+    db: Session,
+    *,
+    organization_id: UUID,
+    workspace_id: Optional[UUID],
+    agent_id: Optional[UUID] = None,
+    scenario_id: Optional[UUID] = None,
+    suite_id: Optional[UUID] = None,
+    evaluator_id: Optional[UUID] = None,
+):
+    from app.models.database import Evaluator
+
+    query = db.query(EvaluatorResult.id).filter(
+        EvaluatorResult.organization_id == organization_id,
+    )
+    if workspace_id is not None:
+        query = query.filter(EvaluatorResult.workspace_id == workspace_id)
+    if agent_id is not None:
+        query = query.filter(EvaluatorResult.agent_id == agent_id)
+    if scenario_id is not None:
+        query = query.filter(EvaluatorResult.scenario_id == scenario_id)
+    if evaluator_id is not None:
+        query = query.filter(EvaluatorResult.evaluator_id == evaluator_id)
+    if suite_id is not None:
+        query = query.join(Evaluator, EvaluatorResult.evaluator_id == Evaluator.id).filter(
+            Evaluator.suite_id == suite_id
+        )
+    return query
+
+
 def evaluator_result_ids_with_usage_model(
     db: Session,
     *,
@@ -741,6 +786,10 @@ def evaluator_result_ids_with_usage_model(
     since: Optional[datetime] = None,
     until: Optional[datetime] = None,
     playground: Optional[bool] = None,
+    agent_id: Optional[UUID] = None,
+    scenario_id: Optional[UUID] = None,
+    suite_id: Optional[UUID] = None,
+    evaluator_id: Optional[UUID] = None,
 ) -> Tuple[List[UUID], int]:
     model_key = (model or "").strip()
     if not model_key:
@@ -782,13 +831,18 @@ def evaluator_result_ids_with_usage_model(
         else:
             implicit_rows.append(row)
 
+    scoped = _scoped_evaluator_result_query(
+        db,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        agent_id=agent_id,
+        scenario_id=scenario_id,
+        suite_id=suite_id,
+        evaluator_id=evaluator_id,
+    )
+
     if explicit_ids:
-        verified = db.query(EvaluatorResult.id).filter(
-            EvaluatorResult.organization_id == organization_id,
-            EvaluatorResult.id.in_(explicit_ids),
-        )
-        if workspace_id is not None:
-            verified = verified.filter(EvaluatorResult.workspace_id == workspace_id)
+        verified = scoped.filter(EvaluatorResult.id.in_(explicit_ids))
         matched = {rid for (rid,) in verified.all()}
         out.update(matched)
         for row in usage_rows:
@@ -817,8 +871,18 @@ def evaluator_result_ids_with_usage_model(
         )
         if not matched_ids:
             continue
-        out.update(matched_ids)
-        attributed_micro += int(row.total_cost_micro_usd or 0)
+        scoped_matched = {
+            rid for (rid,) in scoped.filter(EvaluatorResult.id.in_(matched_ids)).all()
+        }
+        if not scoped_matched:
+            continue
+        out.update(scoped_matched)
+        if len(scoped_matched) == len(matched_ids):
+            attributed_micro += int(row.total_cost_micro_usd or 0)
+        else:
+            attributed_micro += int(
+                (int(row.total_cost_micro_usd or 0) * len(scoped_matched)) / len(matched_ids)
+            )
     return list(out), attributed_micro
 
 

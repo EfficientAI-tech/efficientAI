@@ -107,6 +107,21 @@ def _reporting_day(value: datetime, anchor: Optional[datetime] = None) -> date:
     return value.astimezone(timezone.utc).date()
 
 
+def _calendar_day(value: datetime, tz_name: Optional[str]) -> date:
+    """Calendar day in the dashboard timezone so run-day charts match the run list."""
+    from zoneinfo import ZoneInfo
+
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    zone = timezone.utc
+    if tz_name:
+        try:
+            zone = ZoneInfo(tz_name)
+        except Exception:
+            zone = timezone.utc
+    return value.astimezone(zone).date()
+
+
 def _display_status(status: Optional[str], metric_scores: Any) -> str:
     return effective_evaluator_result_status(
         SimpleNamespace(status=status, metric_scores=metric_scores)
@@ -132,6 +147,7 @@ def fold_daily_buckets(
     rows: Iterable[DailySource],
     *,
     reporting_anchor: Optional[datetime] = None,
+    tz_name: Optional[str] = None,
 ) -> List[DailyBucket]:
     """Group finished runs into day, agent, scenario, and live/simulation buckets."""
     buckets: Dict[tuple, DailyBucket] = {}
@@ -141,7 +157,10 @@ def fold_daily_buckets(
         display = _display_status(row.status, row.metric_scores)
         if display not in _TERMINAL:
             continue
-        day = _reporting_day(row.timestamp, reporting_anchor)
+        if tz_name:
+            day = _calendar_day(row.timestamp, tz_name)
+        else:
+            day = _reporting_day(row.timestamp, reporting_anchor)
         key = (day, row.agent_id, row.scenario_id, row.is_live)
         bucket = buckets.get(key)
         if bucket is None:
@@ -538,8 +557,27 @@ def load_dashboard_series(
     since: Optional[datetime],
     until: Optional[datetime],
     playground: Optional[bool],
+    tz_name: Optional[str] = None,
 ) -> DashboardSeries:
     """Read the daily table. Rebuild the window when its totals are stale."""
+    if tz_name:
+        sources = _scoped_window_sources(
+            db,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            since=since,
+            until=until,
+            playground=playground,
+            agent_id=agent_id,
+            suite_id=suite_id,
+            scenario_id=scenario_id,
+        )
+        return _series_from_buckets(
+            fold_daily_buckets(sources, reporting_anchor=since, tz_name=tz_name),
+            agent_id=agent_id,
+            scenario_ids=None if suite_id is not None else scenario_ids,
+            playground=playground,
+        )
     use_exact_sources = suite_id is not None or scenario_id is not None or agent_id is not None
     if use_exact_sources:
         sources = _scoped_window_sources(
