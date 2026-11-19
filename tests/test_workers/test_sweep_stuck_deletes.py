@@ -59,7 +59,8 @@ def test_enqueue_skips_when_lock_held(
     )
     db_session.add(call_import)
     db_session.commit()
-    assert try_acquire_call_import_delete_lock(call_import.id) is not None
+    owner = try_acquire_call_import_delete_lock(call_import.id)
+    assert owner is not None
 
     enqueued: list[str] = []
     fake_module = types.ModuleType("app.workers.tasks.call_import_bulk_ops")
@@ -75,6 +76,14 @@ def test_enqueue_skips_when_lock_held(
         sys.modules,
         "app.workers.tasks.call_import_bulk_ops",
         fake_module,
+    )
+    monkeypatch.setattr(
+        "app.workers.tasks.sweep_stuck_deletes.list_stuck_call_imports",
+        lambda *_args, **_kwargs: [(call_import.id, org_id)],
+    )
+    monkeypatch.setattr(
+        "app.workers.tasks.sweep_stuck_deletes.list_stuck_evaluations",
+        lambda *_args, **_kwargs: [],
     )
 
     count = enqueue_stuck_deletes(db_session)

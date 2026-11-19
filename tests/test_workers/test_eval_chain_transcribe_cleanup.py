@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from app.workers.tasks.evaluate_call_import_row_core import (
     _apply_parent_status_from_counters,
     reconcile_evaluation_counters,
@@ -42,22 +44,6 @@ def test_eval_chain_transcribe_cleanup_rollup_partial_after_retry(
     db_session.flush()
     reconcile_evaluation_counters(db_session, evaluation)
     _apply_parent_status_from_counters(evaluation)
-
-
-def test_apply_parent_status_preserves_deleting():
-    from types import SimpleNamespace
-
-    evaluation = SimpleNamespace(
-        status="deleting",
-        total_rows=10,
-        completed_rows=10,
-        failed_rows=0,
-        started_at=None,
-        finished_at=None,
-    )
-    _apply_parent_status_from_counters(evaluation)
-    assert evaluation.status == "deleting"
-    assert evaluation.finished_at is None
     db_session.commit()
 
     assert evaluation.status == "running"
@@ -129,8 +115,6 @@ def test_fail_eval_row_for_import_rollup(db_session, monkeypatch):
 
 
 def test_apply_parent_status_preserves_deleting():
-    from types import SimpleNamespace
-
     evaluation = SimpleNamespace(
         status="deleting",
         total_rows=10,

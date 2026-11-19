@@ -57,7 +57,7 @@ def try_acquire_call_import_delete_lock(call_import_id: UUID | str) -> str | Non
             call_import_id,
             exc,
         )
-        return owner
+        return None
 
 
 def refresh_call_import_delete_lock(
@@ -117,7 +117,7 @@ def try_acquire_eval_delete_lock(evaluation_id: UUID | str) -> str | None:
             evaluation_id,
             exc,
         )
-        return owner
+        return None
 
 
 def refresh_eval_delete_lock(evaluation_id: UUID | str, owner: str) -> bool:
