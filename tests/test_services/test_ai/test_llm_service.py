@@ -188,6 +188,71 @@ def test_generate_response_azure_ai_skips_openai_deployment_rewrite(monkeypatch)
     assert "api_version" not in captured
 
 
+def test_azure_ai_inference_uses_endpoint_from_call_config(monkeypatch):
+    service = LLMService()
+    monkeypatch.setattr(service, "_get_ai_provider", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        llm_module,
+        "resolve_integration_for_call",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(service, "_resolve_api_key", lambda *_a, **_k: "azure-key")
+    monkeypatch.setattr(
+        llm_module,
+        "resolve_litellm_api_key",
+        lambda *_a, **_k: "azure-key",
+    )
+    monkeypatch.setattr(
+        llm_module,
+        "resolve_effective_routing",
+        lambda *_a, **_k: (None, "direct"),
+    )
+    monkeypatch.setattr(
+        llm_module,
+        "resolve_litellm_model",
+        lambda workload_model_str, gateway_active, credential: workload_model_str,
+    )
+    monkeypatch.setattr(llm_module, "apply_llm_gateway", lambda kwargs, **_: kwargs)
+    monkeypatch.setattr(
+        "app.database.release_read_only_session",
+        lambda _db: None,
+    )
+
+    captured: dict = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+
+        class _Msg:
+            content = "ok"
+
+        class _Choice:
+            message = _Msg()
+            finish_reason = "stop"
+
+        class _Usage:
+            prompt_tokens = 1
+            completion_tokens = 1
+            total_tokens = 2
+
+        return SimpleNamespace(choices=[_Choice()], usage=_Usage())
+
+    monkeypatch.setattr(llm_module.litellm, "completion", fake_completion)
+
+    service.generate_response(
+        messages=[{"role": "user", "content": "Hello!"}],
+        llm_provider=ModelProvider.AZURE,
+        llm_model="Microsoft-Decision-1.1",
+        organization_id=uuid4(),
+        db=_mock_org_db(),
+        llm_config={
+            "azure_endpoint": "https://override.services.ai.azure.com",
+        },
+    )
+
+    assert captured.get("api_base") == "https://override.services.ai.azure.com"
+
+
 def test_generate_response_raises_when_provider_not_configured(monkeypatch):
     service = LLMService()
     monkeypatch.setattr(service, "_get_ai_provider", lambda *_args, **_kwargs: None)

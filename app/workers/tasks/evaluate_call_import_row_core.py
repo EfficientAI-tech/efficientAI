@@ -747,6 +747,9 @@ def _apply_parent_status_from_counters(
     in_progress = total - completed - failed
     status = (evaluation.status or "").strip().lower()
 
+    if status == "deleting":
+        return
+
     if status == AUTO_ABORTED_STATUS:
         if in_progress <= 0:
             evaluation.finished_at = now_utc()

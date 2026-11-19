@@ -378,11 +378,10 @@ def _build_azure_ai_inference_litellm_kwargs(
 ) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
     """Inject ``api_base`` for Azure AI Inference (``azure_ai/``) models."""
     extra = dict(config or {})
+    endpoint = _resolve_azure_endpoint_from_provider(ai_provider, extra)
     extra.pop("azure_endpoint", None)
     extra.pop("api_base", None)
     extra.pop("api_version", None)
-
-    endpoint = _resolve_azure_endpoint_from_provider(ai_provider, extra)
     if not endpoint:
         return {}, extra or None
 
