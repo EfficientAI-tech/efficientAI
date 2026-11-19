@@ -152,16 +152,6 @@ def delete_call_import(
             status="accepted",
         )
 
-    from app.services.call_imports.delete_teardown_lock import (
-        try_acquire_call_import_delete_lock,
-    )
-
-    if not try_acquire_call_import_delete_lock(call_import.id):
-        return CallImportDeleteResponse(
-            id=call_import.id,
-            status="accepted",
-        )
-
     call_import.status = CallImportStatus.DELETING
     call_import.error_message = None
     stamp_call_import_actor(call_import, principal)
