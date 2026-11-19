@@ -163,8 +163,6 @@ def _serialize_call_import(
     )
     from app.services.call_imports.progress_counters import merge_import_counters_for_ui
 
-    from app.services.call_imports.bulk_ops import _aggregate_import_row_status_counts
-
     ui_completed, ui_failed = merge_import_counters_for_ui(call_import)
     total = int(call_import.total_rows or 0)
     completed = min(ui_completed, total) if total else ui_completed
@@ -177,19 +175,17 @@ def _serialize_call_import(
     # Active imports need the live processing count so a recording retry
     # still polls after an evaluation has already finished.
     import_rows_processing = 0
-    agg_total, agg_completed, agg_failed, _, agg_processing = _aggregate_import_row_status_counts(
-        db, call_import.id
-    )
     if batch_status in {"pending", "processing"}:
+        from app.services.call_imports.bulk_ops import _aggregate_import_row_status_counts
+
+        agg_total, agg_completed, agg_failed, _, agg_processing = _aggregate_import_row_status_counts(
+            db, call_import.id
+        )
         import_rows_processing = int(agg_processing or 0)
-    if batch_status in {"pending", "processing"} and refresh_import_progress_from_rows and agg_total > 0:
-        total = agg_total
-        completed = agg_completed
-        failed = agg_failed
-    elif batch_status not in {"pending", "processing"} and agg_total > 0:
-        total = agg_total
-        completed = agg_completed
-        failed = agg_failed
+        if refresh_import_progress_from_rows and agg_total > 0:
+            total = agg_total
+            completed = agg_completed
+            failed = agg_failed
     if user_emails is None:
         user_emails = emails_for_user_ids(
             db, user_ids_from_call_imports([call_import])

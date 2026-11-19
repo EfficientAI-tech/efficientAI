@@ -85,6 +85,7 @@ export default function ResultsHub() {
   const [generateModalOpen, setGenerateModalOpen] = useState(false)
   const [scopeFiltersOpen, setScopeFiltersOpen] = useState(false)
   const restoredHubScopeRef = useRef(false)
+  const prevWorkspaceIdRef = useRef(activeWorkspaceId)
 
   const agentId = searchParams.get('agent') ?? ''
 
@@ -132,6 +133,24 @@ export default function ResultsHub() {
   }, [searchParams, activeWorkspaceId])
 
   useEffect(() => {
+    if (prevWorkspaceIdRef.current === activeWorkspaceId) return
+    prevWorkspaceIdRef.current = activeWorkspaceId
+    restoredHubScopeRef.current = false
+    try {
+      sessionStorage.removeItem('evaluator-results-hub-search')
+    } catch {
+      /* ignore */
+    }
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      next.delete('agent')
+      next.delete('suite')
+      next.delete('scenario')
+      return next
+    }, { replace: true })
+  }, [activeWorkspaceId, setSearchParams])
+
+  useEffect(() => {
     if (restoredHubScopeRef.current) return
     restoredHubScopeRef.current = true
     const persisted = readPersistedResultsHubQueryString(activeWorkspaceId)
@@ -140,7 +159,7 @@ export default function ResultsHub() {
     if (!hubSearchHasDateScope(saved)) return
     if (hubSearchHasDateScope(searchParams)) return
     setSearchParams(mergePersistedHubScope(searchParams, saved), { replace: true })
-  }, [searchParams, setSearchParams])
+  }, [activeWorkspaceId, searchParams, setSearchParams])
 
   const tabParam = searchParams.get('tab')
 
@@ -183,6 +202,11 @@ export default function ResultsHub() {
     [dateBounds, playgroundScope],
   )
 
+  const clusterCatalogParams = useMemo(
+    () => ({ playground: playgroundScope }),
+    [playgroundScope],
+  )
+
   const [, setDashboardAgents] = useState<EvaluatorResultsAgentSummary[] | null>(null)
 
   const { data: filterCatalog, isLoading: loadingFilterCatalog } = useQuery({
@@ -196,8 +220,6 @@ export default function ResultsHub() {
     () => filterCatalog?.agents ?? [],
     [filterCatalog],
   )
-
-
 
   const suiteOptions = useMemo(() => {
 
@@ -347,7 +369,17 @@ export default function ResultsHub() {
 
   const clustersEnabled = licenseLoaded && isFeatureEnabled('evaluation_clustering')
 
+  const { data: clusterCatalog } = useQuery({
+    queryKey: ['evaluator-results-overview-cluster-catalog', activeWorkspaceId, clusterCatalogParams],
+    queryFn: () => apiClient.getEvaluatorResultsOverview(clusterCatalogParams),
+    enabled: clustersEnabled && (activeTab === 'clusters' || generateModalOpen),
+    staleTime: 60_000,
+  })
 
+  const clusterAgents = useMemo(
+    () => clusterCatalog?.agents ?? [],
+    [clusterCatalog],
+  )
 
   const clusterScopesQuery = useQuery({
 
@@ -1164,7 +1196,7 @@ export default function ResultsHub() {
 
             evaluatorScope={{
 
-              agents,
+              agents: clusterAgents,
 
               scope: clusterScope,
 

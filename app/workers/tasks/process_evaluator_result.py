@@ -1010,8 +1010,14 @@ def process_evaluator_result_task(self, result_id: str):
                 if isinstance(result.call_data, (dict, list)):
                     result.call_data = _make_json_serializable(result.call_data)
                     flag_modified(result, "call_data")
-                result.status = EvaluatorResultStatus.COMPLETED.value
-                result.error_message = None
+                from app.services.evaluators.evaluator_result_status import _metric_scores_mark_failed
+
+                if _metric_scores_mark_failed(result.metric_scores):
+                    result.status = EvaluatorResultStatus.FAILED.value
+                    result.error_message = result.error_message or "Evaluation metrics could not be scored"
+                else:
+                    result.status = EvaluatorResultStatus.COMPLETED.value
+                    result.error_message = None
                 _record_agent_call_usage(result, usage_ctx=usage_ctx)
                 _record_external_agent_llm_usage(result, usage_ctx=usage_ctx)
                 _commit_evaluator_result(db, result)

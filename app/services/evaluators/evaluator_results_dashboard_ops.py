@@ -532,18 +532,19 @@ def compute_evaluator_results_dashboard_ops(
         for agent in db.query(Agent).filter(Agent.id.in_(agent_ids)).all():
             agent_names[agent.id] = agent.name or "Unknown agent"
 
+    usage_scenario_scope = scenario_ids if suite_id is None else None
     cost_by_agent, cost_by_model_day, cost_by_agent_day = rollup_usage(
         usage_rows,
         playground=live,
         agent_id=agent_id,
-        scenario_ids=scenario_ids,
+        scenario_ids=usage_scenario_scope,
         agent_names=agent_names,
     )
     model_layers = rollup_model_layers(
         usage_rows,
         playground=live,
         agent_id=agent_id,
-        scenario_ids=scenario_ids,
+        scenario_ids=usage_scenario_scope,
     )
     model_layers = _with_s2s_models(db, agent_ids, model_layers)
     model_layers = _attach_catalog_rates(db, organization_id, model_layers)

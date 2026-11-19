@@ -3149,20 +3149,9 @@ def evaluate_with_llm(
     except ValueError as exc:
         logger.error(
             f"[EvaluatorResult {result_id}] Batch LLM JSON parse failed; "
-            f"marking metrics with parse errors instead of failing the run: {exc}"
+            f"failing evaluation scoring: {exc}"
         )
-        failed_scores: dict[str, dict[str, Any]] = {}
-        for metric in non_class_metrics:
-            failed_scores[str(metric.id)] = {
-                "value": None,
-                "type": get_metric_type_value(metric),
-                "metric_name": metric.name,
-                "error": "llm_parse_failed",
-                "skipped": False,
-            }
-        if classification_scores:
-            failed_scores = _merge_metric_score_dicts(classification_scores, failed_scores)
-        return failed_scores, evaluation_time
+        raise ValueError(f"Batch LLM JSON parse failed: {exc}") from exc
 
     if "metrics" in evaluation_data and isinstance(evaluation_data["metrics"], dict):
         evaluation_data = evaluation_data["metrics"]

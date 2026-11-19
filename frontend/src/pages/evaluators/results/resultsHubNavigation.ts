@@ -30,12 +30,19 @@ export function persistResultsHubQueryString(queryString: string, workspaceId?: 
 
 export function readPersistedResultsHubQueryString(workspaceId?: string | null): string {
   try {
-    const scoped = workspaceId ? sessionStorage.getItem(storageKey(workspaceId)) : null
-    if (scoped) return scoped
-    const legacy = sessionStorage.getItem('evaluator-results-hub-search')
-    return legacy ?? ''
+    if (!workspaceId) return sessionStorage.getItem('evaluator-results-hub-search') ?? ''
+    return sessionStorage.getItem(storageKey(workspaceId)) ?? ''
   } catch {
     return ''
+  }
+}
+
+export function clearResultsHubQueryString(workspaceId?: string | null) {
+  try {
+    if (workspaceId) sessionStorage.removeItem(storageKey(workspaceId))
+    sessionStorage.removeItem('evaluator-results-hub-search')
+  } catch {
+    /* ignore */
   }
 }
 

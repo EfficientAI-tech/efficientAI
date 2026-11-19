@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from uuid import UUID
 
 from sqlalchemy.orm import Session, Query
-from sqlalchemy import and_, cast, or_
+from sqlalchemy import String, and_, cast, or_
 from sqlalchemy.dialects.postgresql import JSONB
 
 from app.models.database import EvaluatorResult, Evaluator, Agent, VoiceBundle, Scenario, Persona, CallRecording, CallRecordingSource
@@ -203,14 +203,25 @@ def build_evaluator_results_query(
                 EvaluatorResult.status.in_(list(_IN_FLIGHT_STATUSES)),
             ),
         )
+        error_only_scores = and_(
+            EvaluatorResult.status == EvaluatorResultStatus.COMPLETED.value,
+            EvaluatorResult.metric_scores.isnot(None),
+            cast(EvaluatorResult.metric_scores, String).ilike('%"error"%'),
+        )
         if normalized == "completed":
-            query = query.filter(completed_sql)
+            query = query.filter(completed_sql, ~error_only_scores)
         elif normalized == "failed":
-            query = query.filter(EvaluatorResult.status == EvaluatorResultStatus.FAILED.value)
+            query = query.filter(
+                or_(
+                    EvaluatorResult.status == EvaluatorResultStatus.FAILED.value,
+                    error_only_scores,
+                )
+            )
         elif normalized in ("in_progress", "in-progress"):
             query = query.filter(
                 EvaluatorResult.status != EvaluatorResultStatus.FAILED.value,
                 ~completed_sql,
+                ~error_only_scores,
             )
         else:
             raise ValueError("Invalid status filter")

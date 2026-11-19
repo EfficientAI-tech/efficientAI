@@ -208,10 +208,12 @@ def _window_sources(
         EvaluatorResult.organization_id == organization_id,
         EvaluatorResult.workspace_id == workspace_id,
     )
-    if since is not None:
-        query = query.filter(EvaluatorResult.timestamp >= since)
-    if until is not None:
-        query = query.filter(EvaluatorResult.timestamp <= until)
+    since_filter = _since_bound(since) if since is not None else None
+    until_filter = _until_bound(until) if until is not None else None
+    if since_filter is not None:
+        query = query.filter(EvaluatorResult.timestamp >= since_filter)
+    if until_filter is not None:
+        query = query.filter(EvaluatorResult.timestamp <= until_filter)
     loaded = query.all()
     live_ids = _live_result_ids(db, [row[0] for row in loaded])
     sources: List[DailySource] = []
@@ -348,7 +350,8 @@ def _replace_window(
                 workspace_id=workspace_id,
                 since=since,
                 until=until,
-            )
+            ),
+            reporting_anchor=since,
         ),
     )
     db.commit()
@@ -537,7 +540,13 @@ def load_dashboard_series(
     playground: Optional[bool],
 ) -> DashboardSeries:
     """Read the daily table. Rebuild the window when its totals are stale."""
-    use_exact_sources = suite_id is not None or scenario_id is not None or agent_id is not None
+    use_exact_sources = (
+        suite_id is not None
+        or scenario_id is not None
+        or agent_id is not None
+        or since is not None
+        or until is not None
+    )
     if use_exact_sources:
         sources = _scoped_window_sources(
             db,
@@ -591,17 +600,19 @@ def load_dashboard_series(
         logger.warning("Evaluator result daily rollup unavailable; scanning the window", exc_info=True)
         db.rollback()
         try:
+            sources = _scoped_window_sources(
+                db,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                since=since,
+                until=until,
+                playground=playground,
+                agent_id=agent_id,
+                suite_id=suite_id,
+                scenario_id=scenario_id,
+            )
             return _series_from_buckets(
-                fold_daily_buckets(
-                    _window_sources(
-                        db,
-                        organization_id=organization_id,
-                        workspace_id=workspace_id,
-                        since=since,
-                        until=until,
-                    ),
-                    reporting_anchor=since,
-                ),
+                fold_daily_buckets(sources, reporting_anchor=since),
                 agent_id=agent_id,
                 scenario_ids=scenario_ids,
                 playground=playground,
