@@ -1246,15 +1246,25 @@ async def update_agent(
     from app.models.enums import ChatConnectionTypeEnum
     from app.services.agents.chat_connection import coerce_chat_connection_type
 
-    if "chat_connection_type" in update_data:
-        update_data["chat_connection_type"] = coerce_chat_connection_type(
-            update_data["chat_connection_type"]
-        )
+    effective_call_medium = (
+        agent_update.call_medium if agent_update.call_medium is not None else db_agent.call_medium
+    )
+    medium_str = (
+        effective_call_medium.value
+        if hasattr(effective_call_medium, "value")
+        else str(effective_call_medium or "")
+    ).strip().lower()
 
-    raw_conn = update_data.get("chat_connection_type", db_agent.chat_connection_type)
-    effective_conn = coerce_chat_connection_type(raw_conn)
-    if effective_conn == ChatConnectionTypeEnum.INTERNAL_LLM.value:
-        _ensure_hosted_agents_license(organization_id)
+    if medium_str == CallMediumEnum.CHAT.value:
+        if "chat_connection_type" in update_data:
+            update_data["chat_connection_type"] = coerce_chat_connection_type(
+                update_data["chat_connection_type"]
+            )
+
+        raw_conn = update_data.get("chat_connection_type", db_agent.chat_connection_type)
+        effective_conn = coerce_chat_connection_type(raw_conn)
+        if effective_conn == ChatConnectionTypeEnum.INTERNAL_LLM.value:
+            _ensure_hosted_agents_license(organization_id)
 
     from app.services.agents.chat_preprod_scope import apply_preprod_chat_update
 
@@ -1273,9 +1283,6 @@ async def update_agent(
         update_data["description"] = assembled_description
         update_data["test_agent_template"] = template_dict
 
-    effective_call_medium = (
-        agent_update.call_medium if agent_update.call_medium is not None else db_agent.call_medium
-    )
     effective_phone_number = (
         agent_update.phone_number
         if "phone_number" in update_data

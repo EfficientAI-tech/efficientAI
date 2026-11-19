@@ -20,7 +20,8 @@ from app.models.database import (
 )
 from app.services.call_imports.delete_teardown_lock import (
     clear_eval_delete_lock,
-    ensure_eval_delete_lock,
+    refresh_eval_delete_lock,
+    try_acquire_eval_delete_lock,
 )
 
 TEARDOWN_PAGE_SIZE = 500
@@ -228,13 +229,19 @@ def _schedule_eval_delete_continuation(
     )
 
 
+def _claim_eval_delete_lock(evaluation_id: UUID) -> bool:
+    if refresh_eval_delete_lock(evaluation_id):
+        return True
+    return try_acquire_eval_delete_lock(evaluation_id)
+
+
 def execute_evaluation_delete_chunk(
     catalog_db: Session,
     evaluation_id: UUID,
     organization_id: UUID,
     call_import_id: UUID,
 ) -> dict:
-    if not ensure_eval_delete_lock(evaluation_id):
+    if not _claim_eval_delete_lock(evaluation_id):
         return {"status": "skipped", "reason": "lock_busy"}
 
     evaluation = (
@@ -281,7 +288,7 @@ def execute_evaluation_delete_chunk(
         catalog_db.commit()
 
         if progress or _eval_rows_remain(catalog_db, evaluation_id):
-            ensure_eval_delete_lock(evaluation_id)
+            refresh_eval_delete_lock(evaluation_id)
             _schedule_eval_delete_continuation(
                 evaluation_id, organization_id, call_import_id
             )
@@ -289,7 +296,7 @@ def execute_evaluation_delete_chunk(
 
         if _artifacts_remain(catalog_db, evaluation_id):
             _delete_catalog_artifacts_for_eval(catalog_db, evaluation_id)
-            ensure_eval_delete_lock(evaluation_id)
+            refresh_eval_delete_lock(evaluation_id)
             _schedule_eval_delete_continuation(
                 evaluation_id, organization_id, call_import_id
             )

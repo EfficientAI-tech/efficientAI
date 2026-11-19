@@ -26,7 +26,8 @@ from app.models.database import (
 from app.models.enums import CallImportStatus
 from app.services.call_imports.delete_teardown_lock import (
     clear_call_import_delete_lock,
-    ensure_call_import_delete_lock,
+    refresh_call_import_delete_lock,
+    try_acquire_call_import_delete_lock,
 )
 
 TEARDOWN_PAGE_SIZE = 500
@@ -379,13 +380,19 @@ def _schedule_delete_continuation(call_import_id: UUID, organization_id: UUID) -
     delete_call_import_task.delay(str(call_import_id), str(organization_id))
 
 
+def _claim_call_import_delete_lock(call_import_id: UUID) -> bool:
+    if refresh_call_import_delete_lock(call_import_id):
+        return True
+    return try_acquire_call_import_delete_lock(call_import_id)
+
+
 def execute_call_import_delete_chunk(
     catalog_db: Session,
     call_import_id: UUID,
     organization_id: UUID,
 ) -> dict:
     """One bounded chunk of import teardown. Re-enqueues itself when work remains."""
-    if not ensure_call_import_delete_lock(call_import_id):
+    if not _claim_call_import_delete_lock(call_import_id):
         logger.info(
             "execute_call_import_delete_chunk: lock busy for import {}",
             call_import_id,
@@ -426,7 +433,7 @@ def execute_call_import_delete_chunk(
 
         if progress:
             _touch_import_deleting(catalog_db, call_import)
-            ensure_call_import_delete_lock(call_import_id)
+            refresh_call_import_delete_lock(call_import_id)
             _schedule_delete_continuation(call_import_id, organization_id)
             return {
                 "status": "continuing",
@@ -435,14 +442,14 @@ def execute_call_import_delete_chunk(
 
         if _import_rows_remain(catalog_db, call_import_id):
             _touch_import_deleting(catalog_db, call_import)
-            ensure_call_import_delete_lock(call_import_id)
+            refresh_call_import_delete_lock(call_import_id)
             _schedule_delete_continuation(call_import_id, organization_id)
             return {"status": "continuing", "deleted_rows": 0}
 
         child_deleted = _delete_one_page_catalog_children(catalog_db, call_import_id)
         if child_deleted or _catalog_children_remain(catalog_db, call_import_id):
             _touch_import_deleting(catalog_db, call_import)
-            ensure_call_import_delete_lock(call_import_id)
+            refresh_call_import_delete_lock(call_import_id)
             _schedule_delete_continuation(call_import_id, organization_id)
             return {
                 "status": "continuing",

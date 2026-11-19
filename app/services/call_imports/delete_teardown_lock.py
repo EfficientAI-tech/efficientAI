@@ -43,24 +43,43 @@ def call_import_delete_lock_held(call_import_id: UUID | str) -> bool:
         return False
 
 
-def ensure_call_import_delete_lock(call_import_id: UUID | str) -> bool:
-    """Claim or refresh the delete lock (worker chunks). Returns False if another holder."""
+def try_acquire_call_import_delete_lock(call_import_id: UUID | str) -> bool:
+    """Acquire the delete lock for this batch (fails if another worker holds it)."""
     key = _call_import_delete_key(call_import_id)
     try:
-        client = _get_redis()
-        if client.set(key, "1", nx=True, ex=_DELETE_LOCK_TTL_SECONDS):
-            return True
-        if client.exists(key):
-            client.expire(key, _DELETE_LOCK_TTL_SECONDS)
-            return True
-        return False
+        return bool(
+            _get_redis().set(key, "1", nx=True, ex=_DELETE_LOCK_TTL_SECONDS)
+        )
     except redis.RedisError as exc:
         logger.warning(
-            "Failed to ensure call_import delete lock for {}: {}",
+            "Failed to acquire call_import delete lock for {}: {}",
             call_import_id,
             exc,
         )
         return True
+
+
+def refresh_call_import_delete_lock(call_import_id: UUID | str) -> bool:
+    """Extend TTL for an already-held delete lock."""
+    key = _call_import_delete_key(call_import_id)
+    try:
+        client = _get_redis()
+        if not client.exists(key):
+            return False
+        client.expire(key, _DELETE_LOCK_TTL_SECONDS)
+        return True
+    except redis.RedisError as exc:
+        logger.warning(
+            "Failed to refresh call_import delete lock for {}: {}",
+            call_import_id,
+            exc,
+        )
+        return True
+
+
+def ensure_call_import_delete_lock(call_import_id: UUID | str) -> bool:
+    """Refresh an in-progress delete lock (do not steal another worker's lock)."""
+    return refresh_call_import_delete_lock(call_import_id)
 
 
 def clear_call_import_delete_lock(call_import_id: UUID | str) -> None:
@@ -86,23 +105,41 @@ def eval_delete_lock_held(evaluation_id: UUID | str) -> bool:
         return False
 
 
-def ensure_eval_delete_lock(evaluation_id: UUID | str) -> bool:
+def try_acquire_eval_delete_lock(evaluation_id: UUID | str) -> bool:
+    """Acquire the delete lock for this evaluation (fails if another worker holds it)."""
     key = _eval_delete_key(evaluation_id)
     try:
-        client = _get_redis()
-        if client.set(key, "1", nx=True, ex=_DELETE_LOCK_TTL_SECONDS):
-            return True
-        if client.exists(key):
-            client.expire(key, _DELETE_LOCK_TTL_SECONDS)
-            return True
-        return False
+        return bool(_get_redis().set(key, "1", nx=True, ex=_DELETE_LOCK_TTL_SECONDS))
     except redis.RedisError as exc:
         logger.warning(
-            "Failed to ensure eval delete lock for {}: {}",
+            "Failed to acquire eval delete lock for {}: {}",
             evaluation_id,
             exc,
         )
         return True
+
+
+def refresh_eval_delete_lock(evaluation_id: UUID | str) -> bool:
+    """Extend TTL for an already-held evaluation delete lock."""
+    key = _eval_delete_key(evaluation_id)
+    try:
+        client = _get_redis()
+        if not client.exists(key):
+            return False
+        client.expire(key, _DELETE_LOCK_TTL_SECONDS)
+        return True
+    except redis.RedisError as exc:
+        logger.warning(
+            "Failed to refresh eval delete lock for {}: {}",
+            evaluation_id,
+            exc,
+        )
+        return True
+
+
+def ensure_eval_delete_lock(evaluation_id: UUID | str) -> bool:
+    """Refresh an in-progress delete lock (do not steal another worker's lock)."""
+    return refresh_eval_delete_lock(evaluation_id)
 
 
 def clear_eval_delete_lock(evaluation_id: UUID | str) -> None:

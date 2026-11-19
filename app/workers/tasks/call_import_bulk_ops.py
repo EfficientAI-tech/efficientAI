@@ -207,6 +207,8 @@ def _fail_evaluation_materialization(
     )
     if evaluation is None:
         return
+    if (evaluation.status or "").strip().lower() == "deleting":
+        return
     evaluation.status = "failed"
     evaluation.error_message = error_message
     db.commit()

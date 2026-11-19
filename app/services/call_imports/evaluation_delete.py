@@ -8,7 +8,10 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.models.database import CallImportEvaluation
-from app.services.call_imports.delete_teardown_lock import eval_delete_lock_held
+from app.services.call_imports.delete_teardown_lock import (
+    eval_delete_lock_held,
+    try_acquire_eval_delete_lock,
+)
 from app.services.call_imports.evaluation_teardown import EVAL_DELETING_STATUS
 
 
@@ -40,6 +43,9 @@ def begin_evaluation_delete(
             evaluation.call_import_id,
         )
         return True
+
+    if not try_acquire_eval_delete_lock(evaluation.id):
+        return False
 
     evaluation.status = EVAL_DELETING_STATUS
     evaluation.error_message = None

@@ -535,6 +535,13 @@ def materialize_and_enqueue_evaluation(
         )
         return
 
+    if (evaluation.status or "").strip().lower() == "deleting":
+        logger.info(
+            "materialize_and_enqueue_evaluation: skipping evaluation {} (deleting)",
+            evaluation_id,
+        )
+        return
+
     source_row_ids = _source_row_ids_for_evaluation(db, evaluation)
 
     if not source_row_ids:
