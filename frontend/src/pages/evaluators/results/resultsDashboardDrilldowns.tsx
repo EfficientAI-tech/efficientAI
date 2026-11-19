@@ -39,7 +39,6 @@ import type { ListEvaluatorResultsParams } from '../../../types/api'
 import type { RunListBase } from './resultsDashboardInsightDrill'
 import {
   calendarDayToSinceUntil,
-  dateRangeToSinceUntil,
   formatChartDayLabel,
   formatDashboardWindowLabel,
   intersectSinceUntil,
@@ -1259,7 +1258,7 @@ export function TotalCallsDrill({
             caption: 'Calls over time',
             data: agentCallDays.map((day) => ({
               day: day.day,
-              sortKey: day.sortKey,
+              sortKey: day.sortKey ?? String(day.day).slice(0, 10),
               calls: day.calls,
             })),
             series: [{ key: 'calls', color: LAYER_LLM }],
