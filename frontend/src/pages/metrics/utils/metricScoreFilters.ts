@@ -14,6 +14,7 @@ export type MetricScoreEntry = {
   parent_metric_id?: string | null
   rationale?: string | null
   skipped?: unknown
+  passed?: boolean | null
 }
 
 export function isLegacyCategoryLabelMetric(metric: {

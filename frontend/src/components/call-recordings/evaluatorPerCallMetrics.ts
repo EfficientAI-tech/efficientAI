@@ -51,20 +51,43 @@ function formatMetricValue(value: unknown, type?: string | null): string {
 }
 
 function isLocalMetricFailed(metric: MetricScoreEntry, display: string): boolean {
-  const type = (metric.type || '').toLowerCase()
-  if (type === 'boolean') {
-    const v = String(metric.value).toLowerCase()
-    return v === 'false' || v === 'no' || v === '0'
-  }
-  if (type === 'rating' || type === 'number') {
-    const n = Number(metric.value)
-    const name = (metric.metric_name || '').toLowerCase()
-    if (!Number.isNaN(n) && n <= 1 && !name.includes('duration')) {
-      return n < 0.7
-    }
-  }
+  if (typeof metric.passed === 'boolean') return !metric.passed
   const badTokens = ['angry_hangup', 'hangup', 'failed', 'unsuccessful']
   return badTokens.some((token) => display.toLowerCase().includes(token))
+}
+
+function isToolCallError(row: Record<string, unknown>): boolean {
+  if (row.error) return true
+  if (row.failed === true) return true
+  return String(row.status ?? '').toLowerCase() === 'error'
+}
+
+function toolCallDedupeKey(row: Record<string, unknown>): string {
+  const tool = String(row.tool ?? row.name ?? '')
+  const ts = String(row.timestamp ?? row.ts ?? '')
+  const turn = String(row.turn ?? row.turn_index ?? row.step ?? '')
+  const query = String(row.query ?? '')
+  return [tool, ts, turn, query].join('|')
+}
+
+function knowledgeBaseToolRecords(
+  callData: Record<string, unknown>,
+): Record<string, unknown>[] {
+  const dedicated = callData.knowledge_base_tool_calls
+  if (Array.isArray(dedicated) && dedicated.length > 0) {
+    return dedicated.filter(
+      (raw): raw is Record<string, unknown> => Boolean(raw) && typeof raw === 'object',
+    )
+  }
+  const tools = callData.tool_calls
+  if (!Array.isArray(tools)) return []
+  return tools.filter((raw) => {
+    if (!raw || typeof raw !== 'object') return false
+    const row = raw as Record<string, unknown>
+    const provider = String(row.provider ?? '').toLowerCase()
+    const tool = String(row.tool ?? row.name ?? '').toLowerCase()
+    return provider === 'knowledge_base' || tool.includes('knowledge_base')
+  })
 }
 
 function pickNumericMetric(
@@ -86,25 +109,46 @@ function countToolAndRagFailures(callData: Record<string, unknown> | null | unde
 } {
   let tool = 0
   let rag = 0
-  const messages = callData?.messages
-  if (!Array.isArray(messages)) return { tool, rag }
-  for (const raw of messages) {
-    if (!raw || typeof raw !== 'object') continue
-    const msg = raw as Record<string, unknown>
-    const tools = msg.tool_calls ?? msg.toolCalls
-    if (Array.isArray(tools)) {
-      for (const t of tools) {
-        if (!t || typeof t !== 'object') continue
-        const row = t as Record<string, unknown>
-        if (row.error || row.failed === true || row.status === 'error') tool += 1
+  if (!callData || typeof callData !== 'object') return { tool, rag }
+
+  const ragSeen = new Set<string>()
+  for (const row of knowledgeBaseToolRecords(callData)) {
+    const key = toolCallDedupeKey(row)
+    if (ragSeen.has(key)) continue
+    ragSeen.add(key)
+    if (isToolCallError(row)) rag += 1
+  }
+
+  const toolSeen = new Set<string>()
+  const noteToolFailure = (row: Record<string, unknown>) => {
+    const provider = String(row.provider ?? '').toLowerCase()
+    if (provider === 'knowledge_base') return
+    const key = toolCallDedupeKey(row)
+    if (toolSeen.has(key)) return
+    toolSeen.add(key)
+    if (isToolCallError(row)) tool += 1
+  }
+
+  const rootTools = callData.tool_calls
+  if (Array.isArray(rootTools)) {
+    for (const raw of rootTools) {
+      if (raw && typeof raw === 'object') noteToolFailure(raw as Record<string, unknown>)
+    }
+  }
+
+  const messages = callData.messages
+  if (Array.isArray(messages)) {
+    for (const raw of messages) {
+      if (!raw || typeof raw !== 'object') continue
+      const msg = raw as Record<string, unknown>
+      const nested = msg.tool_calls ?? msg.toolCalls
+      if (!Array.isArray(nested)) continue
+      for (const t of nested) {
+        if (t && typeof t === 'object') noteToolFailure(t as Record<string, unknown>)
       }
     }
-    const ragFailed =
-      msg.rag_failed === true ||
-      msg.ragFailed === true ||
-      (typeof msg.rag_status === 'string' && msg.rag_status.toLowerCase() === 'error')
-    if (ragFailed) rag += 1
   }
+
   return { tool, rag }
 }
 
@@ -170,7 +214,7 @@ export function buildEvaluatorPerCallMetricsView(
     durationSeconds: duration,
     turns,
     endedEarly,
-    closingQuality: closingFromScores ?? 3.5,
+    closingQuality: closingFromScores,
   }
 
   let computed = computeCallMetrics(callLike)

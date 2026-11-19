@@ -125,10 +125,10 @@ export default function MetricsStudio() {
         transcript_source: transcriptSource,
         ...(llmProvider && llmModel
           ? {
-              llm_provider: llmProvider,
-              llm_model: llmModel,
-              llm_config: llmConfig,
-            }
+            llm_provider: llmProvider,
+            llm_model: llmModel,
+            llm_config: llmConfig,
+          }
           : {}),
       }),
     onSuccess: (run) => {
@@ -233,11 +233,10 @@ export default function MetricsStudio() {
                 key={tab}
                 type="button"
                 onClick={() => setMetricTab(tab)}
-                className={`px-3 py-1.5 rounded ${
-                  metricTab === tab
+                className={`px-3 py-1.5 rounded ${metricTab === tab
                     ? 'bg-white text-gray-900 shadow-sm'
                     : 'text-gray-600 hover:text-gray-900'
-                }`}
+                  }`}
               >
                 {tab === 'active' ? 'Active' : 'Drafts'}
               </button>
@@ -277,7 +276,7 @@ export default function MetricsStudio() {
           <div className="inline-flex rounded-md border border-gray-200 bg-gray-50 p-0.5 text-xs font-medium w-full">
             {(
               [
-                { id: 'imports', label: 'Call Imports' },
+                { id: 'imports', label: 'Imports' },
                 { id: 'recordings', label: 'Recordings' },
                 { id: 'simulated', label: 'Simulated' },
               ] as const
@@ -286,11 +285,10 @@ export default function MetricsStudio() {
                 key={tab.id}
                 type="button"
                 onClick={() => setSourceTab(tab.id)}
-                className={`flex-1 px-2 py-1.5 rounded ${
-                  sourceTab === tab.id
+                className={`flex-1 px-2 py-1.5 rounded ${sourceTab === tab.id
                     ? 'bg-white text-gray-900 shadow-sm'
                     : 'text-gray-600 hover:text-gray-900'
-                }`}
+                  }`}
               >
                 {tab.label}
               </button>
@@ -523,57 +521,58 @@ export default function MetricsStudio() {
               const inProgress = run.status === 'running' || run.status === 'pending'
 
               return (
-              <div
-                key={run.id}
-                role="link"
-                tabIndex={0}
-                className="px-4 py-3 hover:bg-gray-50 cursor-pointer group"
-                onClick={() => navigate(`/metrics-management/studio/runs/${run.id}`)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault()
-                    navigate(`/metrics-management/studio/runs/${run.id}`)
-                  }
-                }}
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-gray-900 group-hover:text-primary-800 truncate">
-                      {run.name || `Run ${run.id.slice(0, 8)}`}
-                    </p>
-                    <p className="text-xs text-gray-500 mt-0.5">
-                      {format(new Date(run.created_at), 'MMM d, yyyy HH:mm')} ·{' '}
-                      {run.completed_items}/{run.total_items} completed · {run.status}
-                    </p>
-                    <p className="text-xs text-gray-400 mt-0.5 truncate">
-                      {formatStudioModelLabel(run)}
-                    </p>
-                    {inProgress && (
-                      <div className="mt-2 flex items-center gap-2 max-w-xs">
-                        <div className="flex-1 h-1 bg-gray-100 rounded-full overflow-hidden">
-                          <div
-                            className="h-full bg-primary-600 rounded-full transition-all"
-                            style={{ width: `${progress}%` }}
-                          />
+                <div
+                  key={run.id}
+                  role="link"
+                  tabIndex={0}
+                  className="px-4 py-3 hover:bg-gray-50 cursor-pointer group"
+                  onClick={() => navigate(`/metrics-management/studio/runs/${run.id}`)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      navigate(`/metrics-management/studio/runs/${run.id}`)
+                    }
+                  }}
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-gray-900 group-hover:text-primary-800 truncate">
+                        {run.name || `Run ${run.id.slice(0, 8)}`}
+                      </p>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        {format(new Date(run.created_at), 'MMM d, yyyy HH:mm')} ·{' '}
+                        {run.completed_items}/{run.total_items} completed · {run.status}
+                      </p>
+                      <p className="text-xs text-gray-400 mt-0.5 truncate">
+                        {formatStudioModelLabel(run)}
+                      </p>
+                      {inProgress && (
+                        <div className="mt-2 flex items-center gap-2 max-w-xs">
+                          <div className="flex-1 h-1 bg-gray-100 rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-primary-600 rounded-full transition-all"
+                              style={{ width: `${progress}%` }}
+                            />
+                          </div>
+                          <span className="text-[10px] tabular-nums text-gray-500">{progress}%</span>
                         </div>
-                        <span className="text-[10px] tabular-nums text-gray-500">{progress}%</span>
-                      </div>
-                    )}
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      className="text-gray-400 hover:text-red-600 shrink-0 mt-0.5"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        deleteRunMutation.mutate(run.id)
+                      }}
+                      aria-label="Delete run"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    className="text-gray-400 hover:text-red-600 shrink-0 mt-0.5"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      deleteRunMutation.mutate(run.id)
-                    }}
-                    aria-label="Delete run"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
                 </div>
-              </div>
-            )})}
+              )
+            })}
           </div>
         )}
       </section>

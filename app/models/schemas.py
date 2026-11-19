@@ -3800,7 +3800,8 @@ class CallImportSourceRowSkip(BaseModel):
         ...,
         description=(
             "Machine-readable skip reason, e.g. missing_conversation_id, "
-            "missing_recording_url, invalid_recording_url."
+            "missing_recording_url, missing_transcript, missing_required_parameter, "
+            "invalid_recording_url."
         ),
     )
     message: str = Field(

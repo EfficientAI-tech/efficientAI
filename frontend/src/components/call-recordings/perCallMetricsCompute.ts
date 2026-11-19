@@ -15,12 +15,13 @@ export interface CallLike {
   durationSeconds: number
   turns: CallTurn[]
   endedEarly: boolean
-  closingQuality: number
+  /** Null when no closing metric was scored for this run. */
+  closingQuality: number | null
 }
 
 export interface PerCallMetrics {
   durationSeconds: number
-  closingQuality: number
+  closingQuality: number | null
   endedEarly: boolean
   earlyEnding: number
   silenceAvgSeconds: number

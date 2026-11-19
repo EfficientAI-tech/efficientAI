@@ -129,6 +129,7 @@ export interface EvaluatorResultMetricScore {
   type: string
   metric_name: string
   parent_metric_id?: string | null
+  passed?: boolean | null
 }
 
 export interface EvaluatorResultRow {
@@ -1245,7 +1246,7 @@ export interface CallImport {
    */
   skipped_columns: string[]
   /**
-   * Source rows skipped at parse time (missing/invalid conversation ID or URL).
+   * Source rows skipped at parse time (missing/invalid required fields, URLs, etc.).
    */
   source_row_skips?: CallImportSourceRowSkip[]
   /** S3 key for the staged source file. ``null`` on legacy batches. */

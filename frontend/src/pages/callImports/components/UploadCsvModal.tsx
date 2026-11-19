@@ -21,7 +21,7 @@ interface UploadCsvModalProps {
   onClose: () => void
 }
 
-const MAX_BYTES = 15 * 1024 * 1024
+const MAX_BYTES = 100 * 1024 * 1024
 
 const ALLOWED_EXTENSIONS = ['.csv', '.xlsx', '.xlsm'] as const
 const ACCEPT_ATTR =
@@ -43,7 +43,7 @@ function preflight(file: File): string | null {
     return `File must be one of: ${ALLOWED_EXTENSIONS.join(', ')}`
   }
   if (file.size > MAX_BYTES) {
-    return 'File exceeds 15 MB; please split it.'
+    return 'File exceeds 100 MB; please split it.'
   }
   return null
 }
@@ -199,13 +199,12 @@ export default function UploadCsvModal({ open, onClose }: UploadCsvModalProps) {
                 const file = e.dataTransfer.files?.[0]
                 if (file) handleFile(file)
               }}
-              className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition ${
-                isDragOver
+              className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition ${isDragOver
                   ? 'border-primary-400 bg-primary-50'
                   : selectedFile
                     ? 'border-green-300 bg-green-50'
                     : 'border-gray-300 hover:border-gray-400 bg-gray-50'
-              }`}
+                }`}
             >
               <input
                 ref={fileInputRef}
@@ -234,7 +233,7 @@ export default function UploadCsvModal({ open, onClose }: UploadCsvModalProps) {
                     <span className="text-primary-600 font-medium">browse</span>
                   </p>
                   <p className="text-xs text-gray-500 mt-1">
-                    {ALLOWED_EXTENSIONS.join(', ')} · up to 15 MB
+                    {ALLOWED_EXTENSIONS.join(', ')} · up to 100 MB
                   </p>
                 </div>
               )}
@@ -302,11 +301,10 @@ export default function UploadCsvModal({ open, onClose }: UploadCsvModalProps) {
                             : [...prev, tag.id],
                         )
                       }
-                      className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
-                        active
+                      className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${active
                           ? 'bg-primary-600 border-primary-600 text-white'
                           : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
-                      }`}
+                        }`}
                       style={
                         !active && tag.color
                           ? { borderColor: tag.color, color: tag.color }

@@ -93,7 +93,7 @@ const navigationSections: NavSection[] = [
     icon: ClipboardCheck,
     items: [
       { name: 'Prompts', href: '/prompts', icon: ScrollText },
-      { name: 'Call Imports', href: '/call-imports', icon: Upload, enterpriseFeature: 'call_imports' },
+      { name: 'Imports', href: '/call-imports', icon: Upload, enterpriseFeature: 'call_imports' },
     ],
   },
   {
