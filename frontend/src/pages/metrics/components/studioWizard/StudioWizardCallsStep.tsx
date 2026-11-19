@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { Blocks, FileAudio, FileSpreadsheet } from 'lucide-react'
 import { apiClient } from '../../../../lib/api'
 import { itemsOf } from '../../../../lib/safeData'
 import {
@@ -12,6 +13,7 @@ import {
   filterImportBatches,
   matchesRecordingSearch,
   matchesSimulatedSearch,
+  type StudioImportKindTab,
   type StudioRecordingRow,
   type StudioSimulatedRow,
 } from './studioRunSelection'
@@ -22,6 +24,8 @@ type StudioWizardCallsStepProps = {
   sourceTab: SourceTab
   onSourceTabChange: (tab: SourceTab) => void
   importsData: unknown
+  importKindTab: StudioImportKindTab
+  onImportKindTabChange: (tab: StudioImportKindTab) => void
   importDatasets: string[]
   importTags: CallImportTag[]
   importDatasetFilter: string
@@ -60,6 +64,8 @@ export default function StudioWizardCallsStep({
   sourceTab,
   onSourceTabChange,
   importsData,
+  importKindTab,
+  onImportKindTabChange,
   importDatasets,
   importTags,
   importDatasetFilter,
@@ -153,33 +159,70 @@ export default function StudioWizardCallsStep({
       .finally(() => setBulkSelecting(false))
   }
 
+  const sourceTabs = (
+    [
+      { id: 'imports' as const, label: 'Call Imports' },
+      { id: 'recordings' as const, label: 'Recordings' },
+      { id: 'simulated' as const, label: 'Simulated' },
+    ] as const
+  )
+
+  const importKindTabs = (
+    [
+      { id: 'datasets' as const, label: 'CSV / Dataset', icon: FileSpreadsheet },
+      { id: 'audio' as const, label: 'Manual upload', icon: FileAudio },
+      { id: 'platform' as const, label: 'Existing platforms', icon: Blocks },
+    ] as const
+  )
+
   return (
     <div className="flex flex-col h-full min-h-0 gap-4">
-      <div className="inline-flex rounded-md border border-gray-200 bg-gray-50 p-0.5 text-xs font-medium w-full max-w-xl shrink-0">
-        {(
-          [
-            { id: 'imports' as const, label: 'Call Imports' },
-            { id: 'recordings' as const, label: 'Recordings' },
-            { id: 'simulated' as const, label: 'Simulated' },
-          ] as const
-        ).map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => onSourceTabChange(tab.id)}
-            className={`flex-1 px-2 py-2 rounded ${
-              sourceTab === tab.id
-                ? 'bg-white text-gray-900 shadow-sm'
-                : 'text-gray-600 hover:text-gray-900'
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
+      <div className="flex justify-center shrink-0">
+        <div className="inline-flex rounded-md border border-gray-200 bg-gray-50 p-0.5 text-xs font-medium w-full max-w-xl">
+          {sourceTabs.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => onSourceTabChange(tab.id)}
+              className={`flex-1 px-2 py-2 rounded text-center ${
+                sourceTab === tab.id
+                  ? 'bg-white text-gray-900 shadow-sm'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {sourceTab === 'imports' && (
-        <div className="flex-1 min-h-0 grid grid-cols-1 md:grid-cols-[minmax(220px,280px)_1fr] gap-4">
+        <div className="flex justify-center shrink-0">
+          <div className="inline-flex flex-wrap justify-center gap-1 rounded-lg border border-gray-200 bg-white p-1 w-full max-w-2xl">
+            {importKindTabs.map((tab) => {
+              const Icon = tab.icon
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => onImportKindTabChange(tab.id)}
+                  className={`flex items-center justify-center gap-1.5 flex-1 min-w-[7rem] px-2 py-2 rounded-md text-xs font-medium transition-colors ${
+                    importKindTab === tab.id
+                      ? 'bg-primary-50 text-primary-700'
+                      : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                  }`}
+                >
+                  <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                  <span className="truncate">{tab.label}</span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {sourceTab === 'imports' && (
+        <div className="flex-1 min-h-0 grid grid-cols-1 md:grid-cols-[minmax(220px,280px)_1fr] gap-4 max-w-5xl w-full mx-auto">
           <div className="flex flex-col min-h-0 gap-2">
             <div className="space-y-2 shrink-0">
               <div className="flex items-center gap-2">
@@ -350,7 +393,7 @@ export default function StudioWizardCallsStep({
       )}
 
       {sourceTab === 'recordings' && (
-        <div className="flex flex-col flex-1 min-h-0 gap-2">
+        <div className="flex flex-col flex-1 min-h-0 gap-2 max-w-3xl w-full mx-auto">
           <input
             type="search"
             value={recordingSearch}
@@ -391,7 +434,7 @@ export default function StudioWizardCallsStep({
       )}
 
       {sourceTab === 'simulated' && (
-        <div className="flex flex-col flex-1 min-h-0 gap-2">
+        <div className="flex flex-col flex-1 min-h-0 gap-2 max-w-3xl w-full mx-auto">
           <input
             type="search"
             value={simulatedSearch}

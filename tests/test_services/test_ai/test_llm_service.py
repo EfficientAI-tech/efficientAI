@@ -105,6 +105,87 @@ def test_litellm_model_name_maps_known_provider_prefixes():
         )
         == "openrouter/openai/gpt-4o"
     )
+    assert (
+        LLMService._litellm_model_name(ModelProvider.GOOGLE, "gemini-decision-1")
+        == "gemini/gemini-decision-1"
+    )
+    assert (
+        LLMService._litellm_model_name(
+            ModelProvider.AZURE, "Microsoft-Decision-1.1"
+        )
+        == "azure_ai/Microsoft-Decision-1.1"
+    )
+
+
+def test_generate_response_azure_ai_skips_openai_deployment_rewrite(monkeypatch):
+    """azure_ai/ models must not get Azure OpenAI endpoint kwargs or openai/ rewrite."""
+    service = LLMService()
+    provider = SimpleNamespace(
+        provider=ModelProvider.AZURE.value,
+        api_key="enc",
+        endpoint_url="https://my-inferece.services.ai.azure.com",
+    )
+    monkeypatch.setattr(service, "_get_ai_provider", lambda *_a, **_k: provider)
+    monkeypatch.setattr(
+        llm_module,
+        "resolve_integration_for_call",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(service, "_resolve_api_key", lambda *_a, **_k: "azure-key")
+    monkeypatch.setattr(
+        llm_module,
+        "resolve_litellm_api_key",
+        lambda *_a, **_k: "azure-key",
+    )
+    monkeypatch.setattr(
+        llm_module,
+        "resolve_effective_routing",
+        lambda *_a, **_k: (None, "direct"),
+    )
+    monkeypatch.setattr(
+        llm_module,
+        "resolve_litellm_model",
+        lambda workload_model_str, gateway_active, credential: workload_model_str,
+    )
+    monkeypatch.setattr(llm_module, "apply_llm_gateway", lambda kwargs, **_: kwargs)
+    monkeypatch.setattr(
+        "app.database.release_read_only_session",
+        lambda _db: None,
+    )
+
+    captured: dict = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+
+        class _Msg:
+            content = "ok"
+
+        class _Choice:
+            message = _Msg()
+            finish_reason = "stop"
+
+        class _Usage:
+            prompt_tokens = 1
+            completion_tokens = 1
+            total_tokens = 2
+
+        return SimpleNamespace(choices=[_Choice()], usage=_Usage())
+
+    monkeypatch.setattr(llm_module.litellm, "completion", fake_completion)
+
+    service.generate_response(
+        messages=[{"role": "user", "content": "Hello!"}],
+        llm_provider=ModelProvider.AZURE,
+        llm_model="Microsoft-Decision-1.1",
+        organization_id=uuid4(),
+        db=_mock_org_db(),
+    )
+
+    assert captured["model"] == "azure_ai/Microsoft-Decision-1.1"
+    assert captured.get("api_base") == "https://my-inferece.services.ai.azure.com"
+    assert "azure_endpoint" not in captured
+    assert "api_version" not in captured
 
 
 def test_generate_response_raises_when_provider_not_configured(monkeypatch):

@@ -7,6 +7,14 @@ import {
   getCallImportBatchLabel,
 } from '../../utils/sourceLabels'
 
+export type StudioImportKindTab = 'datasets' | 'audio' | 'platform'
+
+export function callImportSourceFormatForKind(tab: StudioImportKindTab): string {
+  if (tab === 'audio') return 'audio'
+  if (tab === 'platform') return 'platform'
+  return '__non_audio__'
+}
+
 export type StudioSourceKind = 'call_import_row' | 'call_recording' | 'evaluator_result'
 
 export type StudioSource = {

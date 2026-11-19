@@ -3,6 +3,7 @@ import {
   buildMetricStudioRunPayload,
   buildStudioSources,
   canAdvanceWizardStep,
+  callImportSourceFormatForKind,
   draftParentIdsToDelete,
   filterImportBatches,
   matchesRecordingSearch,
@@ -120,6 +121,14 @@ describe('buildMetricStudioRunPayload', () => {
       llm_credential_id: 'cred-99',
       llm_config: { temperature: 0.2 },
     })
+  })
+})
+
+describe('callImportSourceFormatForKind', () => {
+  it('maps import kind tabs to list API source_format', () => {
+    expect(callImportSourceFormatForKind('datasets')).toBe('__non_audio__')
+    expect(callImportSourceFormatForKind('audio')).toBe('audio')
+    expect(callImportSourceFormatForKind('platform')).toBe('platform')
   })
 })
 

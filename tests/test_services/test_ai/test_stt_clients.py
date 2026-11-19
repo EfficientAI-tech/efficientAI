@@ -22,6 +22,7 @@ from app.services.ai.stt_clients import (
     deepgram as deepgram_module,
     elevenlabs as elevenlabs_module,
     openai as openai_module,
+    sarvam as sarvam_module,
     smallest as smallest_module,
 )
 
@@ -132,6 +133,50 @@ def test_transcribe_openai_falls_back_to_plain_json_for_gpt4o(monkeypatch, tmp_p
     assert captured["kwargs"]["response_format"] == "json"
     assert "timestamp_granularities" not in captured["kwargs"]
     assert captured["kwargs"]["language"] == "en"
+
+
+def test_transcribe_elevenlabs_scribe_v3_sends_model_id(monkeypatch, tmp_path):
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"fake")
+
+    fake = _make_fake_httpx_module({"text": "v3 text", "language_code": "en"})
+    monkeypatch.setattr(elevenlabs_module, "httpx", fake)
+
+    elevenlabs_module.transcribe_elevenlabs(str(audio), "scribe_v3", "key-1")
+
+    data = fake._captured["calls"][0]["data"]
+    assert data["model_id"] == "scribe_v3"
+
+
+def test_transcribe_sarvam_saaras_v4_sends_mode_transcribe(monkeypatch, tmp_path):
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"fake")
+
+    class _Segment:
+        duration_seconds = 1.0
+
+    class _AudioSegment:
+        @staticmethod
+        def from_file(_path):
+            return _Segment()
+
+    fake_pydub = types.ModuleType("pydub")
+    fake_pydub.AudioSegment = _AudioSegment
+    monkeypatch.setitem(sys.modules, "pydub", fake_pydub)
+
+    fake = _make_fake_httpx_module(
+        {"transcript": "namaste", "language_code": "hi-IN"}
+    )
+    monkeypatch.setattr(sarvam_module, "httpx", fake)
+
+    result = sarvam_module.transcribe_sarvam(str(audio), "saaras:v4", "key-1", "hi-IN")
+
+    assert result["text"] == "namaste"
+    assert result["language"] == "hi-IN"
+    post_data = fake._captured["calls"][0]["data"]
+    assert post_data["model"] == "saaras:v4"
+    assert post_data["mode"] == "transcribe"
+    assert post_data["language_code"] == "hi-IN"
 
 
 def test_transcribe_elevenlabs_uses_httpx_client(monkeypatch, tmp_path):

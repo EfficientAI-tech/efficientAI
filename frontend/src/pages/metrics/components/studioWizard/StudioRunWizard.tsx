@@ -10,11 +10,13 @@ import type { LLMGenerationConfig } from '../../../../config/llmGenerationParams
 import Button from '../../../../components/Button'
 import {
   buildMetricStudioRunPayload,
+  callImportSourceFormatForKind,
   canAdvanceWizardStep,
   draftParentIdsToDelete,
   mapObservabilityCalls,
   mapPlaygroundRecordings,
   singleDraftParentIdToPromote,
+  type StudioImportKindTab,
 } from './studioRunSelection'
 import StudioWizardCallsStep from './StudioWizardCallsStep'
 import StudioWizardLlmStep from './StudioWizardLlmStep'
@@ -52,6 +54,7 @@ function resetWizardState() {
     selectedImportRowIds: new Set<string>(),
     selectedRecordingIds: new Set<string>(),
     selectedSimulatedIds: new Set<string>(),
+    importKindTab: 'datasets' as StudioImportKindTab,
     importDatasetFilter: '',
     importTagFilter: [] as string[],
     importBatchSearch: '',
@@ -115,6 +118,7 @@ export default function StudioRunWizard({
       'call-imports',
       'studio',
       activeWorkspaceId,
+      state.importKindTab,
       state.importDatasetFilter,
       state.importTagFilter,
     ],
@@ -122,6 +126,7 @@ export default function StudioRunWizard({
       apiClient.listCallImports({
         page: 1,
         page_size: 100,
+        source_format: callImportSourceFormatForKind(state.importKindTab),
         ...(state.importDatasetFilter ? { dataset: state.importDatasetFilter } : {}),
         ...(state.importTagFilter.length > 0 ? { tag_id: state.importTagFilter } : {}),
       }),
@@ -337,6 +342,15 @@ export default function StudioRunWizard({
               sourceTab={state.sourceTab}
               onSourceTabChange={(sourceTab) => setState((s) => ({ ...s, sourceTab }))}
               importsData={importsData}
+              importKindTab={state.importKindTab}
+              onImportKindTabChange={(importKindTab) =>
+                setState((s) => ({
+                  ...s,
+                  importKindTab,
+                  selectedImportId: '',
+                  selectedImportRowIds: new Set(),
+                }))
+              }
               importDatasets={importDatasets}
               importTags={importTags}
               importDatasetFilter={state.importDatasetFilter}

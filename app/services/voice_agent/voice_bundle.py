@@ -358,10 +358,18 @@ def _instantiate_tts_service(
             **sr_kw,
         )
     if provider == "sarvam":
+        tts_model = model if model else "bulbul:v3"
+        effective_voice = voice_id
+        if tts_model == "bulbul:v4-flash" and effective_voice in (
+            None,
+            "",
+            tts_cfg.get("default_voice"),
+        ):
+            effective_voice = "shubh_enhi_ads"
         return _get_service("SarvamTTSService")(
             api_key=api_key,
-            voice_id=voice_id,
-            model=model if model else "bulbul:v3",
+            voice_id=effective_voice,
+            model=tts_model,
             **sr_kw,
         )
     if provider == "voicemaker":
