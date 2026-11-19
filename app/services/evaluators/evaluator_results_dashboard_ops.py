@@ -12,7 +12,15 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.models.database import Agent, Evaluator, EvaluatorResult, LLMUsageDaily, VoiceBundle
+from app.models.database import (
+    Agent,
+    CallRecording,
+    CallRecordingSource,
+    Evaluator,
+    EvaluatorResult,
+    LLMUsageDaily,
+    VoiceBundle,
+)
 from app.models.schemas import (
     DashboardOpsAgentDay,
     DashboardOpsAgentMetricCount,
@@ -25,6 +33,7 @@ from app.models.schemas import (
     DashboardOpsProviderDay,
     DashboardOpsProviderTotal,
     DashboardOpsRunDay,
+    DashboardOpsScenarioMetricMean,
     DashboardOpsScoreDay,
     DashboardOpsToolAgentDay,
     DashboardOpsToolByTool,
@@ -79,6 +88,7 @@ class ToolCallSource:
     agent_id: Optional[UUID]
     timestamp: Optional[datetime]
     call_data: Any
+    result_id: Optional[UUID] = None
 
 
 @dataclass
@@ -123,15 +133,24 @@ def usage_row_in_scope(
     agent_id: Optional[UUID],
     scenario_ids: Optional[Set[str]],
     suite_agent_scenarios: Optional[Set[tuple[UUID, str]]] = None,
+    playground_result_ids: Optional[Set[UUID]] = None,
 ) -> bool:
     """Keep spend that belongs to the selected Simulations or Live mode."""
     context = _context_dict(row.context)
+    explicit = _parse_uuid(context.get("evaluator_result_id"))
+    if explicit is not None and playground_result_ids is not None:
+        if (explicit in playground_result_ids) != playground:
+            return False
+    else:
+        role = resolve_usage_role(row.product_section, context)
+        if role is None:
+            return False
+        section = row.product_section or ""
+        live = section in LIVE_USAGE_SECTIONS
+        if playground != live:
+            return False
     role = resolve_usage_role(row.product_section, context)
     if role is None:
-        return False
-    section = row.product_section or ""
-    live = section in LIVE_USAGE_SECTIONS
-    if playground != live:
         return False
     row_agent = _parse_uuid(context.get("agent_id"))
     if row_agent is None:
@@ -157,6 +176,7 @@ def rollup_usage(
     scenario_ids: Optional[Set[str]] = None,
     suite_agent_scenarios: Optional[Set[tuple[UUID, str]]] = None,
     agent_names: Optional[Dict[UUID, str]] = None,
+    playground_result_ids: Optional[Set[UUID]] = None,
 ) -> Tuple[List[DashboardOpsCostByAgent], List[DashboardOpsModelDay], List[DashboardOpsAgentDay]]:
     names = agent_names or {}
     agents: Dict[UUID, _AgentCost] = defaultdict(_AgentCost)
@@ -172,6 +192,7 @@ def rollup_usage(
             agent_id=agent_id,
             scenario_ids=scenario_ids,
             suite_agent_scenarios=suite_agent_scenarios,
+            playground_result_ids=playground_result_ids,
         ):
             continue
         layer = _layer(row.usage_kind)
@@ -246,6 +267,7 @@ def rollup_model_layers(
     agent_id: Optional[UUID] = None,
     scenario_ids: Optional[Set[str]] = None,
     suite_agent_scenarios: Optional[Set[tuple[UUID, str]]] = None,
+    playground_result_ids: Optional[Set[UUID]] = None,
 ) -> List[DashboardOpsModelLayer]:
     totals: Dict[Tuple[str, str], int] = defaultdict(int)
     for row in rows:
@@ -255,6 +277,7 @@ def rollup_model_layers(
             agent_id=agent_id,
             scenario_ids=scenario_ids,
             suite_agent_scenarios=suite_agent_scenarios,
+            playground_result_ids=playground_result_ids,
         ):
             continue
         layer = _layer(row.usage_kind)
@@ -306,11 +329,28 @@ def _provider_name(call: Dict[str, Any]) -> str:
     return provider or "unknown"
 
 
+def _calendar_day(ts: datetime, tz_name: Optional[str]) -> date:
+    """Calendar day in the dashboard timezone so chart days match the run list."""
+    from zoneinfo import ZoneInfo
+
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    zone = timezone.utc
+    if tz_name:
+        try:
+            zone = ZoneInfo(tz_name)
+        except Exception:
+            zone = timezone.utc
+    return ts.astimezone(zone).date()
+
+
 def rollup_tool_calls(
     rows: Iterable[ToolCallSource],
     *,
     agent_names: Optional[Dict[UUID, str]] = None,
+    tz_name: Optional[str] = None,
 ) -> ToolRollup:
+    """Count each run once per day, tool, and provider so charts match the run list."""
     names = agent_names or {}
     by_day: Dict[Tuple[date, UUID], Dict[str, int]] = defaultdict(lambda: {"calls": 0, "errors": 0})
     by_tool: Dict[Tuple[UUID, str], Dict[str, int]] = defaultdict(lambda: {"calls": 0, "errors": 0})
@@ -324,24 +364,32 @@ def rollup_tool_calls(
     for row in rows:
         if row.agent_id is None or row.timestamp is None:
             continue
-        day = row.timestamp.date()
+        day = _calendar_day(row.timestamp, tz_name)
         runs[row.agent_id] += 1
         production = [call for call in _tool_records(row.call_data) if _is_production_call(call)]
         if not production:
             calls_with_no_tools += 1
+            continue
+        day_bucket = by_day[(day, row.agent_id)]
+        day_bucket["calls"] += 1
+        if any(_is_error_call(call) for call in production):
+            day_bucket["errors"] += 1
+        seen_tools: Set[str] = set()
+        seen_tool_errors: Set[str] = set()
+        seen_providers: Set[str] = set()
         for call in production:
-            error = _is_error_call(call)
-            day_bucket = by_day[(day, row.agent_id)]
-            day_bucket["calls"] += 1
             calls_by_agent[row.agent_id] += 1
-            if error:
-                day_bucket["errors"] += 1
             tool = str(call.get("tool") or "tool")
-            tool_bucket = by_tool[(row.agent_id, tool)]
-            tool_bucket["calls"] += 1
-            if error:
-                tool_bucket["errors"] += 1
+            if tool not in seen_tools:
+                seen_tools.add(tool)
+                by_tool[(row.agent_id, tool)]["calls"] += 1
+            if _is_error_call(call) and tool not in seen_tool_errors:
+                seen_tool_errors.add(tool)
+                by_tool[(row.agent_id, tool)]["errors"] += 1
             provider = _provider_name(call)
+            if provider in seen_providers:
+                continue
+            seen_providers.add(provider)
             provider_totals[provider] += 1
             provider_days[(day, provider)] += 1
             provider_agents[(row.agent_id, provider)] += 1
@@ -475,11 +523,31 @@ def compute_evaluator_results_dashboard_ops(
     since: Optional[datetime] = None,
     until: Optional[datetime] = None,
     playground: Optional[bool] = None,
+    tz_name: Optional[str] = None,
+    metric_id: Optional[str] = None,
 ) -> EvaluatorResultsDashboardOpsResponse:
     live = playground is True
     scenario_ids = None if suite_id is not None else _scenario_ids_for_filter(db, scenario_id=scenario_id)
     start_day = _usage_day(since)
     end_day = _usage_day(until)
+
+    playground_result_ids = {
+        rid
+        for (rid,) in db.query(CallRecording.evaluator_result_id).filter(
+            CallRecording.organization_id == organization_id,
+            CallRecording.workspace_id == workspace_id,
+            CallRecording.source == CallRecordingSource.PLAYGROUND,
+            CallRecording.evaluator_result_id.isnot(None),
+        ).all()
+    }
+    playground_result_ids.update(
+        rid
+        for (rid,) in db.query(EvaluatorResult.id).filter(
+            EvaluatorResult.organization_id == organization_id,
+            EvaluatorResult.workspace_id == workspace_id,
+            EvaluatorResult.evaluator_id.is_(None),
+        ).all()
+    )
 
     usage_query = db.query(LLMUsageDaily).filter(
         LLMUsageDaily.organization_id == organization_id,
@@ -515,11 +583,13 @@ def compute_evaluator_results_dashboard_ops(
     )
     tool_rows = [
         ToolCallSource(
+            result_id=result_id,
             agent_id=row_agent_id,
             timestamp=timestamp,
             call_data=_tool_payload(tool_calls, knowledge_calls),
         )
-        for row_agent_id, timestamp, tool_calls, knowledge_calls in result_query.with_entities(
+        for result_id, row_agent_id, timestamp, tool_calls, knowledge_calls in result_query.with_entities(
+            EvaluatorResult.id,
             EvaluatorResult.agent_id,
             EvaluatorResult.timestamp,
             EvaluatorResult.call_data["tool_calls"],
@@ -546,6 +616,7 @@ def compute_evaluator_results_dashboard_ops(
         scenario_ids=usage_scenario_scope,
         suite_agent_scenarios=suite_usage_pairs,
         agent_names=agent_names,
+        playground_result_ids=playground_result_ids,
     )
     model_layers = rollup_model_layers(
         usage_rows,
@@ -553,10 +624,11 @@ def compute_evaluator_results_dashboard_ops(
         agent_id=agent_id,
         scenario_ids=usage_scenario_scope,
         suite_agent_scenarios=suite_usage_pairs,
+        playground_result_ids=playground_result_ids,
     )
     model_layers = _with_s2s_models(db, agent_ids, model_layers)
     model_layers = _attach_catalog_rates(db, organization_id, model_layers)
-    tools = rollup_tool_calls(tool_rows, agent_names=agent_names)
+    tools = rollup_tool_calls(tool_rows, agent_names=agent_names, tz_name=tz_name)
     duration_buckets = _duration_buckets_from_query(result_query)
     from app.services.evaluators.evaluator_result_daily import load_dashboard_series
 
@@ -635,7 +707,42 @@ def compute_evaluator_results_dashboard_ops(
             for row in series.agent_metric_counts
         ],
         duration_buckets=duration_buckets,
+        scenario_metric_means=_scenario_metric_means(result_query, metric_id),
     )
+
+
+def _scenario_metric_means(result_query, metric_id: Optional[str]) -> List[DashboardOpsScenarioMetricMean]:
+    metric_key = (metric_id or "").strip()
+    if not metric_key:
+        return []
+    totals: Dict[UUID, List[float]] = defaultdict(lambda: [0.0, 0.0])
+    for scenario_id, scores in result_query.with_entities(
+        EvaluatorResult.scenario_id,
+        EvaluatorResult.metric_scores,
+    ).all():
+        if scenario_id is None or not isinstance(scores, dict):
+            continue
+        cell = scores.get(metric_key)
+        if not isinstance(cell, dict) or cell.get("skipped") or cell.get("error"):
+            continue
+        try:
+            value = float(cell.get("value"))
+        except (TypeError, ValueError):
+            continue
+        bucket = totals[scenario_id]
+        bucket[0] += value
+        bucket[1] += 1
+    means = [
+        DashboardOpsScenarioMetricMean(
+            scenario_id=scenario_id,
+            mean=bucket[0] / bucket[1],
+            scored=int(bucket[1]),
+        )
+        for scenario_id, bucket in totals.items()
+        if bucket[1]
+    ]
+    means.sort(key=lambda item: item.scored, reverse=True)
+    return means
 
 
 def _with_s2s_models(
@@ -716,6 +823,8 @@ def results_cache_key(
     since: Optional[datetime] = None,
     until: Optional[datetime] = None,
     playground: Optional[bool] = None,
+    tz_name: Optional[str] = None,
+    metric_id: Optional[str] = None,
 ) -> str:
     payload = {
         "organization_id": str(organization_id),
@@ -726,6 +835,8 @@ def results_cache_key(
         "since": since.isoformat() if since else None,
         "until": until.isoformat() if until else None,
         "playground": playground,
+        "tz_name": tz_name,
+        "metric_id": metric_id,
     }
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:32]
     return f"results:{kind}:{organization_id}:{workspace_id}:{digest}"
@@ -741,6 +852,8 @@ def dashboard_ops_cache_key(
     since: Optional[datetime],
     until: Optional[datetime],
     playground: Optional[bool],
+    tz_name: Optional[str] = None,
+    metric_id: Optional[str] = None,
 ) -> str:
     return results_cache_key(
         "dashboard_ops",
@@ -752,6 +865,8 @@ def dashboard_ops_cache_key(
         since=since,
         until=until,
         playground=playground,
+        tz_name=tz_name,
+        metric_id=metric_id,
     )
 
 

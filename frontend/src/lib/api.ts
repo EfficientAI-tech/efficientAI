@@ -5074,6 +5074,8 @@ class ApiClient {
     since?: string
     until?: string
     playground?: boolean
+    tz?: string
+    metricId?: string
   }): Promise<EvaluatorResultsDashboardOpsResponse> {
     const query: Record<string, string> = {}
     if (params.suiteId) query.suite_id = params.suiteId
@@ -5082,6 +5084,8 @@ class ApiClient {
     if (params.since) query.since = params.since
     if (params.until) query.until = params.until
     if (params.playground !== undefined) query.playground = String(params.playground)
+    if (params.tz) query.tz = params.tz
+    if (params.metricId) query.metric_id = params.metricId
     const response = await this.client.get('/api/v1/evaluator-results/dashboard-ops', { params: query })
     return response.data
   }

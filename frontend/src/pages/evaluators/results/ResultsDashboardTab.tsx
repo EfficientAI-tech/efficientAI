@@ -282,6 +282,7 @@ export default function ResultsDashboardTab({
         since: dateBounds.since,
         until: dateBounds.until,
         playground,
+        tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
       }),
     ...dashboardQueryOptions,
   })
@@ -326,6 +327,7 @@ export default function ResultsDashboardTab({
         since: insightScopeParams.since,
         until: insightScopeParams.until,
         playground: insightScopeParams.playground,
+        tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
       }),
     ...dashboardQueryOptions,
     enabled: fetchInsightAgentScope,
@@ -554,12 +556,14 @@ export default function ResultsDashboardTab({
     })),
     [metricsCatalog],
   )
+  const chartTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
   const runListBase = {
     agentId: agentId || undefined,
     suiteId: suiteId || undefined,
     scenarioId: scenarioId || undefined,
     since: dateBounds.since,
     until: dateBounds.until,
+    chartTimeZone,
     playground,
     sampleOn: false,
     sampleRows: [] as EvaluatorResultRow[],

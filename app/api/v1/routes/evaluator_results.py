@@ -24,6 +24,7 @@ from app.models.schemas import (
 from app.services.evaluators.evaluator_results_query import (
     build_evaluator_results_query,
     list_evaluator_results_page,
+    list_query_usage_cost_usd,
 )
 from app.services.evaluators.evaluator_results_dashboard_ops import (
     cache_dashboard_ops,
@@ -434,6 +435,8 @@ def get_evaluator_results_dashboard_ops(
         None,
         description="True for playground/live results only. False for evaluator simulations only.",
     ),
+    tz: Optional[str] = Query(None, description="IANA timezone for chart calendar days"),
+    metric_id: Optional[str] = Query(None, description="When set, include per-scenario means for this metric"),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
@@ -467,6 +470,8 @@ def get_evaluator_results_dashboard_ops(
         since=since,
         until=until,
         playground=playground,
+        tz_name=tz,
+        metric_id=metric_id,
     )
     cached = get_cached_dashboard_ops(cache_key)
     if cached is not None:
@@ -482,6 +487,8 @@ def get_evaluator_results_dashboard_ops(
             since=since,
             until=until,
             playground=playground,
+            tz_name=tz,
+            metric_id=metric_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -540,6 +547,10 @@ def list_evaluator_results(
     Use playground=true to get only playground results, or playground=false to explicitly exclude them.
     Use test_agents_only=true to filter out Voice AI Agent results (those with provider_platform set).
     """
+    from app.services.evaluators.evaluator_result_usage_enrichment import ensure_utc_aware
+
+    since = ensure_utc_aware(since)
+    until = ensure_utc_aware(until)
     try:
         query = build_evaluator_results_query(
             db,
@@ -574,7 +585,11 @@ def list_evaluator_results(
         usage_since=since,
         usage_until=until,
     )
-    return EvaluatorResultListResponse(items=items, total=total)
+    return EvaluatorResultListResponse(
+        items=items,
+        total=total,
+        usage_cost_usd=list_query_usage_cost_usd(query),
+    )
 
 
 @router.get("/{id}", response_model=EvaluatorResultResponse)

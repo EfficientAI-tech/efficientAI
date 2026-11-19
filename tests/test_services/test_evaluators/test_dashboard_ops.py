@@ -247,16 +247,16 @@ def test_rollup_tool_calls_counts_production_side_and_kb_fallback():
     ]
     rolled = rollup_tool_calls(rows, agent_names={agent_id: "Support"})
     assert len(rolled.agent_days) == 1
-    assert rolled.agent_days[0].calls == 3
+    assert rolled.agent_days[0].calls == 2
     assert rolled.agent_days[0].errors == 1
     assert rolled.agent_days[0].agent_name == "Support"
     tools = {item.tool: (item.calls, item.errors) for item in rolled.by_tool}
-    assert tools == {"lookup": (2, 1), "kb": (1, 0)}
+    assert tools == {"lookup": (1, 1), "kb": (1, 0)}
     assert rolled.calls_with_no_tools == 0
     assert rolled.per_run[0].runs == 2
     assert rolled.per_run[0].calls == 3
     assert rolled.per_run[0].avg_per_run == 1.5
-    assert {item.provider: item.calls for item in rolled.providers} == {"postgres": 2, "unknown": 1}
+    assert {item.provider: item.calls for item in rolled.providers} == {"postgres": 1, "unknown": 1}
     assert rolled.provider_agents[0].provider in {"postgres", "unknown"}
 
 

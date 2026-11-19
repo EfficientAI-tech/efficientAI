@@ -37,7 +37,14 @@ import { DrillChartPanel, DrillTrendChart } from './resultsDashboardDrillCharts'
 import { isGoldenMetric, type MetricRow } from '../../simulations/simulationMetricScope'
 import type { ListEvaluatorResultsParams } from '../../../types/api'
 import type { RunListBase } from './resultsDashboardInsightDrill'
-import { dateRangeToSinceUntil, formatChartDayLabel, formatDashboardWindowLabel } from './resultsDateRange'
+import {
+  calendarDayToSinceUntil,
+  dateRangeToSinceUntil,
+  formatChartDayLabel,
+  formatDashboardWindowLabel,
+  intersectSinceUntil,
+} from './resultsDateRange'
+import { getUsageTimezone } from '../../usage/usageTimezone'
 import { evaluatorResultOpenId } from './ResultsRunDetailDrawer'
 
 export type { RunListBase } from './resultsDashboardInsightDrill'
@@ -229,7 +236,11 @@ export function PaginatedRunsTable({
                   : (call?.costUsd ?? inlineUsage.costUsd)
                 return (
                   <tr key={row.id} className="group">
-                    <td className="py-2.5 pr-3 text-xs text-gray-500">{formatCallTime(row.timestamp)}</td>
+                    <td className="py-2.5 pr-3 text-xs text-gray-500">
+                      {usageModel && typeof row.call_data?.usage_on === 'string'
+                        ? formatChartDayLabel(row.call_data.usage_on, false)
+                        : formatCallTime(row.timestamp)}
+                    </td>
                     <td className="py-2.5 pr-3">
                       <button
                         type="button"
@@ -430,7 +441,9 @@ function UsageModelDrillLeaf({
     staleTime: 60_000,
   })
   const attributedRunCount = runCountData?.total ?? 0
-  const spendHeadline = formatUsageCostUsd(modelSpendUsd, displayCurrency, inrRate)
+  const attributedSpend = runCountData?.usage_cost_usd
+  const headlineUsd = attributedSpend != null ? attributedSpend : modelSpendUsd
+  const spendHeadline = formatUsageCostUsd(headlineUsd, displayCurrency, inrRate)
   const unit =
     layer?.usd_per_minute != null
       ? `$${layer.usd_per_minute}/min`
@@ -455,10 +468,10 @@ function UsageModelDrillLeaf({
         <dl className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
           <div>
             <dt className="text-xs text-gray-400">Spend in window</dt>
-            <dd className="font-semibold tabular-nums text-gray-900" title={formatUsageCostExactUsd(modelSpendUsd, displayCurrency, inrRate)}>
+            <dd className="font-semibold tabular-nums text-gray-900" title={formatUsageCostExactUsd(headlineUsd, displayCurrency, inrRate)}>
               {spendHeadline}
             </dd>
-            <p className="mt-0.5 text-[11px] text-gray-400">Ledger total for this model (may differ from per-run split)</p>
+            <p className="mt-0.5 text-[11px] text-gray-400">Total attributed to the runs below, across every page</p>
           </div>
           <div>
             <dt className="text-xs text-gray-400">Attributed runs</dt>
@@ -632,7 +645,7 @@ function MotionStat({ label, value }: { label: string; value: string }) {
 }
 
 type ToolDrillLeaf =
-  | { kind: 'named_tool'; useKind: 'use_case' | 'product'; name: string }
+  | { kind: 'named_tool'; useKind: 'use_case' | 'product'; name: string; dayKey?: string }
   | { kind: 'agent_runs'; agentId: string; agentName: string; dayKey?: string }
 
 function toolsRunListBase(
@@ -640,7 +653,9 @@ function toolsRunListBase(
   dayKey: string | undefined,
 ): RunListBase {
   if (!dayKey) return base
-  const bounds = dateRangeToSinceUntil(dayKey, dayKey)
+  const tz = base.chartTimeZone || getUsageTimezone()
+  const dayBounds = calendarDayToSinceUntil(dayKey, tz)
+  const bounds = intersectSinceUntil(dayBounds, { since: base.since, until: base.until })
   return { ...base, since: bounds.since, until: bounds.until }
 }
 
@@ -701,7 +716,10 @@ export function ToolsMergedDetail({
 
   const openAgentToolRuns = (agentName: string, dayKey?: string) => {
     const agentId = resolveToolAgentFocusId(ops, agentName)
-    if (!agentId) return
+    if (!agentId) {
+      setDrillLeaf({ kind: 'named_tool', useKind: 'product', name: agentName, dayKey })
+      return
+    }
     setDrillLeaf({ kind: 'agent_runs', agentId, agentName, dayKey })
   }
 
@@ -723,11 +741,7 @@ export function ToolsMergedDetail({
           {insightMode === 'errors' ? 'Runs with tool failures in this slice' : 'Pre-prod runs where production tools were invoked'}
         </p>
         <PaginatedRunsTable
-          base={
-            drillLeaf.kind === 'agent_runs'
-              ? toolsRunListBase(runListBase, drillLeaf.dayKey)
-              : runListBase
-          }
+          base={toolsRunListBase(runListBase, drillLeaf.dayKey)}
           filterAgentId={
             drillLeaf.kind === 'agent_runs'
               ? drillLeaf.agentId
@@ -935,6 +949,28 @@ export function MetricUsageDrill({
     () => metrics.filter((metric) => metric.count === 0),
     [metrics],
   )
+  const { data: metricMeans } = useQuery({
+    queryKey: ['scenario-metric-means', agentId, metricId, runListBase.since, runListBase.until, runListBase.playground],
+    queryFn: () => apiClient.getEvaluatorResultsDashboardOps({
+      agentId,
+      suiteId: runListBase.suiteId,
+      scenarioId: runListBase.scenarioId,
+      since: runListBase.since,
+      until: runListBase.until,
+      playground: runListBase.playground,
+      metricId,
+      tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    }),
+    enabled: Boolean(agentId && metricId),
+    staleTime: 60_000,
+  })
+  const meanByScenario = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const row of metricMeans?.scenario_metric_means ?? []) {
+      map.set(row.scenario_id, row.mean)
+    }
+    return map
+  }, [metricMeans])
 
   const scenarios = useMemo(() => {
     if (!agentId || !metricId) return []
@@ -952,7 +988,18 @@ export function MetricUsageDrill({
         scoreStats.set(name, bucket)
       }
     }
-    const opsForAgent = scenarioRows.filter((row) => row.agentId === agentId)
+    const agentSummary = agents.find((item) => item.agent_id === agentId)
+    const fromAgent = (agentSummary?.suites ?? []).flatMap((suite) =>
+      (suite.scenarios ?? []).map((scenario) => ({
+        name: scenario.scenario_name,
+        scenarioId: scenario.scenario_id,
+        count: scenario.counts.total,
+        failed: scenario.counts.failed,
+      })),
+    )
+    const opsForAgent = fromAgent.length > 0
+      ? fromAgent
+      : scenarioRows.filter((row) => row.agentId === agentId)
     if (opsForAgent.length > 0) {
       return opsForAgent
         .map((row) => {
@@ -962,7 +1009,7 @@ export function MetricUsageDrill({
             scenarioId: row.scenarioId,
             count: row.count,
             failed: row.failed,
-            avg: scored?.scored ? scored.sum / scored.scored : null,
+            avg: meanByScenario.get(row.scenarioId) ?? (scored?.scored ? scored.sum / scored.scored : null),
           }
         })
         .sort((a, b) => b.count - a.count)
@@ -992,7 +1039,7 @@ export function MetricUsageDrill({
         avg: stats.scored ? stats.sum / stats.scored : null,
       }))
       .sort((a, b) => b.count - a.count)
-  }, [results, agentId, metricId, scenarioRows])
+  }, [results, agentId, metricId, scenarioRows, agents, meanByScenario])
 
   if (!agentId) {
     return (
@@ -1154,7 +1201,7 @@ export function TotalCallsDrill({
   onOpenResult,
 }: {
   agentRows: Array<{ id: string; name: string; total: number }>
-  callDays: Array<{ day: string; calls: number }>
+  callDays: Array<{ day: string; calls: number; sortKey?: string }>
   results: EvaluatorResultRow[]
   runListBase: RunListBase
   aggregateTotal: number
@@ -1167,7 +1214,9 @@ export function TotalCallsDrill({
 }) {
   const windowLabel = formatDashboardWindowLabel(dateRange, allTime)
   const agent = agentRows.find((row) => row.id === agentId)
-  const agentCallDays = agentId ? callDays : callDays
+  const [dayKey, setDayKey] = useState<string | null>(null)
+  const agentCallDays = callDays
+  const dayListBase = dayKey ? toolsRunListBase(runListBase, dayKey) : runListBase
 
   if (!agentId) {
     return (
@@ -1208,13 +1257,28 @@ export function TotalCallsDrill({
           model={{
             headline: (agent?.total ?? agentCallDays.reduce((sum, day) => sum + day.calls, 0)).toLocaleString(),
             caption: 'Calls over time',
-            data: agentCallDays.map((day) => ({ day: day.day, calls: day.calls })),
+            data: agentCallDays.map((day) => ({
+              day: day.day,
+              sortKey: day.sortKey,
+              calls: day.calls,
+            })),
             series: [{ key: 'calls', color: LAYER_LLM }],
           }}
           display="area"
+          onCategory={(label) => {
+            const match = agentCallDays.find((day) => day.day === label)
+            const next = match?.sortKey
+            if (!next) return
+            setDayKey((prev) => (prev === next ? null : next))
+          }}
         />
       )}
-      <PaginatedRunsTable base={runListBase} filterAgentId={agentId} onOpenResult={onOpenResult} />
+      <PaginatedRunsTable
+        base={dayListBase}
+        filterAgentId={agentId}
+        onOpenResult={onOpenResult}
+        title={dayKey ? `Runs · ${formatChartDayLabel(dayKey, false)}` : 'Runs'}
+      />
     </div>
   )
 }

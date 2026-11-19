@@ -7,10 +7,10 @@ from datetime import date, datetime, time, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from uuid import UUID
 
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
-from app.models.database import CallRecording, EvaluatorResult, LLMUsageDaily
+from app.models.database import CallRecording, CallRecordingSource, EvaluatorResult, LLMUsageDaily
 from app.services.usage.context import LIVE_USAGE_SECTIONS, resolve_usage_role
 
 _USAGE_OVERLAY_KEYS = (
@@ -70,6 +70,7 @@ def apply_usage_rollup(
     total_cost_micro_usd: int,
     by_model: Optional[Dict[str, Tuple[int, int]]] = None,
     by_role: Optional[Dict[str, Tuple[int, int]]] = None,
+    usage_on: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Inject rollup totals when provider call_data has no token/cost breakdown."""
     if total_tokens <= 0 and total_cost_micro_usd <= 0:
@@ -105,6 +106,8 @@ def apply_usage_rollup(
             }
         if usage_by_role:
             call_data["usage_by_role"] = usage_by_role
+    if usage_on:
+        call_data["usage_on"] = usage_on
     return call_data
 
 
@@ -115,6 +118,7 @@ def enrich_call_data_for_usage_display(
     rollup: Optional[Tuple[int, int]] = None,
     rollup_by_model: Optional[Dict[str, Tuple[int, int]]] = None,
     rollup_by_role: Optional[Dict[str, Tuple[int, int]]] = None,
+    usage_on: Optional[str] = None,
 ) -> Dict[str, Any]:
     merged = merge_call_data_usage_fields(call_data, recording_call_data)
     if rollup:
@@ -124,6 +128,7 @@ def enrich_call_data_for_usage_display(
             total_cost_micro_usd=rollup[1],
             by_model=rollup_by_model,
             by_role=rollup_by_role,
+            usage_on=usage_on,
         )
     return merged
 
@@ -154,6 +159,15 @@ def batch_recordings_for_evaluator_results(
     return out
 
 
+def ensure_utc_aware(dt: Optional[datetime]) -> Optional[datetime]:
+    """Treat naive API datetimes as UTC so comparisons with aware bounds are safe."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def _parse_uuid(raw: Any) -> Optional[UUID]:
     if isinstance(raw, UUID):
         return raw
@@ -177,6 +191,8 @@ def _intersect_window(
     until: Optional[datetime],
 ) -> Tuple[datetime, datetime]:
     day_start, day_end = _day_bounds(day)
+    since = ensure_utc_aware(since)
+    until = ensure_utc_aware(until)
     start = day_start if since is None else max(day_start, since)
     end = day_end if until is None else min(day_end, until)
     return start, end
@@ -243,6 +259,8 @@ def _result_matches_usage_row_scope(
     since: Optional[datetime],
     until: Optional[datetime],
 ) -> bool:
+    since = ensure_utc_aware(since)
+    until = ensure_utc_aware(until)
     usage_day = row.usage_date
     if usage_day is None:
         return False
@@ -280,6 +298,8 @@ def _result_ids_for_usage_row(
     until: Optional[datetime],
     candidates: Optional[Sequence[EvaluatorResult]] = None,
 ) -> List[UUID]:
+    since = ensure_utc_aware(since)
+    until = ensure_utc_aware(until)
     ctx = row.context if isinstance(row.context, dict) else {}
     explicit = _parse_uuid(ctx.get("evaluator_result_id"))
     if explicit is not None:
@@ -341,6 +361,61 @@ def _result_ids_for_usage_row(
     return [result_id for (result_id,) in result_query.all()]
 
 
+def _query_usage_rows_for_page(
+    db: Session,
+    *,
+    organization_id: UUID,
+    workspace_id: Optional[UUID],
+    usage_since: date,
+    usage_until: date,
+    page_ids: Set[UUID],
+    page_agent_ids: Set[UUID],
+    page_evaluator_ids: Set[UUID],
+    page_days: Set[date],
+) -> List[LLMUsageDaily]:
+    """Load only ledger rows that can attribute to this result page."""
+    scope_filters = []
+    if page_ids:
+        scope_filters.append(
+            LLMUsageDaily.context["evaluator_result_id"].astext.in_([str(rid) for rid in page_ids])
+        )
+    day_list = list(page_days) if page_days else []
+    if page_agent_ids and day_list:
+        for aid in page_agent_ids:
+            scope_filters.append(
+                and_(
+                    LLMUsageDaily.context["agent_id"].astext == str(aid),
+                    LLMUsageDaily.usage_date.in_(day_list),
+                )
+            )
+    if page_evaluator_ids and day_list:
+        for eid in page_evaluator_ids:
+            scope_filters.append(
+                and_(
+                    or_(
+                        and_(
+                            LLMUsageDaily.context["resource_type"].astext == "evaluator",
+                            LLMUsageDaily.context["resource_id"].astext == str(eid),
+                        ),
+                        LLMUsageDaily.context["evaluator_id"].astext == str(eid),
+                    ),
+                    LLMUsageDaily.usage_date.in_(day_list),
+                )
+            )
+    if not scope_filters:
+        return []
+
+    query = db.query(LLMUsageDaily).filter(
+        LLMUsageDaily.organization_id == organization_id,
+        LLMUsageDaily.usage_date >= usage_since,
+        LLMUsageDaily.usage_date <= usage_until,
+        or_(*scope_filters),
+    )
+    if workspace_id is not None:
+        query = query.filter(LLMUsageDaily.workspace_id == workspace_id)
+    return query.all()
+
+
 def _role_key_from_usage_row(row: LLMUsageDaily) -> Optional[str]:
     ctx = row.context if isinstance(row.context, dict) else {}
     return resolve_usage_role(row.product_section or "", ctx)
@@ -374,34 +449,42 @@ def batch_llm_usage_rollups_for_results(
     Dict[str, Tuple[int, int]],
     Dict[str, Dict[str, Tuple[int, int]]],
     Dict[str, Dict[str, Tuple[int, int]]],
+    Dict[str, str],
 ]:
     rows = list(results)
     if not rows:
-        return {}, {}, {}
+        return {}, {}, {}, {}
     result_days = {row.timestamp.date() for row in rows if row.timestamp is not None}
     if usage_since is None and result_days:
         usage_since = min(result_days)
     if usage_until is None and result_days:
         usage_until = max(result_days)
     if usage_since is None or usage_until is None:
-        return {}, {}, {}
+        return {}, {}, {}, {}
 
     page_ids = {row.id for row in rows}
     page_agent_ids = {row.agent_id for row in rows if row.agent_id is not None}
+    page_evaluator_ids = {row.evaluator_id for row in rows if row.evaluator_id is not None}
     page_days = result_days or {usage_since, usage_until}
     page_share_keys: Set[ShareKey] = set()
 
-    usage_query = db.query(LLMUsageDaily).filter(
-        LLMUsageDaily.organization_id == organization_id,
-        LLMUsageDaily.usage_date >= usage_since,
-        LLMUsageDaily.usage_date <= usage_until,
+    raw_usage_rows = _query_usage_rows_for_page(
+        db,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        usage_since=usage_since,
+        usage_until=usage_until,
+        page_ids=page_ids,
+        page_agent_ids=page_agent_ids,
+        page_evaluator_ids=page_evaluator_ids,
+        page_days=page_days,
     )
-    if workspace_id is not None:
-        usage_query = usage_query.filter(LLMUsageDaily.workspace_id == workspace_id)
-
-    raw_usage_rows = usage_query.all()
     usage_rows: List[LLMUsageDaily] = []
+    seen_row_ids: Set[Any] = set()
     for row in raw_usage_rows:
+        if row.id in seen_row_ids:
+            continue
+        seen_row_ids.add(row.id)
         ctx = row.context if isinstance(row.context, dict) else {}
         explicit = _parse_uuid(ctx.get("evaluator_result_id"))
         if explicit is not None:
@@ -422,6 +505,10 @@ def batch_llm_usage_rollups_for_results(
                     usage_rows.append(row)
                     page_share_keys.add(share)
             continue
+        evaluator_id = _evaluator_id_from_context(ctx)
+        if evaluator_id in page_evaluator_ids and row.usage_date in page_days:
+            usage_rows.append(row)
+            continue
         agent_id = _parse_uuid(ctx.get("agent_id"))
         if agent_id in page_agent_ids and row.usage_date in page_days:
             usage_rows.append(row)
@@ -429,10 +516,13 @@ def batch_llm_usage_rollups_for_results(
     totals: Dict[str, Tuple[int, int]] = defaultdict(lambda: (0, 0))
     by_model: Dict[str, Dict[str, Tuple[int, int]]] = defaultdict(dict)
     by_role: Dict[str, Dict[str, Tuple[int, int]]] = defaultdict(dict)
+    usage_days: Dict[str, Set[str]] = defaultdict(set)
     share_buckets: Dict[ShareKey, Tuple[int, int]] = defaultdict(lambda: (0, 0))
     share_roles: Dict[ShareKey, Dict[str, Tuple[int, int]]] = defaultdict(dict)
     share_run_count: Dict[ShareKey, int] = {}
 
+    window_since = ensure_utc_aware(window_since)
+    window_until = ensure_utc_aware(window_until)
     if window_since is None and usage_since is not None:
         window_since = datetime.combine(usage_since, time.min, tzinfo=timezone.utc)
     if window_until is None and usage_until is not None:
@@ -454,6 +544,8 @@ def batch_llm_usage_rollups_for_results(
             prev_m_tokens, prev_m_micro = model_bucket.get(model_name, (0, 0))
             model_bucket[model_name] = (prev_m_tokens + tokens, prev_m_micro + micro)
             _add_role_slice(by_role, result_id, usage_role, tokens, micro)
+            if row.usage_date is not None:
+                usage_days[result_id].add(row.usage_date.isoformat())
             continue
         share = _share_key_from_row(row)
         if share is None:
@@ -503,6 +595,7 @@ def batch_llm_usage_rollups_for_results(
                 r_tok = role_tokens // run_count
                 r_mic = role_micro // run_count
                 _add_role_slice(by_role, result_key, role, r_tok, r_mic)
+            usage_days[result_key].add(share[3].isoformat())
 
     fallback_rows = [
         row
@@ -539,11 +632,14 @@ def batch_llm_usage_rollups_for_results(
                 prev_m_tokens, prev_m_micro = model_bucket.get(model_name, (0, 0))
                 model_bucket[model_name] = (prev_m_tokens + share_tokens, prev_m_micro + share_micro)
                 _add_role_slice(by_role, result_key, usage_role, share_tokens, share_micro)
+                if row.usage_date is not None:
+                    usage_days[result_key].add(row.usage_date.isoformat())
 
     return (
         dict(totals),
         {key: dict(value) for key, value in by_model.items()},
         {key: dict(value) for key, value in by_role.items()},
+        {key: min(days) for key, days in usage_days.items() if days},
     )
 
 
@@ -588,6 +684,8 @@ def _fetch_implicit_usage_candidates(
     day_max = max(usage_days)
     range_start, _ = _day_bounds(day_min)
     _, range_end = _day_bounds(day_max)
+    since = ensure_utc_aware(since)
+    until = ensure_utc_aware(until)
     if since is not None:
         range_start = max(range_start, since)
     if until is not None:
@@ -612,6 +710,28 @@ def _fetch_implicit_usage_candidates(
     return query.all()
 
 
+def _playground_result_ids(
+    db: Session,
+    organization_id: UUID,
+    workspace_id: Optional[UUID],
+) -> Set[UUID]:
+    recording_query = db.query(CallRecording.evaluator_result_id).filter(
+        CallRecording.organization_id == organization_id,
+        CallRecording.source == CallRecordingSource.PLAYGROUND,
+        CallRecording.evaluator_result_id.isnot(None),
+    )
+    result_query = db.query(EvaluatorResult.id).filter(
+        EvaluatorResult.organization_id == organization_id,
+        EvaluatorResult.evaluator_id.is_(None),
+    )
+    if workspace_id is not None:
+        recording_query = recording_query.filter(CallRecording.workspace_id == workspace_id)
+        result_query = result_query.filter(EvaluatorResult.workspace_id == workspace_id)
+    ids = {rid for (rid,) in recording_query.all() if rid is not None}
+    ids.update(rid for (rid,) in result_query.all())
+    return ids
+
+
 def evaluator_result_ids_with_usage_model(
     db: Session,
     *,
@@ -621,10 +741,10 @@ def evaluator_result_ids_with_usage_model(
     since: Optional[datetime] = None,
     until: Optional[datetime] = None,
     playground: Optional[bool] = None,
-) -> List[UUID]:
+) -> Tuple[List[UUID], int]:
     model_key = (model or "").strip()
     if not model_key:
-        return []
+        return [], 0
     usage_query = db.query(LLMUsageDaily).filter(
         LLMUsageDaily.organization_id == organization_id,
         func.lower(LLMUsageDaily.model) == model_key.lower(),
@@ -636,15 +756,22 @@ def evaluator_result_ids_with_usage_model(
     if until is not None:
         usage_query = usage_query.filter(LLMUsageDaily.usage_date <= until.date())
 
-    usage_rows = [
-        row
-        for row in usage_query.all()
-        if _usage_row_matches_playground_mode(row, playground)
-    ]
+    playground_ids = _playground_result_ids(db, organization_id, workspace_id) if playground is not None else None
+    usage_rows: List[LLMUsageDaily] = []
+    for row in usage_query.all():
+        ctx = row.context if isinstance(row.context, dict) else {}
+        explicit = _parse_uuid(ctx.get("evaluator_result_id"))
+        if explicit is not None and playground_ids is not None:
+            if (explicit in playground_ids) != bool(playground):
+                continue
+        elif not _usage_row_matches_playground_mode(row, playground):
+            continue
+        usage_rows.append(row)
     if not usage_rows:
-        return []
+        return [], 0
 
     out: Set[UUID] = set()
+    attributed_micro = 0
     implicit_rows: List[LLMUsageDaily] = []
     explicit_ids: List[UUID] = []
     for row in usage_rows:
@@ -662,11 +789,13 @@ def evaluator_result_ids_with_usage_model(
         )
         if workspace_id is not None:
             verified = verified.filter(EvaluatorResult.workspace_id == workspace_id)
-        if since is not None:
-            verified = verified.filter(EvaluatorResult.timestamp >= since)
-        if until is not None:
-            verified = verified.filter(EvaluatorResult.timestamp <= until)
-        out.update(rid for (rid,) in verified.all())
+        matched = {rid for (rid,) in verified.all()}
+        out.update(matched)
+        for row in usage_rows:
+            ctx = row.context if isinstance(row.context, dict) else {}
+            explicit = _parse_uuid(ctx.get("evaluator_result_id"))
+            if explicit in matched:
+                attributed_micro += int(row.total_cost_micro_usd or 0)
 
     candidates = _fetch_implicit_usage_candidates(
         db,
@@ -677,7 +806,7 @@ def evaluator_result_ids_with_usage_model(
         until=until,
     )
     for row in implicit_rows:
-        for result_id in _result_ids_for_usage_row(
+        matched_ids = _result_ids_for_usage_row(
             db,
             organization_id=organization_id,
             workspace_id=workspace_id,
@@ -685,9 +814,12 @@ def evaluator_result_ids_with_usage_model(
             since=since,
             until=until,
             candidates=candidates,
-        ):
-            out.add(result_id)
-    return list(out)
+        )
+        if not matched_ids:
+            continue
+        out.update(matched_ids)
+        attributed_micro += int(row.total_cost_micro_usd or 0)
+    return list(out), attributed_micro
 
 
 def usage_enrichment_caches_for_results(
@@ -703,10 +835,13 @@ def usage_enrichment_caches_for_results(
     Dict[str, Tuple[int, int]],
     Dict[str, Dict[str, Tuple[int, int]]],
     Dict[str, Dict[str, Tuple[int, int]]],
+    Dict[str, str],
 ]:
     rows = list(results)
     if not rows:
-        return {}, {}, {}, {}
+        return {}, {}, {}, {}, {}
+    window_since = ensure_utc_aware(window_since)
+    window_until = ensure_utc_aware(window_until)
     organization_id = rows[0].organization_id
     workspace_id = rows[0].workspace_id
     result_ids = [row.id for row in rows]
@@ -716,7 +851,7 @@ def usage_enrichment_caches_for_results(
         workspace_id=workspace_id,
         result_ids=result_ids,
     )
-    rollups, rollups_by_model, rollups_by_role = batch_llm_usage_rollups_for_results(
+    rollups, rollups_by_model, rollups_by_role, usage_days = batch_llm_usage_rollups_for_results(
         db,
         organization_id=organization_id,
         workspace_id=workspace_id,
@@ -726,4 +861,4 @@ def usage_enrichment_caches_for_results(
         window_since=window_since,
         window_until=window_until,
     )
-    return recordings, rollups, rollups_by_model, rollups_by_role
+    return recordings, rollups, rollups_by_model, rollups_by_role, usage_days

@@ -7,6 +7,8 @@ export type RunListBase = {
   scenarioId?: string
   since?: string
   until?: string
+  /** IANA zone used for dashboard-ops chart days (must match drill day bounds). */
+  chartTimeZone?: string
   playground: boolean
   sampleOn: boolean
   sampleRows: EvaluatorResultRow[]

@@ -42,6 +42,19 @@ def test_result_matches_usage_row_scope_limits_to_usage_day():
     assert not _result_matches_usage_row_scope(next_day, row=row, since=since, until=until)
 
 
+def test_intersect_window_accepts_naive_since():
+    from datetime import datetime
+
+    from app.services.evaluators.evaluator_result_usage_enrichment import _intersect_window
+
+    day = datetime(2026, 11, 10).date()
+    since = datetime(2026, 11, 10, 0, 0, 0)
+    until = datetime(2026, 11, 10, 23, 59, 59)
+    start, end = _intersect_window(day, since=since, until=until)
+    assert start.tzinfo is not None
+    assert end.tzinfo is not None
+
+
 def test_enrich_call_data_applies_daily_rollup_when_provider_fields_missing():
     out = enrich_call_data_for_usage_display(
         {},

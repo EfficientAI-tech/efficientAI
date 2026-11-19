@@ -12,8 +12,16 @@ _TOOL_ARRAY_EXISTS = text(
     EXISTS (
         SELECT 1
         FROM jsonb_array_elements(
-            COALESCE(evaluator_results.call_data->'tool_calls', '[]'::jsonb)
-            || COALESCE(evaluator_results.call_data->'knowledge_base_tool_calls', '[]'::jsonb)
+            CASE
+                WHEN jsonb_typeof((evaluator_results.call_data::jsonb)->'tool_calls') = 'array'
+                THEN (evaluator_results.call_data::jsonb)->'tool_calls'
+                ELSE '[]'::jsonb
+            END
+            || CASE
+                WHEN jsonb_typeof((evaluator_results.call_data::jsonb)->'knowledge_base_tool_calls') = 'array'
+                THEN (evaluator_results.call_data::jsonb)->'knowledge_base_tool_calls'
+                ELSE '[]'::jsonb
+            END
         ) AS elem
         WHERE (elem->>'side' IS NULL OR elem->>'side' = 'production')
         AND (:tool_use IS NULL OR elem->>'tool' = :tool_use)

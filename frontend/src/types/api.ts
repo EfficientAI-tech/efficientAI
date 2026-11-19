@@ -156,6 +156,7 @@ export interface EvaluatorResultRow {
 export interface EvaluatorResultListResponse {
   items: EvaluatorResultRow[]
   total: number
+  usage_cost_usd?: number | null
 }
 
 export interface EvaluatorResultCounts {
@@ -2476,6 +2477,7 @@ export interface EvaluatorResultsDashboardOpsResponse {
   agents?: EvaluatorResultsAgentSummary[]
   agent_metric_counts?: DashboardOpsAgentMetricCount[]
   duration_buckets?: DashboardOpsDurationBucket[]
+  scenario_metric_means?: Array<{ scenario_id: string; mean: number; scored: number }>
 }
 
 export interface CallImportInsightsRunPoint {

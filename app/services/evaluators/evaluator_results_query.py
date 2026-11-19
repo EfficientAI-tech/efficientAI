@@ -42,6 +42,22 @@ _IN_FLIGHT_STATUSES = frozenset(
     }
 )
 
+_LIST_QUERY_META_ATTR = "_efficientai_evaluator_list_meta"
+
+
+def _list_query_meta(query: Query) -> Dict[str, Any]:
+    """ORM Query has no portable ``info`` bag — attach list response metadata here."""
+    meta = getattr(query, _LIST_QUERY_META_ATTR, None)
+    if not isinstance(meta, dict):
+        meta = {}
+        setattr(query, _LIST_QUERY_META_ATTR, meta)
+    return meta
+
+
+def list_query_usage_cost_usd(query: Query) -> Optional[float]:
+    value = _list_query_meta(query).get("usage_cost_usd")
+    return float(value) if value is not None else None
+
 
 def classify_display_status(result: EvaluatorResult) -> str:
     """Match API list/detail effective status semantics."""
@@ -138,13 +154,12 @@ def build_evaluator_results_query(
         EvaluatorResult.workspace_id == workspace_id,
     )
 
-    if not usage_model:
-        query = apply_playground_scope_filter(
-            query,
-            db,
-            playground=playground,
-            test_agents_only=test_agents_only,
-        )
+    query = apply_playground_scope_filter(
+        query,
+        db,
+        playground=playground,
+        test_agents_only=test_agents_only,
+    )
 
     if unassigned_only:
         query = query.outerjoin(
@@ -195,9 +210,9 @@ def build_evaluator_results_query(
         if parsed_ids:
             query = query.filter(EvaluatorResult.scenario_id.in_(parsed_ids))
 
-    if since is not None:
+    if since is not None and not usage_model:
         query = query.filter(EvaluatorResult.timestamp >= since)
-    if until is not None:
+    if until is not None and not usage_model:
         query = query.filter(EvaluatorResult.timestamp <= until)
 
     if metric_id:
@@ -211,7 +226,7 @@ def build_evaluator_results_query(
     if usage_model:
         model_key = str(usage_model).strip()
         if model_key:
-            result_ids = evaluator_result_ids_with_usage_model(
+            result_ids, usage_micro = evaluator_result_ids_with_usage_model(
                 db,
                 organization_id=organization_id,
                 workspace_id=workspace_id,
@@ -220,6 +235,7 @@ def build_evaluator_results_query(
                 until=until,
                 playground=playground,
             )
+            _list_query_meta(query)["usage_cost_usd"] = usage_micro / 1_000_000
             if result_ids:
                 # Ledger attribution already respects Simulations vs Live via usage rows;
                 # do not re-apply playground recording filter (judge spend often links
@@ -233,7 +249,7 @@ def build_evaluator_results_query(
         tool_use=tool_use,
         tool_product=tool_product,
         failures_only=bool(tool_failures_only),
-        has_tool_calls=bool(has_tool_calls),
+        has_tool_calls=has_tool_calls is True,
     )
 
     if status:
@@ -283,6 +299,7 @@ def _call_data_for_list_row(
     usage_rollup_by_result_id: Optional[Dict[str, Tuple[int, int]]],
     usage_rollup_by_model: Optional[Dict[str, Dict[str, Tuple[int, int]]]],
     usage_rollup_by_role: Optional[Dict[str, Dict[str, Tuple[int, int]]]] = None,
+    usage_days_by_result_id: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     call_data = enrich_evaluator_result_live_telephony(db, result, result.call_data)
     recording = (recording_by_result_id or {}).get(result.id)
@@ -300,6 +317,7 @@ def _call_data_for_list_row(
         rollup=rollup,
         rollup_by_model=rollup_models,
         rollup_by_role=rollup_roles,
+        usage_on=(usage_days_by_result_id or {}).get(str(result.id)),
     )
 
 
@@ -312,6 +330,7 @@ def serialize_evaluator_result_row(
     usage_rollup_by_result_id: Optional[Dict[str, Tuple[int, int]]] = None,
     usage_rollup_by_model: Optional[Dict[str, Dict[str, Tuple[int, int]]]] = None,
     usage_rollup_by_role: Optional[Dict[str, Dict[str, Tuple[int, int]]]] = None,
+    usage_days_by_result_id: Optional[Dict[str, str]] = None,
 ) -> EvaluatorResultResponse:
     repair_evaluator_result_failed_status_if_needed(db, result)
     repair_evaluator_result_status_if_needed(db, result)
@@ -365,6 +384,7 @@ def serialize_evaluator_result_row(
             usage_rollup_by_result_id=usage_rollup_by_result_id,
             usage_rollup_by_model=usage_rollup_by_model,
             usage_rollup_by_role=usage_rollup_by_role,
+            usage_days_by_result_id=usage_days_by_result_id,
         ),
         "synthetic_call_trace_id": result.synthetic_call_trace_id,
         "created_at": result.created_at,
@@ -445,7 +465,7 @@ def list_evaluator_results_page(
     from app.services.live_entity_storage import hydrate_evaluator_results
 
     hydrate_evaluator_results(results)
-    recordings, rollups, rollups_by_model, rollups_by_role = usage_enrichment_caches_for_results(
+    recordings, rollups, rollups_by_model, rollups_by_role, usage_days = usage_enrichment_caches_for_results(
         db,
         results,
         usage_since=usage_since.date() if usage_since else None,
@@ -462,6 +482,7 @@ def list_evaluator_results_page(
             usage_rollup_by_result_id=rollups,
             usage_rollup_by_model=rollups_by_model,
             usage_rollup_by_role=rollups_by_role,
+            usage_days_by_result_id=usage_days,
         )
         for row in results
     ]

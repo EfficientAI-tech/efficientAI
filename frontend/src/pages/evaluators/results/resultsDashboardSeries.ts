@@ -369,7 +369,11 @@ export function toolCallDetail(
     caption: mode === 'errors' ? 'Tool failures over time' : 'Tool calls over time',
     data: Array.from(byDay.entries())
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([day, values]) => ({ day: formatDayLabel(day), ...values })),
+      .map(([day, values]) => ({
+        day: formatDayLabel(day),
+        sortKey: String(day).slice(0, 10),
+        ...values,
+      })),
     series: keys.map((key, index) => ({
       key,
       color: mode === 'errors' ? '#dc2626' : MODEL_COLORS[index % MODEL_COLORS.length],
@@ -638,7 +642,7 @@ export function platformToolDetail(
   const seriesKeys = Array.from(keys)
   return {
     headline: rows.reduce((sum, row) => sum + row[metricKey], 0).toLocaleString(),
-    caption: mode === 'errors' ? 'Tool failures over time by agent' : 'Usage over time by agent',
+    caption: mode === 'errors' ? 'Runs with tool failures' : 'Runs with tool calls',
     data: Array.from(byDay.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([day, values]) => ({
       day: formatDayLabel(day),
       sortKey: String(day).slice(0, 10),

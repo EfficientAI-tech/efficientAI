@@ -2738,6 +2738,7 @@ class EvaluatorResultsOverviewResponse(BaseModel):
 class EvaluatorResultListResponse(BaseModel):
     items: List["EvaluatorResultResponse"]
     total: int
+    usage_cost_usd: Optional[float] = None
 
 
 
@@ -5618,6 +5619,12 @@ class DashboardOpsDurationBucket(BaseModel):
     count: int = 0
 
 
+class DashboardOpsScenarioMetricMean(BaseModel):
+    scenario_id: UUID
+    mean: float
+    scored: int = 0
+
+
 class EvaluatorResultsDashboardOpsResponse(BaseModel):
     """Cost, tool calls, daily run series, score summaries, and the agent tree."""
 
@@ -5641,6 +5648,7 @@ class EvaluatorResultsDashboardOpsResponse(BaseModel):
     agents: List[EvaluatorResultsAgentSummary] = Field(default_factory=list)
     agent_metric_counts: List[DashboardOpsAgentMetricCount] = Field(default_factory=list)
     duration_buckets: List[DashboardOpsDurationBucket] = Field(default_factory=list)
+    scenario_metric_means: List[DashboardOpsScenarioMetricMean] = Field(default_factory=list)
 
 
 # --- LLM-generated TLDR for the Visualizations tab ---
