@@ -97,20 +97,20 @@ export default function ResultsDashboardSettingsMenu({
         onClick={() => onOpenChange(!open)}
         className={`inline-flex max-w-full items-center gap-2 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors ${settingsActive
           ? theme.pillActive
-          : 'border-gray-200 bg-white text-gray-600 hover:bg-[#fefce8] hover:text-[#854d0e]'
+          : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50 hover:text-gray-900'
           }`}
         aria-expanded={open}
       >
         <Settings2 className="h-3.5 w-3.5 shrink-0" aria-hidden />
         <span className="hidden sm:inline">Dashboard</span>
-        <span className="truncate font-normal text-[#854d0e]/80">
+        <span className="truncate font-normal text-gray-500">
           {summaryParts.join(' · ')}
         </span>
       </button>
 
       {open ? (
         <div
-          className={`absolute right-0 top-full z-50 mt-1.5 w-[min(100vw-2rem,22rem)] rounded-xl border border-gray-200 bg-white p-3 shadow-xl ring-1 ring-[#fde047]/40 ${theme.focusRing}`}
+          className={`absolute right-0 top-full z-50 mt-1.5 w-[min(100vw-2rem,20rem)] rounded-lg border border-gray-200 bg-white p-3 shadow-lg ${theme.focusRing}`}
           role="dialog"
           aria-label="Dashboard settings"
         >
@@ -160,11 +160,11 @@ export default function ResultsDashboardSettingsMenu({
             </div>
 
             {addOpen ? (
-              <div className="mt-2.5 rounded-xl border border-[#fde047]/50 bg-gradient-to-b from-[#fefce8]/80 to-white p-2 shadow-inner">
-                <p className="px-1 pb-1.5 text-[10px] leading-snug text-gray-500">
-                  Pick a chart to drop on the grid. Options already on the dashboard are dimmed.
+              <div className="mt-2.5 border-t border-gray-100 pt-2.5">
+                <p className="mb-2 px-0.5 text-[11px] text-gray-500">
+                  Hover a row for what it adds. Grayed items are already on the grid.
                 </p>
-                <div className="max-h-52 space-y-1 overflow-y-auto pr-0.5">
+                <div className="max-h-56 space-y-0.5 overflow-y-auto scroll-pt-2 pt-8">
                   {ADDABLE_WIDGETS.flatMap((type) => {
                     if (type === 'metric_trend') {
                       if (!metrics.length) {
@@ -180,7 +180,7 @@ export default function ResultsDashboardSettingsMenu({
                       }
                       return [
                         <div key="metric-trend-heading" className="pt-1">
-                          <p className="px-1 pb-1 text-[10px] font-semibold uppercase tracking-wide text-[#854d0e]/70">
+                          <p className="px-1 pb-1 text-[10px] font-medium uppercase tracking-wide text-gray-400">
                             Metric trend
                           </p>
                           <div className="space-y-1">
@@ -242,43 +242,36 @@ function ChartPickerRow({
   onClick?: () => void
 }) {
   return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      className={`group flex w-full items-center gap-2 rounded-md border px-1.5 py-1.5 text-left transition-all ${disabled
-        ? 'cursor-not-allowed border-transparent bg-gray-50/80'
-        : 'border-gray-200/80 bg-white hover:border-primary-300 hover:bg-primary-50/40'
-        }`}
-    >
-      <span
-        className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md ${disabled ? 'bg-gray-100 text-gray-400' : 'bg-primary-100 text-primary-900'
+    <div className="group relative">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onClick}
+        aria-label={disabled ? `${label} (already on dashboard)` : `Add ${label}`}
+        className={`flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-left transition-colors ${disabled
+          ? 'cursor-default text-gray-400'
+          : 'text-gray-800 hover:bg-gray-50'
           }`}
       >
-        <Icon className="h-3 w-3" aria-hidden />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="flex flex-wrap items-center gap-1">
-          <span className={`text-xs font-medium leading-tight ${disabled ? 'text-gray-400' : 'text-gray-900'}`}>
-            {label}
-          </span>
-          {added ? (
-            <span className="inline-flex items-center gap-0.5 rounded-full bg-gray-200/80 px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-gray-600">
-              <Check className="h-2 w-2" aria-hidden />
-              On board
-            </span>
-          ) : (
-            <span className="inline-flex items-center gap-0.5 rounded-full bg-primary-100 px-1 py-px text-[9px] font-semibold text-primary-900 opacity-0 transition-opacity group-hover:opacity-100">
-              <Plus className="h-2 w-2" aria-hidden />
-              Add
-            </span>
-          )}
+        <Icon className="h-3.5 w-3.5 shrink-0 text-gray-500" aria-hidden />
+        <span className={`min-w-0 flex-1 truncate text-xs font-medium ${disabled ? 'text-gray-400' : ''}`}>
+          {label}
         </span>
-        <span className={`mt-px block text-[10px] leading-snug ${disabled ? 'text-gray-400' : 'text-gray-500'}`}>
+        {added ? (
+          <Check className="h-3.5 w-3.5 shrink-0 text-gray-400" aria-hidden />
+        ) : (
+          <Plus className="h-3.5 w-3.5 shrink-0 text-gray-400 opacity-0 transition-opacity group-hover:opacity-100" aria-hidden />
+        )}
+      </button>
+      {!disabled ? (
+        <p
+          role="tooltip"
+          className="pointer-events-none absolute bottom-full left-0 right-0 z-20 mb-1 hidden rounded border border-gray-200 bg-white px-2 py-1 text-[11px] leading-snug text-gray-600 shadow-md group-hover:block"
+        >
           {blurb}
-        </span>
-      </span>
-    </button>
+        </p>
+      ) : null}
+    </div>
   )
 }
 

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   MessageSquare,
@@ -141,9 +142,11 @@ function segmentsFromTraceTurns(turns: Array<Record<string, unknown>>): SpeakerS
 export default function EvaluatorCallDetailPanel({
   evaluatorResultId,
   onClose,
+  fullDetailHref,
 }: {
   evaluatorResultId: string
   onClose?: () => void
+  fullDetailHref?: string
 }) {
   const [tab, setTab] = useState<DrawerTab>('transcript')
   const [liveTranscript, setLiveTranscript] = useState<LiveTranscriptTurn[]>([])
@@ -164,7 +167,7 @@ export default function EvaluatorCallDetailPanel({
 
   const syntheticTraceId =
     typeof (result as { synthetic_call_trace_id?: string | null } | undefined)?.synthetic_call_trace_id ===
-    'string'
+      'string'
       ? (result as { synthetic_call_trace_id: string }).synthetic_call_trace_id
       : undefined
   const callShortIdFromData =
@@ -247,9 +250,9 @@ export default function EvaluatorCallDetailPanel({
     () =>
       result
         ? {
-            provider_platform: result.provider_platform,
-            call_data: result.call_data as Record<string, unknown>,
-          }
+          provider_platform: result.provider_platform,
+          call_data: result.call_data as Record<string, unknown>,
+        }
         : null,
     [result],
   )
@@ -265,14 +268,14 @@ export default function EvaluatorCallDetailPanel({
     String(result?.transcription ?? '').trim() ||
     (speakerSegments.length > 0
       ? speakerSegments
-          .map((seg) => `${getSpeakerLabel(seg.speaker, result?.agent?.name, personaName)}: ${seg.text}`)
-          .join('\n')
+        .map((seg) => `${getSpeakerLabel(seg.speaker, result?.agent?.name, personaName)}: ${seg.text}`)
+        .join('\n')
       : '')
 
   const isLiveCall = Boolean(
     result &&
-      IN_PROGRESS_STATUSES.has(String(result.status ?? '').toLowerCase()) &&
-      (result.call_event === 'call_started' || result.call_event === 'call_in_progress'),
+    IN_PROGRESS_STATUSES.has(String(result.status ?? '').toLowerCase()) &&
+    (result.call_event === 'call_started' || result.call_event === 'call_in_progress'),
   )
 
   useEffect(() => {
@@ -387,9 +390,9 @@ export default function EvaluatorCallDetailPanel({
   const fetchError =
     isError && error
       ? (error as { response?: { data?: { detail?: string } }; message?: string }).response?.data
-          ?.detail ||
-        (error as { message?: string }).message ||
-        'Failed to load call details'
+        ?.detail ||
+      (error as { message?: string }).message ||
+      'Failed to load call details'
       : null
 
   const showLiveTranscript = isLiveCall && liveTranscript.length > 0
@@ -425,6 +428,14 @@ export default function EvaluatorCallDetailPanel({
   return (
     <div className="flex h-full min-h-0 flex-col bg-gray-50">
       <div className="shrink-0 border-b border-gray-200 bg-white px-5 py-4">
+        {fullDetailHref ? (
+          <Link
+            to={fullDetailHref}
+            className="mb-2 inline-block text-sm font-medium text-primary-600 hover:text-primary-800"
+          >
+            Open full evaluation detail →
+          </Link>
+        ) : null}
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h2 className="text-lg font-semibold text-gray-900">
@@ -485,11 +496,10 @@ export default function EvaluatorCallDetailPanel({
                 key={id}
                 type="button"
                 onClick={() => setTab(id)}
-                className={`inline-flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-2 text-sm font-medium transition-colors ${
-                  tab === id
+                className={`inline-flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-2 text-sm font-medium transition-colors ${tab === id
                     ? 'border-primary-500 text-primary-800'
                     : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
-                }`}
+                  }`}
               >
                 <Icon className="h-4 w-4" />
                 {label}
@@ -571,52 +581,52 @@ export default function EvaluatorCallDetailPanel({
                 <div className="h-32 animate-pulse rounded-xl bg-gray-100" />
               </div>
             ) : (
-            <div className="rounded-xl border border-gray-200 bg-white p-5">
-              {callAnalysis.call_summary ? (
-                <div className="mb-4 rounded-lg border border-indigo-100 bg-indigo-50 p-4">
-                  <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-indigo-900">
-                    Summary
-                  </p>
-                  <p className="text-sm leading-relaxed text-indigo-800">{callAnalysis.call_summary}</p>
+              <div className="rounded-xl border border-gray-200 bg-white p-5">
+                {callAnalysis.call_summary ? (
+                  <div className="mb-4 rounded-lg border border-indigo-100 bg-indigo-50 p-4">
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-indigo-900">
+                      Summary
+                    </p>
+                    <p className="text-sm leading-relaxed text-indigo-800">{callAnalysis.call_summary}</p>
+                  </div>
+                ) : null}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-lg bg-gray-50 p-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                      Sentiment
+                    </p>
+                    <p className="mt-1 text-sm font-medium text-gray-900">{callAnalysis.user_sentiment}</p>
+                  </div>
+                  <div className="rounded-lg bg-gray-50 p-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                      Success
+                    </p>
+                    <p className="mt-1 text-sm font-medium text-gray-900">
+                      {callAnalysis.call_successful === true
+                        ? 'Successful'
+                        : callAnalysis.call_successful === false
+                          ? 'Unsuccessful'
+                          : 'N/A'}
+                    </p>
+                  </div>
                 </div>
-              ) : null}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="rounded-lg bg-gray-50 p-3">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">
-                    Sentiment
-                  </p>
-                  <p className="mt-1 text-sm font-medium text-gray-900">{callAnalysis.user_sentiment}</p>
-                </div>
-                <div className="rounded-lg bg-gray-50 p-3">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">
-                    Success
-                  </p>
-                  <p className="mt-1 text-sm font-medium text-gray-900">
-                    {callAnalysis.call_successful === true
-                      ? 'Successful'
-                      : callAnalysis.call_successful === false
-                        ? 'Unsuccessful'
-                        : 'N/A'}
-                  </p>
-                </div>
+                {result?.call_data?.endedReason ? (
+                  <div className="mt-4 rounded-lg bg-gray-50 p-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                      End reason
+                    </p>
+                    <p className="mt-1 text-sm text-gray-900">
+                      {String(result.call_data.endedReason).replace(/-/g, ' ')}
+                    </p>
+                  </div>
+                ) : null}
+                {!callAnalysis.call_summary &&
+                  callAnalysis.call_successful == null &&
+                  callAnalysis.user_sentiment === 'Neutral' &&
+                  !result?.call_data?.endedReason ? (
+                  <p className="mt-4 text-center text-sm text-gray-500">No call analysis available.</p>
+                ) : null}
               </div>
-              {result?.call_data?.endedReason ? (
-                <div className="mt-4 rounded-lg bg-gray-50 p-3">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">
-                    End reason
-                  </p>
-                  <p className="mt-1 text-sm text-gray-900">
-                    {String(result.call_data.endedReason).replace(/-/g, ' ')}
-                  </p>
-                </div>
-              ) : null}
-              {!callAnalysis.call_summary &&
-              callAnalysis.call_successful == null &&
-              callAnalysis.user_sentiment === 'Neutral' &&
-              !result?.call_data?.endedReason ? (
-                <p className="mt-4 text-center text-sm text-gray-500">No call analysis available.</p>
-              ) : null}
-            </div>
             )
           ) : null}
 

@@ -22,6 +22,7 @@ import { isChatEvalResult } from '../../../lib/agentMedium'
 import { evalRunTypeLabel } from '../components/evaluatorUi'
 import { formatDuration, formatTimestamp, getStatusConfig } from './resultsFormatting'
 import { itemsOf } from '../../../lib/safeData'
+import { evaluatorResultOpenId } from './ResultsRunDetailDrawer'
 import { resultsDetailHref } from './resultsHubNavigation'
 
 const PAGE_SIZE = 50
@@ -270,7 +271,7 @@ export default function ResultsRunsList({
                     <tr
                       key={result.id}
                       className="hover:bg-gray-50 cursor-pointer"
-                      onClick={() => openResult(result.result_id)}
+                      onClick={() => openResult(evaluatorResultOpenId(result))}
                     >
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                         <input
@@ -336,7 +337,7 @@ export default function ResultsRunsList({
                                 />
                               </Button>
                             )}
-                          <Button variant="ghost" size="sm" onClick={() => openResult(result.result_id)}>
+                          <Button variant="ghost" size="sm" onClick={() => openResult(evaluatorResultOpenId(result))}>
                             <Eye className="w-4 h-4" />
                           </Button>
                         </div>

@@ -37,6 +37,7 @@ import { isGoldenMetric, type MetricRow } from '../../simulations/simulationMetr
 import type { ListEvaluatorResultsParams } from '../../../types/api'
 import type { RunListBase } from './resultsDashboardInsightDrill'
 import { formatChartDayLabel, formatDashboardWindowLabel, resultLocalDayKey } from './resultsDateRange'
+import { evaluatorResultOpenId } from './ResultsRunDetailDrawer'
 
 export type { RunListBase } from './resultsDashboardInsightDrill'
 
@@ -188,7 +189,7 @@ export function PaginatedRunsTable({
                     <td className="py-2.5 pr-3">
                       <button
                         type="button"
-                        onClick={() => onOpenResult(row.result_id || row.id)}
+                        onClick={() => onOpenResult(evaluatorResultOpenId(row))}
                         className="max-w-[12rem] truncate text-left font-medium text-gray-900 group-hover:text-primary-800"
                       >
                         {row.name || row.result_id}
@@ -218,7 +219,7 @@ export function PaginatedRunsTable({
             <li key={row.id}>
               <button
                 type="button"
-                onClick={() => onOpenResult(row.result_id)}
+                onClick={() => onOpenResult(evaluatorResultOpenId(row))}
                 className="flex w-full items-center justify-between gap-3 py-2 text-left text-sm hover:text-primary-800"
               >
                 <span className="min-w-0 truncate font-medium text-gray-900">{row.name || row.result_id}</span>
@@ -685,12 +686,8 @@ export function ToolsMergedDetail({
   const totalErrors = totalToolErrors(ops)
 
   if (leaf) {
-    const focusedAgentName =
-      agentFocusResolved
-        ? ops?.tool_calls_by_agent_day.find((row) => row.agent_id === agentFocusResolved)?.agent_name
-        : null
     const filtered = calls.filter((call) => {
-      if (focusedAgentName && call.agent !== focusedAgentName) return false
+      if (agentFocusResolved && call.agentId !== agentFocusResolved) return false
       const matchesLeaf =
         leaf.kind === 'product'
           ? callUses(call).some((use) => use.provider === leaf.name)

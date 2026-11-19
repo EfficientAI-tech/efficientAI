@@ -285,6 +285,51 @@ export default function ResultsDashboardTab({
     ...dashboardQueryOptions,
   })
 
+  const insightDrillAgentId = useMemo(() => {
+    if (!detail) return undefined
+    if (detail.kind === 'metric_flow' || detail.kind === 'total_calls_flow') {
+      return detail.agentId
+    }
+    return undefined
+  }, [detail])
+
+  const insightScopeParams = useMemo(
+    () => ({
+      agentId: insightDrillAgentId || agentId || undefined,
+      suiteId: suiteId || undefined,
+      scenarioId: scenarioId || undefined,
+      since: dateBounds.since,
+      until: dateBounds.until,
+      playground,
+      limit: DETAIL_PREFETCH_LIMIT,
+    }),
+    [insightDrillAgentId, agentId, suiteId, scenarioId, dateBounds, playground],
+  )
+
+  const fetchInsightAgentScope = Boolean(insightDrillAgentId)
+
+  const { data: insightListResponse } = useQuery({
+    queryKey: ['evaluator-results-dashboard', 'insight-agent', insightScopeParams],
+    queryFn: () => apiClient.listEvaluatorResults(insightScopeParams),
+    enabled: fetchInsightAgentScope,
+    staleTime: 60_000,
+  })
+
+  const { data: insightOpsData, isLoading: loadingInsightOps } = useQuery({
+    queryKey: ['evaluator-results-dashboard-ops', 'insight-agent', insightScopeParams],
+    queryFn: () =>
+      apiClient.getEvaluatorResultsDashboardOps({
+        agentId: insightScopeParams.agentId,
+        suiteId: insightScopeParams.suiteId,
+        scenarioId: insightScopeParams.scenarioId,
+        since: insightScopeParams.since,
+        until: insightScopeParams.until,
+        playground: insightScopeParams.playground,
+      }),
+    ...dashboardQueryOptions,
+    enabled: fetchInsightAgentScope,
+  })
+
   const { data: metricsCatalog = [] } = useQuery({
     queryKey: ['metrics', 'agent', 'dashboard'],
     queryFn: () => apiClient.listMetrics('agent'),
@@ -295,9 +340,20 @@ export default function ResultsDashboardTab({
   const results = itemsOf<EvaluatorResultRow>(listResponse)
   const aggregateTotal = liveOps?.total_rows ?? 0
   const aggregateCompleted = liveOps?.completed_rows ?? 0
+  const insightOps = fetchInsightAgentScope ? (insightOpsData ?? liveOps) : liveOps
+  const insightResults = fetchInsightAgentScope ? itemsOf<EvaluatorResultRow>(insightListResponse) : results
+  const opsForInsight = insightDrillAgentId ? insightOps : ops
+  const resultsForInsight = insightDrillAgentId ? insightResults : results
+  const aggregateTotalForInsight = insightDrillAgentId
+    ? (insightOps?.total_rows ?? 0)
+    : aggregateTotal
   const metrics = useMemo(
     () => withUnusedMetrics(liveOps?.metrics ?? [], metricsCatalog),
     [liveOps, metricsCatalog],
+  )
+  const metricsForInsight = useMemo(
+    () => withUnusedMetrics(opsForInsight?.metrics ?? [], metricsCatalog),
+    [opsForInsight, metricsCatalog],
   )
   const primaryMetric = useMemo(
     () =>
@@ -314,6 +370,16 @@ export default function ResultsDashboardTab({
   }, [liveOps])
   const days = useMemo(() => daysFromRunDays(liveOps?.run_days, chartDaySpansYears), [liveOps, chartDaySpansYears])
   const callDays = useMemo(() => callDaysFromRunDays(liveOps?.run_days, chartDaySpansYears), [liveOps, chartDaySpansYears])
+  const insightChartDaySpansYears = useMemo(() => {
+    const keys = (opsForInsight?.run_days ?? []).map((row) => String(row.day).slice(0, 10))
+    if (keys.length < 2) return false
+    return keys[0].slice(0, 4) !== keys[keys.length - 1].slice(0, 4)
+  }, [opsForInsight])
+  const callDaysForInsight = useMemo(
+    () => callDaysFromRunDays(opsForInsight?.run_days, insightChartDaySpansYears),
+    [opsForInsight, insightChartDaySpansYears],
+  )
+  const scoreDaysForInsight = opsForInsight?.score_days
   const duration = useMemo(() => durationFromRunDays(liveOps?.run_days, chartDaySpansYears), [liveOps, chartDaySpansYears])
   const scoreSeries = useMemo(() => scoreSeriesFromDays(liveOps?.score_days, chartDaySpansYears), [liveOps, chartDaySpansYears])
   const lowest = useMemo(() => {
@@ -333,6 +399,29 @@ export default function ResultsDashboardTab({
   const chartAgents = useMemo(
     () => narrowAgents(liveOps?.agents ?? agents, agentId, suiteId, scenarioId),
     [liveOps, agents, agentId, suiteId, scenarioId],
+  )
+  const insightAgents = useMemo(
+    () =>
+      narrowAgents(
+        opsForInsight?.agents ?? agents,
+        insightDrillAgentId || agentId,
+        suiteId,
+        scenarioId,
+      ),
+    [opsForInsight, agents, insightDrillAgentId, agentId, suiteId, scenarioId],
+  )
+  const insightAgentRows = useMemo(
+    () =>
+      insightAgents.map((agent) => ({
+        id: agent.agent_id,
+        name: agent.agent_name,
+        total: agent.counts.total,
+      })),
+    [insightAgents],
+  )
+  const drillCallsForInsight = useMemo(
+    () => drillCallsFromResults(resultsForInsight),
+    [resultsForInsight],
   )
   useEffect(() => {
     if (!onDashboardAgents || !liveOps) return
@@ -516,26 +605,41 @@ export default function ResultsDashboardTab({
       || detail.kind === 'metric_flow'
       || detail.kind === 'total_calls_flow')
   ) {
+    const insightLoading = fetchInsightAgentScope && loadingInsightOps && !insightOpsData
+    if (insightLoading) {
+      return (
+        <>
+          {dashboardSettingsPortal}
+          <div className="flex items-center justify-center py-16 text-gray-500">
+            <Loader className="mr-2 h-5 w-5 animate-spin" />
+            Loading agent summary…
+          </div>
+        </>
+      )
+    }
     return (
       <>
         {dashboardSettingsPortal}
         <InsightDrillHost
           detail={detail}
-          runListBase={runListBase}
+          runListBase={{
+            ...runListBase,
+            agentId: insightDrillAgentId || runListBase.agentId,
+          }}
           onBack={() => setDetail(null)}
           onOpenResult={onOpenResult}
-          ops={ops}
-          calls={drillCalls}
-          agents={chartAgents}
-          metrics={metrics}
+          ops={opsForInsight}
+          calls={drillCallsForInsight}
+          agents={insightAgents}
+          metrics={metricsForInsight}
           catalog={metricCatalogRows}
-          scoreDays={ops?.score_days}
+          scoreDays={scoreDaysForInsight}
           dateRange={effectiveDateRange}
           allTime={allTime}
-          results={results}
-          agentRows={agentRows.map((row) => ({ id: row.id, name: row.name, total: row.total }))}
-          callDays={callDays}
-          aggregateTotal={aggregateTotal}
+          results={resultsForInsight}
+          agentRows={insightAgentRows}
+          callDays={insightDrillAgentId ? callDaysForInsight : callDays}
+          aggregateTotal={aggregateTotalForInsight}
           onMetricNavigate={(next) => setDetail({ kind: 'metric_flow', widgetId: detail.widgetId, ...next })}
           onTotalCallsNavigate={(agentId) => setDetail({ kind: 'total_calls_flow', widgetId: detail.widgetId, agentId })}
         />
@@ -1938,7 +2042,7 @@ function ResultsDetailView({
                   <li key={row.id}>
                     <button
                       type="button"
-                      onClick={() => onOpenResult(row.result_id || row.id)}
+                      onClick={() => onOpenResult(row.id)}
                       className="flex w-full items-center justify-between gap-3 py-2 text-left text-sm hover:text-primary-700"
                     >
                       <span className="truncate text-gray-900">{row.name || row.agent?.name || row.result_id}</span>
@@ -2230,6 +2334,7 @@ function drillCallsFromResults(rows: EvaluatorResultRow[]): DashboardDrillCall[]
     return {
       at: row.timestamp,
       agent: row.agent?.name || 'Agent',
+      agentId: row.agent_id ?? row.agent?.id ?? undefined,
       title: row.name || row.result_id,
       durationSeconds: row.duration_seconds ?? 0,
       costUsd: 0,

@@ -491,6 +491,7 @@ const CALL_TITLES = [
 export type DashboardDrillCall = {
   at: string
   agent: string
+  agentId?: string
   title: string
   durationSeconds: number
   costUsd: number

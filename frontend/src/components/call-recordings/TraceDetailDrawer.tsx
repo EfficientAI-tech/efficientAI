@@ -18,6 +18,7 @@ export default function TraceDetailDrawer({
   evaluatorResultId = null,
   callShortId = null,
   observabilityCallShortId = null,
+  fullDetailHref,
 }: {
   open: boolean
   onClose: () => void
@@ -25,6 +26,8 @@ export default function TraceDetailDrawer({
   evaluatorResultId?: string | null
   callShortId?: string | null
   observabilityCallShortId?: string | null
+  /** When set (e.g. Results hub), show a link to the full evaluation result page. */
+  fullDetailHref?: string
 }) {
   const queryClient = useQueryClient()
   const hasContent = Boolean(traceId || evaluatorResultId || callShortId || observabilityCallShortId)
@@ -102,7 +105,11 @@ export default function TraceDetailDrawer({
                 onClose={onClose}
               />
             ) : evaluatorResultId ? (
-              <EvaluatorCallDetailPanel evaluatorResultId={evaluatorResultId} onClose={onClose} />
+              <EvaluatorCallDetailPanel
+                evaluatorResultId={evaluatorResultId}
+                onClose={onClose}
+                fullDetailHref={fullDetailHref}
+              />
             ) : (
               <SyntheticCallTracePanel
                 traceId={traceId ?? undefined}

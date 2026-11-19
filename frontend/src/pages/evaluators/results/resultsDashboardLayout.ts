@@ -27,7 +27,7 @@ export interface ResultsWidget {
 }
 
 /** How many charts ship visible in a fresh layout — users can add more with no cap. */
-export const DEFAULT_DASHBOARD_WIDGET_COUNT = 6
+export const DEFAULT_DASHBOARD_WIDGET_COUNT = 5
 
 export const WIDGET_LABELS: Record<ResultsWidgetType, string> = {
   total_calls: 'Total calls',
@@ -56,7 +56,7 @@ export const CHART_TYPE_LABELS: Record<ResultsChartType, string> = {
   area: 'Area',
 }
 
-const STORAGE_KEY = 'resultsDashboardLayout.v8'
+const STORAGE_KEY = 'resultsDashboardLayout.v9'
 
 export const ADDABLE_WIDGETS: ResultsWidgetType[] = [
   'total_calls',
@@ -79,7 +79,6 @@ export const DEFAULT_RESULTS_WIDGETS: ResultsWidget[] = [
   seed('tools', 'line'),
   seed('completion', 'line'),
   seed('avg_duration', 'line'),
-  seed('scenarios_by_agent', 'bar'),
 ]
 
 export function copyResultsWidgets(widgets: ResultsWidget[]): ResultsWidget[] {
@@ -122,6 +121,14 @@ function sanitize(raw: unknown): ResultsWidget[] {
   return widgets.length ? widgets : DEFAULT_RESULTS_WIDGETS.map((item) => ({ ...item }))
 }
 
+function hideScenariosByAgent(widgets: ResultsWidget[]): ResultsWidget[] {
+  return widgets.map((widget) =>
+    widget.type === 'scenarios_by_agent' && !widget.hidden
+      ? { ...widget, hidden: true }
+      : widget,
+  )
+}
+
 export function readResultsDashboardLayout(): ResultsWidget[] {
   if (typeof window === 'undefined') return DEFAULT_RESULTS_WIDGETS.map((item) => ({ ...item }))
   try {
@@ -129,6 +136,12 @@ export function readResultsDashboardLayout(): ResultsWidget[] {
     if (raw) {
       const current = sanitize(JSON.parse(raw))
       if (current.length) return current
+    }
+    const legacy = localStorage.getItem('resultsDashboardLayout.v8')
+    if (legacy) {
+      const migrated = hideScenariosByAgent(sanitize(JSON.parse(legacy)))
+      writeResultsDashboardLayout(migrated)
+      return migrated
     }
     return DEFAULT_RESULTS_WIDGETS.map((item) => ({ ...item }))
   } catch {

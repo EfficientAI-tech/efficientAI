@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { RefreshCw } from 'lucide-react'
 
 import { keepPreviousData, useIsFetching, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -45,8 +45,8 @@ import {
   mergePersistedHubScope,
   persistResultsHubQueryString,
   readPersistedResultsHubQueryString,
-  resultsDetailHref,
 } from './resultsHubNavigation'
+import ResultsRunDetailDrawer from './ResultsRunDetailDrawer'
 
 import type {
   EvaluatorResultsAgentSummary,
@@ -69,8 +69,6 @@ const STATUS_FILTERS = new Set<StatusFilter>(['all', 'completed', 'failed', 'in_
 
 export default function ResultsHub() {
 
-  const navigate = useNavigate()
-
   const queryClient = useQueryClient()
   const runsListFetching = useIsFetching({ queryKey: ['evaluator-results'] }) > 0
 
@@ -84,6 +82,10 @@ export default function ResultsHub() {
 
   const [generateModalOpen, setGenerateModalOpen] = useState(false)
   const [scopeFiltersOpen, setScopeFiltersOpen] = useState(false)
+  const [runDetailId, setRunDetailId] = useState<string | null>(null)
+  const openRunDetail = useCallback((resultId: string) => {
+    if (resultId) setRunDetailId(resultId)
+  }, [])
   const restoredHubScopeRef = useRef(false)
   const prevWorkspaceIdRef = useRef(activeWorkspaceId)
 
@@ -1063,9 +1065,7 @@ export default function ResultsHub() {
 
           onOpenRuns={() => setTab('runs')}
 
-          onOpenResult={(resultId) => {
-            navigate(resultsDetailHref(resultId, searchParams.toString()))
-          }}
+          onOpenResult={openRunDetail}
 
           onDashboardAgents={setDashboardAgents}
           runSource={runSource}
@@ -1097,10 +1097,6 @@ export default function ResultsHub() {
             showPersonaColumn={Boolean(suiteId || scenarioId)}
 
             showScenarioColumn={!scenarioId}
-
-            onResultClick={(resultId) => {
-              navigate(resultsDetailHref(resultId, searchParams.toString()))
-            }}
 
           />
 
@@ -1209,6 +1205,12 @@ export default function ResultsHub() {
         </div>
 
       ) : null}
+
+      <ResultsRunDetailDrawer
+        resultId={runDetailId}
+        onClose={() => setRunDetailId(null)}
+        workspaceId={activeWorkspaceId}
+      />
 
     </div>
 
