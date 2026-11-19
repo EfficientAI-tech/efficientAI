@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
@@ -60,6 +61,21 @@ def _now_utc() -> datetime:
 
 def _rollup_run(db: Session, run: MetricStudioRun) -> None:
     rollup_metric_studio_run(db, run, emit_flexprice=True, commit=True)
+
+
+def studio_evaluator_from_llm_config(config) -> SimpleNamespace | None:
+    """Build an evaluator stub from an ``build_llm_config_buckets`` config key."""
+    provider, model, llm_config_key, credential_id = config
+    if not (provider and model):
+        return None
+    llm_cfg = json.loads(llm_config_key) if llm_config_key else None
+    return SimpleNamespace(
+        llm_provider=provider,
+        llm_model=model,
+        llm_config=llm_cfg,
+        llm_credential_id=credential_id,
+        custom_prompt=None,
+    )
 
 
 def studio_run_llm_bucket_kwargs(run: MetricStudioRun) -> dict[str, Any]:
@@ -224,7 +240,7 @@ def evaluate_studio_run_item_task(self, result_row_id: str) -> dict[str, Any]:
                     **studio_run_llm_bucket_kwargs(run),
                 )
                 try:
-                    for _config, groups in buckets.items():
+                    for config, groups in buckets.items():
                         comparison_pair = None
                         if bucket_needs_comparison_pair(
                             groups,
@@ -241,6 +257,7 @@ def evaluate_studio_run_item_task(self, result_row_id: str) -> dict[str, Any]:
                             organization_id=run.organization_id,
                             result_id=result_id,
                             db=db,
+                            evaluator=studio_evaluator_from_llm_config(config),
                             comparison_pair=comparison_pair,
                             metric_groups=groups,
                         )

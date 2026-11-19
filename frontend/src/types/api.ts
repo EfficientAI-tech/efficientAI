@@ -1469,7 +1469,15 @@ export interface CallImportEvaluation {
   /** parent_id -> [child_id, ...] snapshot captured at run time. */
   selected_metric_groups?: Record<string, string[]> | null
   metrics: CallImportMetricSummary[]
-  status: 'pending' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled' | 'auto_aborted'
+  status:
+    | 'pending'
+    | 'running'
+    | 'completed'
+    | 'partial'
+    | 'failed'
+    | 'cancelled'
+    | 'auto_aborted'
+    | 'deleting'
   total_rows: number
   completed_rows: number
   failed_rows: number

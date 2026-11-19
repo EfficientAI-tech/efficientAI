@@ -321,6 +321,137 @@ def test_sort_by_metric_value_orders_by_extracted_json(
     ]
 
 
+def test_filter_one_metric_sort_by_another_classification_facet(
+    authenticated_client, db_session, org_id, seed_org,
+):
+    """Filtering metric A and sorting metric B must use distinct SQL bind params."""
+    import pytest
+
+    if db_session.bind.dialect.name != "postgresql":
+        pytest.skip("classification facet filters use postgres text SQL")
+
+    workspace = _ensure_default_workspace(db_session, org_id)
+
+    integration = TelephonyIntegration(
+        id=uuid4(),
+        organization_id=org_id,
+        provider="exotel",
+        auth_id="enc",
+        auth_token="enc",
+        is_active=True,
+        is_default=True,
+    )
+    db_session.add(integration)
+    db_session.flush()
+
+    metric_a = Metric(
+        id=uuid4(),
+        organization_id=org_id,
+        workspace_id=workspace.id,
+        name="TopicA",
+        metric_type="rating",
+        custom_data_type="classification",
+        trigger="always",
+        enabled=True,
+        supported_surfaces=["agent"],
+        enabled_surfaces=["agent"],
+    )
+    metric_b = Metric(
+        id=uuid4(),
+        organization_id=org_id,
+        workspace_id=workspace.id,
+        name="TopicB",
+        metric_type="rating",
+        custom_data_type="classification",
+        trigger="always",
+        enabled=True,
+        supported_surfaces=["agent"],
+        enabled_surfaces=["agent"],
+    )
+    db_session.add(metric_a)
+    db_session.add(metric_b)
+    db_session.flush()
+
+    row_specs = [
+        ("match-a1", {"classification_choice": "Billing"}, {"classification_choice": "Refund"}),
+        ("match-a2", {"classification_choice": "Billing"}, {"classification_choice": "Billing"}),
+        ("no-match", {"classification_choice": "Refund"}, {"classification_choice": "Refund"}),
+    ]
+
+    call_import = CallImport(
+        id=uuid4(),
+        organization_id=org_id,
+        workspace_id=workspace.id,
+        provider="exotel",
+        telephony_integration_id=integration.id,
+        original_filename="batch.csv",
+        column_mapping={"external_call_id": "CallID", "transcript": "Transcript"},
+        extra_columns=[],
+        total_rows=len(row_specs),
+        completed_rows=len(row_specs),
+        failed_rows=0,
+        status=CallImportStatus.COMPLETED,
+    )
+    db_session.add(call_import)
+    db_session.flush()
+
+    evaluation = CallImportEvaluation(
+        id=uuid4(),
+        call_import_id=call_import.id,
+        organization_id=org_id,
+        workspace_id=workspace.id,
+        name="QA pass",
+        selected_metric_ids=[str(metric_a.id), str(metric_b.id)],
+        status="completed",
+        total_rows=len(row_specs),
+        completed_rows=len(row_specs),
+        failed_rows=0,
+    )
+    db_session.add(evaluation)
+    db_session.flush()
+
+    for idx, (conversation_id, scores_a, scores_b) in enumerate(row_specs):
+        source_row = CallImportRow(
+            id=uuid4(),
+            call_import_id=call_import.id,
+            organization_id=org_id,
+            row_index=idx,
+            conversation_id=conversation_id,
+            transcript=f"transcript-{idx}",
+            raw_columns={"CallID": conversation_id, "Transcript": f"transcript-{idx}"},
+            status=CallImportRowStatus.COMPLETED,
+        )
+        db_session.add(source_row)
+        db_session.flush()
+        db_session.add(
+            CallImportEvaluationRow(
+                id=uuid4(),
+                evaluation_id=evaluation.id,
+                call_import_row_id=source_row.id,
+                status="completed",
+                metric_scores={
+                    str(metric_a.id): {**scores_a, "type": "classification", "metric_name": "TopicA"},
+                    str(metric_b.id): {**scores_b, "type": "classification", "metric_name": "TopicB"},
+                },
+            )
+        )
+
+    db_session.commit()
+
+    response = authenticated_client.get(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/rows",
+        params={
+            "metric_id": str(metric_a.id),
+            "classification_choice": "billing",
+            "sort_by": f"metric:{metric_b.id}:choice",
+            "sort_dir": "desc",
+            "page_size": 20,
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert _ids(response.json()["items"]) == ["match-a1", "match-a2"]
+
+
 def test_sort_by_classification_facet_orders_effective_labels(
     authenticated_client, db_session, org_id, seed_org
 ):

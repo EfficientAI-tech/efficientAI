@@ -129,7 +129,24 @@ def delete_call_import(
             status="completed",
         )
 
-    if call_import.status == CallImportStatus.DELETING:
+    from app.services.call_imports.import_teardown import import_delete_resumable
+    from app.workers.tasks.call_import_bulk_ops import delete_call_import_task
+
+    if import_delete_resumable(call_import):
+        if call_import.status != CallImportStatus.DELETING:
+            call_import.status = CallImportStatus.DELETING
+            call_import.error_message = None
+            stamp_call_import_actor(call_import, principal)
+            db.commit()
+        from app.services.call_imports.delete_teardown_lock import (
+            call_import_delete_lock_held,
+        )
+
+        if not call_import_delete_lock_held(call_import.id):
+            delete_call_import_task.delay(
+                str(call_import_id),
+                str(organization_id),
+            )
         return CallImportDeleteResponse(
             id=call_import.id,
             status="accepted",
@@ -139,8 +156,6 @@ def delete_call_import(
     call_import.error_message = None
     stamp_call_import_actor(call_import, principal)
     db.commit()
-
-    from app.workers.tasks.call_import_bulk_ops import delete_call_import_task
 
     delete_call_import_task.delay(
         str(call_import_id),

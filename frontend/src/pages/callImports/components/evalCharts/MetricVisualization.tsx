@@ -167,6 +167,10 @@ export default function MetricVisualization({
           const facetActive =
             isActive && classificationActiveFacet === section.key
           const facetActiveValue = facetActive ? classificationActiveValue : null
+          const chartActiveValue =
+            facetActiveValue != null && section.key === 'choice'
+              ? humanizeClassificationLabel(String(facetActiveValue))
+              : facetActiveValue
           return (
             <div key={section.key}>
               <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 mb-2">
@@ -183,7 +187,7 @@ export default function MetricVisualization({
                       : String(vc.label),
                 }))}
                 totalCategorical={total}
-                activeValue={facetActiveValue ?? null}
+                activeValue={chartActiveValue ?? null}
                 onValueClick={(value) => {
                   const raw =
                     section.valueCounts.find(

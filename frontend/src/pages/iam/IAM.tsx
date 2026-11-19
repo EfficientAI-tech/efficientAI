@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useSearchParams } from 'react-router-dom'
 import { Role, Invitation, OrganizationMember, InvitationCreate } from '../../types/api'
@@ -117,11 +117,18 @@ export default function IAM() {
     [orgWorkspaces],
   )
 
+  const inviteWorkspaceSeededRef = useRef(false)
+
   useEffect(() => {
-    if (showInviteModal && inviteableWorkspaces.length > 0 && inviteWorkspaceIds.length === 0) {
-      setInviteWorkspaceIds(inviteableWorkspaces.map((ws) => ws.id))
+    if (!showInviteModal) {
+      inviteWorkspaceSeededRef.current = false
+      return
     }
-  }, [showInviteModal, inviteableWorkspaces, inviteWorkspaceIds.length])
+    if (inviteableWorkspaces.length > 0 && !inviteWorkspaceSeededRef.current) {
+      setInviteWorkspaceIds(inviteableWorkspaces.map((ws) => ws.id))
+      inviteWorkspaceSeededRef.current = true
+    }
+  }, [showInviteModal, inviteableWorkspaces])
 
   const updateOrgMutation = useMutation({
     mutationFn: (name: string) => apiClient.updateOrganization({ name }),
@@ -404,6 +411,7 @@ export default function IAM() {
                 showToast(limitMessage('org_members'), 'error')
                 return
               }
+              inviteWorkspaceSeededRef.current = true
               setInviteWorkspaceIds(inviteableWorkspaces.map((ws) => ws.id))
               setShowInviteModal(true)
             }}

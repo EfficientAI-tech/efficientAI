@@ -25,6 +25,7 @@ wheels/
 MANIFEST
 secrets/
 *.json
+!app/config/sarvam_bulbul_v4_flash_voices.json
 !package.json
 !tests/fixtures/**/*.json
 !docs-fumadocs/content/docs/**/meta.json

@@ -811,89 +811,10 @@ def execute_call_import_delete(
     call_import_id: UUID,
     organization_id: UUID,
 ) -> dict:
-    """Tear down a call-import batch, its rows, and S3 artefacts off the API thread."""
-    from app.models.enums import CallImportStatus
-    from app.services.storage.s3_service import s3_service
+    """Tear down a call-import batch in resumable chunks off the API thread."""
+    from app.services.call_imports.import_teardown import execute_call_import_delete_chunk
 
-    call_import = (
-        db.query(CallImport)
-        .filter(
-            CallImport.id == call_import_id,
-            CallImport.organization_id == organization_id,
-        )
-        .first()
-    )
-    if call_import is None:
-        logger.info(
-            "execute_call_import_delete: import {} already removed",
-            call_import_id,
-        )
-        return {"status": "completed", "deleted_rows": 0}
-
-    total_rows = int(call_import.total_rows or 0)
-    _release_platform_import_work(db, call_import)
-    _delete_import_rows_everywhere(db, call_import_id)
-
-    deleted_objects = 0
-    s3_errors = 0
-    if s3_service.is_enabled():
-        sweep_prefix = (
-            f"{s3_service.prefix}organizations/{organization_id}/"
-            f"call_imports/{call_import_id}/"
-        )
-        try:
-            deleted_objects, errs = s3_service.delete_keys_by_prefix(sweep_prefix)
-            s3_errors = len(errs)
-            if errs:
-                logger.warning(
-                    "S3 prefix sweep reported {} errors for call_import {}",
-                    s3_errors,
-                    call_import_id,
-                )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception(
-                "S3 prefix sweep failed for call_import {}: {}",
-                call_import_id,
-                exc,
-            )
-
-    try:
-        db.delete(call_import)
-        db.commit()
-    except Exception as exc:  # noqa: BLE001
-        logger.exception(
-            "Failed to delete call_import {} from database",
-            call_import_id,
-        )
-        db.rollback()
-        call_import = (
-            db.query(CallImport)
-            .filter(
-                CallImport.id == call_import_id,
-                CallImport.organization_id == organization_id,
-            )
-            .first()
-        )
-        if call_import is not None:
-            call_import.status = CallImportStatus.FAILED
-            call_import.error_message = f"Failed to delete import: {exc}"
-            db.commit()
-        return {"status": "failed", "deleted_rows": 0, "error": str(exc)}
-
-    logger.info(
-        "Deleted call_import {} (org={}, rows={}, s3_objects_deleted={}, s3_errors={})",
-        call_import_id,
-        organization_id,
-        total_rows,
-        deleted_objects,
-        s3_errors,
-    )
-    return {
-        "status": "completed",
-        "deleted_rows": total_rows,
-        "s3_objects_deleted": deleted_objects,
-        "s3_errors": s3_errors,
-    }
+    return execute_call_import_delete_chunk(db, call_import_id, organization_id)
 
 
 def pending_source_row_indices(existing: set[int], row_count: int) -> list[int]:

@@ -642,7 +642,7 @@ async def cancel_call_import_evaluation_row(
 
 @router.delete(
     "/{eval_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    status_code=status.HTTP_202_ACCEPTED,
     operation_id="deleteCallImportEvaluation",
 )
 async def delete_call_import_evaluation(
@@ -652,8 +652,8 @@ async def delete_call_import_evaluation(
     organization_id: UUID = Depends(get_organization_id),
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
-) -> Response:
-    del api_key
+) -> Dict[str, str]:
+    del api_key, principal
     _require_import(db, call_import_id, organization_id)
 
     row = (
@@ -668,26 +668,15 @@ async def delete_call_import_evaluation(
     if not row:
         raise HTTPException(status_code=404, detail="Call import evaluation not found")
 
-    _revoke_pending_tasks(row)
+    from app.services.call_imports.evaluation_delete import begin_evaluation_delete
 
-    from app.services.call_imports.discovered_running_cache import (
-        clear_discovered_running_cache,
-    )
-
-    clear_discovered_running_cache(eval_id)
-    db.delete(row)
-    db.commit()
-    from app.services.call_imports.eval_progress_buffer import (
-        delete as delete_eval_counters,
-    )
-
-    delete_eval_counters(eval_id)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    begin_evaluation_delete(db, row)
+    return {"id": str(eval_id), "status": "accepted"}
 
 
 @router.post(
     "/bulk-delete",
-    status_code=status.HTTP_200_OK,
+    status_code=status.HTTP_202_ACCEPTED,
     operation_id="bulkDeleteCallImportEvaluations",
 )
 async def bulk_delete_call_import_evaluations(
@@ -698,19 +687,13 @@ async def bulk_delete_call_import_evaluations(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> Dict[str, int]:
-    """Delete multiple evaluation runs scoped to one call import.
+    """Delete multiple evaluation runs scoped to one call import (async)."""
 
-    Mirrors :func:`delete_call_import_evaluation` but in bulk so the UI
-    can clear out a multi-select. Unknown ids (already deleted, or
-    belonging to a different org/import) are silently skipped — the
-    response just reports how many actually went away.
-    """
-
-    del api_key
+    del api_key, principal
     _require_import(db, call_import_id, organization_id)
 
     if not payload.evaluation_ids:
-        return {"deleted": 0}
+        return {"deleted": 0, "accepted": 0}
 
     rows = (
         db.query(CallImportEvaluation)
@@ -721,19 +704,8 @@ async def bulk_delete_call_import_evaluations(
         )
         .all()
     )
-    deleted = 0
-    deleted_ids = []
-    for row in rows:
-        _revoke_pending_tasks(row)
-        deleted_ids.append(row.id)
-        db.delete(row)
-        deleted += 1
-    db.commit()
-    from app.services.call_imports.eval_progress_buffer import (
-        delete as delete_eval_counters,
-    )
+    from app.services.call_imports.evaluation_delete import begin_bulk_evaluation_delete
 
-    for deleted_id in deleted_ids:
-        delete_eval_counters(deleted_id)
-    return {"deleted": deleted}
+    accepted = begin_bulk_evaluation_delete(db, rows)
+    return {"deleted": 0, "accepted": accepted}
 

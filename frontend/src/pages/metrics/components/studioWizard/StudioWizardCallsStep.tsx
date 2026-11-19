@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Blocks, FileAudio, FileSpreadsheet } from 'lucide-react'
 import { apiClient } from '../../../../lib/api'
 import { itemsOf } from '../../../../lib/safeData'
@@ -135,6 +135,11 @@ export default function StudioWizardCallsStep({
     onSelectedImportRowIdsChange(next)
   }
 
+  const selectedImportIdRef = useRef(selectedImportId)
+  selectedImportIdRef.current = selectedImportId
+  const selectedImportRowIdsRef = useRef(selectedImportRowIds)
+  selectedImportRowIdsRef.current = selectedImportRowIds
+
   const selectAllVisibleRows = () => {
     const next = new Set(selectedImportRowIds)
     for (const row of importRows) next.add(row.id)
@@ -143,11 +148,19 @@ export default function StudioWizardCallsStep({
 
   const selectAllMatchingSearch = async () => {
     if (!selectedImportId) return
+    const importIdAtRequest = selectedImportId
     const q = importRowSearch.trim() || undefined
-    const { ids } = await apiClient.listCallImportRowIds(selectedImportId, { q })
-    const next = new Set(selectedImportRowIds)
+    const { ids } = await apiClient.listCallImportRowIds(importIdAtRequest, { q })
+    if (selectedImportIdRef.current !== importIdAtRequest) return
+    const next = new Set(selectedImportRowIdsRef.current)
     for (const id of ids) next.add(id)
     onSelectedImportRowIdsChange(next)
+  }
+
+  const clearAllSelections = () => {
+    onSelectedImportRowIdsChange(new Set())
+    onSelectedRecordingIdsChange(new Set())
+    onSelectedSimulatedIdsChange(new Set())
   }
 
   const [bulkSelecting, setBulkSelecting] = useState(false)
@@ -478,9 +491,18 @@ export default function StudioWizardCallsStep({
 
       {selectedSources.length > 0 && (
         <div className="shrink-0 border-t border-gray-100 pt-3">
-          <p className="text-xs font-medium text-gray-700 mb-2">
-            Selected ({selectedSources.length})
-          </p>
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <p className="text-xs font-medium text-gray-700">
+              Selected ({selectedSources.length})
+            </p>
+            <button
+              type="button"
+              onClick={clearAllSelections}
+              className="text-xs font-medium text-primary-600 hover:text-primary-700"
+            >
+              Clear selection
+            </button>
+          </div>
           <div className="flex flex-wrap gap-2 max-h-24 overflow-y-auto">
             {selectedSources.map((src) => (
               <span

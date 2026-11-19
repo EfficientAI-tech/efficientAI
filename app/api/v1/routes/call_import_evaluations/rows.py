@@ -226,11 +226,11 @@ def _sqlite_classification_facet_sort_column(facet: str, metric_uuid: UUID):
 
 def _postgres_classification_facet_sort_expr(facet: str, metric_uuid: UUID):
     sql_by_facet = {
-        "yes_no": effective_yes_no_sql(),
-        "choice": effective_choice_sql(),
-        "level": effective_level_sql(),
+        "yes_no": effective_yes_no_sql(mid_param="sort_mid"),
+        "choice": effective_choice_sql(mid_param="sort_mid"),
+        "level": effective_level_sql(mid_param="sort_mid"),
     }
-    return text(f"({sql_by_facet[facet]})").bindparams(mid=str(metric_uuid))
+    return text(f"({sql_by_facet[facet]})").bindparams(sort_mid=str(metric_uuid))
 
 
 def _apply_classification_metric_filters(

@@ -309,6 +309,29 @@ def delete_call_import_task(
         db.close()
 
 
+@celery_app.task(name="delete_call_import_evaluation", bind=True, max_retries=1)
+def delete_call_import_evaluation_task(
+    self,
+    evaluation_id: str,
+    organization_id: str,
+    call_import_id: str,
+) -> dict:
+    """Delete an evaluation run in resumable chunks off the API thread."""
+    del self
+    from app.services.call_imports.evaluation_teardown import execute_evaluation_delete_chunk
+
+    db = SessionLocal()
+    try:
+        return execute_evaluation_delete_chunk(
+            db,
+            UUID(evaluation_id),
+            UUID(organization_id),
+            UUID(call_import_id),
+        )
+    finally:
+        db.close()
+
+
 @celery_app.task(name="bulk_delete_call_import_rows", bind=True, max_retries=1)
 def bulk_delete_call_import_rows_task(
     self,

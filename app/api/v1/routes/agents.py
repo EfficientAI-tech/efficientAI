@@ -20,7 +20,6 @@ from app.dependencies import (
     get_api_key,
     require_enterprise_feature,
 )
-from app.core.license import is_feature_enabled
 from app.core.api_rate_limit import enforce_resource_create_rate_limit
 from app.core.oss_quotas import enforce_oss_quota
 from app.core.auth import Principal, get_principal
@@ -66,7 +65,9 @@ router = APIRouter(prefix="/agents", tags=["agents"])
 
 
 def _ensure_hosted_agents_license(organization_id: UUID) -> None:
-    if not is_feature_enabled("hosted_agents", organization_id):
+    import app.dependencies as app_dependencies
+
+    if not app_dependencies.is_feature_enabled("hosted_agents", organization_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={
@@ -799,8 +800,12 @@ async def create_agent(
     if is_chat_agent:
         from app.api.v1.routes.voicebundles import _validate_credential
 
-        conn = agent.chat_connection_type or ChatConnectionTypeEnum.INTERNAL_LLM
-        if conn == ChatConnectionTypeEnum.INTERNAL_LLM:
+        from app.services.agents.chat_connection import coerce_chat_connection_type
+
+        conn = coerce_chat_connection_type(
+            agent.chat_connection_type or ChatConnectionTypeEnum.INTERNAL_LLM
+        )
+        if conn == ChatConnectionTypeEnum.INTERNAL_LLM.value:
             _ensure_hosted_agents_license(organization_id)
         if agent.main_llm_provider:
             _validate_credential(
@@ -1238,17 +1243,17 @@ async def update_agent(
             if hasattr(update_data["chat_eval_mode"], "value")
             else update_data["chat_eval_mode"]
         )
-    if "chat_connection_type" in update_data and update_data["chat_connection_type"] is not None:
-        from app.services.agents.chat_connection import coerce_chat_connection_type
+    from app.models.enums import ChatConnectionTypeEnum
+    from app.services.agents.chat_connection import coerce_chat_connection_type
 
+    if "chat_connection_type" in update_data:
         update_data["chat_connection_type"] = coerce_chat_connection_type(
             update_data["chat_connection_type"]
         )
 
-    from app.models.enums import ChatConnectionTypeEnum
-
-    effective_conn = update_data.get("chat_connection_type", db_agent.chat_connection_type)
-    if effective_conn == ChatConnectionTypeEnum.INTERNAL_LLM:
+    raw_conn = update_data.get("chat_connection_type", db_agent.chat_connection_type)
+    effective_conn = coerce_chat_connection_type(raw_conn)
+    if effective_conn == ChatConnectionTypeEnum.INTERNAL_LLM.value:
         _ensure_hosted_agents_license(organization_id)
 
     from app.services.agents.chat_preprod_scope import apply_preprod_chat_update
