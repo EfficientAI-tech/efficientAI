@@ -219,6 +219,8 @@ def _schedule_eval_delete_continuation(
     evaluation_id: UUID,
     organization_id: UUID,
     call_import_id: UUID,
+    *,
+    lock_owner: str,
 ) -> None:
     from app.workers.tasks.call_import_bulk_ops import delete_call_import_evaluation_task
 
@@ -226,12 +228,16 @@ def _schedule_eval_delete_continuation(
         str(evaluation_id),
         str(organization_id),
         str(call_import_id),
+        lock_owner=lock_owner,
     )
 
 
-def _claim_eval_delete_lock(evaluation_id: UUID) -> bool:
-    if refresh_eval_delete_lock(evaluation_id):
-        return True
+def _claim_eval_delete_lock(
+    evaluation_id: UUID,
+    lock_owner: str | None,
+) -> str | None:
+    if lock_owner and refresh_eval_delete_lock(evaluation_id, lock_owner):
+        return lock_owner
     return try_acquire_eval_delete_lock(evaluation_id)
 
 
@@ -240,8 +246,11 @@ def execute_evaluation_delete_chunk(
     evaluation_id: UUID,
     organization_id: UUID,
     call_import_id: UUID,
+    *,
+    lock_owner: str | None = None,
 ) -> dict:
-    if not _claim_eval_delete_lock(evaluation_id):
+    owner = _claim_eval_delete_lock(evaluation_id, lock_owner)
+    if owner is None:
         return {"status": "skipped", "reason": "lock_busy"}
 
     evaluation = (
@@ -288,17 +297,23 @@ def execute_evaluation_delete_chunk(
         catalog_db.commit()
 
         if progress or _eval_rows_remain(catalog_db, evaluation_id):
-            refresh_eval_delete_lock(evaluation_id)
+            refresh_eval_delete_lock(evaluation_id, owner)
             _schedule_eval_delete_continuation(
-                evaluation_id, organization_id, call_import_id
+                evaluation_id,
+                organization_id,
+                call_import_id,
+                lock_owner=owner,
             )
             return {"status": "continuing", "deleted_rows": progress}
 
         if _artifacts_remain(catalog_db, evaluation_id):
             _delete_catalog_artifacts_for_eval(catalog_db, evaluation_id)
-            refresh_eval_delete_lock(evaluation_id)
+            refresh_eval_delete_lock(evaluation_id, owner)
             _schedule_eval_delete_continuation(
-                evaluation_id, organization_id, call_import_id
+                evaluation_id,
+                organization_id,
+                call_import_id,
+                lock_owner=owner,
             )
             return {"status": "continuing", "deleted_artifacts": True}
 

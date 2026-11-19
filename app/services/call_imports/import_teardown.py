@@ -374,15 +374,27 @@ def _sweep_s3_prefix(organization_id: UUID, call_import_id: UUID) -> tuple[int, 
         return 0, 0
 
 
-def _schedule_delete_continuation(call_import_id: UUID, organization_id: UUID) -> None:
+def _schedule_delete_continuation(
+    call_import_id: UUID,
+    organization_id: UUID,
+    *,
+    lock_owner: str,
+) -> None:
     from app.workers.tasks.call_import_bulk_ops import delete_call_import_task
 
-    delete_call_import_task.delay(str(call_import_id), str(organization_id))
+    delete_call_import_task.delay(
+        str(call_import_id),
+        str(organization_id),
+        lock_owner=lock_owner,
+    )
 
 
-def _claim_call_import_delete_lock(call_import_id: UUID) -> bool:
-    if refresh_call_import_delete_lock(call_import_id):
-        return True
+def _claim_call_import_delete_lock(
+    call_import_id: UUID,
+    lock_owner: str | None,
+) -> str | None:
+    if lock_owner and refresh_call_import_delete_lock(call_import_id, lock_owner):
+        return lock_owner
     return try_acquire_call_import_delete_lock(call_import_id)
 
 
@@ -390,9 +402,12 @@ def execute_call_import_delete_chunk(
     catalog_db: Session,
     call_import_id: UUID,
     organization_id: UUID,
+    *,
+    lock_owner: str | None = None,
 ) -> dict:
     """One bounded chunk of import teardown. Re-enqueues itself when work remains."""
-    if not _claim_call_import_delete_lock(call_import_id):
+    owner = _claim_call_import_delete_lock(call_import_id, lock_owner)
+    if owner is None:
         logger.info(
             "execute_call_import_delete_chunk: lock busy for import {}",
             call_import_id,
@@ -433,8 +448,10 @@ def execute_call_import_delete_chunk(
 
         if progress:
             _touch_import_deleting(catalog_db, call_import)
-            refresh_call_import_delete_lock(call_import_id)
-            _schedule_delete_continuation(call_import_id, organization_id)
+            refresh_call_import_delete_lock(call_import_id, owner)
+            _schedule_delete_continuation(
+                call_import_id, organization_id, lock_owner=owner
+            )
             return {
                 "status": "continuing",
                 "deleted_rows": progress,
@@ -442,15 +459,19 @@ def execute_call_import_delete_chunk(
 
         if _import_rows_remain(catalog_db, call_import_id):
             _touch_import_deleting(catalog_db, call_import)
-            refresh_call_import_delete_lock(call_import_id)
-            _schedule_delete_continuation(call_import_id, organization_id)
+            refresh_call_import_delete_lock(call_import_id, owner)
+            _schedule_delete_continuation(
+                call_import_id, organization_id, lock_owner=owner
+            )
             return {"status": "continuing", "deleted_rows": 0}
 
         child_deleted = _delete_one_page_catalog_children(catalog_db, call_import_id)
         if child_deleted or _catalog_children_remain(catalog_db, call_import_id):
             _touch_import_deleting(catalog_db, call_import)
-            refresh_call_import_delete_lock(call_import_id)
-            _schedule_delete_continuation(call_import_id, organization_id)
+            refresh_call_import_delete_lock(call_import_id, owner)
+            _schedule_delete_continuation(
+                call_import_id, organization_id, lock_owner=owner
+            )
             return {
                 "status": "continuing",
                 "deleted_catalog_children": child_deleted,

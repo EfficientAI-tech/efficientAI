@@ -7,7 +7,9 @@ from uuid import uuid4
 
 from app.models.database import CallImport
 from app.models.enums import CallImportStatus
-from app.services.call_imports.delete_teardown_lock import ensure_call_import_delete_lock
+from app.services.call_imports.delete_teardown_lock import (
+    try_acquire_call_import_delete_lock,
+)
 from app.workers.tasks.sweep_stuck_deletes import enqueue_stuck_deletes, list_stuck_call_imports
 
 
@@ -57,7 +59,7 @@ def test_enqueue_skips_when_lock_held(
     )
     db_session.add(call_import)
     db_session.commit()
-    ensure_call_import_delete_lock(call_import.id)
+    assert try_acquire_call_import_delete_lock(call_import.id) is not None
 
     enqueued: list[str] = []
     fake_module = types.ModuleType("app.workers.tasks.call_import_bulk_ops")

@@ -8,10 +8,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.models.database import CallImportEvaluation
-from app.services.call_imports.delete_teardown_lock import (
-    eval_delete_lock_held,
-    try_acquire_eval_delete_lock,
-)
+from app.services.call_imports.delete_teardown_lock import eval_delete_lock_held
 from app.services.call_imports.evaluation_teardown import EVAL_DELETING_STATUS
 
 
@@ -22,12 +19,11 @@ def _enqueue_evaluation_delete(
 ) -> None:
     from app.workers.tasks.call_import_bulk_ops import delete_call_import_evaluation_task
 
-    if not eval_delete_lock_held(evaluation_id):
-        delete_call_import_evaluation_task.delay(
-            str(evaluation_id),
-            str(organization_id),
-            str(call_import_id),
-        )
+    delete_call_import_evaluation_task.delay(
+        str(evaluation_id),
+        str(organization_id),
+        str(call_import_id),
+    )
 
 
 def begin_evaluation_delete(
@@ -37,15 +33,13 @@ def begin_evaluation_delete(
     """Mark deleting and enqueue teardown. Returns True if accepted."""
     status = (evaluation.status or "").strip().lower()
     if status == EVAL_DELETING_STATUS:
-        _enqueue_evaluation_delete(
-            evaluation.id,
-            evaluation.organization_id,
-            evaluation.call_import_id,
-        )
+        if not eval_delete_lock_held(evaluation.id):
+            _enqueue_evaluation_delete(
+                evaluation.id,
+                evaluation.organization_id,
+                evaluation.call_import_id,
+            )
         return True
-
-    if not try_acquire_eval_delete_lock(evaluation.id):
-        return False
 
     evaluation.status = EVAL_DELETING_STATUS
     evaluation.error_message = None

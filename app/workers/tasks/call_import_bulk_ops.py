@@ -297,15 +297,20 @@ def delete_call_import_task(
     self,
     call_import_id: str,
     organization_id: str,
+    *,
+    lock_owner: str | None = None,
 ) -> dict:
     """Delete a call-import batch and all associated storage off the API thread."""
     del self
+    from app.services.call_imports.import_teardown import execute_call_import_delete_chunk
+
     db = SessionLocal()
     try:
-        return execute_call_import_delete(
+        return execute_call_import_delete_chunk(
             db,
             UUID(call_import_id),
             UUID(organization_id),
+            lock_owner=lock_owner,
         )
     finally:
         db.close()
@@ -317,6 +322,8 @@ def delete_call_import_evaluation_task(
     evaluation_id: str,
     organization_id: str,
     call_import_id: str,
+    *,
+    lock_owner: str | None = None,
 ) -> dict:
     """Delete an evaluation run in resumable chunks off the API thread."""
     del self
@@ -329,6 +336,7 @@ def delete_call_import_evaluation_task(
             UUID(evaluation_id),
             UUID(organization_id),
             UUID(call_import_id),
+            lock_owner=lock_owner,
         )
     finally:
         db.close()
