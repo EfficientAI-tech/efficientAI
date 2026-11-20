@@ -43,7 +43,7 @@ export default function MetricsStudioRunDetail() {
 
   const { data: resultsData, isLoading: resultsLoading } = useQuery({
     queryKey: ['metric-studio-run-results', runId],
-    queryFn: () => apiClient.listMetricStudioRunResults(runId),
+    queryFn: () => apiClient.listAllMetricStudioRunResults(runId),
     enabled: !!runId,
     refetchInterval: () => (run?.status === 'running' ? 3000 : false),
   })

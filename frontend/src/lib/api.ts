@@ -13,6 +13,7 @@ import {
   redirectToLoginWithMessage,
   type UserSessionCredentials,
 } from './authSession'
+import { fetchAllPaginated } from './fetchAllPaginated'
 import type {
   GenerateScenariosFromPromptParams,
   GenerateTestPromptParams,
@@ -4986,6 +4987,15 @@ class ApiClient {
       params: { skip, limit },
     })
     return response.data
+  }
+
+  /** Load every result row for a studio run (API pages max 500 items each). */
+  async listAllMetricStudioRunResults(
+    runId: string,
+  ): Promise<{ items: any[]; total: number }> {
+    return fetchAllPaginated(500, (skip, limit) =>
+      this.listMetricStudioRunResults(runId, skip, limit),
+    )
   }
 
   async retryMetricStudioRun(
