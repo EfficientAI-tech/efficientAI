@@ -123,10 +123,15 @@ export function evaluationRunPollMs(
 }
 
 /** Poll the evaluations list on import detail (evaluations / insights tabs only). */
+export const EVALUATION_DELETE_POLL_MS = 4000
+
 export function evaluationListPollMs(
   evaluations: CallImportEvaluation[],
   options?: { slowCadenceMs?: number },
 ): number | false {
+  if (evaluations.some((row) => row.status === 'deleting')) {
+    return EVALUATION_DELETE_POLL_MS
+  }
   if (evaluations.some((row) => row.bulk_operation)) {
     return EVALUATION_BULK_OPERATION_POLL_MS
   }

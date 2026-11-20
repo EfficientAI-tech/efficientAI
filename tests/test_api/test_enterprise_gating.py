@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 
 from app.core import license as license_module
@@ -244,3 +246,66 @@ def test_workspace_iam_forbidden_without_license(unlicensed_client, default_work
     )
     assert response.status_code == 403
     assert response.json()["detail"]["error"] == "enterprise_license_required"
+
+
+def test_harbor_simulations_forbidden_without_feature(unlicensed_client):
+    response = unlicensed_client.post(
+        "/api/v1/simulation-runs",
+        json={
+            "agent_id": str(uuid4()),
+            "scenario_ids": [],
+            "persona_ids": [],
+            "n_attempts": 1,
+        },
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "enterprise_feature_required"
+    assert response.json()["detail"]["feature"] == "harbor_simulations"
+
+
+def test_update_chat_agent_null_connection_forbidden_without_hosted_agents(
+    unlicensed_client, make_ai_provider
+):
+    cred = make_ai_provider(provider="openai")
+    created = unlicensed_client.post(
+        "/api/v1/agents",
+        json={
+            "name": "API Chat Bot",
+            "language": "en",
+            "description": "You are a helpful support agent.",
+            "provider_prompt": "You are a helpful support agent.",
+            "call_type": "outbound",
+            "call_medium": "chat",
+            "chat_connection_type": "customer_api",
+            "chat_connection_config": {"api_base_url": "https://example.com"},
+        },
+    )
+    assert created.status_code == 201
+    agent_id = created.json()["id"]
+
+    response = unlicensed_client.put(
+        f"/api/v1/agents/{agent_id}",
+        json={
+            "chat_connection_type": None,
+            "main_llm_provider": "openai",
+            "main_llm_model": "gpt-4o-mini",
+            "main_llm_credential_id": str(cred.id),
+        },
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["feature"] == "hosted_agents"
+
+
+def test_generate_production_prompt_forbidden_without_hosted_agents(unlicensed_client):
+    response = unlicensed_client.post(
+        "/api/v1/agents/generate-production-prompt",
+        json={
+            "brief": "A refunds assistant",
+            "agent_name": "Refunds",
+            "language": "en",
+            "call_type": "inbound",
+        },
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "enterprise_feature_required"
+    assert response.json()["detail"]["feature"] == "hosted_agents"

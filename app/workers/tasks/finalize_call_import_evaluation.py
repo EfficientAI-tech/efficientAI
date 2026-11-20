@@ -37,6 +37,17 @@ def finalize_call_import_evaluation_task(evaluation_id: str) -> dict:
 
     db = SessionLocal()
     try:
+        from app.services.call_imports.evaluation_teardown import EVAL_DELETING_STATUS
+        from app.models.database import CallImportEvaluation
+
+        status = (
+            db.query(CallImportEvaluation.status)
+            .filter(CallImportEvaluation.id == evaluation_uuid)
+            .scalar()
+        )
+        if status is not None and (status or "").strip().lower() == EVAL_DELETING_STATUS:
+            return {"evaluation_id": str(evaluation_uuid), "skipped": "deleting"}
+
         outcome = finalize_evaluation_progress(db, evaluation_uuid)
     except Exception:
         db.rollback()

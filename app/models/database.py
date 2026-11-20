@@ -421,6 +421,7 @@ class Invitation(Base):
 
     token = Column(String(255), unique=True, nullable=False, index=True)  # Invitation token
     expires_at = Column(DateTime(timezone=True), nullable=False)
+    workspace_ids = Column(JSON, nullable=False, server_default="[]")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     accepted_at = Column(DateTime(timezone=True), nullable=True)
 

@@ -1,4 +1,5 @@
 import { enumOptionsToCsv } from '../../lib/metricOptionLabels'
+import { tagsCsvFromList } from './metricTagsUtils'
 
 export type MetricClipboardScope = 'workspace' | 'organization'
 
@@ -250,5 +251,6 @@ export function categoryFormFromMetricClipboard(
     scenario_link_ids: [] as string[],
     agent_scope_mode: 'all' as const,
     agent_link_ids: [] as string[],
+    tags_csv: tagsCsvFromList(payload.tags),
   }
 }

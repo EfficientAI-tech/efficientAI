@@ -237,7 +237,14 @@ function App() {
             element={<RedirectAgentScenarioToWorkspace />}
           />
           <Route path="results/:id" element={<EvaluatorResultDetail />} />
-          <Route path="simulations/:runId" element={<SimulationRunDetail />} />
+          <Route
+            path="simulations/:runId"
+            element={
+              <EnterpriseGate feature="harbor_simulations">
+                <SimulationRunDetail />
+              </EnterpriseGate>
+            }
+          />
           <Route path="observability" element={<Observability />} />
           <Route path="observability/calls" element={<TestInsights />} />
           <Route path="observability/calls/:callShortId" element={<ObservabilityCallDetail />} />

@@ -531,6 +531,12 @@ def _serialize_eval(
                 allow_discovery=bool(
                     getattr(metric, "allow_discovery", False)
                 ),
+                custom_data_type=getattr(metric, "custom_data_type", None),
+                custom_config=(
+                    metric.custom_config
+                    if isinstance(getattr(metric, "custom_config", None), dict)
+                    else None
+                ),
             )
             for metric in metrics
         ],

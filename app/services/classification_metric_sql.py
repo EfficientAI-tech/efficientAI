@@ -30,9 +30,9 @@ def _numeric_jsonb(value_sql: str) -> str:
     )
 
 
-def _flat_string(field: str) -> str:
+def _flat_string(field: str, *, mid_param: str = "mid") -> str:
     """Non-blank trimmed flat facet field, or NULL (non-strings ignored)."""
-    path = f"metric_scores -> :mid -> '{field}'"
+    path = f"metric_scores -> :{mid_param} -> '{field}'"
     return (
         f"(CASE WHEN json_typeof({path}) = 'string' "
         f"THEN nullif(btrim({path} #>> '{{}}'), '') END)"
@@ -53,18 +53,31 @@ def _top_probability_key(probabilities_path: str) -> str:
     )
 
 
-def effective_choice_sql() -> str:
-    explicit = "metric_scores -> :mid -> 'answers' -> 'choice' -> 'choice'"
-    top = _top_probability_key("metric_scores -> :mid -> 'answers' -> 'choice' -> 'probabilities'")
+def effective_yes_no_sql(*, mid_param: str = "mid") -> str:
+    noul = f"metric_scores -> :{mid_param} -> 'answers' -> 'noul' -> 'noul'"
+    derived = (
+        f"(CASE WHEN json_typeof({noul}) IN ('number', 'string') "
+        f"AND ({noul} #>> '{{}}') ~ '{_NUMERIC_TEXT_RE}' "
+        f"THEN CASE WHEN ({noul} #>> '{{}}')::double precision >= 0.5 "
+        f"THEN 'Yes' ELSE 'No' END END)"
+    )
+    return f"coalesce({_flat_string('classification_yes_no', mid_param=mid_param)}, {derived})"
+
+
+def effective_choice_sql(*, mid_param: str = "mid") -> str:
+    explicit = f"metric_scores -> :{mid_param} -> 'answers' -> 'choice' -> 'choice'"
+    top = _top_probability_key(
+        f"metric_scores -> :{mid_param} -> 'answers' -> 'choice' -> 'probabilities'"
+    )
     return (
-        f"coalesce({_flat_string('classification_choice')}, "
+        f"coalesce({_flat_string('classification_choice', mid_param=mid_param)}, "
         f"nullif(btrim({explicit} #>> '{{}}'), ''), "
         f"nullif(btrim({top}), ''))"
     )
 
 
-def effective_level_sql() -> str:
-    score = "metric_scores -> :mid -> 'answers' -> 'score'"
+def effective_level_sql(*, mid_param: str = "mid") -> str:
+    score = f"metric_scores -> :{mid_param} -> 'answers' -> 'score'"
     legend = f"{score} -> 'legend'"
     top = _top_probability_key(f"{score} -> 'probabilities'")
     label_from_probabilities = (
@@ -80,7 +93,7 @@ def effective_level_sql() -> str:
         f"(CASE WHEN {_numeric_jsonb(score_value)} "
         f"THEN (round(({score_value} #>> '{{}}')::numeric, 2))::text END)"
     )
-    return f"coalesce({_flat_string('classification_level')}, {label_from_probabilities}, {score_fallback})"
+    return f"coalesce({_flat_string('classification_level', mid_param=mid_param)}, {label_from_probabilities}, {score_fallback})"
 
 
 def classification_level_row_predicate(metric_id: str, level: str) -> TextClause:

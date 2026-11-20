@@ -1020,6 +1020,7 @@ def _make_invitation(
     role=RoleEnum.READER.value,
     token=None,
     expires_in_days=7,
+    workspace_ids=None,
 ):
     invitation = Invitation(
         id=uuid4(),
@@ -1030,6 +1031,7 @@ def _make_invitation(
         status=InvitationStatus.PENDING.value,
         token=token or f"tok-{uuid4()}",
         expires_at=datetime.now(timezone.utc) + timedelta(days=expires_in_days),
+        workspace_ids=workspace_ids or [],
     )
     db_session.add(invitation)
     db_session.commit()
@@ -1141,6 +1143,11 @@ def test_accept_invitation_by_token_issues_org_scoped_session(
     db_session.add(invited_org)
     db_session.commit()
 
+    default_ws = provision_default_workspace(
+        db_session,
+        organization_id=invited_org.id,
+        created_by_user_id=user_context["user"].id,
+    )
     invitation = _make_invitation(
         db_session,
         email="existing@example.com",
@@ -1148,6 +1155,7 @@ def test_accept_invitation_by_token_issues_org_scoped_session(
         organization_id=invited_org.id,
         role=RoleEnum.WRITER.value,
         token="accept-by-token",
+        workspace_ids=[str(default_ws.id)],
     )
     existing_user = User(
         email="existing@example.com",
@@ -1172,11 +1180,6 @@ def test_accept_invitation_by_token_issues_org_scoped_session(
         db_session, user_id=existing_user.id, organization_id=home_org.id
     )
     set_org_password_hash(home_cred, existing_user.password_hash)
-    provision_default_workspace(
-        db_session,
-        organization_id=invited_org.id,
-        created_by_user_id=user_context["user"].id,
-    )
     db_session.commit()
 
     login = client.post(

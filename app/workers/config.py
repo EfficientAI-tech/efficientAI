@@ -151,6 +151,10 @@ def _platform_beat_schedule() -> dict:
             "task": "sweep_stale_running_evaluations",
             "schedule": 86400.0,
         },
+        "sweep-stuck-deletes": {
+            "task": "sweep_stuck_deletes",
+            "schedule": 60.0,
+        },
         # Fair diarisation is only triggered after bulk enqueue + chain;
         # periodic tick clears stale locks and drains the diarisation queue.
         "dispatch-fair-diarization-rows": {
@@ -222,6 +226,8 @@ celery_app.conf.task_routes = {
     "bulk_delete_call_import_rows": {"queue": "imports"},
     "materialize_call_import_rows": {"queue": "imports"},
     "delete_call_import": {"queue": "import-control"},
+    "delete_call_import_evaluation": {"queue": "import-control"},
+    "sweep_stuck_deletes": {"queue": "import-control"},
     "discover_platform_slice": {"queue": "import-control"},
     "dispatch_fair_platform_import_rows": {"queue": "import-control"},
     "materialize_call_import_evaluation": {"queue": EVAL_CONTROL_QUEUE},

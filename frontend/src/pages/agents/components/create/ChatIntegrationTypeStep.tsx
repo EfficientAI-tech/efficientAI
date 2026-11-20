@@ -7,7 +7,8 @@ import {
   CHAT_CONNECTION_CAPABILITIES,
   type ChatIntegrationOptionId,
 } from '../../../../lib/chatConnectionCapabilities'
-import { WIZARD_EXISTING_PLATFORM_LABEL } from './wizardCopy'
+import { WIZARD_EXISTING_PLATFORM_LABEL, wizardOptionGridClass } from './wizardCopy'
+import { useLicenseStore } from '../../../../store/licenseStore'
 
 export type { ChatIntegrationOptionId }
 
@@ -48,7 +49,17 @@ export default function ChatIntegrationTypeStep({
   embedded,
   compact,
 }: ChatIntegrationTypeStepProps) {
-  const options = CHAT_CONNECTION_CAPABILITIES.filter((c) => c.offeredInCreateWizard)
+  const { isFeatureEnabled, isLoaded } = useLicenseStore()
+  const hostedEnabled = !isLoaded || isFeatureEnabled('hosted_agents')
+  const options = CHAT_CONNECTION_CAPABILITIES.filter(
+    (c) =>
+      c.offeredInCreateWizard &&
+      (c.id !== 'internal_llm' || hostedEnabled),
+  )
+  const gridClass = wizardOptionGridClass(
+    options.length,
+    Boolean(compact),
+  )
 
   return (
     <div className={embedded ? 'w-full' : 'w-full max-w-3xl mx-auto space-y-6'}>
@@ -59,13 +70,7 @@ export default function ChatIntegrationTypeStep({
           prominence={compact ? 'entry' : 'default'}
         />
       ) : null}
-      <div
-        className={`grid w-full ${
-          compact
-            ? 'grid-cols-1 gap-3.5 mt-4 sm:grid-cols-3'
-            : 'grid-cols-1 sm:grid-cols-3 gap-3 mt-6 max-w-4xl'
-        }`}
-      >
+      <div className={`${gridClass}${compact ? '' : ' max-w-4xl'}`}>
         {options.map((option) => {
           const Icon = ICONS[option.id]
           const shortDesc = option.description.split('.')[0]

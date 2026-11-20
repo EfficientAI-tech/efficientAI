@@ -56,9 +56,14 @@ _URL_QUERY_PATTERN = re.compile(
 
 # --- name: value / name=value fields (headers, dict reprs, kwargs, JSON) -----
 _SECRET_FIELD_NAMES = (
-    r"x-goog-api-key|xi-api-key|x-api-key|x-auth-token|api[-_]?key|authorization"
+    r"x-goog-api-key|xi-api-key|x-api-key|x-auth-id|x-auth-token|api[-_]?key|authorization"
     r"|auth[-_]?token|access[-_]?token|refresh[-_]?token|id[-_]?token"
     r"|client[-_]?secret|secret[-_]?key|secret|password|passwd|token"
+)
+# Vobiz client headers in dict reprs: ``'X-Auth-Token': 'secret'``.
+_QUOTED_X_AUTH_HEADER_PATTERN = re.compile(
+    r"(['\"]X-Auth-(?:ID|Token)['\"]\s*:\s*)(['\"])(?![^'\"]*\[REDACTED\])([^'\"]+)\2",
+    re.IGNORECASE,
 )
 _SECRET_FIELD_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_-])"  # whole field name only (not max_tokens, prompt_token)
@@ -92,6 +97,7 @@ def redact_secrets(text: Any) -> str:
         return out
     out = _URL_USERINFO_PATTERN.sub(rf"\1{REDACTED}@", out)
     out = _URL_QUERY_PATTERN.sub(rf"\1{REDACTED}", out)
+    out = _QUOTED_X_AUTH_HEADER_PATTERN.sub(rf"\1\2{REDACTED}\2", out)
     out = _SECRET_FIELD_PATTERN.sub(_redact_field, out)
     out = _BEARER_PATTERN.sub(rf"\1 {REDACTED}", out)
     out = _BASIC_PATTERN.sub(rf"\1 {REDACTED}", out)

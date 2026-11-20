@@ -15,6 +15,8 @@ interface ConfirmModalProps {
   onCancel: () => void
   variant?: 'danger' | 'warning' | 'default'
   confirmPhrase?: string
+  /** Root overlay z-index (Tailwind class). Use above nested modals when needed. */
+  overlayZIndexClass?: string
 }
 
 export default function ConfirmModal({
@@ -29,6 +31,7 @@ export default function ConfirmModal({
   onCancel,
   variant = 'danger',
   confirmPhrase,
+  overlayZIndexClass = 'z-[9999]',
 }: ConfirmModalProps) {
   const [typedPhrase, setTypedPhrase] = useState('')
   useEffect(() => {
@@ -64,7 +67,9 @@ export default function ConfirmModal({
   if (!isOpen) return null
 
   const modal = (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 overflow-y-auto overflow-x-hidden">
+    <div
+      className={`fixed inset-0 ${overlayZIndexClass} flex items-center justify-center p-4 overflow-y-auto overflow-x-hidden`}
+    >
       <div
         className="fixed inset-0 bg-gray-900/40 backdrop-blur-sm transition-opacity"
         onClick={onCancel}

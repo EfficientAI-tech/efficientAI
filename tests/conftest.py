@@ -862,6 +862,7 @@ def _wire_bulk_ops_stubs(db_session):
     fake_bulk_ops_module.bulk_diarize_call_import_task = _NoopBulkTask()
     fake_bulk_ops_module.bulk_delete_call_import_rows_task = _NoopBulkTask()
     fake_bulk_ops_module.delete_call_import_task = _NoopBulkTask()
+    fake_bulk_ops_module.delete_call_import_evaluation_task = _NoopBulkTask()
 
     def _sync_retry_delay(evaluation_id, payload_dict):
         from uuid import UUID

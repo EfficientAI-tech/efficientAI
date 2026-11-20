@@ -362,6 +362,33 @@ def _apply_direct_custom_provider_kwargs(
     return result
 
 
+# Catalog model id -> explicit LiteLLM model string (Azure AI Inference).
+_AZURE_AI_LITELLM_MODELS: Dict[str, str] = {
+    "Microsoft-Decision-1.1": "azure_ai/Microsoft-Decision-1.1",
+}
+
+
+def _is_azure_ai_inference_litellm_model(model_str: str) -> bool:
+    return str(model_str or "").startswith("azure_ai/")
+
+
+def _build_azure_ai_inference_litellm_kwargs(
+    ai_provider: Optional[AIProvider],
+    config: Optional[Dict[str, Any]],
+) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    """Inject ``api_base`` for Azure AI Inference (``azure_ai/``) models."""
+    extra = dict(config or {})
+    endpoint = _resolve_azure_endpoint_from_provider(ai_provider, extra)
+    extra.pop("azure_endpoint", None)
+    extra.pop("api_base", None)
+    extra.pop("api_version", None)
+    if not endpoint:
+        return {}, extra or None
+
+    api_base, _ = _normalize_azure_endpoint(endpoint)
+    return {"api_base": api_base}, extra or None
+
+
 def _azure_deployment_name(catalog_model: str) -> str:
     """Map Azure catalog keys to LiteLLM deployment names.
 
@@ -505,6 +532,9 @@ class LLMService:
         provider_value = provider.value if hasattr(provider, "value") else str(provider)
         prefix = _LITELLM_PROVIDER_PREFIX.get(provider_value.lower(), provider_value.lower())
         if provider_value.lower() == "azure":
+            explicit_azure_ai = _AZURE_AI_LITELLM_MODELS.get(model)
+            if explicit_azure_ai:
+                return explicit_azure_ai
             model = _azure_deployment_name(model)
         if provider_value.lower() == "fireworks":
             from app.services.ai.fireworks_model_aliases import (
@@ -646,7 +676,12 @@ class LLMService:
             call_kwargs["max_tokens"] = effective_max_tokens
 
         remaining_config = config
-        if provider_value == "azure":
+        if provider_value == "azure" and _is_azure_ai_inference_litellm_model(model_str):
+            azure_ai_kwargs, remaining_config = _build_azure_ai_inference_litellm_kwargs(
+                ai_provider, config
+            )
+            call_kwargs.update(azure_ai_kwargs)
+        elif provider_value == "azure":
             azure_kwargs, remaining_config, azure_v1_routing = _build_azure_litellm_kwargs(
                 ai_provider, config
             )

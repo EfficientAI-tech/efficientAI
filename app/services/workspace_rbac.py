@@ -230,6 +230,40 @@ def remove_user_org_workspace_memberships(
     )
 
 
+def add_invitation_workspace_memberships(
+    db: Session,
+    *,
+    organization_id: UUID,
+    user_id: UUID,
+    org_role: RoleEnum | str,
+    workspace_ids: List[UUID],
+    added_by_user_id: UUID | None = None,
+) -> None:
+    """Add a user to the workspaces selected on an organization invitation."""
+    if not workspace_ids:
+        return
+    roles = seed_system_workspace_roles(db, organization_id=organization_id)
+    ws_role = roles[org_role_to_system_workspace_role(org_role)]
+    for workspace_id in workspace_ids:
+        workspace = (
+            db.query(Workspace)
+            .filter(
+                Workspace.id == workspace_id,
+                Workspace.organization_id == organization_id,
+            )
+            .first()
+        )
+        if workspace is None:
+            continue
+        add_workspace_member(
+            db,
+            workspace_id=workspace.id,
+            user_id=user_id,
+            role_id=ws_role.id,
+            added_by_user_id=added_by_user_id,
+        )
+
+
 def backfill_org_workspace_memberships(db: Session, *, organization_id: UUID) -> None:
     """Add every org member to every org workspace (idempotent)."""
     roles = seed_system_workspace_roles(db, organization_id=organization_id)

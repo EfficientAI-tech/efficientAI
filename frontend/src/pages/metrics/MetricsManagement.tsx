@@ -43,6 +43,12 @@ import {
   formatMetricValuePayloadJson,
 } from './metricValuePayloadUtils'
 import ClassificationMetricFields from './components/ClassificationMetricFields'
+import MetricTagsField from './components/MetricTagsField'
+import {
+  tagsCsvFromList,
+  tagsForMetricCreate,
+  tagsForMetricUpdate,
+} from './metricTagsUtils'
 import {
   buildClassificationPayload,
   classificationFormFromMetric,
@@ -231,6 +237,8 @@ export interface MetricsManagementProps {
   createModalOnly?: boolean
   draftMode?: boolean
   createModalOpen?: boolean
+  /** Tailwind z-index class when the create modal must sit above another overlay (e.g. Studio wizard). */
+  createModalZIndexClass?: string
   onCreateModalClose?: () => void
   onMetricCreated?: (metric: Metric) => void
 }
@@ -239,6 +247,7 @@ export default function MetricsManagement({
   createModalOnly = false,
   draftMode = false,
   createModalOpen = false,
+  createModalZIndexClass = 'z-[9999]',
   onCreateModalClose,
   onMetricCreated,
 }: MetricsManagementProps = {}) {
@@ -282,6 +291,7 @@ export default function MetricsManagement({
   const [categoryForm, setCategoryForm] = useState<{
     name: string
     description: string
+    tags_csv: string
     surfaces: MetricSurface[]
     capture_rationale: boolean
     selection_mode: 'single_choice' | 'multi_label'
@@ -301,6 +311,7 @@ export default function MetricsManagement({
   }>({
     name: '',
     description: '',
+    tags_csv: '',
     surfaces: ['agent'],
     capture_rationale: false,
     selection_mode: 'single_choice',
@@ -362,6 +373,7 @@ export default function MetricsManagement({
   const [editCategoryForm, setEditCategoryForm] = useState<{
     name: string
     description: string
+    tags_csv: string
     // Selection mode lives here only so the save handler can avoid
     // sending it in the PUT (the server rejects flipping it on a
     // metric with completed evaluations). The simplified UI no longer
@@ -380,6 +392,7 @@ export default function MetricsManagement({
   }>({
     name: '',
     description: '',
+    tags_csv: '',
     selection_mode: 'single_choice',
     surfaces: ['agent'],
     capture_rationale: false,
@@ -884,6 +897,7 @@ export default function MetricsManagement({
     mutationFn: (payload: {
       name: string
       description?: string | null
+      tags?: string[]
       selection_mode: 'single_choice' | 'multi_label'
       allow_discovery?: boolean
       // Parent-level rationale toggle. Children never carry their own
@@ -948,6 +962,7 @@ export default function MetricsManagement({
       parent: {
         name: string
         description?: string | null
+        tags: string[]
         allow_discovery: boolean
         // Parent-level rationale toggle (children never carry their own
         // rationale in hierarchical mode).
@@ -1095,6 +1110,7 @@ export default function MetricsManagement({
     setCategoryForm({
       name: '',
       description: '',
+      tags_csv: '',
       surfaces: ['agent'],
       capture_rationale: false,
       selection_mode: 'single_choice',
@@ -1228,10 +1244,8 @@ export default function MetricsManagement({
   }
 
   const buildPayload = () => {
-    const tags = formData.tags_csv
-      .split(',')
-      .map((tag) => tag.trim())
-      .filter(Boolean)
+    const tagsCreate = tagsForMetricCreate(formData.tags_csv)
+    const tagsUpdate = tagsForMetricUpdate(formData.tags_csv)
     // Text metrics are unstructured by definition, so we never persist a
     // ``custom_data_type``/``custom_config`` for them even when the modal was
     // opened in "custom" mode. This keeps the backend's LLM prompt branch
@@ -1249,7 +1263,11 @@ export default function MetricsManagement({
       enabled_surfaces: formData.enabled ? formData.enabled_surfaces : [],
       custom_data_type: useCustomConfig ? formData.custom_data_type : undefined,
       custom_config: useCustomConfig ? getCustomConfigFromForm() : undefined,
-      tags: tags.length > 0 ? tags : undefined,
+      ...(editingMetric
+        ? { tags: tagsUpdate }
+        : tagsCreate !== undefined
+          ? { tags: tagsCreate }
+          : {}),
       // Capture LLM rationale only makes sense for LLM-judged metrics
       // (i.e. anything that isn't a free-form text summary). The CSV
       // exporter and worker both no-op when the flag is false.
@@ -1354,6 +1372,7 @@ export default function MetricsManagement({
             enabled: true,
             scope: targetScope,
             custom_config: payload.custom_config ?? null,
+            tags: payload.tags ?? null,
           }),
         )
         resetForm()
@@ -1470,6 +1489,7 @@ export default function MetricsManagement({
     setEditCategoryForm({
       name: parent.name,
       description: parent.description || '',
+      tags_csv: tagsCsvFromList(parent.tags),
       selection_mode:
         (parent.selection_mode as 'single_choice' | 'multi_label') ||
         'single_choice',
@@ -1564,6 +1584,7 @@ export default function MetricsManagement({
       parent: {
         name: editCategoryForm.name.trim(),
         description: editCategoryForm.description.trim() || null,
+        tags: tagsForMetricUpdate(editCategoryForm.tags_csv),
         // The simplified UI no longer surfaces allow_discovery. Force
         // false so a re-save on an older legacy parent also turns it
         // off, keeping the post-save UX honest.
@@ -2303,7 +2324,11 @@ export default function MetricsManagement({
 
       {/* Create/Edit Modal */}
       {showCreateModal && (
-        <div className={`fixed inset-0 ${createModalOnly ? 'z-[9999]' : 'z-50'} overflow-y-auto`}>
+        <div
+          className={`fixed inset-0 ${
+            createModalOnly ? createModalZIndexClass : 'z-50'
+          } overflow-y-auto`}
+        >
           <div className="flex min-h-screen items-center justify-center p-4">
             <div
               className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
@@ -2876,18 +2901,10 @@ export default function MetricsManagement({
                     />
                   </div>
 
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Tags (comma separated)
-                    </label>
-                    <input
-                      type="text"
-                      value={formData.tags_csv}
-                      onChange={(e) => setFormData({ ...formData, tags_csv: e.target.value })}
-                      className={MODERN_INPUT_CLASS}
-                      placeholder="quality, compliance, friendliness"
-                    />
-                  </div>
+                  <MetricTagsField
+                    value={formData.tags_csv}
+                    onChange={(tags_csv) => setFormData({ ...formData, tags_csv })}
+                  />
 
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -3112,125 +3129,13 @@ export default function MetricsManagement({
                       />
                     </div>
 
-                    <MetricAgentScopeField
-                      mode={categoryForm.agent_scope_mode}
-                      agentIds={categoryForm.agent_link_ids}
-                      onModeChange={(mode) =>
-                        setCategoryForm((s) => ({
-                          ...s,
-                          agent_scope_mode: mode,
-                          agent_link_ids: mode === 'all' ? [] : s.agent_link_ids,
-                        }))
-                      }
-                      onAgentIdsChange={(agent_link_ids) =>
-                        setCategoryForm((s) => ({ ...s, agent_link_ids }))
-                      }
-                    />
-                    <MetricScenarioScopeField
-                      mode={categoryForm.scenario_scope_mode}
-                      scenarioIds={categoryForm.scenario_link_ids}
-                      onModeChange={(mode) =>
-                        setCategoryForm((s) => ({
-                          ...s,
-                          scenario_scope_mode: mode,
-                          scenario_link_ids: mode === 'all' ? [] : s.scenario_link_ids,
-                        }))
-                      }
-                      onScenarioIdsChange={(scenario_link_ids) =>
-                        setCategoryForm((s) => ({ ...s, scenario_link_ids }))
-                      }
-                    />
-
-                    {/* Enable LLM Rationale toggle. The flag is stored
-                        on every child (via MetricChildDraft.capture_rationale)
-                        so the existing rationale-key emit logic in
-                        _render_parent_block picks it up without any
-                        prompt-builder changes. */}
-                    <div className="md:col-span-2 rounded-xl border border-gray-200 bg-gray-50/70 p-3.5">
-                      <label className="flex items-start gap-2.5 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={categoryForm.capture_rationale}
-                          onChange={(e) =>
-                            setCategoryForm((s) => ({
-                              ...s,
-                              capture_rationale: e.target.checked,
-                            }))
-                          }
-                          className="mt-0.5 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
-                        />
-                        <span className="text-sm text-gray-800">
-                          <span className="font-medium">Enable LLM Rationale</span>
-                          <span className="block text-xs text-gray-500 mt-0.5">
-                            Ask the LLM to also return a 1-2 sentence
-                            reason for the chosen label. Adds a{' '}
-                            <code className="px-1 py-0.5 bg-white border border-gray-200 rounded text-[11px]">
-                              &lt;Name&gt; - LLM Rationale
-                            </code>{' '}
-                            column to the call-import CSV export.
-                          </span>
-                        </span>
-                      </label>
-                    </div>
-
                     <div className="md:col-span-2">
-                      <MetricSurfacesField
-                        compact
-                        supported={categoryForm.surfaces}
-                        enabled={categoryForm.surfaces}
-                        onChange={({ supported }) =>
-                          setCategoryForm((s) => ({ ...s, surfaces: supported }))
+                      <MetricTagsField
+                        value={categoryForm.tags_csv}
+                        onChange={(tags_csv) =>
+                          setCategoryForm((s) => ({ ...s, tags_csv }))
                         }
                       />
-                    </div>
-
-                    {/* Visibility scope picker. Same shape + semantics
-                        as the single-metric scope picker — the parent
-                        and every child inherit the chosen scope. */}
-                    <div className="md:col-span-2 rounded-xl border border-gray-200 bg-gray-50/70 p-3.5">
-                      <span className="block text-sm font-medium text-gray-700 mb-2">
-                        Available in
-                      </span>
-                      <div className="space-y-2">
-                        <label className="flex items-start gap-2.5 cursor-pointer">
-                          <input
-                            type="radio"
-                            name="category-scope"
-                            value="workspace"
-                            checked={categoryForm.scope === 'workspace'}
-                            onChange={() =>
-                              setCategoryForm((s) => ({ ...s, scope: 'workspace' }))
-                            }
-                            className="mt-0.5 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300"
-                          />
-                          <span className="text-sm text-gray-800">
-                            <span className="font-medium">This workspace only</span>
-                            <span className="block text-xs text-gray-500 mt-0.5">
-                              The category and all of its labels are created
-                              inside the currently active workspace.
-                            </span>
-                          </span>
-                        </label>
-                        <label className="flex items-start gap-2.5 cursor-pointer">
-                          <input
-                            type="radio"
-                            name="category-scope"
-                            value="organization"
-                            checked={categoryForm.scope === 'organization'}
-                            onChange={() =>
-                              setCategoryForm((s) => ({ ...s, scope: 'organization' }))
-                            }
-                            className="mt-0.5 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300"
-                          />
-                          <span className="text-sm text-gray-800">
-                            <span className="font-medium">All workspaces in this organization</span>
-                            <span className="block text-xs text-gray-500 mt-0.5">
-                              The category subtree is shared org-wide and
-                              shows up in every workspace's metric list.
-                            </span>
-                          </span>
-                        </label>
-                      </div>
                     </div>
                   </div>
 
@@ -3383,6 +3288,129 @@ export default function MetricsManagement({
                     </button>
                   </div>
 
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
+                    {/* Enable LLM Rationale toggle. The flag is stored
+                        on every child (via MetricChildDraft.capture_rationale)
+                        so the existing rationale-key emit logic in
+                        _render_parent_block picks it up without any
+                        prompt-builder changes. */}
+                    <div className="md:col-span-2 rounded-xl border border-gray-200 bg-gray-50/70 p-3.5">
+                      <label className="flex items-start gap-2.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={categoryForm.capture_rationale}
+                          onChange={(e) =>
+                            setCategoryForm((s) => ({
+                              ...s,
+                              capture_rationale: e.target.checked,
+                            }))
+                          }
+                          className="mt-0.5 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+                        />
+                        <span className="text-sm text-gray-800">
+                          <span className="font-medium">Enable LLM Rationale</span>
+                          <span className="block text-xs text-gray-500 mt-0.5">
+                            Ask the LLM to also return a 1-2 sentence
+                            reason for the chosen label. Adds a{' '}
+                            <code className="px-1 py-0.5 bg-white border border-gray-200 rounded text-[11px]">
+                              &lt;Name&gt; - LLM Rationale
+                            </code>{' '}
+                            column to the call-import CSV export.
+                          </span>
+                        </span>
+                      </label>
+                    </div>
+
+                    <div className="md:col-span-2">
+                      <MetricSurfacesField
+                        compact
+                        supported={categoryForm.surfaces}
+                        enabled={categoryForm.surfaces}
+                        onChange={({ supported }) =>
+                          setCategoryForm((s) => ({ ...s, surfaces: supported }))
+                        }
+                      />
+                    </div>
+
+                    {/* Visibility scope picker. Same shape + semantics
+                        as the single-metric scope picker — the parent
+                        and every child inherit the chosen scope. */}
+                    <div className="md:col-span-2 rounded-xl border border-gray-200 bg-gray-50/70 p-3.5">
+                      <span className="block text-sm font-medium text-gray-700 mb-2">
+                        Available in
+                      </span>
+                      <div className="space-y-2">
+                        <label className="flex items-start gap-2.5 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="category-scope"
+                            value="workspace"
+                            checked={categoryForm.scope === 'workspace'}
+                            onChange={() =>
+                              setCategoryForm((s) => ({ ...s, scope: 'workspace' }))
+                            }
+                            className="mt-0.5 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300"
+                          />
+                          <span className="text-sm text-gray-800">
+                            <span className="font-medium">This workspace only</span>
+                            <span className="block text-xs text-gray-500 mt-0.5">
+                              The category and all of its labels are created
+                              inside the currently active workspace.
+                            </span>
+                          </span>
+                        </label>
+                        <label className="flex items-start gap-2.5 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="category-scope"
+                            value="organization"
+                            checked={categoryForm.scope === 'organization'}
+                            onChange={() =>
+                              setCategoryForm((s) => ({ ...s, scope: 'organization' }))
+                            }
+                            className="mt-0.5 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300"
+                          />
+                          <span className="text-sm text-gray-800">
+                            <span className="font-medium">All workspaces in this organization</span>
+                            <span className="block text-xs text-gray-500 mt-0.5">
+                              The category subtree is shared org-wide and
+                              shows up in every workspace's metric list.
+                            </span>
+                          </span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <MetricAgentScopeField
+                      mode={categoryForm.agent_scope_mode}
+                      agentIds={categoryForm.agent_link_ids}
+                      onModeChange={(mode) =>
+                        setCategoryForm((s) => ({
+                          ...s,
+                          agent_scope_mode: mode,
+                          agent_link_ids: mode === 'all' ? [] : s.agent_link_ids,
+                        }))
+                      }
+                      onAgentIdsChange={(agent_link_ids) =>
+                        setCategoryForm((s) => ({ ...s, agent_link_ids }))
+                      }
+                    />
+                    <MetricScenarioScopeField
+                      mode={categoryForm.scenario_scope_mode}
+                      scenarioIds={categoryForm.scenario_link_ids}
+                      onModeChange={(mode) =>
+                        setCategoryForm((s) => ({
+                          ...s,
+                          scenario_scope_mode: mode,
+                          scenario_link_ids: mode === 'all' ? [] : s.scenario_link_ids,
+                        }))
+                      }
+                      onScenarioIdsChange={(scenario_link_ids) =>
+                        setCategoryForm((s) => ({ ...s, scenario_link_ids }))
+                      }
+                    />
+                  </div>
+
                   <div className="flex items-center justify-end gap-3 pt-2 border-t border-gray-100">
                     <Button variant="ghost" onClick={closeModal}>
                       Cancel
@@ -3425,10 +3453,12 @@ export default function MetricsManagement({
                             capture_rationale: false,
                             enabled: true,
                           }))
+                        const categoryTags = tagsForMetricCreate(categoryForm.tags_csv)
                         createCategoryMutation.mutate({
                           name: categoryForm.name.trim(),
                           description:
                             categoryForm.description.trim() || null,
+                          ...(categoryTags !== undefined ? { tags: categoryTags } : {}),
                           // Preserve pasted selection_mode; default flow
                           // remains single_choice.
                           selection_mode: categoryForm.selection_mode,
@@ -3515,69 +3545,11 @@ export default function MetricsManagement({
                       />
                     </div>
 
-                    <MetricAgentScopeField
-                      mode={editCategoryForm.agent_scope_mode}
-                      agentIds={editCategoryForm.agent_link_ids}
-                      onModeChange={(mode) =>
-                        setEditCategoryForm((s) => ({
-                          ...s,
-                          agent_scope_mode: mode,
-                          agent_link_ids: mode === 'all' ? [] : s.agent_link_ids,
-                        }))
-                      }
-                      onAgentIdsChange={(agent_link_ids) =>
-                        setEditCategoryForm((s) => ({ ...s, agent_link_ids }))
-                      }
-                    />
-                    <MetricScenarioScopeField
-                      mode={editCategoryForm.scenario_scope_mode}
-                      scenarioIds={editCategoryForm.scenario_link_ids}
-                      onModeChange={(mode) =>
-                        setEditCategoryForm((s) => ({
-                          ...s,
-                          scenario_scope_mode: mode,
-                          scenario_link_ids: mode === 'all' ? [] : s.scenario_link_ids,
-                        }))
-                      }
-                      onScenarioIdsChange={(scenario_link_ids) =>
-                        setEditCategoryForm((s) => ({ ...s, scenario_link_ids }))
-                      }
-                    />
-
-                    <div className="md:col-span-2 rounded-xl border border-gray-200 bg-gray-50/70 p-3.5">
-                      <label className="flex items-start gap-2.5 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={editCategoryForm.capture_rationale}
-                          onChange={(e) =>
-                            setEditCategoryForm((s) => ({
-                              ...s,
-                              capture_rationale: e.target.checked,
-                            }))
-                          }
-                          className="mt-0.5 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
-                        />
-                        <span className="text-sm text-gray-800">
-                          <span className="font-medium">Enable LLM Rationale</span>
-                          <span className="block text-xs text-gray-500 mt-0.5">
-                            Ask the LLM to also return a 1-2 sentence
-                            reason for the chosen label. Adds a{' '}
-                            <code className="px-1 py-0.5 bg-white border border-gray-200 rounded text-[11px]">
-                              &lt;Name&gt; - LLM Rationale
-                            </code>{' '}
-                            column to the call-import CSV export.
-                          </span>
-                        </span>
-                      </label>
-                    </div>
-
                     <div className="md:col-span-2">
-                      <MetricSurfacesField
-                        compact
-                        supported={editCategoryForm.surfaces}
-                        enabled={editCategoryForm.surfaces}
-                        onChange={({ supported }) =>
-                          setEditCategoryForm((s) => ({ ...s, surfaces: supported }))
+                      <MetricTagsField
+                        value={editCategoryForm.tags_csv}
+                        onChange={(tags_csv) =>
+                          setEditCategoryForm((s) => ({ ...s, tags_csv }))
                         }
                       />
                     </div>
@@ -3795,6 +3767,75 @@ export default function MetricsManagement({
                         appear in new runs.
                       </p>
                     )}
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
+                    <div className="md:col-span-2 rounded-xl border border-gray-200 bg-gray-50/70 p-3.5">
+                      <label className="flex items-start gap-2.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={editCategoryForm.capture_rationale}
+                          onChange={(e) =>
+                            setEditCategoryForm((s) => ({
+                              ...s,
+                              capture_rationale: e.target.checked,
+                            }))
+                          }
+                          className="mt-0.5 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+                        />
+                        <span className="text-sm text-gray-800">
+                          <span className="font-medium">Enable LLM Rationale</span>
+                          <span className="block text-xs text-gray-500 mt-0.5">
+                            Ask the LLM to also return a 1-2 sentence
+                            reason for the chosen label. Adds a{' '}
+                            <code className="px-1 py-0.5 bg-white border border-gray-200 rounded text-[11px]">
+                              &lt;Name&gt; - LLM Rationale
+                            </code>{' '}
+                            column to the call-import CSV export.
+                          </span>
+                        </span>
+                      </label>
+                    </div>
+
+                    <div className="md:col-span-2">
+                      <MetricSurfacesField
+                        compact
+                        supported={editCategoryForm.surfaces}
+                        enabled={editCategoryForm.surfaces}
+                        onChange={({ supported }) =>
+                          setEditCategoryForm((s) => ({ ...s, surfaces: supported }))
+                        }
+                      />
+                    </div>
+
+                    <MetricAgentScopeField
+                      mode={editCategoryForm.agent_scope_mode}
+                      agentIds={editCategoryForm.agent_link_ids}
+                      onModeChange={(mode) =>
+                        setEditCategoryForm((s) => ({
+                          ...s,
+                          agent_scope_mode: mode,
+                          agent_link_ids: mode === 'all' ? [] : s.agent_link_ids,
+                        }))
+                      }
+                      onAgentIdsChange={(agent_link_ids) =>
+                        setEditCategoryForm((s) => ({ ...s, agent_link_ids }))
+                      }
+                    />
+                    <MetricScenarioScopeField
+                      mode={editCategoryForm.scenario_scope_mode}
+                      scenarioIds={editCategoryForm.scenario_link_ids}
+                      onModeChange={(mode) =>
+                        setEditCategoryForm((s) => ({
+                          ...s,
+                          scenario_scope_mode: mode,
+                          scenario_link_ids: mode === 'all' ? [] : s.scenario_link_ids,
+                        }))
+                      }
+                      onScenarioIdsChange={(scenario_link_ids) =>
+                        setEditCategoryForm((s) => ({ ...s, scenario_link_ids }))
+                      }
+                    />
                   </div>
 
                   <div className="flex items-center justify-end gap-3 pt-2 border-t border-gray-100">

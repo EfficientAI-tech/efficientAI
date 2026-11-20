@@ -6,8 +6,9 @@ from uuid import uuid4
 import pytest
 
 from app.config import settings
-from app.models.database import Invitation, OrganizationMember
+from app.models.database import Invitation, OrganizationMember, Workspace, WorkspaceMember
 from app.models.enums import InvitationStatus, RoleEnum
+from app.services.organization_provisioning import provision_default_workspace
 
 
 @pytest.fixture
@@ -16,6 +17,15 @@ def enable_local_password(monkeypatch):
     monkeypatch.setattr(settings, "AUTH_LOCAL_ALLOW_SIGNUP", True)
     monkeypatch.setattr(settings, "AUTH_GATED_SIGNUP_ENABLED", False)
     return settings
+
+
+def _workspace_ids_for_org(db_session, org_id):
+    rows = (
+        db_session.query(Workspace.id)
+        .filter(Workspace.organization_id == org_id, Workspace.is_active.is_(True))
+        .all()
+    )
+    return [str(row[0]) for row in rows]
 
 
 @pytest.fixture
@@ -36,10 +46,15 @@ def test_list_organization_users(authenticated_client, user_context):
     assert users[0]["user"]["email"] == user_context["user"].email
 
 
-def test_invite_and_list_invitations(iam_admin_override, authenticated_client):
+def test_invite_and_list_invitations(iam_admin_override, authenticated_client, db_session, org_id):
+    workspace_ids = _workspace_ids_for_org(db_session, org_id)
     invite_response = authenticated_client.post(
         "/api/v1/iam/invitations",
-        json={"email": "invitee@example.com", "role": "reader"},
+        json={
+            "email": "invitee@example.com",
+            "role": "reader",
+            "workspace_ids": workspace_ids,
+        },
     )
     assert invite_response.status_code == 201
     body = invite_response.json()
@@ -80,8 +95,14 @@ def test_list_invitations_excludes_accepted(
     assert "accepted@example.com" not in emails
 
 
-def test_invite_duplicate_pending_returns_conflict(iam_admin_override, authenticated_client):
-    payload = {"email": "dup@example.com", "role": "reader"}
+def test_invite_duplicate_pending_returns_conflict(
+    iam_admin_override, authenticated_client, db_session, org_id
+):
+    payload = {
+        "email": "dup@example.com",
+        "role": "reader",
+        "workspace_ids": _workspace_ids_for_org(db_session, org_id),
+    }
     first = authenticated_client.post("/api/v1/iam/invitations", json=payload)
     assert first.status_code == 201
 
@@ -317,6 +338,11 @@ def test_removed_member_reinvite_does_not_reactivate_old_access_token(
         organization_id=org_id,
         created_by_user_id=user_context["user"].id,
     )
+    default_ws = (
+        db_session.query(Workspace)
+        .filter(Workspace.organization_id == org_id, Workspace.is_default.is_(True))
+        .first()
+    )
     invitation = Invitation(
         organization_id=org_id,
         invited_by_id=user_context["user"].id,
@@ -325,6 +351,7 @@ def test_removed_member_reinvite_does_not_reactivate_old_access_token(
         status=InvitationStatus.PENDING.value,
         token="returning-member",
         expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+        workspace_ids=[str(default_ws.id)] if default_ws else [],
     )
     db_session.add(invitation)
     db_session.commit()
@@ -339,3 +366,54 @@ def test_removed_member_reinvite_does_not_reactivate_old_access_token(
     reset_provider_registry()
     with pytest.raises(AuthError):
         provider.authenticate(RawCredential(bearer_token=old_access_token), db_session)
+
+
+def test_accept_invitation_adds_only_selected_workspaces(
+    db_session, org_id, user_context, make_user
+):
+    from app.services.invitation_service import accept_invitation
+
+    provision_default_workspace(
+        db_session,
+        organization_id=org_id,
+        created_by_user_id=user_context["user"].id,
+    )
+    default_ws = (
+        db_session.query(Workspace)
+        .filter(Workspace.organization_id == org_id, Workspace.is_default.is_(True))
+        .one()
+    )
+    second_ws = Workspace(
+        organization_id=org_id,
+        name="Secondary",
+        slug="secondary",
+        is_default=False,
+        created_by_user_id=user_context["user"].id,
+    )
+    db_session.add(second_ws)
+    db_session.commit()
+
+    invitee = make_user(email="scoped@example.com", name="Scoped User")
+    invitation = Invitation(
+        organization_id=org_id,
+        invited_by_id=user_context["user"].id,
+        email=invitee.email,
+        role=RoleEnum.READER.value,
+        status=InvitationStatus.PENDING.value,
+        token=f"tok-{uuid4()}",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+        workspace_ids=[str(second_ws.id)],
+    )
+    db_session.add(invitation)
+    db_session.commit()
+
+    accept_invitation(db_session, invitation, invitee)
+
+    memberships = (
+        db_session.query(WorkspaceMember.workspace_id)
+        .filter(WorkspaceMember.user_id == invitee.id)
+        .all()
+    )
+    member_ws_ids = {row[0] for row in memberships}
+    assert member_ws_ids == {second_ws.id}
+    assert default_ws.id not in member_ws_ids
