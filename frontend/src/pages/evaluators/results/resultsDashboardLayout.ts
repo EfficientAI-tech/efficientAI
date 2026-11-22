@@ -95,8 +95,26 @@ function mergeToolWidgetType(type: ResultsWidgetType): ResultsWidgetType {
   return type === 'tool_calls' ? 'tools' : type
 }
 
-function sanitize(raw: unknown): ResultsWidget[] {
+function layoutSignature(widgets: ResultsWidget[]): string {
+  return widgets
+    .map((widget) =>
+      [widget.id, widget.type, widget.display, widget.hidden ? '1' : '0', widget.metricId ?? ''].join(':'),
+    )
+    .join('|')
+}
+
+function hadVisibleTotalCalls(raw: unknown): boolean {
+  if (!Array.isArray(raw)) return false
+  return raw.some((item) => {
+    if (!item || typeof item !== 'object') return false
+    const candidate = item as Partial<ResultsWidget>
+    return candidate.type === 'total_calls' && !candidate.hidden
+  })
+}
+
+function sanitize(raw: unknown, options?: { promoteTotalCalls?: boolean }): ResultsWidget[] {
   if (!Array.isArray(raw)) return DEFAULT_RESULTS_WIDGETS.map((item) => ({ ...item }))
+  const promoteTotalCalls = options?.promoteTotalCalls !== false
   const widgets: ResultsWidget[] = []
   const seen = new Set<string>()
   let visibleCalls: ResultsWidget | null = null
@@ -108,7 +126,7 @@ function sanitize(raw: unknown): ResultsWidget[] {
     const display = isChartType(candidate.display) ? candidate.display : 'line'
     const hidden = Boolean(candidate.hidden)
     if (type === 'total_calls') {
-      if (!hidden) {
+      if (promoteTotalCalls && !hidden) {
         visibleCalls = { id: 'metric_usage', type: 'metric_usage', display, hidden: false }
       }
       continue
@@ -156,12 +174,25 @@ export function readResultsDashboardLayout(): ResultsWidget[] {
     const legacyV10 = localStorage.getItem('resultsDashboardLayout.v10')
     const legacyV9 = localStorage.getItem('resultsDashboardLayout.v9')
     if (legacyV10) {
-      const fromV10 = sanitize(JSON.parse(legacyV10))
-      const agentsVisible = fromV10.some((widget) => widget.type === 'metric_usage' && !widget.hidden)
-      if (agentsVisible || !legacyV9) {
-        writeResultsDashboardLayout(fromV10)
-        return fromV10
+      const parsedV10 = JSON.parse(legacyV10)
+      let fromV10 = sanitize(parsedV10)
+      if (legacyV9) {
+        const parsedV9 = JSON.parse(legacyV9)
+        const untouched =
+          layoutSignature(sanitize(parsedV9, { promoteTotalCalls: false }))
+          === layoutSignature(sanitize(parsedV10, { promoteTotalCalls: false }))
+        if (untouched && hadVisibleTotalCalls(parsedV9)) {
+          fromV10 = sanitize(parsedV9)
+        } else if (
+          hadVisibleTotalCalls(parsedV9)
+          && !fromV10.some((widget) => widget.type === 'metric_usage')
+        ) {
+          const recovered = sanitize(parsedV9).find((widget) => widget.type === 'metric_usage' && !widget.hidden)
+          if (recovered) fromV10 = [recovered, ...fromV10]
+        }
       }
+      writeResultsDashboardLayout(fromV10)
+      return fromV10
     }
     if (legacyV9) {
       const migrated = sanitize(JSON.parse(legacyV9))
