@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildSpanTranscriptMessages,
+  isTurnIncomplete,
   parseUnixNano,
+  sessionPipelineMode,
   resolveTraceStartNsFromSpans,
   unixNanoOffsetMs,
 } from './traceUtils'
@@ -72,5 +74,73 @@ describe('resolveTraceStartNsFromSpans', () => {
       },
     ])
     expect(traceStart).toBe(parseUnixNano(1789153005157148232))
+  })
+})
+
+describe('chat traces', () => {
+  const start = 1_000_000_000n
+  const spans = [
+    { span_id: 't1', name: 'turn', start_time_unix_nano: start },
+    {
+      span_id: 'u1',
+      parent_span_id: 't1',
+      name: 'user_message',
+      start_time_unix_nano: start + 1_000_000n,
+      attributes: { 'gen_ai.operation.name': 'user_message', message: 'Where is my order?' },
+    },
+    {
+      span_id: 'l1',
+      parent_span_id: 't1',
+      name: 'llm',
+      start_time_unix_nano: start + 2_000_000n,
+      attributes: { 'gen_ai.operation.name': 'chat', output: 'raw model text' },
+    },
+    {
+      span_id: 'a1',
+      parent_span_id: 't1',
+      name: 'assistant_message',
+      start_time_unix_nano: start + 9_000_000n,
+      attributes: { 'gen_ai.operation.name': 'assistant_message', message: 'It ships tomorrow.' },
+    },
+    {
+      span_id: 't2',
+      name: 'turn',
+      start_time_unix_nano: start + 20_000_000n,
+    },
+    {
+      span_id: 'u2',
+      parent_span_id: 't2',
+      name: 'user_message',
+      start_time_unix_nano: start + 21_000_000n,
+      attributes: { 'gen_ai.operation.name': 'user_message', message: 'Thanks!' },
+    },
+    {
+      span_id: 'l2',
+      parent_span_id: 't2',
+      name: 'llm',
+      start_time_unix_nano: start + 22_000_000n,
+      attributes: { 'gen_ai.operation.name': 'chat', output: 'You are welcome.' },
+    },
+  ]
+
+  it('shows typed user messages and prefers the explicit reply over raw LLM output', () => {
+    const messages = buildSpanTranscriptMessages(spans, start)
+    expect(messages.map((m) => [m.role, m.text, m.turn])).toEqual([
+      ['user', 'Where is my order?', 1],
+      ['agent', 'It ships tomorrow.', 1],
+      ['user', 'Thanks!', 2],
+      ['agent', 'You are welcome.', 2],
+    ])
+  })
+
+  it('does not flag chat turns as incomplete for missing STT/TTS', () => {
+    const turns = [
+      { turn_number: 1, sut_response_latency_ms: 900, llm_ttfb_ms: 210, extra: { pipeline_mode: 'chat' as const } },
+      { turn_number: 2, sut_response_latency_ms: 500, extra: { pipeline_mode: 'chat' as const } },
+    ]
+    const mode = sessionPipelineMode(turns)
+    expect(mode).toBe('chat')
+    expect(isTurnIncomplete(turns[0], mode)).toBe(false)
+    expect(isTurnIncomplete(turns[1], mode)).toBe(true)
   })
 })

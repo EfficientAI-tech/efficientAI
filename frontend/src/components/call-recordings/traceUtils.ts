@@ -1,5 +1,5 @@
 export type ComponentKind = 'stt' | 'llm' | 'tts' | 's2s'
-export type PipelineMode = 's2s' | 'stt_llm_tts'
+export type PipelineMode = 's2s' | 'stt_llm_tts' | 'chat'
 
 export interface TraceTurnLike {
   turn_number: number
@@ -19,6 +19,7 @@ export interface TraceTurnLike {
     user_utterances?: string[]
     assistant_text?: string
     is_opener?: boolean
+    tool_calls?: Array<{ name: string; latency_ms?: number | null; error?: boolean }>
   }
 }
 
@@ -70,6 +71,27 @@ function spokenTextFromSpan(span: OtelSpanLike, kind: ComponentKind): string | n
     return attrString(attrs, 'text') ?? attrString(attrs, 'output')
   }
   return attrString(attrs, 'output')
+}
+
+/** Chat traces: typed user messages and (optional) explicit replies. */
+function chatMessageRole(span: OtelSpanLike): 'user' | 'agent' | null {
+  const op = attrString(span.attributes, 'gen_ai.operation.name')?.toLowerCase()
+  const name = span.name.toLowerCase()
+  if (op === 'user_message' || name === 'user_message') return 'user'
+  if (op === 'assistant_message' || name === 'assistant_message') return 'agent'
+  return null
+}
+
+/** An explicit reply later in the same turn replaces the raw LLM output. */
+function hasLaterAssistantMessage(spans: OtelSpanLike[], llmSpan: OtelSpanLike): boolean {
+  if (!llmSpan.parent_span_id) return false
+  const llmStart = parseUnixNano(llmSpan.start_time_unix_nano) ?? 0n
+  return spans.some((other) => {
+    if (chatMessageRole(other) !== 'agent') return false
+    if (other.parent_span_id !== llmSpan.parent_span_id) return false
+    const start = parseUnixNano(other.start_time_unix_nano) ?? 0n
+    return start >= llmStart
+  })
 }
 
 function isLowSignalTranscript(text: string): boolean {
@@ -126,6 +148,22 @@ export function buildSpanTranscriptMessages(
 
   const messages: SpanTranscriptMessage[] = []
   for (const span of sorted) {
+    const chatRole = chatMessageRole(span)
+    if (chatRole) {
+      const text = attrString(span.attributes, 'message')
+      if (text) {
+        messages.push({
+          role: chatRole,
+          text,
+          turn: 0,
+          offsetMs: unixNanoOffsetMs(span.start_time_unix_nano, traceStartNs),
+          agentRole: attrString(span.attributes, 'efficientai.agent_role'),
+          spanId: span.span_id,
+        })
+      }
+      continue
+    }
+
     const kind = spanComponentKind(span)
     if (!kind) continue
 
@@ -141,7 +179,9 @@ export function buildSpanTranscriptMessages(
       role = 'agent'
     } else if (kind === 'llm') {
       text = spokenTextFromSpan(span, kind)
-      if (!text || hasMatchingTts(sorted, span, text)) continue
+      if (!text || hasMatchingTts(sorted, span, text) || hasLaterAssistantMessage(sorted, span)) {
+        continue
+      }
       role = 'agent'
     } else {
       continue
@@ -229,6 +269,7 @@ export const FAILURE_FLAG_LABELS: Record<string, string> = {
 export const PIPELINE_MODE_LABELS: Record<PipelineMode, string> = {
   s2s: 'S2S',
   stt_llm_tts: 'STT · LLM · TTS',
+  chat: 'Chat',
 }
 
 export function formatMs(value?: number | null): string {
@@ -248,6 +289,7 @@ export function formatCallDuration(startedAt?: string | null, endedAt?: string |
 }
 
 export function sessionPipelineMode(turns: TraceTurnLike[]): PipelineMode | null {
+  if (turns.some((t) => t.extra?.pipeline_mode === 'chat')) return 'chat'
   if (turns.some((t) => t.extra?.pipeline_mode === 's2s' || (t.s2s_ttfb_ms != null && t.s2s_ttfb_ms > 0))) {
     return 's2s'
   }
@@ -274,6 +316,10 @@ export function isTurnIncomplete(turn: TraceTurnLike, mode: PipelineMode | null)
 
   if (mode === 's2s') {
     return turn.sut_response_latency_ms != null && (turn.s2s_ttfb_ms == null || turn.s2s_ttfb_ms <= 0)
+  }
+  if (mode === 'chat') {
+    // Chat turns have no STT/TTS; only a missing LLM step makes them incomplete.
+    return turn.sut_response_latency_ms != null && (turn.llm_ttfb_ms == null || turn.llm_ttfb_ms <= 0)
   }
   if (turn.sut_response_latency_ms == null) return false
   const missingLlm = turn.llm_ttfb_ms == null || turn.llm_ttfb_ms <= 0

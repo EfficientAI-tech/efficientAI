@@ -69,6 +69,7 @@ async def handle_call(first_message=None):
                 tts.set_text(reply)
 ```
 
+- **Chat agents:** `session(channel="chat")` plus `call.user_message()`, `call.tool()`, `call.retrieval()` and `call.llm()`. Each turn shows the user message, the final reply, tool calls and response time.
 - **Pipecat:** `PipelineTask(pipeline, **task_kwargs(call))` with `from efficientai_sdk.integrations.pipecat import task_kwargs`.
 - **Existing OpenTelemetry setup:** call `efficientai.trace.instrument()` once at startup.
 - **Test calls from EfficientAI:** pass the platform's `handshake=`, `headers=` or `sip_headers=` so traces link to the simulation result.

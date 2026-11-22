@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from efficientai_sdk import AsyncEfficientAI
+from efficientai_sdk.tracing import otel as sdk_otel
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.common.trace_encoder import encode_spans
 from opentelemetry.sdk.trace import TracerProvider
@@ -23,9 +25,6 @@ from app.services.synthetic_traces.otlp_mapper import (
     extract_pipeline_models,
     group_spans_by_call_short_id,
 )
-from efficientai_sdk import AsyncEfficientAI
-from efficientai_sdk.tracing import otel as sdk_otel
-
 
 
 @pytest.fixture
@@ -61,7 +60,10 @@ CONVERSATIONS = {
         ("Four of us, around eight", "Done. You're booked for four at 8pm."),
     ],
     "beta": [
-        ("My internet keeps dropping every evening", "Sorry about that. Have you restarted the router?"),
+        (
+            "My internet keeps dropping every evening",
+            "Sorry about that. Have you restarted the router?",
+        ),
         ("Yes, twice already today", "Thanks. I'm scheduling a technician visit for you."),
     ],
 }
@@ -122,3 +124,54 @@ async def test_sdk_spans_map_to_turns_and_separate_concurrent_calls(captured):
             assert turn["llm_ttfb_ms"] == 250.0
             assert turn["tts_ttfb_ms"] == 120.0
             assert turn["sut_response_latency_ms"] is not None
+
+
+@pytest.mark.asyncio
+async def test_sdk_chat_session_maps_to_chat_turns(captured):
+    client = AsyncEfficientAI(api_key="key", workspace_id="ws-1")
+    handshake = _handshake("333333", "run-chat")
+    async with client.trace.session(handshake=handshake, channel="chat") as call:
+        with call.turn():
+            call.user_message("Where is my order 1234?")
+            with call.llm(model="gpt-4o", provider="openai") as llm:
+                llm.set_ttfb(0.2)  # first call decides to use a tool
+                await asyncio.sleep(0.002)
+            with call.tool("lookup_order", arguments='{"order_id": "1234"}') as tool:
+                tool.set_result('{"status": "shipped"}')
+                await asyncio.sleep(0.002)
+            with call.retrieval(source="faq", query="shipping times") as kb:
+                kb.set_documents(2)
+            with call.llm(model="gpt-4o", provider="openai") as llm:
+                llm.set_output("Your order shipped and arrives tomorrow.")
+                await asyncio.sleep(0.002)
+        with call.turn():
+            call.user_message("Can I change the delivery address?")
+            with call.llm(model="gpt-4o", provider="openai") as llm:
+                llm.set_output("Yes, reply with the new address and I'll update it.")
+    await client.close()
+
+    finished = [
+        s
+        for s in captured.get_finished_spans()
+        if (s.attributes or {}).get("efficientai.call_short_id") == "333333"
+    ]
+    spans = parse_otlp_protobuf(encode_spans(finished).SerializeToString())
+    assert extract_correlation_ids(spans)["evaluator_result_id"] == "run-chat"
+
+    turns = derive_turns_from_spans(spans)
+    assert len(turns) == 2
+    first, second = turns
+    assert first["transcript"] == (
+        "User: Where is my order 1234?\nAssistant: Your order shipped and arrives tomorrow."
+    )
+    assert first["extra"]["pipeline_mode"] == "chat"
+    assert first["extra"]["llm_calls"] == 2
+    assert first["extra"]["tool_calls"][0]["name"] == "lookup_order"
+    assert first["extra"]["retrievals"][0] == {
+        "latency_ms": first["extra"]["retrievals"][0]["latency_ms"],
+        "source": "faq",
+        "documents": 2,
+    }
+    assert first["llm_ttfb_ms"] == 200.0
+    assert first["sut_response_latency_ms"] > 0
+    assert "Can I change the delivery address?" in second["transcript"]

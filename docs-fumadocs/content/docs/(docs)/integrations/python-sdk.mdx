@@ -99,6 +99,42 @@ Synchronous code works the same way with `EfficientAI()` and a plain `with`.
 
 `set_ttfb` is time to first byte or token, in seconds. It's shown as that component's latency. If you don't set it, the span's duration is used.
 
+### Chat agents
+
+For text agents, open the session with `channel="chat"` and record the user's message, any tool calls and lookups, and the LLM calls:
+
+```python
+async with efficientai.trace.session(channel="chat", headers=request.headers) as call:
+    with call.turn():
+        call.user_message(user_text)
+        with call.llm(model="gpt-4o", provider="openai") as llm:
+            ...  # the model decides to call a tool
+        with call.tool("lookup_order", arguments=args_json) as tool:
+            tool.set_result(result_json)
+        with call.retrieval(source="help-center", query=user_text) as kb:
+            kb.set_documents(len(docs))
+        with call.llm(model="gpt-4o", provider="openai") as llm:
+            llm.set_output(reply).set_ttfb(first_token_seconds)
+```
+
+Each turn on the Calls page shows:
+
+- **Transcript:** the user's message and the reply.
+- **LLM latency:** time to first token of the first LLM call.
+- **Response time:** from the user's message to the final reply.
+- **Tool calls and lookups:** each one, with its duration.
+
+By default, the last LLM output in a turn is used as the reply. If your agent changes the text before sending it, record what was actually sent with `call.assistant_message(text)`.
+
+| Helper | Use it for | Setters |
+|---|---|---|
+| `call.user_message(text)` | The message the user sent | n/a |
+| `call.assistant_message(text)` | The reply actually sent (optional) | n/a |
+| `call.tool(name, arguments=...)` | A tool or function call | `set_result(text)`, `set_error(message)` |
+| `call.retrieval(source=..., query=...)` | A knowledge-base or RAG lookup | `set_documents(count)` |
+
+Long tool arguments and results are cut off at 8,192 characters.
+
 ### Pipecat
 
 Let Pipecat create the spans, and attach them to the call:
