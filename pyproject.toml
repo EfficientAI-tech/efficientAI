@@ -5,6 +5,8 @@ description = "Voice AI Evaluation Platform"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    # Standalone SDK in sdks/python (installed from the local path, see [tool.uv.sources]).
+    "efficientai-sdk",
     # Cap below 0.137: FastAPI 0.137+ uses _IncludedRouter without .path, which
     # breaks prometheus-fastapi-instrumentator on every API request when
     # OBSERVABILITY_ENABLED is true. See prometheus-fastapi-instrumentator#370.
@@ -152,6 +154,9 @@ gepa = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv.sources]
+efficientai-sdk = { path = "sdks/python", editable = true }
 
 [tool.hatch.build]
 force-include = { "src/efficientai" = "efficientai" }
