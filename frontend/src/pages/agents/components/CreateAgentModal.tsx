@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
+import { useCopilotStore, type CreateAgentPrefill } from '../../../store/copilotStore'
 import { createPortal } from 'react-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { X } from 'lucide-react'
+import { Sparkles, X } from 'lucide-react'
 import Button from '../../../components/Button'
 import { apiClient } from '../../../lib/api'
 import { AIProvider, VoiceBundle, Integration, IntegrationPlatform } from '../../../types/api'
@@ -78,6 +79,8 @@ interface CreateAgentModalProps {
   onClose: () => void
   onSuccess: () => void
   showToast: (message: string, type: 'success' | 'error') => void
+  /** Values handed over from the assistant ("Open in agent wizard"). */
+  initialValues?: CreateAgentPrefill | null
 }
 
 export default function CreateAgentModal({
@@ -85,6 +88,7 @@ export default function CreateAgentModal({
   onClose,
   onSuccess,
   showToast,
+  initialValues,
 }: CreateAgentModalProps) {
   const [wizardPhase, setWizardPhase] = useState<CreateWizardPhase>('entry_medium')
   const [agentMedium, setAgentMedium] = useState<AgentMedium | null>(null)
@@ -189,6 +193,17 @@ export default function CreateAgentModal({
       setAiModel(selectableModels[0])
     }
   }, [aiProvider, selectableModels, aiModel, gatewayDirectModel])
+
+  useEffect(() => {
+    if (!isOpen || !initialValues) return
+    if (initialValues.call_medium) setAgentMedium(initialValues.call_medium)
+    setFormData((current) => ({
+      ...current,
+      name: initialValues.name ?? current.name,
+      description: initialValues.description ?? current.description,
+    }))
+    if (initialValues.production_prompt) setProductionPrompt(initialValues.production_prompt)
+  }, [isOpen, initialValues])
 
   useEffect(() => {
     if (!isOpen) return
@@ -1216,6 +1231,20 @@ export default function CreateAgentModal({
             >
               Create agent
             </h2>
+            {isEntryPhase && (
+              <button
+                type="button"
+                className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-gray-600 hover:text-gray-900"
+                onClick={() => {
+                  onClose()
+                  useCopilotStore
+                    .getState()
+                    .openWith('I want to create a new agent and set up tests for it. Ask me what you need to know.')
+                }}
+              >
+                <Sparkles className="h-3.5 w-3.5" /> Set up with AI instead
+              </button>
+            )}
             {!isEntryPhase ? (
               <p className="text-sm text-gray-500 mt-1">
                 {`Step ${currentStep} of ${steps.length} · ${steps[currentStep - 1]?.title}`}

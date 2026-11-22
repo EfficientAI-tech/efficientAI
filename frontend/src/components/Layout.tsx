@@ -44,6 +44,7 @@ import Logo from './Logo'
 import { consumeJoinNotice } from '../lib/joinNotice'
 import WorkspaceSwitcher from './WorkspaceSwitcher'
 import WalkthroughRail from './walkthrough/WalkthroughRail'
+import { CopilotLauncher } from './copilot/CopilotPanel'
 
 interface NavItem {
   name: string
@@ -414,6 +415,7 @@ export default function Layout() {
           </div>
         </main>
         <WalkthroughRail />
+        <CopilotLauncher />
       </div>
     </div>
   )

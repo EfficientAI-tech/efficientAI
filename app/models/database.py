@@ -3827,6 +3827,114 @@ class LLMUsageDaily(Base):
     )
 
 
+class CopilotSession(Base):
+    """One copilot conversation, private to its user within one workspace.
+
+    ``message_count`` doubles as the sequence allocator: a turn reserves two
+    ``seq`` values (user + assistant) with one atomic ``UPDATE ... RETURNING``.
+    ``draft`` holds structured work in progress (e.g. a generated test setup).
+    """
+    __tablename__ = "copilot_sessions"
+    __table_args__ = (
+        Index(
+            "ix_copilot_sessions_user_ws_recent",
+            "user_id",
+            "workspace_id",
+            "status",
+            "last_message_at",
+            "id",
+        ),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    workspace_id = Column(
+        UUID(as_uuid=True), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    title = Column(String(200), nullable=True)
+    status = Column(String(16), nullable=False, default="active", server_default="active")
+    draft = Column(JSON, nullable=False, default=dict)
+    message_count = Column(Integer, nullable=False, default=0, server_default="0")
+    last_message_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CopilotMessage(Base):
+    """A user or assistant message. An assistant message's ``steps`` records the
+    tool rounds that produced it (calls, result previews, drafts), so a turn is
+    two rows however many tools it used."""
+    __tablename__ = "copilot_messages"
+    __table_args__ = (
+        UniqueConstraint("session_id", "seq", name="uq_copilot_messages_session_seq"),
+        UniqueConstraint(
+            "session_id", "client_message_id", name="uq_copilot_messages_session_client_id"
+        ),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(
+        UUID(as_uuid=True), ForeignKey("copilot_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    organization_id = Column(UUID(as_uuid=True), nullable=False)
+    seq = Column(Integer, nullable=False)
+    role = Column(String(16), nullable=False)  # user | assistant | event
+    content = Column(Text, nullable=False, default="", server_default="")
+    steps = Column(JSON, nullable=True)
+    status = Column(String(16), nullable=False, default="complete", server_default="complete")
+    error = Column(Text, nullable=True)
+    client_message_id = Column(UUID(as_uuid=True), nullable=True)
+    page_context = Column(JSON, nullable=True)
+    model = Column(String(255), nullable=True)
+    prompt_tokens = Column(Integer, nullable=True)
+    completion_tokens = Column(Integer, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class CopilotAction(Base):
+    """A change the copilot proposed. Nothing happens until the user confirms it.
+
+    Lifecycle: proposed -> applied | failed | rejected | expired, and
+    applied -> undone. ``payload`` is what will run (the user may edit it before
+    confirming), ``result`` lists what was created or changed, and
+    ``undo_state`` holds what undo needs (e.g. the previous field values).
+    The table doubles as the audit log of everything the copilot changed.
+    """
+    __tablename__ = "copilot_actions"
+    __table_args__ = (
+        Index("ix_copilot_actions_session", "session_id", "created_at"),
+        Index("ix_copilot_actions_workspace", "workspace_id", "created_at"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(
+        UUID(as_uuid=True), ForeignKey("copilot_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    organization_id = Column(UUID(as_uuid=True), nullable=False)
+    workspace_id = Column(UUID(as_uuid=True), nullable=False)
+    user_id = Column(UUID(as_uuid=True), nullable=False)
+    message_id = Column(UUID(as_uuid=True), nullable=True)
+    kind = Column(String(64), nullable=False)
+    status = Column(String(16), nullable=False, default="proposed", server_default="proposed")
+    summary = Column(Text, nullable=False, default="", server_default="")
+    payload = Column(JSON, nullable=False, default=dict)
+    cost_estimate = Column(JSON, nullable=True)
+    result = Column(JSON, nullable=True)
+    undo_state = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    decided_at = Column(DateTime(timezone=True), nullable=True)
+    undone_at = Column(DateTime(timezone=True), nullable=True)
+
+
 # Bump the Redis settings version when an evaluation's worker-visible settings
 # change, so eval workers drop their cached copy (see eval_settings_version).
 from app.services.call_imports.eval_settings_version import (  # noqa: E402

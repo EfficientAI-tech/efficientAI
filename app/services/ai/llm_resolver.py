@@ -6,6 +6,7 @@ endpoint, so the helper now lives here. Callers must pass an explicit
 provider and/or credential_id and model (unless gateway_model pins the model).
 """
 
+from dataclasses import dataclass
 from typing import Optional, Tuple
 from uuid import UUID
 
@@ -312,6 +313,23 @@ def _default_model_for_org_credential(
     if provider_enum == ModelProvider.OPENAI:
         return "gpt-4o-mini"
     return _default_model_for(provider_enum, ai_prov)
+
+
+@dataclass(frozen=True)
+class OrgDefaultLLM:
+    credential: AIProvider
+    provider: ModelProvider
+    model: str
+
+
+def resolve_org_default_llm(db: Session, organization_id: UUID) -> Optional[OrgDefaultLLM]:
+    """The org's default active LLM credential and model, or None when none is configured."""
+    ai_prov = _default_org_llm_credential(db, organization_id)
+    if ai_prov is None:
+        return None
+    provider_enum = _provider_enum(ai_prov.provider)
+    model_str = _default_model_for_org_credential(organization_id, db, ai_prov, provider_enum)
+    return OrgDefaultLLM(credential=ai_prov, provider=provider_enum, model=model_str)
 
 
 def get_llm_provider_and_model_for_request(

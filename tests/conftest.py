@@ -117,6 +117,10 @@ def isolate_eval_progress_buffer(monkeypatch):
         return True
 
     monkeypatch.setattr(buf, "request_finalize", _record_finalize)
+    # Copilot rate limits, turn locks and snapshots share the isolated test db.
+    from app.services.copilot import redis_state as copilot_redis
+
+    monkeypatch.setattr(copilot_redis, "_redis", client)
     yield finalize_requests
 
 
@@ -1040,6 +1044,8 @@ def _build_session_api_app():
         telephony,
         test_agents,
         tool_connections,
+        copilot,
+        copilot_mcp,
         voice_agent,
         voice_playground,
         voicebundles,
@@ -1065,6 +1071,8 @@ def _build_session_api_app():
     app.include_router(personas.router, prefix="/api/v1")
     app.include_router(scenarios.router, prefix="/api/v1")
     app.include_router(tool_connections.router, prefix="/api/v1")
+    app.include_router(copilot.router, prefix="/api/v1")
+    app.include_router(copilot_mcp.router, prefix="/api/v1")
     app.include_router(settings.router, prefix="/api/v1")
     app.include_router(iam.router, prefix="/api/v1")
     app.include_router(audio.router, prefix="/api/v1")

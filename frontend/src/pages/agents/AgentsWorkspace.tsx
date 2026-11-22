@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import type { CreateAgentPrefill } from '../../store/copilotStore'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, Phone, Trash2, X, AlertCircle } from 'lucide-react'
 import { apiClient } from '../../lib/api'
@@ -43,6 +44,17 @@ export default function AgentsWorkspace() {
 
   const [isEditMode, setIsEditMode] = useState(false)
   const [showCreateModal, setShowCreateModal] = useState(false)
+  const location = useLocation()
+  const [createPrefill, setCreatePrefill] = useState<CreateAgentPrefill | null>(null)
+
+  // "Open in agent wizard" from the assistant navigates here with the draft in router state.
+  useEffect(() => {
+    const prefill = (location.state as { copilotCreateAgent?: CreateAgentPrefill } | null)?.copilotCreateAgent
+    if (!prefill) return
+    setCreatePrefill(prefill)
+    setShowCreateModal(true)
+    navigate(location.pathname + location.search, { replace: true, state: null })
+  }, [location.state]) // eslint-disable-line react-hooks/exhaustive-deps
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false)
   const [showBulkImpactModal, setShowBulkImpactModal] = useState(false)
@@ -386,7 +398,11 @@ export default function AgentsWorkspace() {
 
       <CreateAgentModal
         isOpen={showCreateModal}
-        onClose={() => setShowCreateModal(false)}
+        initialValues={createPrefill}
+        onClose={() => {
+          setShowCreateModal(false)
+          setCreatePrefill(null)
+        }}
         onSuccess={handleCreateSuccess}
         showToast={showToast}
       />

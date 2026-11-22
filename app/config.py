@@ -188,6 +188,19 @@ class Settings(BaseSettings):
     SECURITY_HSTS_INCLUDE_SUBDOMAINS: bool = True
     SECURITY_OMIT_SERVER_HEADER: bool = True
 
+    # In-app copilot (EFF-71). Limits protect the org's LLM spend and this
+    # process's thread pool; Redis-backed limits fail open (the per-process
+    # turn cap still applies) so a Redis blip doesn't take chat down.
+    COPILOT_ENABLED: bool = True
+    COPILOT_MAX_CONCURRENT_TURNS_PER_PROCESS: int = 16
+    COPILOT_USER_MESSAGES_PER_MINUTE: int = 20
+    COPILOT_ORG_MESSAGES_PER_MINUTE: int = 600
+    COPILOT_ORG_DAILY_TOKEN_BUDGET: int = 0  # 0 = unlimited
+    COPILOT_MAX_TOOL_ROUNDS: int = 6
+    COPILOT_TURN_TIMEOUT_SECONDS: int = 180
+    COPILOT_HISTORY_MESSAGES: int = 20
+    COPILOT_MAX_MESSAGE_CHARS: int = 8000
+
     # Call traces / OTLP observability (Phase 2 scaling)
     TRACES_ASYNC_INGEST_ENABLED: bool = True
     TRACES_RATE_LIMIT_PER_MINUTE: int = 120

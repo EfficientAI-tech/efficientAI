@@ -63,6 +63,8 @@ from app.api.v1.routes import (
     org_usage,
     usage_pricing,
     synthetic_traces,
+    copilot,
+    copilot_mcp,
 )
 
 api_router = APIRouter()
@@ -135,3 +137,5 @@ api_router.include_router(platform_admin.router)
 api_router.include_router(org_usage.router)
 api_router.include_router(usage_pricing.router)
 api_router.include_router(synthetic_traces.router)
+api_router.include_router(copilot.router)
+api_router.include_router(copilot_mcp.router)

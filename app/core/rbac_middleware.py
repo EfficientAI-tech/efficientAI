@@ -41,6 +41,9 @@ _READER_WRITE_ALLOWLIST: tuple[str, ...] = (
     "auth/invitations/",
     "profile",
     "public-blind-test/",
+    # Readers may chat with the copilot; each copilot tool enforces workspace
+    # capabilities, so they can still only read.
+    "copilot/",
 )
 
 

@@ -1,6 +1,7 @@
 import axios, { AxiosInstance } from 'axios'
 export { uploadFileToPresignedPutUrl } from './presignedUpload'
 import { CallImportsApi, type CallImportAudioUploadProgress } from '../pages/callImports/api/callImportsApi'
+import { CopilotApi } from './copilotApi'
 export type { CallImportAudioUploadProgress } from '../pages/callImports/api/callImportsApi'
 export { AUDIO_UPLOAD_CHUNK_SIZE } from '../pages/callImports/api/callImportsApi'
 import {
@@ -606,6 +607,7 @@ let refreshPromise: Promise<boolean> | null = null
 class ApiClient {
   private client: AxiosInstance
   readonly callImports: CallImportsApi
+  readonly copilot: CopilotApi
   private inMemoryAccessToken: string | null = null
   private inMemoryRefreshToken: string | null = null
   private cookieSessionEnabled = true
@@ -620,6 +622,7 @@ class ApiClient {
     })
 
     this.callImports = new CallImportsApi(this.client)
+    this.copilot = new CopilotApi(this.client, () => this.streamRequestHeaders())
 
     this.client.interceptors.request.use((config) => {
       const apiKey = this.cookieSessionEnabled ? null : localStorage.getItem('apiKey')
@@ -4538,6 +4541,20 @@ class ApiClient {
       url.searchParams.set('workspace_id', workspaceId)
     }
     return url.toString()
+  }
+
+  /** Headers axios would send on a POST, for fetch-based streaming requests. */
+  private streamRequestHeaders(): Record<string, string> {
+    const headers: Record<string, string> = { ...csrfHeaders() }
+    if (this.inMemoryAccessToken) {
+      headers.Authorization = `Bearer ${this.inMemoryAccessToken}`
+    } else if (!this.cookieSessionEnabled) {
+      const apiKey = localStorage.getItem('apiKey')
+      if (apiKey) headers['X-API-Key'] = apiKey
+    }
+    const workspaceId = localStorage.getItem('activeWorkspaceId')
+    if (workspaceId) headers['X-Workspace-Id'] = workspaceId
+    return headers
   }
 
   /** SSE / EventSource cannot use axios; must send session cookies explicitly. */

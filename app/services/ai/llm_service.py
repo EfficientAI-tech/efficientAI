@@ -824,8 +824,16 @@ class LLMService:
         llm_config: Optional[Dict[str, Any]] = None,
         credential_id: Optional[UUID] = None,
         task_defaults: Optional[Dict[str, Any]] = None,
+        on_text_delta: Optional[Callable[[str], None]] = None,
+        release_db_before_call: bool = False,
     ) -> Dict[str, Any]:
-        """Single LiteLLM completion with optional function tools."""
+        """Single LiteLLM completion with optional function tools.
+
+        ``on_text_delta`` streams visible text as it arrives (tool calls are
+        rebuilt from the chunks, so the return shape is unchanged). Pass
+        ``release_db_before_call`` with a session used only for this call to
+        return its DB connection to the pool before the (slow) completion.
+        """
         gen_kwargs = build_litellm_kwargs(
             llm_config=llm_config,
             override_llm_config=None,
@@ -871,9 +879,10 @@ class LLMService:
             "model": model_str,
             "messages": messages,
             "temperature": temperature,
-            "tools": tools,
-            "tool_choice": "auto",
         }
+        if tools:
+            call_kwargs["tools"] = tools
+            call_kwargs["tool_choice"] = "auto"
         if api_key is not None:
             call_kwargs["api_key"] = api_key
         # Same thinking budget as generate_response. A 400-token cap on
@@ -897,8 +906,14 @@ class LLMService:
             credential=credential_ctx,
         )
 
+        if release_db_before_call:
+            db.close()
+
         try:
-            response = litellm.completion(**call_kwargs)
+            if on_text_delta is not None:
+                response = _stream_completion(call_kwargs, messages, on_text_delta)
+            else:
+                response = litellm.completion(**call_kwargs)
         except Exception as e:
             logger.exception("[LLMService] LiteLLM tool call failed (%s)", model_str)
             raise RuntimeError(f"LLM tool generation failed for {model_str}: {e}") from e

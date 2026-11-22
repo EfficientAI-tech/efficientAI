@@ -26,6 +26,7 @@ class LLMUsageProductSection(str, Enum):
     CONVERSATION_EVALUATIONS = "conversation_evaluations"
     TELEPHONY = "telephony"
     TEST_AGENT = "test_agent"
+    COPILOT = "copilot"
     OTHER = "other"
 
 
@@ -66,6 +67,7 @@ _PATH_SECTION_RULES: tuple[tuple[str, LLMUsageProductSection], ...] = (
     ("conversation-evaluations", LLMUsageProductSection.CONVERSATION_EVALUATIONS),
     ("telephony", LLMUsageProductSection.TELEPHONY),
     ("test-agent", LLMUsageProductSection.TEST_AGENT),
+    ("copilot", LLMUsageProductSection.COPILOT),
 )
 
 
