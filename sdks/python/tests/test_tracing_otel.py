@@ -41,24 +41,11 @@ class FakeOTLPExporter:
         return True
 
 
-@pytest.fixture(scope="module")
-def provider() -> TracerProvider:
-    """An app-owned provider, installed before the SDK is configured."""
-    current = trace.get_tracer_provider()
-    if isinstance(current, TracerProvider):
-        return current
-    p = TracerProvider()
-    trace.set_tracer_provider(p)
-    return p
-
-
 @pytest.fixture(autouse=True)
 def fake_exporter(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     FakeOTLPExporter.instances = []
     monkeypatch.setattr(otel, "OTLPSpanExporter", FakeOTLPExporter)
-    otel._reset_for_tests()
     yield
-    otel._reset_for_tests()
 
 
 def latest() -> FakeOTLPExporter:

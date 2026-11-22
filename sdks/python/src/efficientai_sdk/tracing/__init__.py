@@ -7,6 +7,14 @@ Install with the ``otel`` extra to export spans::
 Correlation and handshake helpers work without it.
 """
 
+from efficientai_sdk.tracing.api import (
+    AsyncTraceResource,
+    CallTrace,
+    ComponentSpan,
+    TraceResource,
+    TurnSpan,
+)
+from efficientai_sdk.tracing.context import call_attributes, get_call_attributes
 from efficientai_sdk.tracing.correlation import (
     ATTR_AGENT_ID,
     ATTR_CALL_SHORT_ID,
@@ -29,6 +37,7 @@ from efficientai_sdk.tracing.handshake import HANDSHAKE_TYPE, parse_trace_handsh
 from efficientai_sdk.tracing.otel import (
     OTEL_AVAILABLE,
     create_otlp_exporter,
+    ensure_export_pipeline,
     flush_efficientai_tracing,
     is_tracing_available,
     setup_efficientai_tracing,
@@ -64,14 +73,22 @@ __all__ = [
     "OTLP_HEADER_CALL_SHORT_ID",
     "OTLP_HEADER_RUN_ID",
     "OTLP_HEADER_WORKSPACE_ID",
+    "AsyncTraceResource",
+    "CallTrace",
+    "ComponentSpan",
+    "TraceResource",
     "TraceSessionError",
+    "TurnSpan",
     "build_outbound_sip_headers",
+    "call_attributes",
     "close_trace_session",
     "create_otlp_exporter",
+    "ensure_export_pipeline",
     "ensure_trace_session",
     "extract_call_short_id",
     "flush_efficientai_tracing",
     "format_plivo_sip_headers",
+    "get_call_attributes",
     "is_tracing_available",
     "mint_trace_session",
     "missing_deployment_trace_env",
