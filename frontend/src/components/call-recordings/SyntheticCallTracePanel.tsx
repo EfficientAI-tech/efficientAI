@@ -72,7 +72,7 @@ interface TraceTurnExtra {
   agent_role?: string
   turn_type?: string
   was_interrupted?: boolean
-  pipeline_mode?: 'stt_llm_tts' | 's2s'
+  pipeline_mode?: 'stt_llm_tts' | 's2s' | 'chat'
   stt_model?: string
   llm_model?: string
   tts_model?: string

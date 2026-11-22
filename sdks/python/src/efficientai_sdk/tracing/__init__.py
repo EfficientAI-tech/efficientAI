@@ -11,6 +11,8 @@ from efficientai_sdk.tracing.api import (
     AsyncTraceResource,
     CallTrace,
     ComponentSpan,
+    RetrievalSpan,
+    ToolSpan,
     TraceResource,
     TurnSpan,
 )
@@ -76,6 +78,8 @@ __all__ = [
     "AsyncTraceResource",
     "CallTrace",
     "ComponentSpan",
+    "RetrievalSpan",
+    "ToolSpan",
     "TraceResource",
     "TraceSessionError",
     "TurnSpan",
