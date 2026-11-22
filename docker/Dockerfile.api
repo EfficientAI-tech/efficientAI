@@ -43,6 +43,9 @@ WORKDIR /app
 # ============================================================
 COPY pyproject.toml README.md ./
 
+# Local efficientai-sdk package (path dependency in pyproject.toml)
+COPY sdks/python/ ./sdks/python/
+
 # Create minimal src structure for editable install
 RUN mkdir -p src/efficientai && touch src/efficientai/__init__.py
 

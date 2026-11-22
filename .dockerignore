@@ -11,6 +11,8 @@
 **/.mypy_cache
 **/.ruff_cache
 .venv
+**/.venv
+sdks/python/dist
 venv
 env
 newenv

@@ -26,7 +26,7 @@ help: ## Show available make targets
 	@echo "  make test-sharding-integration - run 2-shard Postgres integration tests (CI)"
 
 install-dev: ## Install project and dev dependencies
-	$(PYTHON) -m pip install -e ".[dev]"
+	$(PYTHON) -m pip install -e sdks/python -e ".[dev]"
 
 check-pytest:
 	@$(PYTHON) -c "import pytest" >/dev/null 2>&1 || ( \
