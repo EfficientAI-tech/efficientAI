@@ -29,6 +29,9 @@ secrets/
 !tests/fixtures/**/*.json
 !docs-fumadocs/content/docs/**/meta.json
 !docs-fumadocs/data/changelog-releases-feed.json
+# Copilot data shipped with the backend: docs search index and eval cases.
+!app/services/copilot/docs_index.json
+!app/services/copilot/evals/cases.json
 .cursorrules
 
 # Local scratch / MCP / Confluence publish artifacts
