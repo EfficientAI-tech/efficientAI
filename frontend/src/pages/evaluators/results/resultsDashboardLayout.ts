@@ -56,7 +56,7 @@ export const CHART_TYPE_LABELS: Record<ResultsChartType, string> = {
   area: 'Area',
 }
 
-const STORAGE_KEY = 'resultsDashboardLayout.v10'
+const STORAGE_KEY = 'resultsDashboardLayout.v11'
 
 export const ADDABLE_WIDGETS: ResultsWidgetType[] = [
   'tools',
@@ -99,12 +99,20 @@ function sanitize(raw: unknown): ResultsWidget[] {
   if (!Array.isArray(raw)) return DEFAULT_RESULTS_WIDGETS.map((item) => ({ ...item }))
   const widgets: ResultsWidget[] = []
   const seen = new Set<string>()
+  let visibleCalls: ResultsWidget | null = null
   for (const item of raw) {
     if (!item || typeof item !== 'object') continue
     const candidate = item as Partial<ResultsWidget>
     if (!isWidgetType(candidate.type) || typeof candidate.id !== 'string') continue
     const type = mergeToolWidgetType(candidate.type)
-    if (type === 'total_calls') continue
+    const display = isChartType(candidate.display) ? candidate.display : 'line'
+    const hidden = Boolean(candidate.hidden)
+    if (type === 'total_calls') {
+      if (!hidden) {
+        visibleCalls = { id: 'metric_usage', type: 'metric_usage', display, hidden: false }
+      }
+      continue
+    }
     const id = type === 'tools' && (candidate.id === 'tool_calls' || candidate.type === 'tool_calls') ? 'tools' : candidate.id
     if (id === 'tools' && candidate.id !== 'tools' && seen.has('tools')) continue
     if (seen.has(id)) continue
@@ -112,10 +120,19 @@ function sanitize(raw: unknown): ResultsWidget[] {
     widgets.push({
       id,
       type,
-      display: isChartType(candidate.display) ? candidate.display : 'line',
-      hidden: Boolean(candidate.hidden),
+      display,
+      hidden,
       metricId: typeof candidate.metricId === 'string' ? candidate.metricId : null,
     })
+  }
+  if (visibleCalls) {
+    const agents = widgets.find((widget) => widget.type === 'metric_usage')
+    if (!agents) {
+      widgets.unshift(visibleCalls)
+    } else if (agents.hidden) {
+      agents.hidden = false
+      agents.display = visibleCalls.display
+    }
   }
   return widgets.length ? widgets : DEFAULT_RESULTS_WIDGETS.map((item) => ({ ...item }))
 }
@@ -136,7 +153,16 @@ export function readResultsDashboardLayout(): ResultsWidget[] {
       const current = sanitize(JSON.parse(raw))
       if (current.length) return current
     }
+    const legacyV10 = localStorage.getItem('resultsDashboardLayout.v10')
     const legacyV9 = localStorage.getItem('resultsDashboardLayout.v9')
+    if (legacyV10) {
+      const fromV10 = sanitize(JSON.parse(legacyV10))
+      const agentsVisible = fromV10.some((widget) => widget.type === 'metric_usage' && !widget.hidden)
+      if (agentsVisible || !legacyV9) {
+        writeResultsDashboardLayout(fromV10)
+        return fromV10
+      }
+    }
     if (legacyV9) {
       const migrated = sanitize(JSON.parse(legacyV9))
       writeResultsDashboardLayout(migrated)
