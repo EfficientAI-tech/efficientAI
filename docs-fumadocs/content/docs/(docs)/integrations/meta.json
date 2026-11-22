@@ -2,6 +2,7 @@
   "title": "Integrations",
   "pages": [
     "index",
+    "python-sdk",
     "retell",
     "elevenlabs",
     "vapi",

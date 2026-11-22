@@ -14,7 +14,9 @@ import threading
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Optional
 
+from efficientai_sdk.tracing.context import get_call_attributes, set_call_attributes
 from efficientai_sdk.tracing.correlation import (
+    ATTR_CALL_SHORT_ID,
     extract_call_short_id,
     otlp_export_headers,
     span_correlation_attributes,
@@ -49,6 +51,7 @@ if TYPE_CHECKING:
 __all__ = [
     "OTEL_AVAILABLE",
     "create_otlp_exporter",
+    "ensure_export_pipeline",
     "flush_efficientai_tracing",
     "is_tracing_available",
     "setup_efficientai_tracing",
@@ -63,6 +66,8 @@ _state_lock = threading.Lock()
 _correlation_processor: Optional[_CorrelationSpanProcessor] = None
 _mutable_exporter: Optional[_MutableOtlpExporter] = None
 _exporter_attached = False
+# Export pipelines added by ensure_export_pipeline, keyed by (endpoint, api_key, workspace).
+_pipelines: dict[tuple[str, str, Optional[str]], Any] = {}
 
 
 def is_tracing_available() -> bool:
@@ -134,18 +139,43 @@ class _MutableOtlpExporter(SpanExporter):
         return True if inner is None else bool(inner.force_flush(timeout_millis))
 
 
+_EFFICIENTAI_PREFIX = "efficientai."
+
+
+def _parent_call_attributes(parent_context: Optional[Context]) -> Optional[dict[str, str]]:
+    """``efficientai.*`` attributes of the parent span, when it belongs to a call."""
+    parent = trace.get_current_span(parent_context)
+    attrs = getattr(parent, "attributes", None)
+    if not attrs or ATTR_CALL_SHORT_ID not in attrs:
+        return None
+    return {k: str(v) for k, v in attrs.items() if k.startswith(_EFFICIENTAI_PREFIX)}
+
+
 class _CorrelationSpanProcessor(SpanProcessor):
-    """Stamps EfficientAI correlation attributes on every span when it starts."""
+    """Stamps EfficientAI correlation attributes on every span when it starts.
+
+    Source, in order: the call active in the current context, the parent span's call,
+    then the process-wide default set by :func:`setup_efficientai_tracing`. Attributes
+    already set on the span (for example by the SDK's own span helpers) are kept.
+    """
 
     def __init__(self, attributes: Mapping[str, str]) -> None:
         self._attributes = dict(attributes)
+        self.active = True
 
     def update_attributes(self, attributes: Mapping[str, str]) -> None:
         self._attributes = dict(attributes)
 
     def on_start(self, span: Span, parent_context: Optional[Context] = None) -> None:
-        for key, value in self._attributes.items():
-            span.set_attribute(key, value)
+        if not self.active:
+            return
+        attrs = get_call_attributes() or _parent_call_attributes(parent_context) or self._attributes
+        if not attrs:
+            return
+        existing = getattr(span, "attributes", None) or {}
+        for key, value in attrs.items():
+            if key not in existing:
+                span.set_attribute(key, value)
 
     def on_end(self, span: ReadableSpan) -> None:
         return
@@ -260,14 +290,59 @@ def setup_tracer_provider(
         return False
 
 
-def _attach_correlation_processor(provider: Any, attrs: dict[str, str]) -> None:
+def _attach_correlation_processor(provider: Any, attrs: Optional[dict[str, str]]) -> None:
+    """Add the correlation processor once. ``attrs`` (if given) become the default."""
     global _correlation_processor
     with _state_lock:
         if _correlation_processor is None:
-            _correlation_processor = _CorrelationSpanProcessor(attrs)
+            _correlation_processor = _CorrelationSpanProcessor(attrs or {})
             provider.add_span_processor(_correlation_processor)
-        else:
+        elif attrs is not None:
             _correlation_processor.update_attributes(attrs)
+
+
+def ensure_export_pipeline(
+    *,
+    endpoint: str,
+    api_key: str,
+    workspace_id: Optional[str] = None,
+    service_name: str = "efficientai-agent",
+    console_export: bool = False,
+) -> bool:
+    """Make sure spans from this process are exported to EfficientAI. Idempotent.
+
+    Uses the app's ``TracerProvider`` if it has one, otherwise installs one. The exporter
+    carries only the API key and workspace; each span carries its own call id (see
+    :mod:`efficientai_sdk.tracing.context`), so one pipeline serves concurrent calls.
+    Returns ``False`` when OpenTelemetry is not installed or setup failed.
+    """
+    if not OTEL_AVAILABLE:
+        return False
+    key = (endpoint.rstrip("/"), api_key, workspace_id or None)
+    with _state_lock:
+        if key in _pipelines:
+            return True
+    try:
+        exporter = OTLPSpanExporter(
+            endpoint=key[0],
+            headers=otlp_export_headers(api_key=api_key, workspace_id=workspace_id),
+        )
+        provider = trace.get_tracer_provider()
+        if not isinstance(provider, TracerProvider):
+            if not setup_tracer_provider(
+                service_name, exporter=exporter, console_export=console_export
+            ):
+                return False
+            provider = trace.get_tracer_provider()
+        else:
+            provider.add_span_processor(BatchSpanProcessor(exporter))
+        _attach_correlation_processor(provider, None)
+    except Exception:
+        logger.exception("Failed to set up EfficientAI span export")
+        return False
+    with _state_lock:
+        _pipelines[key] = exporter
+    return True
 
 
 def setup_efficientai_tracing(
@@ -331,6 +406,9 @@ def setup_efficientai_tracing(
 
     if isinstance(provider, TracerProvider):
         _attach_correlation_processor(provider, attrs)
+    # Tag spans from this task/thread with this call even when other calls run
+    # concurrently in the same process (the processor default is only a fallback).
+    set_call_attributes(attrs)
     return True
 
 
@@ -351,6 +429,10 @@ def _reset_for_tests() -> None:
     """Forget process-wide exporter state (tests only)."""
     global _correlation_processor, _mutable_exporter, _exporter_attached
     with _state_lock:
+        # Processors can't be removed from a TracerProvider; switch the old one off.
+        if _correlation_processor is not None:
+            _correlation_processor.active = False
         _correlation_processor = None
         _mutable_exporter = None
         _exporter_attached = False
+        _pipelines.clear()

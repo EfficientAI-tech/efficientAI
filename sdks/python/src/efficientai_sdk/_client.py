@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from functools import cached_property
 from types import TracebackType
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import httpx
 
 from efficientai_sdk._base_client import AsyncAPIClient, SyncAPIClient
 from efficientai_sdk._config import resolve_config
+
+if TYPE_CHECKING:
+    from efficientai_sdk.tracing.api import AsyncTraceResource, TraceResource
 
 _VALIDATE_PATH = "/api/v1/auth/validate"
 
@@ -52,6 +56,13 @@ class EfficientAI(SyncAPIClient):
         self.request("POST", _VALIDATE_PATH, retry=True)
         return True
 
+    @cached_property
+    def trace(self) -> TraceResource:
+        """Live call tracing. See :mod:`efficientai_sdk.tracing.api`."""
+        from efficientai_sdk.tracing.api import TraceResource
+
+        return TraceResource(self)
+
     def __enter__(self) -> EfficientAI:
         return self
 
@@ -93,6 +104,13 @@ class AsyncEfficientAI(AsyncAPIClient):
         """Async version of :meth:`EfficientAI.verify`."""
         await self.request("POST", _VALIDATE_PATH, retry=True)
         return True
+
+    @cached_property
+    def trace(self) -> AsyncTraceResource:
+        """Live call tracing. See :mod:`efficientai_sdk.tracing.api`."""
+        from efficientai_sdk.tracing.api import AsyncTraceResource
+
+        return AsyncTraceResource(self)
 
     async def __aenter__(self) -> AsyncEfficientAI:
         return self
