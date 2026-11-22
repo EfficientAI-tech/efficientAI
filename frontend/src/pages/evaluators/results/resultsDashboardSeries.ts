@@ -22,6 +22,9 @@ export interface ChartSeries {
 export interface ChartModel {
   headline: string
   caption?: string
+  /** Second headline on the right (e.g. total runs beside agent count). */
+  headlineRight?: string
+  captionRight?: string
   data: Array<Record<string, string | number>>
   series: ChartSeries[]
   horizontal?: boolean
@@ -776,11 +779,15 @@ export function totalCallsByAgentCard(
 
 export function metricUsageAgentsCard(
   agentRows: Array<{ name: string; total: number }>,
+  aggregateTotal: number,
 ): ChartModel {
   const top = agentRows.slice(0, 6)
+  const agentCount = agentRows.filter((row) => row.total > 0).length
   return {
-    headline: top.length.toLocaleString(),
-    caption: 'Agents with runs',
+    headline: agentCount.toLocaleString(),
+    caption: 'Agents',
+    headlineRight: formatHeadlineNumber(aggregateTotal),
+    captionRight: 'Total runs',
     data: top.map((row) => ({ name: row.name, total: row.total })),
     series: [{ key: 'total', color: LAYER_LLM }],
     horizontal: true,

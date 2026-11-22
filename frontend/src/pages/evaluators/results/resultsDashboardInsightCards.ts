@@ -36,7 +36,10 @@ export function buildInsightCardModel(widget: ResultsWidget, source: InsightPane
     )
   }
   if (widget.type === 'metric_usage') {
-    return metricUsageAgentsCard(source.agentRows.map((row) => ({ name: row.name, total: row.total })))
+    return metricUsageAgentsCard(
+      source.agentRows.map((row) => ({ name: row.name, total: row.total })),
+      source.aggregateTotal,
+    )
   }
   if (widget.type === 'agent_cost') return agentCostCard(source.ops, widget.display)
   if (widget.type === 'model_cost') return modelCostCard(source.ops)

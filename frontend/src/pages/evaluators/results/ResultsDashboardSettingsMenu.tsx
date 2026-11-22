@@ -33,7 +33,7 @@ const WIDGET_PICKER_META: Partial<
   usage: { icon: Coins, blurb: 'Pre-prod LLM spend in window' },
   completion: { icon: PieChart, blurb: 'Completed vs failed over time' },
   avg_duration: { icon: Clock, blurb: 'Mean call length by day' },
-  metric_usage: { icon: LineChart, blurb: 'Which agents scored metrics' },
+  metric_usage: { icon: LineChart, blurb: 'Agents and run counts — drill into metrics and runs' },
   lowest_metrics: { icon: TrendingDown, blurb: 'Bottom mean scores' },
   scenarios_by_agent: { icon: Grid3x3, blurb: 'Stacked scenarios per agent' },
   metric_trend: { icon: LineChart, blurb: 'Daily average for one metric' },

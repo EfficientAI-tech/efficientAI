@@ -27,12 +27,12 @@ export interface ResultsWidget {
 }
 
 /** How many charts ship visible in a fresh layout — users can add more with no cap. */
-export const DEFAULT_DASHBOARD_WIDGET_COUNT = 5
+export const DEFAULT_DASHBOARD_WIDGET_COUNT = 4
 
 export const WIDGET_LABELS: Record<ResultsWidgetType, string> = {
   total_calls: 'Total calls',
   avg_duration: 'Avg duration / call',
-  metric_usage: 'Metric usage',
+  metric_usage: 'Agents',
   scenarios_by_agent: 'Scenarios / agent',
   usage: 'Usage',
   tools: 'Tools & tool calls',
@@ -56,10 +56,9 @@ export const CHART_TYPE_LABELS: Record<ResultsChartType, string> = {
   area: 'Area',
 }
 
-const STORAGE_KEY = 'resultsDashboardLayout.v9'
+const STORAGE_KEY = 'resultsDashboardLayout.v10'
 
 export const ADDABLE_WIDGETS: ResultsWidgetType[] = [
-  'total_calls',
   'tools',
   'usage',
   'completion',
@@ -74,7 +73,6 @@ function seed(type: ResultsWidgetType, display: ResultsChartType): ResultsWidget
 }
 
 export const DEFAULT_RESULTS_WIDGETS: ResultsWidget[] = [
-  seed('total_calls', 'bar'),
   seed('metric_usage', 'bar'),
   seed('tools', 'line'),
   seed('completion', 'line'),
@@ -106,6 +104,7 @@ function sanitize(raw: unknown): ResultsWidget[] {
     const candidate = item as Partial<ResultsWidget>
     if (!isWidgetType(candidate.type) || typeof candidate.id !== 'string') continue
     const type = mergeToolWidgetType(candidate.type)
+    if (type === 'total_calls') continue
     const id = type === 'tools' && (candidate.id === 'tool_calls' || candidate.type === 'tool_calls') ? 'tools' : candidate.id
     if (id === 'tools' && candidate.id !== 'tools' && seen.has('tools')) continue
     if (seen.has(id)) continue
@@ -136,6 +135,12 @@ export function readResultsDashboardLayout(): ResultsWidget[] {
     if (raw) {
       const current = sanitize(JSON.parse(raw))
       if (current.length) return current
+    }
+    const legacyV9 = localStorage.getItem('resultsDashboardLayout.v9')
+    if (legacyV9) {
+      const migrated = sanitize(JSON.parse(legacyV9))
+      writeResultsDashboardLayout(migrated)
+      return migrated
     }
     const legacy = localStorage.getItem('resultsDashboardLayout.v8')
     if (legacy) {

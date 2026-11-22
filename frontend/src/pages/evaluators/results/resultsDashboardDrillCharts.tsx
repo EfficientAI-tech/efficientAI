@@ -20,6 +20,42 @@ import type { ResultsChartType } from './resultsDashboardLayout'
 const PRIMARY = '#ca8a04'
 const GRID = '#e5e7eb'
 
+type HeadlineProps = Pick<ChartModel, 'headline' | 'caption' | 'headlineRight' | 'captionRight'>
+
+export function ChartHeadlineRow({
+  headline,
+  caption,
+  headlineRight,
+  captionRight,
+  compact,
+}: HeadlineProps & { compact?: boolean }) {
+  if (!headline && !headlineRight) return null
+  const valueClass = compact
+    ? 'text-2xl font-semibold tracking-tight text-gray-900'
+    : 'text-2xl font-semibold tracking-tight text-gray-900'
+  const capClass = compact ? 'mt-0.5 text-xs text-gray-500' : 'mt-1 text-sm text-gray-500'
+  if (headlineRight) {
+    return (
+      <div className="flex w-full max-w-full items-end">
+        <div className="min-w-0">
+          {headline ? <p className={valueClass}>{headline}</p> : null}
+          {caption ? <p className={capClass}>{caption}</p> : null}
+        </div>
+        <div className="ml-auto shrink-0 pl-10 text-right sm:pl-12">
+          {headlineRight ? <p className={valueClass}>{headlineRight}</p> : null}
+          {captionRight ? <p className={capClass}>{captionRight}</p> : null}
+        </div>
+      </div>
+    )
+  }
+  return (
+    <>
+      {headline ? <p className={valueClass}>{headline}</p> : null}
+      {caption ? <p className={capClass}>{caption}</p> : null}
+    </>
+  )
+}
+
 function categoryKey(data: ChartModel['data']): 'name' | 'day' {
   return data[0] && 'name' in data[0] ? 'name' : 'day'
 }
@@ -108,7 +144,7 @@ export function DrillChartPanel({
   inrRate = 95,
   displayCurrency = 'USD',
 }: {
-  model: Pick<ChartModel, 'headline' | 'caption' | 'data' | 'series' | 'horizontal' | 'stacked'>
+  model: Pick<ChartModel, 'headline' | 'caption' | 'headlineRight' | 'captionRight' | 'data' | 'series' | 'horizontal' | 'stacked'>
   display?: ResultsChartType
   height?: number
   className?: string
@@ -120,7 +156,7 @@ export function DrillChartPanel({
   inrRate?: number
   displayCurrency?: UsageDisplayCurrency
 }) {
-  const { headline, caption, series } = model
+  const { headline, caption, headlineRight, captionRight, series } = model
   const catKey = categoryKey(model.data)
   const data = chartDataWithLabels(model.data, catKey)
   const resolvedDisplay: ResultsChartType = display
@@ -129,8 +165,12 @@ export function DrillChartPanel({
   if (!data.length) {
     return (
       <div className={`rounded-xl border border-gray-200 bg-white p-5 shadow-sm ${className}`}>
-        {headline && <p className="text-2xl font-semibold text-gray-900">{headline}</p>}
-        {caption && <p className="mt-1 text-sm text-gray-500">{caption}</p>}
+        <ChartHeadlineRow
+          headline={headline}
+          caption={caption}
+          headlineRight={headlineRight}
+          captionRight={captionRight}
+        />
         <p className="mt-6 text-sm text-gray-400">No data in this window.</p>
       </div>
     )
@@ -239,17 +279,17 @@ export function DrillChartPanel({
                 activeDot={
                   onSeriesPoint
                     ? {
-                        r: 5,
-                        onClick: (_event, dot) => {
-                          const payload = (dot as { payload?: Record<string, unknown> })?.payload
-                          if (!payload) return
-                          onSeriesPoint({
-                            series: item.key,
-                            sortKey: typeof payload.sortKey === 'string' ? payload.sortKey : undefined,
-                            dayLabel: String(payload.day ?? ''),
-                          })
-                        },
-                      }
+                      r: 5,
+                      onClick: (_event, dot) => {
+                        const payload = (dot as { payload?: Record<string, unknown> })?.payload
+                        if (!payload) return
+                        onSeriesPoint({
+                          series: item.key,
+                          sortKey: typeof payload.sortKey === 'string' ? payload.sortKey : undefined,
+                          dayLabel: String(payload.day ?? ''),
+                        })
+                      },
+                    }
                     : undefined
                 }
               />
@@ -278,17 +318,17 @@ export function DrillChartPanel({
                 activeDot={
                   onSeriesPoint
                     ? {
-                        r: 5,
-                        onClick: (_event, dot) => {
-                          const payload = (dot as { payload?: Record<string, unknown> })?.payload
-                          if (!payload) return
-                          onSeriesPoint({
-                            series: item.key,
-                            sortKey: typeof payload.sortKey === 'string' ? payload.sortKey : undefined,
-                            dayLabel: String(payload.day ?? ''),
-                          })
-                        },
-                      }
+                      r: 5,
+                      onClick: (_event, dot) => {
+                        const payload = (dot as { payload?: Record<string, unknown> })?.payload
+                        if (!payload) return
+                        onSeriesPoint({
+                          series: item.key,
+                          sortKey: typeof payload.sortKey === 'string' ? payload.sortKey : undefined,
+                          dayLabel: String(payload.day ?? ''),
+                        })
+                      },
+                    }
                     : undefined
                 }
               />
@@ -326,8 +366,12 @@ export function DrillChartPanel({
 
   return (
     <section className={`rounded-xl border border-gray-200 bg-white p-5 shadow-sm ${className}`}>
-      {headline && <p className="text-2xl font-semibold tracking-tight text-gray-900">{headline}</p>}
-      {caption && <p className="mt-1 text-sm text-gray-500">{caption}</p>}
+      <ChartHeadlineRow
+        headline={headline}
+        caption={caption}
+        headlineRight={headlineRight}
+        captionRight={captionRight}
+      />
       <div
         className={`mt-4 min-h-[160px] [&_.recharts-surface]:outline-none ${drillable ? INTERACTIVE_CHART_CLASS : ''}`}
       >

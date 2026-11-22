@@ -48,6 +48,7 @@ import {
   type ResultsWidgetType,
 } from './resultsDashboardLayout'
 import type { DashboardDrillCall } from './resultsDashboardSample'
+import { ChartHeadlineRow } from './resultsDashboardDrillCharts'
 import { usageFromEvaluatorCallData } from './evaluatorDrillUsage'
 import {
   agentCostDetail,
@@ -67,6 +68,7 @@ import {
 import { PaginatedRunsTable } from './resultsDashboardDrilldowns'
 import {
   RunInsightBreakdown,
+  RunInsightDrillPanel,
   RunInsightFilterBar,
   RunInsightRunsSection,
   usesRunInsightLayout,
@@ -961,73 +963,93 @@ function DashboardPanel({
       style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.55 : 1 }}
       className={`relative flex min-h-[280px] min-w-0 max-w-full flex-col overflow-hidden rounded-xl border border-gray-200 bg-white p-4 shadow-sm ${isDragging ? 'z-20 touch-none' : ''}`}
     >
-      <div className="mb-3 flex items-start justify-between gap-3">
-        <div className="flex min-w-0 items-start gap-1">
-          <button
-            type="button"
-            className="mt-0.5 cursor-grab rounded p-0.5 text-gray-300 hover:text-gray-600 active:cursor-grabbing"
-            aria-label={`Drag ${WIDGET_LABELS[widget.type]}`}
-            {...attributes}
-            {...listeners}
-          >
-            <GripVertical className="h-3.5 w-3.5" />
-          </button>
-          <div className="min-w-0">
-            <h3 className="text-sm font-semibold text-gray-900">{WIDGET_LABELS[widget.type]}</h3>
-            <p className="mt-1 text-2xl font-semibold tracking-tight text-gray-900">{model.headline}</p>
-            {model.caption && <p className="mt-0.5 text-xs text-gray-500">{model.caption}</p>}
+      <div className="mb-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex min-w-0 flex-1 items-start gap-1">
+            <button
+              type="button"
+              className="mt-0.5 cursor-grab rounded p-0.5 text-gray-300 hover:text-gray-600 active:cursor-grabbing"
+              aria-label={`Drag ${WIDGET_LABELS[widget.type]}`}
+              {...attributes}
+              {...listeners}
+            >
+              <GripVertical className="h-3.5 w-3.5" />
+            </button>
+            <div className="min-w-0 flex-1">
+              <h3 className="text-sm font-semibold text-gray-900">{WIDGET_LABELS[widget.type]}</h3>
+              {!model.headlineRight && (
+                <div className="mt-1">
+                  <ChartHeadlineRow
+                    headline={model.headline}
+                    caption={model.caption}
+                    compact
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="relative shrink-0" ref={menuRef}>
+            <button
+              type="button"
+              aria-label={`${WIDGET_LABELS[widget.type]} options`}
+              onClick={() => setMenuOpen((open) => !open)}
+              className="rounded-md p-1 text-gray-400 hover:bg-gray-50 hover:text-gray-700"
+            >
+              <MoreHorizontal className="h-4 w-4" />
+            </button>
+            {menuOpen && (
+              <div
+                className="absolute right-0 z-20 mt-1 w-36 rounded-lg border border-gray-200 bg-white py-1 shadow-lg"
+                onPointerDown={(event) => event.stopPropagation()}
+              >
+                {(['line', 'bar', 'area'] as ResultsChartType[]).map((type) => (
+                  <button
+                    key={type}
+                    type="button"
+                    onClick={() => {
+                      onDisplay(type)
+                      setMenuOpen(false)
+                    }}
+                    className={`block w-full px-3 py-1.5 text-left text-xs ${widget.display === type ? 'text-gray-900' : 'text-gray-600 hover:bg-gray-50'
+                      }`}
+                  >
+                    {CHART_TYPE_LABELS[type]}
+                  </button>
+                ))}
+                {showCurrencyMenu ? (
+                  <>
+                    <div className="my-1 border-t border-gray-100" />
+                    <UsageDisplayCurrencyPicker
+                      value={usageDisplayCurrency}
+                      onChange={onUsageDisplayCurrencyChange}
+                    />
+                  </>
+                ) : null}
+                <div className="my-1 border-t border-gray-100" />
+                <button type="button" disabled={!canMoveUp} onClick={() => onMove(-1)} className="block w-full px-3 py-1.5 text-left text-xs text-gray-600 hover:bg-gray-50 disabled:text-gray-300">
+                  Move up
+                </button>
+                <button type="button" disabled={!canMoveDown} onClick={() => onMove(1)} className="block w-full px-3 py-1.5 text-left text-xs text-gray-600 hover:bg-gray-50 disabled:text-gray-300">
+                  Move down
+                </button>
+                <button type="button" onClick={onHide} className="block w-full px-3 py-1.5 text-left text-xs text-gray-600 hover:bg-gray-50">
+                  Hide
+                </button>
+              </div>
+            )}
           </div>
         </div>
-        <div className="relative" ref={menuRef}>
-          <button
-            type="button"
-            aria-label={`${WIDGET_LABELS[widget.type]} options`}
-            onClick={() => setMenuOpen((open) => !open)}
-            className="rounded-md p-1 text-gray-400 hover:bg-gray-50 hover:text-gray-700"
-          >
-            <MoreHorizontal className="h-4 w-4" />
-          </button>
-          {menuOpen && (
-            <div
-              className="absolute right-0 z-20 mt-1 w-36 rounded-lg border border-gray-200 bg-white py-1 shadow-lg"
-              onPointerDown={(event) => event.stopPropagation()}
-            >
-              {(['line', 'bar', 'area'] as ResultsChartType[]).map((type) => (
-                <button
-                  key={type}
-                  type="button"
-                  onClick={() => {
-                    onDisplay(type)
-                    setMenuOpen(false)
-                  }}
-                  className={`block w-full px-3 py-1.5 text-left text-xs ${widget.display === type ? 'text-gray-900' : 'text-gray-600 hover:bg-gray-50'
-                    }`}
-                >
-                  {CHART_TYPE_LABELS[type]}
-                </button>
-              ))}
-              {showCurrencyMenu ? (
-                <>
-                  <div className="my-1 border-t border-gray-100" />
-                  <UsageDisplayCurrencyPicker
-                    value={usageDisplayCurrency}
-                    onChange={onUsageDisplayCurrencyChange}
-                  />
-                </>
-              ) : null}
-              <div className="my-1 border-t border-gray-100" />
-              <button type="button" disabled={!canMoveUp} onClick={() => onMove(-1)} className="block w-full px-3 py-1.5 text-left text-xs text-gray-600 hover:bg-gray-50 disabled:text-gray-300">
-                Move up
-              </button>
-              <button type="button" disabled={!canMoveDown} onClick={() => onMove(1)} className="block w-full px-3 py-1.5 text-left text-xs text-gray-600 hover:bg-gray-50 disabled:text-gray-300">
-                Move down
-              </button>
-              <button type="button" onClick={onHide} className="block w-full px-3 py-1.5 text-left text-xs text-gray-600 hover:bg-gray-50">
-                Hide
-              </button>
-            </div>
-          )}
-        </div>
+        {model.headlineRight ? (
+          <div className="mt-2 w-full pl-6 pr-0.5">
+            <ChartHeadlineRow
+              headline={model.headline}
+              caption={model.caption}
+              headlineRight={model.headlineRight}
+              captionRight={model.captionRight}
+              compact
+            />
+          </div>
+        ) : null}
       </div>
 
       {widget.type === 'metric_trend' && (
@@ -1694,6 +1716,58 @@ function ResultsDetailView({
     total: row.total,
     failed: row.failed,
   }))
+  const hasRunInsightBreakdown =
+    Boolean(detail.kind === 'agent' && agent)
+    || Boolean(runInsight && widget)
+    || Boolean(
+      widget
+      && (widget.type === 'total_calls' || widget.type === 'volume' || widget.type === 'completion'),
+    )
+  const usesConnectedDrillPanel = usesPaginatedRunLeaf(detail, widget) && hasRunInsightBreakdown
+  const drillSelectionActive = Boolean(drillScenarioId || drillDayLabel)
+  const sharedScenarioFilterBar = (
+    <RunInsightFilterBar
+      embedded={usesConnectedDrillPanel}
+      dayLabel={drillDayLabel}
+      scenarioName={activeScenarioName}
+      onClearDay={() => setDrillSortKey(null)}
+      onClearScenario={() => setDrillScenarioId(null)}
+      onClearAll={() => {
+        setDrillSortKey(null)
+        setDrillScenarioId(null)
+      }}
+    />
+  )
+  const onScenarioDrillClick = (scenarioId: string) => {
+    setDrillScenarioId((prev) => (prev === scenarioId ? null : scenarioId))
+  }
+  const paginatedRunsTable = (
+    <PaginatedRunsTable
+      base={tableBase}
+      filterAgentId={
+        detail.kind === 'agent'
+          ? detail.agentId
+          : widget?.type === 'agent_cost' && focusId
+            ? focusId
+            : undefined
+      }
+      filterScenarioId={drillScenarioId ?? undefined}
+      metricId={scoreMetricId}
+      scoreMetricId={scoreMetricId}
+      usageModel={
+        widget?.type === 'model_cost' && focusId ? focusId : undefined
+      }
+      usageRole={
+        widget?.type === 'agent_cost' && costRole && typeof costRole === 'string'
+          ? costRole
+          : undefined
+      }
+      rich={widget?.type === 'agent_cost' || widget?.type === 'model_cost'}
+      title=""
+      embedded={usesConnectedDrillPanel}
+      onOpenResult={onOpenResult}
+    />
+  )
 
   return (
     <div className="space-y-4">
@@ -1903,91 +1977,84 @@ function ResultsDetailView({
           </div>
         )}
       </section>
-      {detail.kind === 'agent' && agent && (
-        <>
-          <RunInsightFilterBar
-            dayLabel={drillDayLabel}
-            scenarioName={activeScenarioName}
-            onClearDay={() => setDrillSortKey(null)}
-            onClearScenario={() => setDrillScenarioId(null)}
-            onClearAll={() => {
-              setDrillSortKey(null)
-              setDrillScenarioId(null)
-            }}
-          />
-          <RunInsightBreakdown
-            results={agentSliceResults}
-            scenarioRows={scenarioRows.filter((row) => row.agentId === detail.agentId)}
-            agentRows={[{ id: agent.id, name: agent.name }]}
-            agentRunRows={breakdownAgents.filter((row) => row.id === detail.agentId)}
-            scenarioCountsFromSample={scenarioCountsFromSample}
-            windowRunTotal={scopedRunTotal}
-            sampleSize={results.length}
-            windowDurationBuckets={ops?.duration_buckets}
-            activeScenarioId={drillScenarioId}
-            activeScenarioName={activeScenarioName}
-            title={`${agent.name} · scenarios`}
-            onScenarioClick={(scenarioId) => {
-              setDrillScenarioId((prev) => (prev === scenarioId ? null : scenarioId))
-            }}
-          />
-        </>
-      )}
-      {runInsight && widget && (
-        <>
-          <RunInsightFilterBar
-            dayLabel={drillDayLabel}
-            scenarioName={activeScenarioName}
-            onClearDay={() => setDrillSortKey(null)}
-            onClearScenario={() => setDrillScenarioId(null)}
-            onClearAll={() => {
-              setDrillSortKey(null)
-              setDrillScenarioId(null)
-            }}
-          />
-          <RunInsightBreakdown
-            results={sliceResults}
-            scenarioRows={scenarioRows}
-            agentRows={agentRows.map((row) => ({ id: row.id, name: row.name }))}
-            agentRunRows={breakdownAgents}
-            scenarioCountsFromSample={scenarioCountsFromSample}
-            windowRunTotal={scopedRunTotal}
-            sampleSize={results.length}
-            windowDurationBuckets={ops?.duration_buckets}
-            activeScenarioId={drillScenarioId}
-            activeScenarioName={activeScenarioName}
-            title={
-              widget.type === 'scenarios_by_agent'
-                ? 'Scenarios across agents'
-                : widget.type === 'scenarios'
-                  ? 'Scenario runs'
-                  : 'Call duration'
-            }
-            onScenarioClick={(scenarioId) => {
-              setDrillScenarioId((prev) => (prev === scenarioId ? null : scenarioId))
-            }}
-          />
-        </>
-      )}
-      {(widget?.type === 'total_calls' || widget?.type === 'volume' || widget?.type === 'completion') && (
-        <RunInsightBreakdown
-          results={sliceResults}
-          scenarioRows={scenarioRows}
-          agentRows={agentRows.map((row) => ({ id: row.id, name: row.name }))}
-          agentRunRows={breakdownAgents}
-          scenarioCountsFromSample={scenarioCountsFromSample}
-          windowRunTotal={scopedRunTotal}
-          sampleSize={results.length}
-          windowDurationBuckets={ops?.duration_buckets}
-          activeScenarioId={drillScenarioId}
-          activeScenarioName={activeScenarioName}
-          title="Runs in window"
-          onScenarioClick={(scenarioId) => {
-            setDrillScenarioId((prev) => (prev === scenarioId ? null : scenarioId))
-          }}
+      {usesConnectedDrillPanel ? (
+        <RunInsightDrillPanel
+          filterBar={sharedScenarioFilterBar}
+          selectionActive={drillSelectionActive}
+          runsTitle={runTableTitle({
+            windowLabel,
+            drillDayLabel,
+            activeScenarioName,
+            agentName: detail.kind === 'agent' ? agent?.name : detail.kind === 'widget' && widget?.type === 'agent_cost' && focusId
+              ? ops?.cost_by_agent.find((row) => row.agent_id === focusId)?.agent_name
+              : undefined,
+            modelName: detail.kind === 'widget' && widget?.type === 'model_cost' && focusId ? focusId : undefined,
+          })}
+          runsSubtitle={
+            drillSelectionActive
+              ? 'Clear filters above or click the selected scenario again to show all runs in this window.'
+              : 'Select a scenario in the breakdown to narrow this list.'
+          }
+          runs={paginatedRunsTable}
+          breakdown={
+            detail.kind === 'agent' && agent ? (
+              <RunInsightBreakdown
+                embedded
+                results={agentSliceResults}
+                scenarioRows={scenarioRows.filter((row) => row.agentId === detail.agentId)}
+                agentRows={[{ id: agent.id, name: agent.name }]}
+                agentRunRows={breakdownAgents.filter((row) => row.id === detail.agentId)}
+                scenarioCountsFromSample={scenarioCountsFromSample}
+                windowRunTotal={scopedRunTotal}
+                sampleSize={results.length}
+                windowDurationBuckets={ops?.duration_buckets}
+                activeScenarioId={drillScenarioId}
+                activeScenarioName={activeScenarioName}
+                title={`${agent.name} · scenarios`}
+                onScenarioClick={onScenarioDrillClick}
+              />
+            ) : runInsight && widget ? (
+              <RunInsightBreakdown
+                embedded
+                results={sliceResults}
+                scenarioRows={scenarioRows}
+                agentRows={agentRows.map((row) => ({ id: row.id, name: row.name }))}
+                agentRunRows={breakdownAgents}
+                scenarioCountsFromSample={scenarioCountsFromSample}
+                windowRunTotal={scopedRunTotal}
+                sampleSize={results.length}
+                windowDurationBuckets={ops?.duration_buckets}
+                activeScenarioId={drillScenarioId}
+                activeScenarioName={activeScenarioName}
+                title={
+                  widget.type === 'scenarios_by_agent'
+                    ? 'Scenarios across agents'
+                    : widget.type === 'scenarios'
+                      ? 'Scenario runs'
+                      : 'Call duration'
+                }
+                onScenarioClick={onScenarioDrillClick}
+              />
+            ) : widget && (widget.type === 'total_calls' || widget.type === 'volume' || widget.type === 'completion') ? (
+              <RunInsightBreakdown
+                embedded
+                results={sliceResults}
+                scenarioRows={scenarioRows}
+                agentRows={agentRows.map((row) => ({ id: row.id, name: row.name }))}
+                agentRunRows={breakdownAgents}
+                scenarioCountsFromSample={scenarioCountsFromSample}
+                windowRunTotal={scopedRunTotal}
+                sampleSize={results.length}
+                windowDurationBuckets={ops?.duration_buckets}
+                activeScenarioId={drillScenarioId}
+                activeScenarioName={activeScenarioName}
+                title="Runs in window"
+                onScenarioClick={onScenarioDrillClick}
+              />
+            ) : null
+          }
         />
-      )}
-      {usesPaginatedRunLeaf(detail, widget) ? (
+      ) : usesPaginatedRunLeaf(detail, widget) ? (
         <RunInsightRunsSection title={runTableTitle({
           windowLabel,
           drillDayLabel,
@@ -1998,30 +2065,7 @@ function ResultsDetailView({
           modelName: detail.kind === 'widget' && widget?.type === 'model_cost' && focusId ? focusId : undefined,
         })}
         >
-          <PaginatedRunsTable
-            base={tableBase}
-            filterAgentId={
-              detail.kind === 'agent'
-                ? detail.agentId
-                : widget?.type === 'agent_cost' && focusId
-                  ? focusId
-                  : undefined
-            }
-            filterScenarioId={drillScenarioId ?? undefined}
-            metricId={scoreMetricId}
-            scoreMetricId={scoreMetricId}
-            usageModel={
-              widget?.type === 'model_cost' && focusId ? focusId : undefined
-            }
-            usageRole={
-              widget?.type === 'agent_cost' && costRole && typeof costRole === 'string'
-                ? costRole
-                : undefined
-            }
-            rich={widget?.type === 'agent_cost' || widget?.type === 'model_cost'}
-            title=""
-            onOpenResult={onOpenResult}
-          />
+          {paginatedRunsTable}
         </RunInsightRunsSection>
       ) : (
         <section className="rounded-xl border border-gray-200 bg-white p-5">

@@ -23,6 +23,7 @@ import {
   MERGED_TOOLS_VIEWS,
   formatChartNumber,
   formatDuration,
+  metricUsageAgentsCard,
   scoreTrendForWindow,
   mergedToolsDetail,
   resolveToolAgentFocusId,
@@ -79,6 +80,7 @@ export function PaginatedRunsTable({
   toolProduct,
   toolFailuresOnly,
   hasToolCalls,
+  embedded,
 }: {
   base: RunListBase
   filterAgentId?: string
@@ -100,6 +102,8 @@ export function PaginatedRunsTable({
   toolProduct?: string
   toolFailuresOnly?: boolean
   hasToolCalls?: boolean
+  /** Omit outer card when nested in {@link RunInsightDrillPanel}. */
+  embedded?: boolean
 }) {
   const currency = displayCurrency ?? readUsageDisplayCurrency()
   const [page, setPage] = useState(0)
@@ -171,8 +175,14 @@ export function PaginatedRunsTable({
   }, [runScopeKey])
 
   return (
-    <section className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-      <div className="flex items-center justify-between gap-3">
+    <section
+      className={
+        embedded
+          ? 'bg-transparent'
+          : 'rounded-xl border border-gray-200 bg-white p-5 shadow-sm'
+      }
+    >
+      <div className={`flex items-center justify-between gap-3 ${embedded ? 'px-1 pt-1' : ''}`}>
         {title ? <h3 className="text-sm font-semibold text-gray-900">{title}</h3> : <span className="sr-only">Runs</span>}
         <div className="ml-auto flex shrink-0 items-center gap-2 text-xs text-gray-500">
           <button
@@ -1056,15 +1066,15 @@ export function MetricUsageDrill({
           <ArrowLeft className="h-4 w-4" />
           Back to dashboard
         </button>
-        <h2 className="text-lg font-semibold text-gray-900">Metric usage</h2>
+        <h2 className="text-lg font-semibold text-gray-900">Agents</h2>
         <p className="text-sm text-gray-500">{windowLabel} · click an agent to see metrics</p>
         <DrillChartPanel
           model={{
-            headline: agents.reduce((sum, agent) => sum + agent.counts.total, 0).toLocaleString(),
-            caption: 'Runs by agent',
+            ...metricUsageAgentsCard(
+              agents.map((agent) => ({ name: agent.agent_name, total: agent.counts.total })),
+              agents.reduce((sum, agent) => sum + agent.counts.total, 0),
+            ),
             data: agents.map((agent) => ({ name: agent.agent_name, total: agent.counts.total })),
-            series: [{ key: 'total', color: LAYER_LLM }],
-            horizontal: true,
           }}
           onCategory={(name) => {
             const agent = agents.find((item) => item.agent_name === name)
@@ -1152,16 +1162,22 @@ export function MetricUsageDrill({
               }}
             />
             <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-              <h3 className="text-sm font-semibold text-gray-900">By scenario</h3>
-              <ul className="mt-2 divide-y divide-gray-100">
+              <h3 className="text-sm font-semibold text-gray-900">By scenario · click to open runs</h3>
+              <ul className="mt-2 space-y-1">
                 {scenarios.map((row) => (
-                  <li key={row.name} className="flex items-center justify-between gap-3 py-2 text-sm text-gray-700">
-                    <span className="truncate pr-3">{row.name}</span>
-                    <span className="shrink-0 text-xs text-gray-500">
-                      {row.count}
-                      {row.avg != null ? ` · avg ${formatChartNumber(row.avg)}` : ''}
-                      {` · ${row.count ? Math.round((row.failed / row.count) * 100) : 0}% fail`}
-                    </span>
+                  <li key={row.name}>
+                    <button
+                      type="button"
+                      onClick={() => onNavigate({ agentId, metricId, scenarioId: row.scenarioId ?? row.name })}
+                      className="flex w-full items-center justify-between gap-3 rounded-lg border border-transparent px-2 py-2 text-left text-sm text-gray-700 transition-colors hover:border-gray-200 hover:bg-gray-50"
+                    >
+                      <span className="truncate pr-3">{row.name}</span>
+                      <span className="shrink-0 text-xs text-gray-500">
+                        {row.count}
+                        {row.avg != null ? ` · avg ${formatChartNumber(row.avg)}` : ''}
+                        {` · ${row.count ? Math.round((row.failed / row.count) * 100) : 0}% fail`}
+                      </span>
+                    </button>
                   </li>
                 ))}
               </ul>
@@ -1183,14 +1199,34 @@ export function MetricUsageDrill({
         <ArrowLeft className="h-4 w-4" />
         {metric?.metric_name ?? 'Metric'}
       </button>
-      <h2 className="text-lg font-semibold text-gray-900">{scenarioName}</h2>
-      <PaginatedRunsTable
-        base={runListBase}
-        filterAgentId={agentId}
-        filterScenarioId={scenarioId}
-        metricId={metricId}
-        onOpenResult={onOpenResult}
-      />
+      <section className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+        <div className="flex flex-wrap items-center gap-2 border-b border-gray-100 bg-primary-50/40 px-5 py-3">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Scenario filter</span>
+          <button
+            type="button"
+            onClick={() => onNavigate({ agentId, metricId })}
+            className="inline-flex items-center gap-1 rounded-full border border-primary-200 bg-white px-2.5 py-0.5 text-xs font-medium text-primary-900 hover:bg-primary-50"
+          >
+            {scenarioName}
+            <span className="text-primary-600">×</span>
+          </button>
+        </div>
+        <header className="border-b border-gray-100 bg-gray-50/40 px-5 py-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Filtered run list</p>
+          <h2 className="text-sm font-semibold text-gray-900">Runs · {scenarioName}</h2>
+        </header>
+        <div className="px-3 pb-4 pt-1 sm:px-5 sm:pb-5">
+          <PaginatedRunsTable
+            embedded
+            base={runListBase}
+            filterAgentId={agentId}
+            filterScenarioId={scenarioId}
+            metricId={metricId}
+            title=""
+            onOpenResult={onOpenResult}
+          />
+        </div>
+      </section>
     </div>
   )
 }
