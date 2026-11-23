@@ -6,7 +6,6 @@ default ``redis://localhost:6379/15``) and skips when none is reachable.
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
@@ -22,18 +21,18 @@ from app.workers.tasks.evaluate_call_import_row_core import (
     recount_evaluation_counters,
     record_buffered_transition,
 )
+from tests.helpers.eval_buffer_test_redis import eval_buffer_test_redis_url
 from tests.test_workers.test_evaluate_call_import_row import _seed
-
-_TEST_REDIS_URL = os.getenv("EVAL_BUFFER_TEST_REDIS_URL", "redis://localhost:6379/15")
 
 
 @pytest.fixture
-def rclient(monkeypatch):
-    client = redis.from_url(_TEST_REDIS_URL, decode_responses=True)
+def rclient(monkeypatch, worker_id):
+    url = eval_buffer_test_redis_url(worker_id)
+    client = redis.from_url(url, decode_responses=True)
     try:
         client.ping()
     except redis.RedisError:
-        pytest.skip(f"redis not reachable at {_TEST_REDIS_URL}")
+        pytest.skip(f"redis not reachable at {url}")
     client.flushdb()
     monkeypatch.setattr(buf, "_redis", client)
     monkeypatch.setattr(buf, "_scripts", {})
