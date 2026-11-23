@@ -1,5 +1,5 @@
 import { LayerResponseDonut, TraceSection, TurnTotalsBar } from './TraceCharts'
-import { formatMs } from './traceUtils'
+import { formatMs, type TraceToolCall } from './traceUtils'
 
 type ComponentKind = 'stt' | 'llm' | 'tts' | 's2s'
 
@@ -22,6 +22,7 @@ export interface TraceTurnRow {
   interrupted?: boolean
   incomplete?: boolean
   models: Partial<Record<ComponentKind, string>>
+  toolCalls?: TraceToolCall[]
   spans: Array<{
     id: string
     kind: ComponentKind | null
@@ -59,6 +60,48 @@ function StageChip({ label }: { label: string }) {
   )
 }
 
+function ToolCallTable({ rows }: { rows: TraceTurnRow[] }) {
+  const withTools = rows.filter((row) => (row.toolCalls?.length ?? 0) > 0)
+  if (withTools.length === 0) return null
+
+  return (
+    <TraceSection title="Tool calls" subtitle="Tools the agent called on each turn">
+      <div className="overflow-hidden rounded-lg border border-primary-200 bg-white">
+        <table className="min-w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-100 bg-gray-50/80 text-left text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+              <th className="px-4 py-2.5">Turn</th>
+              <th className="px-4 py-2.5">Tool</th>
+              <th className="px-4 py-2.5 text-right">Duration</th>
+              <th className="px-4 py-2.5">Status</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {withTools.flatMap((row) =>
+              (row.toolCalls ?? []).map((call, index) => (
+                <tr key={`${row.turnNumber}-${call.name}-${index}`}>
+                  <td className="px-4 py-2.5 font-medium text-gray-700">T{row.turnNumber}</td>
+                  <td className="px-4 py-2.5 font-mono text-xs text-gray-800">{call.name}</td>
+                  <td className="px-4 py-2.5 text-right tabular-nums text-gray-800">{formatMsLocal(call.latencyMs)}</td>
+                  <td className="px-4 py-2.5">
+                    {call.error ? (
+                      <span className="inline-flex rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-xs font-semibold text-rose-800">
+                        Error
+                      </span>
+                    ) : (
+                      <span className="text-xs text-gray-500">Ok</span>
+                    )}
+                  </td>
+                </tr>
+              )),
+            )}
+          </tbody>
+        </table>
+      </div>
+    </TraceSection>
+  )
+}
+
 function PipelineStageTable({
   models,
   aggregates,
@@ -74,10 +117,10 @@ function PipelineStageTable({
       return { kind, meta, stats }
     })
     .filter(Boolean) as Array<{
-    kind: ComponentKind
-    meta?: ComponentMeta
-    stats?: { p50?: number; p90?: number; p95?: number }
-  }>
+      kind: ComponentKind
+      meta?: ComponentMeta
+      stats?: { p50?: number; p90?: number; p95?: number }
+    }>
 
   if (rows.length === 0) return null
 
@@ -154,6 +197,8 @@ export default function TraceTurnDetail({
       <TraceSection title="Pipeline" subtitle="Models and TTFB percentiles per stage (p50 / p90 / p95)">
         <PipelineStageTable models={pipelineModels} aggregates={componentAggregates} />
       </TraceSection>
+
+      <ToolCallTable rows={rows} />
     </div>
   )
 }

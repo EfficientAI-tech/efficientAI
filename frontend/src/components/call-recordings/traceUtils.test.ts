@@ -5,6 +5,7 @@ import {
   parseUnixNano,
   sessionPipelineMode,
   resolveTraceStartNsFromSpans,
+  turnToolCalls,
   unixNanoOffsetMs,
 } from './traceUtils'
 
@@ -131,6 +132,25 @@ describe('chat traces', () => {
       ['user', 'Thanks!', 2],
       ['agent', 'You are welcome.', 2],
     ])
+  })
+
+  it('reads tool calls stored on the turn and drops blank rows', () => {
+    expect(
+      turnToolCalls({
+        tool_calls: [
+          { name: 'lookup_order', latency_ms: 290 },
+          { name: '  refund  ', latency_ms: Number.NaN, error: true },
+          { name: '   ' },
+          { name: 'search', latency_ms: null },
+        ],
+      }),
+    ).toEqual([
+      { name: 'lookup_order', latencyMs: 290, error: false },
+      { name: 'refund', latencyMs: null, error: true },
+      { name: 'search', latencyMs: null, error: false },
+    ])
+    expect(turnToolCalls(undefined)).toEqual([])
+    expect(turnToolCalls({})).toEqual([])
   })
 
   it('does not flag chat turns as incomplete for missing STT/TTS', () => {

@@ -37,6 +37,8 @@ import {
   PIPELINE_MODE_LABELS,
   sessionPipelineMode,
   spanHasError,
+  turnToolCalls,
+  type TraceToolCall,
 } from './traceUtils'
 import { transcriptBubbleClass, transcriptMetaClass } from './transcriptBubbleStyles'
 
@@ -73,6 +75,7 @@ interface TraceTurnExtra {
   turn_type?: string
   was_interrupted?: boolean
   pipeline_mode?: 'stt_llm_tts' | 's2s' | 'chat'
+  tool_calls?: Array<{ name?: string | null; latency_ms?: number | null; error?: boolean | null }>
   stt_model?: string
   llm_model?: string
   tts_model?: string
@@ -168,25 +171,43 @@ function TraceTabBar({
 }) {
   return (
     <div
-      className={`flex flex-nowrap gap-0.5 overflow-x-auto border-b border-gray-200 bg-white px-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${
-        compact ? '' : 'px-5'
-      }`}
+      className={`flex flex-nowrap gap-0.5 overflow-x-auto border-b border-gray-200 bg-white px-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${compact ? '' : 'px-5'
+        }`}
     >
       {tabs.map(({ id, label, icon: Icon }) => (
         <button
           key={id}
           type="button"
           onClick={() => onSelect(id)}
-          className={`inline-flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-1.5 text-sm font-medium transition-colors ${
-            activeTab === id
+          className={`inline-flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-1.5 text-sm font-medium transition-colors ${activeTab === id
               ? 'border-primary-500 text-primary-800'
               : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
-          }`}
+            }`}
         >
           <Icon className="h-4 w-4" />
           {label}
         </button>
       ))}
+    </div>
+  )
+}
+
+function ToolCallNotes({ calls }: { calls: TraceToolCall[] }) {
+  if (calls.length === 0) return null
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[85%] space-y-1">
+        {calls.map((call, index) => (
+          <div
+            key={`${call.name}-${index}`}
+            className="inline-flex items-center gap-2 rounded-lg border border-primary-200 bg-white px-3 py-1.5 text-xs text-gray-700"
+          >
+            <span className="font-mono font-medium text-gray-900">{call.name}</span>
+            <span className="tabular-nums text-gray-500">{formatMs(call.latencyMs)}</span>
+            {call.error ? <span className="font-semibold text-rose-700">error</span> : null}
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -291,10 +312,10 @@ function turnMetaFromSpans(spans: OtelSpan[]): Partial<TraceTurnExtra> {
     if (!kind) continue
     const meta = metaFromSpan(span)
     if (meta.model && !out[`${kind}_model` as keyof TraceTurnExtra]) {
-      ;(out as Record<string, string>)[`${kind}_model`] = meta.model
+      ; (out as Record<string, string>)[`${kind}_model`] = meta.model
     }
     if (meta.provider && !out[`${kind}_provider` as keyof TraceTurnExtra]) {
-      ;(out as Record<string, string>)[`${kind}_provider`] = meta.provider
+      ; (out as Record<string, string>)[`${kind}_provider`] = meta.provider
     }
   }
   return out
@@ -310,10 +331,10 @@ function mergeTurnMeta(
     const modelKey = `${kind}_model` as keyof TraceTurnExtra
     const providerKey = `${kind}_provider` as keyof TraceTurnExtra
     if (!extra[modelKey] && sessionModels[kind]?.model) {
-      ;(extra as Record<string, string>)[modelKey] = sessionModels[kind]!.model!
+      ; (extra as Record<string, string>)[modelKey] = sessionModels[kind]!.model!
     }
     if (!extra[providerKey] && sessionModels[kind]?.provider) {
-      ;(extra as Record<string, string>)[providerKey] = sessionModels[kind]!.provider!
+      ; (extra as Record<string, string>)[providerKey] = sessionModels[kind]!.provider!
     }
   }
   if (isS2sTurn(turn)) fill('s2s')
@@ -378,15 +399,13 @@ function MetricTile({
 }) {
   return (
     <div
-      className={`rounded-lg border px-3 py-3 ${
-        highlight ? 'border-primary-400 bg-primary-50/40' : 'border-gray-200 bg-white'
-      }`}
+      className={`rounded-lg border px-3 py-3 ${highlight ? 'border-primary-400 bg-primary-50/40' : 'border-gray-200 bg-white'
+        }`}
       title={hint}
     >
       <p
-        className={`text-[10px] font-semibold uppercase tracking-wider ${
-          highlight ? 'text-primary-800/70' : 'text-gray-400'
-        }`}
+        className={`text-[10px] font-semibold uppercase tracking-wider ${highlight ? 'text-primary-800/70' : 'text-gray-400'
+          }`}
       >
         {label}
       </p>
@@ -424,11 +443,10 @@ function RawSpanRow({ span }: { span: OtelSpan }) {
           <span className="flex items-center gap-1.5 text-xs font-medium text-gray-500">
             {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
             <span
-              className={`inline-flex rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${
-                kind
+              className={`inline-flex rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${kind
                   ? 'border-primary-300 bg-primary-50/60 text-primary-800'
                   : 'border-gray-200 bg-gray-50 text-gray-600'
-              }`}
+                }`}
             >
               {stageLabel}
             </span>
@@ -570,6 +588,7 @@ export default function SyntheticCallTracePanel({
         talkOver: turn.talk_over,
         interrupted: extra.was_interrupted,
         incomplete: isTurnIncomplete(turn, pipelineMode),
+        toolCalls: turnToolCalls(extra),
         models,
         spans: turnSpans.map((span) => ({
           id: span.span_id,
@@ -715,13 +734,13 @@ export default function SyntheticCallTracePanel({
 
   const startedLabel = trace.started_at
     ? new Date(trace.started_at).toLocaleString(undefined, {
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-      })
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    })
     : null
 
   const callDuration = formatCallDuration(trace.started_at, trace.ended_at)
@@ -772,23 +791,37 @@ export default function SyntheticCallTracePanel({
             <div className="space-y-4 max-w-2xl mx-auto">
               {transcriptMessages.map((msg, idx) => {
                 const isUser = msg.role === 'user'
+                const turnTools = traceTurnRows.find((row) => row.turnNumber === msg.turn)?.toolCalls ?? []
+                const earlierAgent = transcriptMessages.some(
+                  (other, otherIdx) => other.role === 'agent' && other.turn === msg.turn && otherIdx < idx,
+                )
+                const hasAgent = transcriptMessages.some((other) => other.role === 'agent' && other.turn === msg.turn)
+                const laterInTurn = transcriptMessages.some(
+                  (other, otherIdx) => other.turn === msg.turn && otherIdx > idx,
+                )
+                const showTools =
+                  turnTools.length > 0 && ((msg.role === 'agent' && !earlierAgent) || (!hasAgent && !laterInTurn))
                 return (
-                  <div key={`${msg.turn}-${msg.role}-${idx}`} className={isUser ? 'flex justify-end' : 'flex justify-start'}>
-                    <div className={transcriptBubbleClass(isUser)}>
-                      <div className={transcriptMetaClass(isUser)}>
-                        <span>{msg.speakerLabel}</span>
-                        <span className="text-[10px] font-normal normal-case tracking-normal tabular-nums opacity-90">
-                          Turn {msg.turn} {formatOffset(msg.offsetMs)}
-                          {msg.latencyMs != null ? ` · ${formatMs(msg.latencyMs)}` : ''}
-                        </span>
-                        <TurnSignalBadges
-                          talkOver={isUser ? msg.talkOver : undefined}
-                          interrupted={!isUser ? msg.interrupted : undefined}
-                          incomplete={msg.incomplete}
-                        />
+                  <div key={`${msg.turn}-${msg.role}-${idx}`} className="space-y-2">
+                    {showTools && msg.role === 'agent' ? <ToolCallNotes calls={turnTools} /> : null}
+                    <div className={isUser ? 'flex justify-end' : 'flex justify-start'}>
+                      <div className={transcriptBubbleClass(isUser)}>
+                        <div className={transcriptMetaClass(isUser)}>
+                          <span>{msg.speakerLabel}</span>
+                          <span className="text-[10px] font-normal normal-case tracking-normal tabular-nums opacity-90">
+                            Turn {msg.turn} {formatOffset(msg.offsetMs)}
+                            {msg.latencyMs != null ? ` · ${formatMs(msg.latencyMs)}` : ''}
+                          </span>
+                          <TurnSignalBadges
+                            talkOver={isUser ? msg.talkOver : undefined}
+                            interrupted={!isUser ? msg.interrupted : undefined}
+                            incomplete={msg.incomplete}
+                          />
+                        </div>
+                        <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.text}</p>
                       </div>
-                      <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.text}</p>
                     </div>
+                    {showTools && msg.role !== 'agent' ? <ToolCallNotes calls={turnTools} /> : null}
                   </div>
                 )
               })}
@@ -869,11 +902,10 @@ export default function SyntheticCallTracePanel({
             </h2>
             <div className="mt-2.5 flex flex-wrap items-center gap-2">
               <span
-                className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium capitalize ${
-                  isOpen
+                className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium capitalize ${isOpen
                     ? 'border-primary-300 bg-primary-50/60 text-primary-800'
                     : 'border-gray-200 bg-gray-50 text-gray-600'
-                }`}
+                  }`}
               >
                 {isOpen && <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-primary-500" />}
                 {statusLabel}
@@ -963,7 +995,7 @@ export default function SyntheticCallTracePanel({
               subtitle={latencySampleLabel}
               hint={
                 latencySampleCount != null &&
-                turnCountForLatency > latencySampleCount
+                  turnCountForLatency > latencySampleCount
                   ? RESPONSE_LATENCY_SAMPLE_HINT
                   : undefined
               }
