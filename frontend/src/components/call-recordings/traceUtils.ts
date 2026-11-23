@@ -19,8 +19,33 @@ export interface TraceTurnLike {
     user_utterances?: string[]
     assistant_text?: string
     is_opener?: boolean
-    tool_calls?: Array<{ name: string; latency_ms?: number | null; error?: boolean }>
+    tool_calls?: Array<{ name?: string | null; latency_ms?: number | null; error?: boolean | null }>
   }
+}
+
+export interface TraceToolCall {
+  name: string
+  latencyMs: number | null
+  error: boolean
+}
+
+/** Tool calls stored on a mapped turn (`extra.tool_calls`). Drops blank rows. */
+export function turnToolCalls(extra?: TraceTurnLike['extra'] | null): TraceToolCall[] {
+  const rows = extra?.tool_calls
+  if (!Array.isArray(rows)) return []
+  const calls: TraceToolCall[] = []
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue
+    const name = String(row.name ?? '').trim()
+    if (!name) continue
+    const latency = row.latency_ms
+    calls.push({
+      name,
+      latencyMs: typeof latency === 'number' && Number.isFinite(latency) ? latency : null,
+      error: row.error === true,
+    })
+  }
+  return calls
 }
 
 export function textSimilar(a: string, b: string): boolean {
