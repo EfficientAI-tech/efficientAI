@@ -127,6 +127,39 @@ async def _start_agent_tts_streamer(test_agent: Any):
     return streamer
 
 
+
+def _red_team_evaluator_stub(caller_override: Dict[str, Any]) -> Any:
+    """Red team voice calls (EFF-36) have no Evaluator row; the bridge only reads these fields."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        id=None,
+        evaluator_id=f"red-team-{caller_override.get('run_ref') or ''}",
+        agent_id=caller_override["agent_id"],
+        persona_id=caller_override["persona_id"],
+        scenario_id=None,
+    )
+
+
+def _red_team_scenario_stub(caller_override: Dict[str, Any]) -> Any:
+    """Stand-in scenario for red team calls; the caller prompt comes from ``caller_override``."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        id=None,
+        name="Red team attack",
+        description=caller_override.get("goal") or "Red team attack",
+        required_info={},
+        expected_tool_calls=None,
+    )
+
+
+def _max_call_seconds(caller_override: Optional[Dict[str, Any]]) -> int:
+    if caller_override and caller_override.get("max_call_seconds"):
+        return int(caller_override["max_call_seconds"])
+    return 600
+
+
 class TestAgentBridgeService:
     """Service to bridge test voice AI agent with Voice AI agent."""
 
@@ -140,6 +173,7 @@ class TestAgentBridgeService:
         evaluator_result_id: UUID,
         organization_id: UUID,
         db,
+        caller_override: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Main bridging logic to connect test agent to Voice AI agent.
@@ -152,7 +186,11 @@ class TestAgentBridgeService:
         from app.models.database import Evaluator, Persona, Scenario
 
         # Load evaluator and related entities
-        evaluator = db.query(Evaluator).filter(Evaluator.id == evaluator_id).first()
+        evaluator = (
+            _red_team_evaluator_stub(caller_override)
+            if caller_override is not None
+            else db.query(Evaluator).filter(Evaluator.id == evaluator_id).first()
+        )
         if not evaluator:
             raise ValueError(f"Evaluator {evaluator_id} not found")
 
@@ -164,7 +202,11 @@ class TestAgentBridgeService:
         if not persona:
             raise ValueError(f"Persona {evaluator.persona_id} not found")
 
-        scenario = db.query(Scenario).filter(Scenario.id == evaluator.scenario_id).first()
+        scenario = (
+            _red_team_scenario_stub(caller_override)
+            if caller_override is not None
+            else db.query(Scenario).filter(Scenario.id == evaluator.scenario_id).first()
+        )
         if not scenario:
             raise ValueError(f"Scenario {evaluator.scenario_id} not found")
 
@@ -234,7 +276,8 @@ class TestAgentBridgeService:
                     "organization_id": str(organization_id),
                     "test_agent_mode": True,
                     "persona_id": str(persona.id),
-                    "scenario_id": str(scenario.id),
+                    "scenario_id": str(scenario.id) if scenario.id else None,
+                    "red_team": caller_override is not None,
                 },
             )
             logger.info(f"[Bridge] provider.create_web_call() returned: {list(web_call_response.keys()) if web_call_response else 'None'}")
@@ -299,6 +342,7 @@ class TestAgentBridgeService:
                     provider_platform=platform_value,
                     evaluator_result_id=evaluator_result_id,
                     voice_bundle_id=agent.voice_bundle_id,
+                    caller_override=caller_override,
                     db=db,
                 )
             )
@@ -312,6 +356,7 @@ class TestAgentBridgeService:
                     evaluator_result_id=evaluator_result_id,
                     organization_id=organization_id,
                     db=db,
+                    skip_metric_evaluation=bool(caller_override and caller_override.get("skip_metric_evaluation")),
                 )
             )
 
@@ -325,7 +370,7 @@ class TestAgentBridgeService:
                 logger.info("[Bridge] Waiting for bridge task to complete...")
 
                 try:
-                    await asyncio.wait_for(bridge_task, timeout=600)  # 10 minute max call duration
+                    await asyncio.wait_for(bridge_task, timeout=_max_call_seconds(caller_override))  # 10 minute default max call duration
                     logger.info(f"[Bridge] Bridge task completed for call {call_id}")
                 except asyncio.TimeoutError:
                     logger.warning(f"[Bridge] Bridge task timed out for call {call_id}")
@@ -392,6 +437,7 @@ class TestAgentBridgeService:
         evaluator_result_id: UUID,
         voice_bundle_id: UUID,
         db,
+        caller_override: Optional[Dict[str, Any]] = None,
     ):
         """
         Connect test agent and bridge to Retell/Vapi (WebRTC) or ElevenLabs (WebSocket).
@@ -519,7 +565,11 @@ class TestAgentBridgeService:
             # Load agent, persona and scenario for the test agent
             agent = db.query(Agent).filter(Agent.id == agent_id).first()
             persona = db.query(Persona).filter(Persona.id == persona_id).first()
-            scenario = db.query(Scenario).filter(Scenario.id == scenario_id).first()
+            scenario = (
+                _red_team_scenario_stub(caller_override)
+                if caller_override is not None
+                else db.query(Scenario).filter(Scenario.id == scenario_id).first()
+            )
 
             if not agent:
                 raise ValueError(f"Agent not found: {agent_id}")
@@ -728,6 +778,8 @@ class TestAgentBridgeService:
                     scenario_first_message=scenario_first_message,
                 )
                 caller_speaks_first = should_caller_speak_first(first_message_config)
+                if caller_override is not None and caller_override.get("first_message"):
+                    first_message = caller_override["first_message"]
 
                 persona_description = build_persona_description_for_bridge(persona)
                 effective_max_turns = resolve_persona_max_turns(persona)
@@ -739,6 +791,8 @@ class TestAgentBridgeService:
                     max_turns=effective_max_turns,
                     persona_description=persona_description,
                 )
+                if caller_override is not None and caller_override.get("caller_system_prompt"):
+                    caller_system_prompt = caller_override["caller_system_prompt"]
 
                 test_agent_config = TestAgentConfig(
                     organization_id=organization_id,
@@ -1165,6 +1219,7 @@ class TestAgentBridgeService:
         evaluator_result_id: UUID,
         organization_id: UUID,
         db,
+        skip_metric_evaluation: bool = False,
         max_attempts: int = 120,  # Poll for up to 10 minutes (5 second intervals)
         poll_interval: int = 5,
     ):
@@ -1365,7 +1420,12 @@ class TestAgentBridgeService:
                         logger.info("[Bridge Poll] ✅ All call data committed to database")
 
                         # === Status: EVALUATING ===
-                        if transcript_text:
+                        if transcript_text and skip_metric_evaluation:
+                            # Red team calls: the red team judge scores the transcript instead of metrics.
+                            result.status = EvaluatorResultStatus.COMPLETED.value
+                            result.error_message = None
+                            poll_db.commit()
+                        elif transcript_text:
                             result.status = EvaluatorResultStatus.EVALUATING.value
                             result.error_message = None
                             poll_db.commit()

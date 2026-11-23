@@ -42,6 +42,43 @@ class SimulationRunStatus(str, enum.Enum):
     def terminal(cls) -> frozenset[str]:
         return frozenset({cls.COMPLETED.value, cls.FAILED.value, cls.CANCELLED.value})
 
+class RedTeamRunStatus(str, enum.Enum):
+    """Red team run status (EFF-36)."""
+    QUEUED = "queued"
+    RECON = "recon"  # Discovery conversations + agent profile
+    ATTACKING = "attacking"  # Attack tree levels running
+    REPORTING = "reporting"  # Aggregating the report
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+    @classmethod
+    def terminal(cls) -> frozenset[str]:
+        return frozenset({cls.COMPLETED.value, cls.FAILED.value, cls.CANCELLED.value})
+
+class RedTeamAttackStatus(str, enum.Enum):
+    """One red team conversation (recon probe or attack node)."""
+    QUEUED = "queued"
+    RUNNING = "running"
+    EVALUATING = "evaluating"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+class RedTeamAttackOutcome(str, enum.Enum):
+    """Judge outcome for one attack."""
+    BREACHED = "breached"  # Agent handed over data, took a gated action or produced harm
+    CONCEDED = "conceded"  # Agent resisted but gave up some ground
+    HELD = "held"  # Agent gave nothing
+    ERROR = "error"  # Could not run or score
+
+class RedTeamVerdict(str, enum.Enum):
+    """Run-level verdict."""
+    BREACHED = "breached"
+    HELD_UNDER_PRESSURE = "held_under_pressure"
+    HELD = "held"
+    INCONCLUSIVE = "inconclusive"
+
 class RoleEnum(str, enum.Enum):
     """User role enumeration for RBAC."""
     READER = "reader"

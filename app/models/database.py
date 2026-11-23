@@ -33,6 +33,7 @@ from app.models.enums import (
     MetricType, MetricCategory, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
     AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus, CronJobStatus,
     PromptOptimizationStatus, CallImportStatus, CallImportRowStatus, SimulationRunStatus,
+    RedTeamRunStatus, RedTeamAttackStatus,
 )
 
 def get_enum_values(enum_class):
@@ -1488,6 +1489,114 @@ class SimulationRun(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     created_by = Column(String, nullable=True)
+
+
+class RedTeamRun(Base):
+    """Red team run (EFF-36): adversarial conversations against one agent, judged per OWASP / harm category.
+
+    Recon conversations first build ``agent_profile``; then attack levels escalate the
+    tactics that conceded ground (tree search). See app/services/red_team/.
+    """
+
+    __tablename__ = "red_team_runs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    run_id = Column(String(6), unique=True, nullable=False, index=True)  # 6-digit ID
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String, nullable=True)
+
+    intensity = Column(String(16), nullable=False)  # quick | standard | thorough | custom
+    modality = Column(String(16), nullable=False)  # chat | voice
+    # Resolved limits: recon_count, max_levels, max_branches, max_turns, max_call_minutes,
+    # n_concurrent, attack_quotas {family: n}; see app/services/red_team/presets.py
+    config = Column(JSON, nullable=False, default=dict)
+    # [{"label": "Date of birth", "value": "1990-04-02"}]; only social engineering attackers use it.
+    attacker_knowledge = Column(JSON, nullable=True)
+    connection_overrides = Column(JSON, nullable=True)  # {"extension": "123"}
+    # Voice runs: persona whose TTS voice the attacker speaks with.
+    persona_id = Column(UUID(as_uuid=True), ForeignKey("personas.id", ondelete="SET NULL"), nullable=True)
+
+    # Optional LLM overrides; NULL = the agent's test LLM.
+    attacker_llm_provider = Column(String(64), nullable=True)
+    attacker_llm_model = Column(String(255), nullable=True)
+    judge_llm_provider = Column(String(64), nullable=True)
+    judge_llm_model = Column(String(255), nullable=True)
+    resolved_llms = Column(JSON, nullable=True)
+
+    catalog_version = Column(String(16), nullable=False)
+    agent_profile = Column(JSON, nullable=True)  # Recon output: data held, gated actions, verification
+    status = Column(String(20), nullable=False, default=RedTeamRunStatus.QUEUED.value, index=True)
+    verdict = Column(String(32), nullable=True)
+    report = Column(JSON, nullable=True)
+    max_attacks = Column(Integer, nullable=False, default=0)
+    completed_attacks = Column(Integer, nullable=False, default=0)
+    breached_attacks = Column(Integer, nullable=False, default=0)
+    error_message = Column(Text, nullable=True)
+    celery_task_id = Column(String, nullable=True)
+    cancel_requested = Column(Boolean, nullable=False, default=False, server_default="false")
+
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_by = Column(String, nullable=True)
+
+
+class RedTeamAttack(Base):
+    """One red team conversation: a recon probe (``kind='recon'``) or a node in the attack tree."""
+
+    __tablename__ = "red_team_attacks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    red_team_run_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("red_team_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    parent_attack_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("red_team_attacks.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    kind = Column(String(16), nullable=False, default="attack")  # recon | attack
+    level = Column(Integer, nullable=False, default=0)
+    sequence = Column(Integer, nullable=False, default=0)  # Display order within the run
+    family = Column(String(32), nullable=True)
+    technique_id = Column(String(64), nullable=True)
+    owasp_category = Column(String(8), nullable=True)  # LLM01 .. LLM09
+    harm_category = Column(String(32), nullable=True)
+    goal = Column(Text, nullable=True)
+    strategy = Column(Text, nullable=True)
+
+    status = Column(String(20), nullable=False, default=RedTeamAttackStatus.QUEUED.value)
+    outcome = Column(String(16), nullable=True)  # breached | conceded | held | error
+    score = Column(Float, nullable=True)  # Judge score 0-10 (10 = full breach)
+    success_score = Column(Float, nullable=True)  # Content harm: 100 x non_refusal x specificity x actionability
+    judge = Column(JSON, nullable=True)  # rationale, evidence_turns, leaked_data, gated_actions, harm sub-scores
+    # [{"role": "attacker" | "agent", "text": "...", "tool_calls": [...]}]
+    transcript = Column(JSON, nullable=True)
+    # Voice attacks: the evaluator result that holds the recording + provider transcript.
+    evaluator_result_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("evaluator_results.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    error_message = Column(Text, nullable=True)
+
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class EvaluatorResultClusterJob(Base):

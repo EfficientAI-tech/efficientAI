@@ -24,6 +24,7 @@ from app.workers.tasks import (
 )
 from app.workers.tasks.ingest_knowledge_document import ingest_knowledge_document_task
 from app.workers.tasks.run_harbor_simulation import run_harbor_simulation_task
+from app.workers.tasks.run_red_team import run_red_team_task
 
 __all__ = [
     "celery_app",
@@ -40,4 +41,5 @@ __all__ = [
     "finalize_telephony_recording_task",
     "ingest_knowledge_document_task",
     "run_harbor_simulation_task",
+    "run_red_team_task",
 ]

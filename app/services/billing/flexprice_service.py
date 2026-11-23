@@ -62,6 +62,7 @@ FEATURE_METRICS_AI_ASSIST = "metrics_ai_assist"
 FEATURE_METRIC_STUDIO = "metric_studio"
 FEATURE_SCENARIO_AI = "scenario_ai"
 FEATURE_PROMPT_PARTIALS = "prompt_partials"
+FEATURE_RED_TEAMING = "red_teaming"
 
 # Audit-only ui_surface values (never wire Flexprice meters to these).
 UI_SURFACE_AGENTS_TALK = "agents_talk"
@@ -88,6 +89,7 @@ PLAYGROUND_WEBSOCKET_SESSION_STARTED = "playground.websocket_session_started"
 PLAYGROUND_CALL_EVALUATED = "playground.call_evaluated"
 PLAYGROUND_EVALUATION_COMPLETED = "playground.evaluation_completed"
 EVALUATOR_RUN_REQUESTED = "evaluator.run_requested"
+RED_TEAM_ATTACK_COMPLETED = "red_team.attack_completed"
 EVALUATOR_RUN_COMPLETED = "evaluator.run_completed"
 EVALUATOR_RECORDING_MINUTES_BILLED = "evaluator.recording_minutes_billed"
 EVALUATION_CREATED = "evaluation.created"
@@ -1508,5 +1510,35 @@ def record_agent_test_setup_generated(
             purpose=purpose,
             model=model,
             scenario_count=scenario_count,
+        ),
+    )
+
+
+def buffer_red_team_attack_completed(
+    organization_id: UUID,
+    attack_id: UUID,
+    *,
+    workspace_id: UUID,
+    red_team_run_id: UUID,
+    modality: str,
+    family: str,
+    call_seconds: Optional[float] = None,
+) -> bool:
+    """One billable red team conversation (EFF-36); idempotent per attack."""
+    from app.services.billing.flexprice_buffer import enqueue_flexprice_event
+
+    return enqueue_flexprice_event(
+        RED_TEAM_ATTACK_COMPLETED,
+        organization_id,
+        str(attack_id),
+        properties=_event_properties(
+            workspace_id,
+            FEATURE_RED_TEAMING,
+            quantity=1,
+            red_team_run_id=red_team_run_id,
+            attack_id=attack_id,
+            modality=modality,
+            family=family,
+            call_seconds=call_seconds,
         ),
     )

@@ -64,6 +64,7 @@ import EvaluatorResultDetail from './pages/evaluators/results/EvaluatorResultDet
 import EvaluationDetail from './pages/evaluators/results/EvaluationDetail'
 import EvaluationsList from './pages/evaluators/results/EvaluationsList'
 import SimulationRunDetail from './pages/simulations/SimulationRunDetail'
+import RedTeamRunDetail from './pages/redTeam/RedTeamRunDetail'
 
 // Observability
 import Observability from './pages/observability/Observability'
@@ -238,6 +239,7 @@ function App() {
           />
           <Route path="results/:id" element={<EvaluatorResultDetail />} />
           <Route path="simulations/:runId" element={<SimulationRunDetail />} />
+          <Route path="red-team/:runRef" element={<RedTeamRunDetail />} />
           <Route path="observability" element={<Observability />} />
           <Route path="observability/calls" element={<TestInsights />} />
           <Route path="observability/calls/:callShortId" element={<ObservabilityCallDetail />} />

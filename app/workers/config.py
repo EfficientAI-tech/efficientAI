@@ -85,6 +85,8 @@ PLATFORM_WORKER_QUEUE = "platform"
 NOTIFICATIONS_WORKER_QUEUE = os.environ.get("NOTIFICATIONS_WORKER_QUEUE", "platform")
 TRACES_WORKER_QUEUE = "traces"
 HARBOR_WORKER_QUEUE = "harbor-sim"
+# Red team runs hold a worker slot for the whole run (threads drive the conversations).
+RED_TEAM_WORKER_QUEUE = os.environ.get("RED_TEAM_WORKER_QUEUE", "celery")
 
 
 def _usage_flush_beat_seconds() -> float:
@@ -245,6 +247,7 @@ celery_app.conf.task_routes = {
     "evaluate_studio_run_item": {"queue": "evaluations"},
     # Harbor jobs need Python 3.12 + the harbor extra (worker-harbor service).
     "run_harbor_simulation": {"queue": HARBOR_WORKER_QUEUE},
+    "run_red_team": {"queue": RED_TEAM_WORKER_QUEUE},
     "analyze_simulation_run_failures": {"queue": "evaluations"},
     "generate_agent_flowchart": {"queue": "celery"},
     "map_agent_flowchart_prompt_sections": {"queue": "celery"},

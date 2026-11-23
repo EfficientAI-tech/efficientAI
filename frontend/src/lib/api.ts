@@ -3,6 +3,7 @@ export { uploadFileToPresignedPutUrl } from './presignedUpload'
 import { CallImportsApi, type CallImportAudioUploadProgress } from '../pages/callImports/api/callImportsApi'
 export type { CallImportAudioUploadProgress } from '../pages/callImports/api/callImportsApi'
 export { AUDIO_UPLOAD_CHUNK_SIZE } from '../pages/callImports/api/callImportsApi'
+import { RedTeamApi } from './redTeamApi'
 import {
   clearAuthSession,
   csrfHeaders,
@@ -606,6 +607,7 @@ let refreshPromise: Promise<boolean> | null = null
 class ApiClient {
   private client: AxiosInstance
   readonly callImports: CallImportsApi
+  readonly redTeam: RedTeamApi
   private inMemoryAccessToken: string | null = null
   private inMemoryRefreshToken: string | null = null
   private cookieSessionEnabled = true
@@ -620,6 +622,7 @@ class ApiClient {
     })
 
     this.callImports = new CallImportsApi(this.client)
+    this.redTeam = new RedTeamApi(this.client)
 
     this.client.interceptors.request.use((config) => {
       const apiKey = this.cookieSessionEnabled ? null : localStorage.getItem('apiKey')

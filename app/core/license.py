@@ -79,6 +79,11 @@ FEATURE_CATALOG: Dict[str, Dict[str, str]] = {
         "description": "Self-improving voice agents via reflective prompt evolution (GEPA). Open source — catalog entry kept for legacy JWT compatibility.",
         "category": "optimization",
     },
+    "red_team_custom": {
+        "title": "Red Teaming: Custom Intensity",
+        "description": "Set red team attempts per attack family (up to 20 each) instead of the Quick / Standard / Thorough presets.",
+        "category": "evaluation",
+    },
     # --- Authentication features (gate pluggable auth providers) ---
     "oidc_sso": {
         "title": "Enterprise SSO (OIDC)",
@@ -127,6 +132,7 @@ DEFAULT_ENTERPRISE_OFFERINGS: List[str] = [
     "scenario_metrics",
     "db_sharding",
     "llm_gateway",
+    "red_team_custom",
 ]
 
 # RSA public key used to verify enterprise license JWTs.

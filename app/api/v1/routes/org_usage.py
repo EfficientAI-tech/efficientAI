@@ -73,6 +73,7 @@ SECTION_LABELS = {
     "conversation_evaluations": "Conversation Evaluations",
     "telephony": "Telephony",
     "test_agent": "Test Agent",
+    "red_team": "Red Teaming",
     "other": "Other",
 }
 

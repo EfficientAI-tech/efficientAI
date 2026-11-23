@@ -20,6 +20,7 @@ import type { AgentDetailTab } from './components/AgentInfoView'
 import AgentEditForm from './components/AgentEditForm'
 import AgentTalkSidebar from './components/AgentTalkSidebar'
 import AgentSimulationsPanel from '../simulations/AgentSimulationsPanel'
+import AgentRedTeamPanel from '../redTeam/AgentRedTeamPanel'
 import { Save, X } from 'lucide-react'
 import { extractPhoneConflictDetail } from './components/agentPhoneValidation'
 import {
@@ -51,10 +52,10 @@ import {
 import { chatEvalModeForConnection } from './components/create/chatPreprodScope'
 import type { ChatIntegrationOptionId } from './components/create/ChatIntegrationTypeStep'
 
-// 'simulations' is a workspace-only tab (Harbor runs); info/edit views never see it.
-type WorkspaceTab = AgentDetailTab | 'simulations'
+// 'simulations' (Harbor runs) and 'red_team' are workspace-only tabs; info/edit views never see them.
+type WorkspaceTab = AgentDetailTab | 'simulations' | 'red_team'
 
-const VALID_TABS: WorkspaceTab[] = ['overview', 'test_agent', 'voice_ai_agent', 'simulations']
+const VALID_TABS: WorkspaceTab[] = ['overview', 'test_agent', 'voice_ai_agent', 'simulations', 'red_team']
 
 function parseTabFromSearch(params: URLSearchParams): WorkspaceTab {
   const tab = params.get('tab')
@@ -597,12 +598,14 @@ export default function AgentWorkspaceDetail({
                     { id: 'test_agent' as const, label: 'Test Agent' },
                     { id: 'voice_ai_agent' as const, label: agentProductionTabLabel('chat') },
                     { id: 'simulations' as const, label: 'Simulations' },
+                    { id: 'red_team' as const, label: 'Red Teaming' },
                   ]
                 : [
                     { id: 'overview' as const, label: 'Overview' },
                     { id: 'test_agent' as const, label: 'Test Agent' },
                     { id: 'voice_ai_agent' as const, label: agentProductionTabLabel('voice') },
                     { id: 'simulations' as const, label: 'Simulations' },
+                    { id: 'red_team' as const, label: 'Red Teaming' },
                   ]
             ).map((tab) => (
               <button
@@ -624,6 +627,8 @@ export default function AgentWorkspaceDetail({
         <div className="flex-1 min-h-0 overflow-y-auto p-4">
           {activeTab === 'simulations' ? (
             <AgentSimulationsPanel agent={agent} />
+          ) : activeTab === 'red_team' ? (
+            <AgentRedTeamPanel agent={agent} />
           ) : !isEditMode ? (
             <AgentInfoView
               agent={agent}
