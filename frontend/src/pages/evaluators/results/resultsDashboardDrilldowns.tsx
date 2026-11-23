@@ -455,9 +455,9 @@ function UsageModelDrillLeaf({
   const spendHeadline = formatUsageCostUsd(headlineUsd, displayCurrency, inrRate)
   const unit =
     layer?.usd_per_minute != null
-      ? `$${layer.usd_per_minute}/min`
+      ? `${formatUsageCostExactUsd(layer.usd_per_minute, displayCurrency, inrRate)}/min`
       : layer?.usd_per_million_tokens != null
-        ? `$${layer.usd_per_million_tokens}/1M tok`
+        ? `${formatUsageCostExactUsd(layer.usd_per_million_tokens, displayCurrency, inrRate)}/1M tok`
         : null
 
   return (
@@ -551,8 +551,6 @@ export function UsageWidgetDetail({
   const [viewId, setViewId] = useState(views[0]?.id ?? 'stt')
   const [focusModel, setFocusModel] = useState<string | null>(null)
   const activeId = views.some((view) => view.id === viewId) ? viewId : views[0]?.id
-  const chart = usageDetail(ops, activeId ?? 'stt', focusModel)
-  const spend = usageFacts(ops)
   const [displayCurrency, setDisplayCurrency] = useState<UsageDisplayCurrency>(readUsageDisplayCurrency)
   const { data: fxRate } = useQuery({
     queryKey: ['org-usage', 'fx-rate'],
@@ -560,6 +558,8 @@ export function UsageWidgetDetail({
     staleTime: 60 * 60 * 1000,
   })
   const inrRate = fxRate?.rate ?? 95
+  const chart = usageDetail(ops, activeId ?? 'stt', focusModel, { currency: displayCurrency, inrRate })
+  const spend = usageFacts(ops, { currency: displayCurrency, inrRate })
   const totalUsd = (ops?.cost_by_agent ?? []).reduce((sum, row) => sum + row.total_usd, 0)
   const spendHeadline = formatUsageCostUsd(totalUsd, displayCurrency, inrRate)
 

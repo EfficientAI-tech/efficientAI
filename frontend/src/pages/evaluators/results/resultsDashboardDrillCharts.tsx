@@ -157,6 +157,21 @@ export function DrillChartPanel({
   displayCurrency?: UsageDisplayCurrency
 }) {
   const { headline, caption, headlineRight, captionRight, series } = model
+  const currencyAxis = valueFormat === 'currency'
+    ? {
+      width: 72,
+      tickFormatter: (value: number) => formatUsageCostExactUsd(value, displayCurrency, inrRate),
+    }
+    : { width: 40, tickFormatter: undefined }
+  const valueAxis = (
+    <YAxis
+      tick={{ fontSize: 11, fill: '#6b7280' }}
+      axisLine={false}
+      tickLine={false}
+      width={currencyAxis.width}
+      tickFormatter={currencyAxis.tickFormatter}
+    />
+  )
   const catKey = categoryKey(model.data)
   const data = chartDataWithLabels(model.data, catKey)
   const resolvedDisplay: ResultsChartType = display
@@ -264,7 +279,7 @@ export function DrillChartPanel({
           <AreaChart data={data} onClick={chartClick} style={chartStyle}>
             {grid}
             <XAxis dataKey={catKey} tick={{ fontSize: 11, fill: '#6b7280' }} axisLine={false} tickLine={false} />
-            <YAxis tick={{ fontSize: 11, fill: '#6b7280' }} axisLine={false} tickLine={false} width={40} />
+            {valueAxis}
             {tooltip}
             {series.map((item) => (
               <Area
@@ -305,7 +320,7 @@ export function DrillChartPanel({
           <LineChart data={data} onClick={chartClick} style={chartStyle}>
             {grid}
             <XAxis dataKey={catKey} tick={{ fontSize: 11, fill: '#6b7280' }} axisLine={false} tickLine={false} />
-            <YAxis tick={{ fontSize: 11, fill: '#6b7280' }} axisLine={false} tickLine={false} width={40} />
+            {valueAxis}
             {tooltip}
             {series.map((item) => (
               <Line
@@ -343,7 +358,7 @@ export function DrillChartPanel({
         <BarChart data={data} onClick={chartClick} style={chartStyle}>
           {grid}
           <XAxis dataKey={catKey} tick={{ fontSize: 11, fill: '#6b7280' }} axisLine={false} tickLine={false} />
-          <YAxis tick={{ fontSize: 11, fill: '#6b7280' }} axisLine={false} tickLine={false} width={40} />
+          {valueAxis}
           {tooltip}
           {series.map((item) => (
             <Bar

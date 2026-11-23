@@ -461,17 +461,22 @@ export function usageHasS2S(ops: EvaluatorResultsDashboardOpsResponse | undefine
   return (ops?.model_layers ?? []).some((row) => row.usage_kind === 's2s')
 }
 
-export function usageFacts(ops: EvaluatorResultsDashboardOpsResponse | undefined): { most: string; least: string; highest: string } {
+export function usageFacts(
+  ops: EvaluatorResultsDashboardOpsResponse | undefined,
+  options?: { currency?: UsageDisplayCurrency; inrRate?: number },
+): { most: string; least: string; highest: string } {
   const totals = new Map<string, number>()
   for (const row of ops?.model_layers ?? []) {
     if (row.cost_usd <= 0) continue
     totals.set(row.model, (totals.get(row.model) ?? 0) + row.cost_usd)
   }
   const ranked = Array.from(totals.entries()).sort((a, b) => b[1] - a[1])
+  const currency = options?.currency ?? getUsageDisplayCurrency()
+  const inrRate = options?.inrRate ?? 95
   return {
     most: ranked[0]?.[0] ?? '—',
     least: ranked[ranked.length - 1]?.[0] ?? '—',
-    highest: ranked[0] ? formatUsd(ranked[0][1]) : '—',
+    highest: ranked[0] ? formatUsageCostUsd(ranked[0][1], currency, inrRate) : '—',
   }
 }
 
@@ -479,7 +484,11 @@ export function usageDetail(
   ops: EvaluatorResultsDashboardOpsResponse | undefined,
   view: string,
   focus: string | null,
+  options?: { currency?: UsageDisplayCurrency; inrRate?: number },
 ): ChartModel {
+  const currency = options?.currency ?? getUsageDisplayCurrency()
+  const inrRate = options?.inrRate ?? 95
+  const money = (usd: number) => formatUsageCostUsd(usd, currency, inrRate)
   const layers = ops?.model_layers ?? []
   if (view === 'price_minute' || view === 'price_million') {
     const rateKey = view === 'price_minute' ? 'usd_per_minute' : 'usd_per_million_tokens'
@@ -496,7 +505,7 @@ export function usageDetail(
     }
     const spent = history.reduce((sum, row) => sum + row.cost_usd, 0)
     return {
-      headline: formatUsd(spent),
+      headline: money(spent),
       caption: view === 'price_minute' ? 'Daily spend, priced per minute' : 'Daily spend, priced per 1M tokens',
       data: Array.from(byDay.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([day, values]) => ({
         day: formatDayLabel(day),
@@ -522,7 +531,7 @@ export function usageDetail(
   const layerTotal = models.reduce((sum, row) => sum + row.cost_usd, 0)
   const total = stacked > 0 ? stacked : layerTotal
   return {
-    headline: formatUsd(total),
+    headline: money(total),
     caption: `${view.toUpperCase()} models`,
     data,
     series: agents.map((agent, index) => ({
