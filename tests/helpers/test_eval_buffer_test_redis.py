@@ -1,19 +1,30 @@
+import pytest
+
 from tests.helpers.eval_buffer_test_redis import (
     _redis_url_with_db,
     eval_buffer_test_redis_url,
 )
 
 
-def test_eval_buffer_test_redis_url_serial_uses_base():
-    assert (
-        eval_buffer_test_redis_url("master")
-        == "redis://localhost:6379/15"
-    )
+@pytest.fixture
+def default_eval_buffer_env(monkeypatch):
+    """Default-value tests must not inherit CI/local ``EVAL_BUFFER_TEST_REDIS_URL``."""
+    monkeypatch.delenv("EVAL_BUFFER_TEST_REDIS_URL", raising=False)
 
 
-def test_eval_buffer_test_redis_url_parallel_maps_worker_to_db():
+def test_eval_buffer_test_redis_url_serial_uses_base(default_eval_buffer_env):
+    assert eval_buffer_test_redis_url("master") == "redis://localhost:6379/15"
+
+
+def test_eval_buffer_test_redis_url_parallel_maps_worker_to_db(default_eval_buffer_env):
     assert eval_buffer_test_redis_url("gw0") == "redis://localhost:6379/1"
     assert eval_buffer_test_redis_url("gw14") == "redis://localhost:6379/15"
+
+
+def test_eval_buffer_test_redis_url_respects_configured_host(monkeypatch):
+    monkeypatch.setenv("EVAL_BUFFER_TEST_REDIS_URL", "redis://redis:6379/15")
+    assert eval_buffer_test_redis_url("master") == "redis://redis:6379/15"
+    assert eval_buffer_test_redis_url("gw0") == "redis://redis:6379/1"
 
 
 def test_redis_url_with_db_preserves_query_options(monkeypatch):
