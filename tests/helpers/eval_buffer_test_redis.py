@@ -3,7 +3,21 @@
 from __future__ import annotations
 
 import os
-import re
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+
+
+def _redis_url_with_db(url: str, db: int) -> str:
+    """Return ``url`` with the logical Redis database set to ``db`` (path + ``db`` query)."""
+    parsed = urlparse(url)
+    path = f"/{db}"
+    if parsed.query:
+        params = parse_qs(parsed.query, keep_blank_values=True)
+        if "db" in params:
+            params["db"] = [str(db)]
+        query = urlencode(params, doseq=True)
+    else:
+        query = parsed.query
+    return urlunparse(parsed._replace(path=path, query=query))
 
 
 def eval_buffer_test_redis_url(worker_id: str) -> str:
@@ -20,6 +34,4 @@ def eval_buffer_test_redis_url(worker_id: str) -> str:
         db = 1 + (int(worker_id[2:]) % 15)
     except (ValueError, IndexError):
         return base
-    if re.search(r"/\d+$", base):
-        return re.sub(r"/\d+$", f"/{db}", base)
-    return f"{base.rstrip('/')}/{db}"
+    return _redis_url_with_db(base, db)
