@@ -4,6 +4,8 @@ import {
   type MetricRow,
 } from '../evaluators/components/metricSelectionUtils'
 
+export type { MetricRow }
+
 export function isGoldenMetric(metric: MetricRow): boolean {
   return !metric.agent_ids?.length && !metric.scenario_ids?.length
 }

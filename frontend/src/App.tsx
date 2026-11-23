@@ -20,6 +20,7 @@ import UsagePage, { UsagePricingRedirect } from './pages/usage/UsagePage'
 
 // Prompt Partials
 import PromptPartials from './pages/promptPartials/PromptPartials'
+import PromptsLayout from './pages/prompts/PromptsLayout'
 
 // Agents
 import AgentsWorkspace from './pages/agents/AgentsWorkspace'
@@ -214,9 +215,9 @@ function App() {
           <Route path="knowledge-bases/:id" element={<KnowledgeBaseDetail />} />
           <Route path="tools" element={<ToolsHub />} />
           <Route path="metrics" element={<Navigate to="/metrics-management" replace />} />
-          <Route path="integrations" element={<Integrations />} />
-          <Route path="telephony-numbers" element={<TelephonyNumbers />} />
-          <Route path="data-sources" element={<DataSources />} />
+          <Route path="integrations" element={<PreserveSearchRedirect to="/settings/integrations" />} />
+          <Route path="telephony-numbers" element={<PreserveSearchRedirect to="/settings/telephony" />} />
+          <Route path="data-sources" element={<PreserveSearchRedirect to="/settings/cloud-storage" />} />
           <Route path="voicebundles" element={<VoiceBundles />} />
           <Route path="evaluate-test-agents" element={<EvaluateTestAgents />} />
           <Route path="evaluate-test-agents/:id" element={<EvaluatorDetail />} />
@@ -241,31 +242,45 @@ function App() {
           <Route path="observability" element={<Observability />} />
           <Route path="observability/calls" element={<TestInsights />} />
           <Route path="observability/calls/:callShortId" element={<ObservabilityCallDetail />} />
+          <Route path="observability/usage" element={<UsagePage />} />
           <Route path="calls" element={<PreserveSearchRedirect to="/observability/calls" />} />
           <Route path="calls/:traceId" element={<CallTraceDetail />} />
           <Route path="call-traces" element={<Navigate to="/observability/calls" replace />} />
           <Route path="call-traces/:traceId" element={<CallTraceDetail />} />
           <Route path="test-insights" element={<PreserveSearchRedirect to="/observability/calls" />} />
-          <Route path="iam" element={<IAM />} />
-          <Route path="usage" element={<UsagePage />} />
+          <Route path="iam" element={<PreserveSearchRedirect to="/settings/members" />} />
+          <Route path="usage" element={<PreserveSearchRedirect to="/observability/usage" />} />
           <Route path="usage/pricing" element={<UsagePricingRedirect />} />
           <Route
             path="workspace-members"
-            element={<Navigate to="/iam?tab=workspace-members" replace />}
+            element={<Navigate to="/settings/members?tab=workspace-members" replace />}
           />
           <Route path="profile" element={<Profile />} />
-          <Route path="settings" element={<Settings />} />
+          <Route path="settings" element={<Navigate to="/settings/api-keys" replace />} />
+          <Route path="settings/api-keys" element={<Settings />} />
+          <Route path="settings/integrations" element={<Integrations />} />
+          <Route path="settings/cloud-storage" element={<DataSources />} />
+          <Route path="settings/telephony" element={<TelephonyNumbers />} />
+          <Route path="settings/members" element={<IAM />} />
           <Route path="alerts" element={<EnterpriseGate feature="alerts"><Alerts /></EnterpriseGate>} />
           <Route path="alerts/history" element={<EnterpriseGate feature="alerts"><AlertHistory /></EnterpriseGate>} />
           <Route path="alerts/:id" element={<EnterpriseGate feature="alerts"><AlertDetail /></EnterpriseGate>} />
           <Route path="voice-playground" element={<EnterpriseGate feature="voice_playground"><VoicePlayground /></EnterpriseGate>} />
           <Route path="cron-jobs" element={<CronJobs />} />
           <Route path="configurations/cron-jobs" element={<Navigate to="/cron-jobs" replace />} />
-          <Route path="prompt-partials" element={<PromptPartials />} />
-          <Route path="prompt-partials/:id" element={<PromptPartials />} />
+          <Route path="prompts" element={<PromptsLayout />}>
+            <Route index element={<Navigate to="partials" replace />} />
+            <Route path="partials" element={<PromptPartials embedded />} />
+            <Route path="partials/:id" element={<PromptPartials embedded />} />
+            <Route path="optimization" element={<PromptOptimization embedded />} />
+            <Route path="judge-alignment" element={<JudgeAlignment embedded />} />
+            <Route path="judge-alignment/datasets/:datasetId" element={<JudgeDatasetDetail />} />
+          </Route>
+          <Route path="prompt-partials" element={<PreserveSearchRedirect to="/prompts/partials" />} />
+          <Route path="prompt-partials/:id" element={<PromptPartialRedirect />} />
           <Route
             path="imported-agents"
-            element={<Navigate to="/prompt-partials?kind=imported_agent" replace />}
+            element={<Navigate to="/prompts/partials?kind=imported_agent" replace />}
           />
           <Route
             path="imported-agents/:id"
@@ -295,19 +310,31 @@ function App() {
               </EnterpriseGate>
             }
           />
-          <Route path="prompt-optimization" element={<PromptOptimization />} />
-          <Route path="judge-alignment" element={<JudgeAlignment />} />
-          <Route path="judge-alignment/datasets/:datasetId" element={<JudgeDatasetDetail />} />
+          <Route path="prompt-optimization" element={<PreserveSearchRedirect to="/prompts/optimization" />} />
+          <Route path="judge-alignment" element={<PreserveSearchRedirect to="/prompts/judge-alignment" />} />
+          <Route path="judge-alignment/datasets/:datasetId" element={<JudgeDatasetRedirect />} />
         </Route>
       </Routes>
     </BrowserRouter>
   )
 }
 
+function PromptPartialRedirect() {
+  const { id } = useParams<{ id: string }>()
+  const location = useLocation()
+  return <Navigate to={`/prompts/partials/${id}${location.search}`} replace />
+}
+
+function JudgeDatasetRedirect() {
+  const { datasetId } = useParams<{ datasetId: string }>()
+  const location = useLocation()
+  return <Navigate to={`/prompts/judge-alignment/datasets/${datasetId}${location.search}`} replace />
+}
+
 function ImportedAgentRedirect() {
   const { id } = useParams<{ id: string }>()
   return (
-    <Navigate to={`/prompt-partials/${id}?kind=imported_agent`} replace />
+    <Navigate to={`/prompts/partials/${id}?kind=imported_agent`} replace />
   )
 }
 

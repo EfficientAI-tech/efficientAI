@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
-import { useMemo, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
 import { apiClient } from '../../../lib/api'
 import type { EvaluatorResultRow, ListEvaluatorResultsParams } from '../../../types/api'
 import ResultsHierarchyNav, { type HierarchyCrumb } from './ResultsHierarchyNav'
@@ -22,6 +22,8 @@ import { isChatEvalResult } from '../../../lib/agentMedium'
 import { evalRunTypeLabel } from '../components/evaluatorUi'
 import { formatDuration, formatTimestamp, getStatusConfig } from './resultsFormatting'
 import { itemsOf } from '../../../lib/safeData'
+import { evaluatorResultOpenId } from './ResultsRunDetailDrawer'
+import { resultsDetailHref } from './resultsHubNavigation'
 
 const PAGE_SIZE = 50
 
@@ -41,6 +43,8 @@ interface ResultsRunsListProps {
   showScenarioColumn?: boolean
   /** Opens result in agent workspace when set; otherwise navigates to /results/:id */
   onResultClick?: (resultId: string) => void
+  /** Hides title, subtitle, and inline refresh (hub supplies refresh in the scope bar). */
+  compactHeader?: boolean
 }
 
 export default function ResultsRunsList({
@@ -56,8 +60,10 @@ export default function ResultsRunsList({
   showPersonaColumn = false,
   showScenarioColumn = false,
   onResultClick,
+  compactHeader = false,
 }: ResultsRunsListProps) {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const queryClient = useQueryClient()
   const [page, setPage] = useState(0)
   const [localStatusFilter, setLocalStatusFilter] = useState<StatusFilter>('all')
@@ -79,6 +85,11 @@ export default function ResultsRunsList({
     else setLocalStatusFilter(next)
     setPage(0)
   }
+
+  const listScopeKey = useMemo(() => JSON.stringify(listParams), [listParams])
+  useEffect(() => {
+    setPage(0)
+  }, [listScopeKey])
 
   const { data, isLoading, isFetching } = useQuery({
     queryKey: ['evaluator-results', listParams, page, apiStatus],
@@ -134,30 +145,32 @@ export default function ResultsRunsList({
       onResultClick(resultId)
       return
     }
-    navigate(`/results/${resultId}`)
+    navigate(resultsDetailHref(resultId, searchParams.toString()))
   }
 
   return (
     <div className={embedded ? 'space-y-4' : 'space-y-6'}>
       {!embedded && crumbs.length > 0 && <ResultsHierarchyNav crumbs={crumbs} />}
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          {embedded ? (
-            <h2 className="text-xl font-bold text-gray-900">{title}</h2>
-          ) : (
-            <h1 className="text-2xl font-bold text-gray-900">{title}</h1>
-          )}
-          {subtitle && <p className="text-sm text-gray-600 mt-1">{subtitle}</p>}
+      {!compactHeader ? (
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            {embedded ? (
+              <h2 className="text-xl font-bold text-gray-900">{title}</h2>
+            ) : (
+              <h1 className="text-2xl font-bold text-gray-900">{title}</h1>
+            )}
+            {subtitle && <p className="text-sm text-gray-600 mt-1">{subtitle}</p>}
+          </div>
+          <Button
+            variant="outline"
+            onClick={() => queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })}
+            disabled={isFetching}
+          >
+            <RefreshCw className={`w-4 h-4 mr-2 ${isFetching ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
         </div>
-        <Button
-          variant="outline"
-          onClick={() => queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })}
-          disabled={isFetching}
-        >
-          <RefreshCw className={`w-4 h-4 mr-2 ${isFetching ? 'animate-spin' : ''}`} />
-          Refresh
-        </Button>
-      </div>
+      ) : null}
 
       {counts && (
         <ResultsCountCards
@@ -183,11 +196,10 @@ export default function ResultsRunsList({
                 key={key}
                 type="button"
                 onClick={() => updateStatusFilter(key)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-lg ${
-                  statusFilter === key
-                    ? 'bg-primary-100 text-primary-800 border border-primary-300'
-                    : 'text-gray-600 hover:bg-gray-100'
-                }`}
+                className={`px-3 py-1.5 text-xs font-medium rounded-lg ${statusFilter === key
+                  ? 'bg-primary-100 text-primary-800 border border-primary-300'
+                  : 'text-gray-600 hover:bg-gray-100'
+                  }`}
               >
                 {label}
               </button>
@@ -205,11 +217,10 @@ export default function ResultsRunsList({
                 key={key}
                 type="button"
                 onClick={() => setRunMediumFilter(key)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-lg ${
-                  runMediumFilter === key
-                    ? 'bg-violet-100 text-violet-900 border border-violet-200'
-                    : 'text-gray-600 hover:bg-gray-100'
-                }`}
+                className={`px-3 py-1.5 text-xs font-medium rounded-lg ${runMediumFilter === key
+                  ? 'bg-violet-100 text-violet-900 border border-violet-200'
+                  : 'text-gray-600 hover:bg-gray-100'
+                  }`}
               >
                 {label}
               </button>
@@ -260,7 +271,7 @@ export default function ResultsRunsList({
                     <tr
                       key={result.id}
                       className="hover:bg-gray-50 cursor-pointer"
-                      onClick={() => openResult(result.result_id)}
+                      onClick={() => openResult(evaluatorResultOpenId(result))}
                     >
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                         <input
@@ -326,7 +337,7 @@ export default function ResultsRunsList({
                                 />
                               </Button>
                             )}
-                          <Button variant="ghost" size="sm" onClick={() => openResult(result.result_id)}>
+                          <Button variant="ghost" size="sm" onClick={() => openResult(evaluatorResultOpenId(result))}>
                             <Eye className="w-4 h-4" />
                           </Button>
                         </div>

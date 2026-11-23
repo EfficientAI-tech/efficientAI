@@ -19,6 +19,7 @@ import type {
   CallImportRow,
   CallImportTag,
 } from '../../../../types/api'
+import { summarizeSourceRowSkipReasons } from '../../sourceRowSkipSummary'
 import type { UseMutationResult } from '@tanstack/react-query'
 
 export type ImportDetailHeaderProps = {
@@ -172,9 +173,8 @@ export function ImportDetailHeader({
               leftIcon={<RefreshCw className="h-4 w-4" />}
               onClick={onRetryFailedImport}
               className="text-amber-700 hover:text-amber-800 hover:bg-amber-50 border-amber-200"
-              title={`Retry ${failedImportRowsCount} failed import row${
-                failedImportRowsCount === 1 ? '' : 's'
-              }`}
+              title={`Retry ${failedImportRowsCount} failed import row${failedImportRowsCount === 1 ? '' : 's'
+                }`}
             >
               Retry failed imports ({failedImportRowsCount})
             </Button>
@@ -229,12 +229,12 @@ export function ImportDetailHeader({
                     {(data.platform_agents || []).length === 0
                       ? 'All agents'
                       : (data.platform_agents || [])
-                          .map((agent) =>
-                            agent.medium
-                              ? `${agent.name} · ${agent.medium}`
-                              : agent.name,
-                          )
-                          .join(', ')}
+                        .map((agent) =>
+                          agent.medium
+                            ? `${agent.name} · ${agent.medium}`
+                            : agent.name,
+                        )
+                        .join(', ')}
                   </span>
                 </span>
               )}
@@ -452,11 +452,10 @@ export function ImportDetailHeader({
                                 : [...prev, tag.id],
                             )
                           }
-                          className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
-                            active
+                          className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${active
                               ? 'bg-primary-600 border-primary-600 text-white'
                               : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
-                          }`}
+                            }`}
                           style={
                             !active && tag.color
                               ? { borderColor: tag.color, color: tag.color }
@@ -540,9 +539,15 @@ export function ImportDetailHeader({
                 <p>
                   Imported {data.total_rows} row
                   {data.total_rows === 1 ? '' : 's'}.{' '}
-                  {data.source_row_skips!.length} source row
-                  {data.source_row_skips!.length === 1 ? '' : 's'} skipped
-                  — missing or invalid conversation ID / recording URL.
+                  {data.source_row_skips!.length} row
+                  {data.source_row_skips!.length === 1 ? '' : 's'} from your file
+                  {data.source_row_skips!.length === 1 ? ' was' : ' were'} not
+                  imported (
+                  {summarizeSourceRowSkipReasons(data.source_row_skips!)}).
+                </p>
+                <p className="text-xs text-amber-800">
+                  Each skipped row is listed below. Fix the source file and upload again
+                  if you need those rows in this batch.
                 </p>
                 <ul className="list-disc pl-5 space-y-0.5 max-h-40 overflow-y-auto text-xs">
                   {data.source_row_skips!.slice(0, 50).map((skip) => (
@@ -564,53 +569,50 @@ export function ImportDetailHeader({
       </div>
 
       {showWorkflowTabs ? (
-      <div className="border-b border-gray-200">
-        <nav className="-mb-px flex gap-6" aria-label="Call import sections">
-          <button
-            type="button"
-            onClick={() => setActiveTab('rows')}
-            className={`whitespace-nowrap py-3 px-1 border-b-2 text-sm font-medium transition ${
-              activeTab === 'rows'
-                ? 'border-primary-500 text-primary-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            }`}
-            aria-current={activeTab === 'rows' ? 'page' : undefined}
-          >
-            Rows
-            <span className="ml-2 inline-flex items-center justify-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">
-              {totalRows}
-            </span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('evaluations')}
-            className={`whitespace-nowrap py-3 px-1 border-b-2 text-sm font-medium transition ${
-              activeTab === 'evaluations'
-                ? 'border-primary-500 text-primary-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            }`}
-            aria-current={activeTab === 'evaluations' ? 'page' : undefined}
-          >
-            Evaluations
-            <span className="ml-2 inline-flex items-center justify-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">
-              {evaluationsCount}
-            </span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('insights')}
-            className={`whitespace-nowrap py-3 px-1 border-b-2 text-sm font-medium transition ${
-              activeTab === 'insights'
-                ? 'border-primary-500 text-primary-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            }`}
-            aria-current={activeTab === 'insights' ? 'page' : undefined}
-          >
-            <BarChart3 className="h-3.5 w-3.5 inline mr-1 -mt-0.5" />
-            Insights
-          </button>
-        </nav>
-      </div>
+        <div className="border-b border-gray-200">
+          <nav className="-mb-px flex gap-6" aria-label="Call import sections">
+            <button
+              type="button"
+              onClick={() => setActiveTab('rows')}
+              className={`whitespace-nowrap py-3 px-1 border-b-2 text-sm font-medium transition ${activeTab === 'rows'
+                  ? 'border-primary-500 text-primary-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              aria-current={activeTab === 'rows' ? 'page' : undefined}
+            >
+              Rows
+              <span className="ml-2 inline-flex items-center justify-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">
+                {totalRows}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('evaluations')}
+              className={`whitespace-nowrap py-3 px-1 border-b-2 text-sm font-medium transition ${activeTab === 'evaluations'
+                  ? 'border-primary-500 text-primary-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              aria-current={activeTab === 'evaluations' ? 'page' : undefined}
+            >
+              Evaluations
+              <span className="ml-2 inline-flex items-center justify-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">
+                {evaluationsCount}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('insights')}
+              className={`whitespace-nowrap py-3 px-1 border-b-2 text-sm font-medium transition ${activeTab === 'insights'
+                  ? 'border-primary-500 text-primary-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              aria-current={activeTab === 'insights' ? 'page' : undefined}
+            >
+              <BarChart3 className="h-3.5 w-3.5 inline mr-1 -mt-0.5" />
+              Insights
+            </button>
+          </nav>
+        </div>
       ) : null}
     </>
   )

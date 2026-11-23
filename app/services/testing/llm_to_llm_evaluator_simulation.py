@@ -563,6 +563,7 @@ def run_llm_to_llm_evaluator_simulation(
             "evaluator_result_id": str(result.id),
             "synthetic_testing": "pre_prod",
             "simulation_leg": "production_agent",
+            "usage_role": "agent",
             "provider_platform": "internal",
         },
     )

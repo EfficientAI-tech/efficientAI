@@ -47,6 +47,7 @@ export function evaluatorDrawerScopeTags(
   tab:
     | 'transcript'
     | 'analysis'
+    | 'per_call_metrics'
     | 'cost'
     | 'latency'
     | 'logs'
@@ -73,6 +74,11 @@ export function evaluatorDrawerScopeTags(
     case 'analysis':
       return {
         tags: ['Post-call summary', plat ? `${plat} or evaluator` : 'Provider / evaluator'],
+      }
+    case 'per_call_metrics':
+      return {
+        tags: ['Call stats & gaps', 'Evaluator scores'],
+        hint: 'Global signals from the transcript plus scored metrics for this run.',
       }
     case 'cost': {
       const tags = [plat ? `${plat} agent cost` : 'Agent provider cost']

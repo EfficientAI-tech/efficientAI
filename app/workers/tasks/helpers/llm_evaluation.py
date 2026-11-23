@@ -3092,6 +3092,7 @@ def evaluate_with_llm(
     # disable thinking and enforce a floor for Gemini 2.5.
     metric_count = max(1, len(non_class_metrics))
     rationale_count = sum(1 for m in non_class_metrics if _wants_rationale(m))
+    text_count = sum(1 for m in non_class_metrics if get_metric_type_value(m) == "text")
     hierarchical_extra = 0
     if filtered_groups is not None:
         for group in filtered_groups:
@@ -3110,6 +3111,7 @@ def evaluate_with_llm(
             2000,
             300 * metric_count
             + 200 * rationale_count
+            + 450 * text_count
             + 150 * hierarchical_extra,
         ),
     )
@@ -3142,7 +3144,14 @@ def evaluate_with_llm(
             f"max_tokens={dynamic_max_tokens}). Parser will attempt recovery."
         )
 
-    evaluation_data = _parse_llm_response(llm_result["text"], result_id)
+    try:
+        evaluation_data = _parse_llm_response(llm_result["text"], result_id)
+    except ValueError as exc:
+        logger.error(
+            f"[EvaluatorResult {result_id}] Batch LLM JSON parse failed; "
+            f"failing evaluation scoring: {exc}"
+        )
+        raise ValueError(f"Batch LLM JSON parse failed: {exc}") from exc
 
     if "metrics" in evaluation_data and isinstance(evaluation_data["metrics"], dict):
         evaluation_data = evaluation_data["metrics"]

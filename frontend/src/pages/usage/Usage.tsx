@@ -1226,50 +1226,52 @@ export default function Usage() {
     return false
   }
 
+  const filterTrailing = (
+    <>
+      <div
+        className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 text-xs font-medium"
+        role="group"
+        aria-label="Display currency"
+      >
+        {(['USD', 'INR'] as const).map((currency) => (
+          <button
+            key={currency}
+            type="button"
+            title={currency === 'INR' ? fxRateHint : undefined}
+            onClick={() => {
+              setDisplayCurrency(currency)
+              setUsageDisplayCurrency(currency)
+            }}
+            className={`rounded-md px-2.5 py-1 transition-colors ${displayCurrency === currency
+              ? 'bg-gray-900 text-white'
+              : 'text-gray-600 hover:bg-gray-50'
+              }`}
+          >
+            {currency}
+          </button>
+        ))}
+      </div>
+      {showCostBreakdown ? (
+        <button
+          type="button"
+          onClick={() => setCostBreakdownOpen(true)}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition-colors hover:border-gray-300 hover:bg-gray-50 hover:text-gray-900"
+          title={formatCostExact(estimatedTotalCost)}
+        >
+          <CircleDollarSign className="h-4 w-4 shrink-0 text-gray-500" />
+          <span className="whitespace-nowrap">Cost breakdown</span>
+        </button>
+      ) : null}
+      {summary?.last_updated_at ? (
+        <p className="text-[11px] text-gray-400 whitespace-nowrap">
+          Updated {new Date(summary.last_updated_at).toLocaleString()}
+        </p>
+      ) : null}
+    </>
+  )
+
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-end gap-3">
-        <div
-          className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 text-xs font-medium"
-          role="group"
-          aria-label="Display currency"
-        >
-          {(['USD', 'INR'] as const).map((currency) => (
-            <button
-              key={currency}
-              type="button"
-              title={currency === 'INR' ? fxRateHint : undefined}
-              onClick={() => {
-                setDisplayCurrency(currency)
-                setUsageDisplayCurrency(currency)
-              }}
-              className={`rounded-md px-2.5 py-1 transition-colors ${displayCurrency === currency
-                  ? 'bg-gray-900 text-white'
-                  : 'text-gray-600 hover:bg-gray-50'
-                }`}
-            >
-              {currency}
-            </button>
-          ))}
-        </div>
-        {showCostBreakdown ? (
-          <button
-            type="button"
-            onClick={() => setCostBreakdownOpen(true)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition-colors hover:border-gray-300 hover:bg-gray-50 hover:text-gray-900"
-            title={formatCostExact(estimatedTotalCost)}
-          >
-            <CircleDollarSign className="h-4 w-4 shrink-0 text-gray-500" />
-            <span className="whitespace-nowrap">Cost breakdown</span>
-          </button>
-        ) : null}
-        {summary?.last_updated_at ? (
-          <p className="text-[11px] text-gray-400 whitespace-nowrap">
-            Updated {new Date(summary.last_updated_at).toLocaleString()}
-          </p>
-        ) : null}
-      </div>
-
       {summaryError ? (
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
           Could not load usage data
@@ -1369,6 +1371,7 @@ export default function Usage() {
       </div>
 
       <UsageFiltersBar
+        trailing={filterTrailing}
         start={start}
         end={end}
         workspaceId={workspaceId}

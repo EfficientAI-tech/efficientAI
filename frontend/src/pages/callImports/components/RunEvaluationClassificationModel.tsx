@@ -68,7 +68,7 @@ export default function RunEvaluationClassificationModel({
       {!hasCompatibleCredential && (
         <p className="text-[11px] text-amber-800">
           No System 1 model is configured.{' '}
-          <Link to="/integrations" className="font-medium underline hover:text-amber-900">
+          <Link to="/settings/integrations" className="font-medium underline hover:text-amber-900">
             Add an OpenRouter or TypeSafe credential
           </Link>{' '}
           with a Jev model to score classification metrics.

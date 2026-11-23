@@ -360,7 +360,7 @@ def test_raise_if_no_importable_rows_when_all_skipped():
             CallImportParseSkip(
                 source_row=2,
                 reason="missing_recording_url",
-                message="Row 2 is missing the required 'recording_url' value.",
+                message="Row 2: no value in mapped column 'recording_url' (required on schema).",
             )
         ],
     )
@@ -370,20 +370,45 @@ def test_raise_if_no_importable_rows_when_all_skipped():
     assert "No importable rows" in exc.value.detail
 
 
-def test_parse_csv_rejects_missing_recording_date_value():
+def test_parse_csv_skips_row_missing_recording_date_value():
     csv_text = (
         "CallID,Recording Date,Recording URL,Transcript\n"
-        "abc-1,,https://x/recording.mp3,Some transcript\n"
+        "good-1,18/05/2026,https://x/recording.mp3,Some transcript\n"
+        "abc-2,,https://x/recording.mp3,No date\n"
     )
-    with pytest.raises(HTTPException) as exc:
-        _parse_csv(
-            _csv_bytes(csv_text),
-            _standard_params(),
-            _standard_mapping(),
-            _standard_skipped(),
-        )
-    assert exc.value.status_code == 400
-    assert "recording_date" in exc.value.detail.lower()
+    result = _parse_csv(
+        _csv_bytes(csv_text),
+        _standard_params(),
+        _standard_mapping(),
+        _standard_skipped(),
+    )
+    assert len(result.rows) == 1
+    assert len(result.skipped) == 1
+    assert result.skipped[0].reason == "missing_recording_date"
+    assert result.skipped[0].source_row == 2
+
+
+def test_parse_csv_skips_row_missing_required_transcript():
+    params = _standard_params()
+    transcript_param = next(
+        p for p in params if p.type == CallImportParameterType.TRANSCRIPT.value
+    )
+    transcript_param.is_required = True
+    csv_text = (
+        "CallID,Recording Date,Recording URL,Transcript\n"
+        "good-1,18/05/2026,https://x/recording.mp3,Some transcript\n"
+        "abc-2,19/05/2026,https://x/2.mp3,\n"
+    )
+    result = _parse_csv(
+        _csv_bytes(csv_text),
+        params,
+        _standard_mapping(),
+        _standard_skipped(),
+    )
+    assert len(result.rows) == 1
+    assert len(result.skipped) == 1
+    assert result.skipped[0].reason == "missing_transcript"
+    assert result.skipped[0].source_row == 2
 
 
 def test_parse_csv_accepts_blank_recording_date_when_optional():

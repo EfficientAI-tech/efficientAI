@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
+import { RefreshCw } from 'lucide-react'
 
-import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useIsFetching, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { apiClient } from '../../../lib/api'
 import { itemsOf } from '../../../lib/safeData'
@@ -11,8 +12,6 @@ import { useLicenseStore } from '../../../store/licenseStore'
 
 import { useWorkspaceStore } from '../../../store/workspaceStore'
 
-import ResultsHierarchyNav from './ResultsHierarchyNav'
-
 import ResultsRunsList from './ResultsRunsList'
 
 import ResultsDrillPath, { type ResultsDrillCrumb } from './ResultsDrillPath'
@@ -20,6 +19,8 @@ import ResultsDrillPath, { type ResultsDrillCrumb } from './ResultsDrillPath'
 import ResultsDateRangePicker from './ResultsDateRangePicker'
 
 import ResultsDashboardTab from './ResultsDashboardTab'
+
+import { RESULTS_DASHBOARD_TOOLBAR_SLOT_ID, resultsScopeTheme } from './resultsScopeTheme'
 
 import MetricClustersPanel from '../../../components/metricClusters/MetricClustersPanel'
 
@@ -37,9 +38,18 @@ import {
 
 } from '../../../components/metricClusters/clients'
 
-import { dateRangeToSinceUntil, isoToDateInput } from './resultsDateRange'
+import { dateRangeToSinceUntil, isoToDateInput, rangeForDays } from './resultsDateRange'
+
+import {
+  hubSearchHasDateScope,
+  mergePersistedHubScope,
+  persistResultsHubQueryString,
+  readPersistedResultsHubQueryString,
+} from './resultsHubNavigation'
+import ResultsRunDetailDrawer from './ResultsRunDetailDrawer'
 
 import type {
+  EvaluatorResultsAgentSummary,
   EvaluatorResultsScenarioSummary,
   EvaluatorResultsSuiteSummary,
   ListEvaluatorResultsParams,
@@ -59,9 +69,8 @@ const STATUS_FILTERS = new Set<StatusFilter>(['all', 'completed', 'failed', 'in_
 
 export default function ResultsHub() {
 
-  const navigate = useNavigate()
-
   const queryClient = useQueryClient()
+  const runsListFetching = useIsFetching({ queryKey: ['evaluator-results'] }) > 0
 
   const [searchParams, setSearchParams] = useSearchParams()
 
@@ -72,8 +81,13 @@ export default function ResultsHub() {
   const openGenerateModalRef = useRef<(() => void) | null>(null)
 
   const [generateModalOpen, setGenerateModalOpen] = useState(false)
-
-
+  const [scopeFiltersOpen, setScopeFiltersOpen] = useState(false)
+  const [runDetailId, setRunDetailId] = useState<string | null>(null)
+  const openRunDetail = useCallback((resultId: string) => {
+    if (resultId) setRunDetailId(resultId)
+  }, [])
+  const restoredHubScopeRef = useRef(false)
+  const prevWorkspaceIdRef = useRef(activeWorkspaceId)
 
   const agentId = searchParams.get('agent') ?? ''
 
@@ -102,6 +116,9 @@ export default function ResultsHub() {
   const clusterView: ClusterReportView =
     clusterViewParam === 'visualization' ? 'visualization' : 'details'
 
+  const runSource = searchParams.get('run_source') === 'live' ? 'live' : 'simulation'
+  const playgroundScope = runSource === 'live'
+
   const statusParam = searchParams.get('status')
 
   const statusFilter: StatusFilter =
@@ -111,6 +128,40 @@ export default function ResultsHub() {
       ? (statusParam as StatusFilter)
 
       : 'all'
+
+  useEffect(() => {
+    const qs = searchParams.toString()
+    if (qs) persistResultsHubQueryString(qs, activeWorkspaceId)
+  }, [searchParams, activeWorkspaceId])
+
+  useEffect(() => {
+    if (prevWorkspaceIdRef.current === activeWorkspaceId) return
+    prevWorkspaceIdRef.current = activeWorkspaceId
+    restoredHubScopeRef.current = false
+    try {
+      sessionStorage.removeItem('evaluator-results-hub-search')
+    } catch {
+      /* ignore */
+    }
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      next.delete('agent')
+      next.delete('suite')
+      next.delete('scenario')
+      return next
+    }, { replace: true })
+  }, [activeWorkspaceId, setSearchParams])
+
+  useEffect(() => {
+    if (restoredHubScopeRef.current) return
+    restoredHubScopeRef.current = true
+    const persisted = readPersistedResultsHubQueryString(activeWorkspaceId)
+    if (!persisted) return
+    const saved = new URLSearchParams(persisted)
+    if (!hubSearchHasDateScope(saved)) return
+    if (hubSearchHasDateScope(searchParams)) return
+    setSearchParams(mergePersistedHubScope(searchParams, saved), { replace: true })
+  }, [activeWorkspaceId, searchParams, setSearchParams])
 
   const tabParam = searchParams.get('tab')
 
@@ -132,45 +183,45 @@ export default function ResultsHub() {
 
 
 
+  const allTimeDates = searchParams.get('dates') === 'all'
+
+  const effectiveHubDateRange = useMemo(() => {
+    if (allTimeDates) return null
+    if (startDate && endDate) return { start: startDate, end: endDate }
+    return rangeForDays(7)
+  }, [allTimeDates, startDate, endDate])
+
   const dateBounds = useMemo(() => {
+    if (!effectiveHubDateRange) return undefined
+    return dateRangeToSinceUntil(effectiveHubDateRange.start, effectiveHubDateRange.end)
+  }, [effectiveHubDateRange])
 
-    if (!startDate || !endDate) return undefined
-
-    return dateRangeToSinceUntil(startDate, endDate)
-
-  }, [startDate, endDate])
-
-
-
-  const overviewParams = useMemo(
-
+  const filterCatalogParams = useMemo(
     () => ({
-
       ...(dateBounds ? { since: dateBounds.since, until: dateBounds.until } : {}),
-
+      playground: playgroundScope,
     }),
-
-    [dateBounds],
-
+    [dateBounds, playgroundScope],
   )
 
+  const clusterCatalogParams = useMemo(
+    () => ({ playground: playgroundScope }),
+    [playgroundScope],
+  )
 
+  const [, setDashboardAgents] = useState<EvaluatorResultsAgentSummary[] | null>(null)
 
-  const { data: overview, isLoading: loadingOverview } = useQuery({
-
-    queryKey: ['evaluator-results-overview', activeWorkspaceId, overviewParams],
-
-    queryFn: () => apiClient.getEvaluatorResultsOverview(overviewParams),
-
+  const { data: filterCatalog, isLoading: loadingFilterCatalog } = useQuery({
+    queryKey: ['evaluator-results-overview-catalog', activeWorkspaceId, filterCatalogParams],
+    queryFn: () => apiClient.getEvaluatorResultsOverview(filterCatalogParams),
     enabled: showScopeFilters || generateModalOpen,
-
+    staleTime: 60_000,
   })
 
-
-
-  const agents = overview?.agents ?? []
-
-
+  const agents = useMemo(
+    () => filterCatalog?.agents ?? [],
+    [filterCatalog],
+  )
 
   const suiteOptions = useMemo(() => {
 
@@ -255,16 +306,12 @@ export default function ResultsHub() {
     if (scenarioId) params.scenarioId = scenarioId
 
     if (dateBounds) {
-
       params.since = dateBounds.since
-
       params.until = dateBounds.until
-
     }
-
+    params.playground = playgroundScope
     return params
-
-  }, [agentId, suiteId, scenarioId, dateBounds])
+  }, [agentId, suiteId, scenarioId, dateBounds, playgroundScope])
 
 
 
@@ -324,7 +371,17 @@ export default function ResultsHub() {
 
   const clustersEnabled = licenseLoaded && isFeatureEnabled('evaluation_clustering')
 
+  const { data: clusterCatalog } = useQuery({
+    queryKey: ['evaluator-results-overview-cluster-catalog', activeWorkspaceId, clusterCatalogParams],
+    queryFn: () => apiClient.getEvaluatorResultsOverview(clusterCatalogParams),
+    enabled: clustersEnabled && (activeTab === 'clusters' || generateModalOpen),
+    staleTime: 60_000,
+  })
 
+  const clusterAgents = useMemo(
+    () => clusterCatalog?.agents ?? [],
+    [clusterCatalog],
+  )
 
   const clusterScopesQuery = useQuery({
 
@@ -623,6 +680,8 @@ export default function ResultsHub() {
 
       end,
 
+      dates: start && end ? null : 'all',
+
     })
 
   }
@@ -719,6 +778,13 @@ export default function ResultsHub() {
 
 
 
+  const scopeSummary = [
+    selectedAgent?.agent_name || 'All agents',
+    selectedSuite?.suite_name || 'All suites',
+    selectedScenario?.scenario_name || 'All scenarios',
+  ].join(' · ')
+  const scopeActive = Boolean(agentId || suiteId || scenarioId)
+
   const drillLevelLabel = selectedScenario
 
     ? 'Scenario runs'
@@ -749,11 +815,7 @@ export default function ResultsHub() {
 
   return (
 
-    <div className="space-y-6">
-
-      <ResultsHierarchyNav crumbs={[{ label: 'Evaluation Results' }]} />
-
-
+    <div className="min-w-0 max-w-full space-y-6 overflow-x-clip">
 
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
 
@@ -762,9 +824,7 @@ export default function ResultsHub() {
           <h1 className="text-3xl font-bold text-gray-900">Evaluation Results</h1>
 
           <p className="mt-2 text-sm text-gray-600">
-
-            Drill down by agent, suite, scenario, and when the call happened
-
+            Drill down by agent, suite, scenario, and when the call happened.
           </p>
 
         </div>
@@ -785,145 +845,21 @@ export default function ResultsHub() {
 
 
 
-      {showScopeFilters && (loadingOverview || !overview) ? (
+      {activeTab !== 'dashboard' && showScopeFilters && (loadingFilterCatalog || !filterCatalog) ? (
 
         <p className="text-gray-500">Loading overview…</p>
 
-      ) : overview && overview.unassigned.counts.total > 0 && showScopeFilters ? (
+      ) : filterCatalog && filterCatalog.unassigned.counts.total > 0 && showScopeFilters ? (
 
-          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
 
-            {overview.unassigned.counts.total} run(s) are not linked to an evaluator suite.{' '}
+          {filterCatalog.unassigned.counts.total} run(s) are not linked to an evaluator suite.{' '}
 
-            <Link to="/results/unassigned" className="font-semibold underline">
+          <Link to="/results/unassigned" className="font-semibold underline">
 
-              View unassigned
+            View unassigned
 
-            </Link>
-
-          </div>
-
-      ) : null}
-
-
-
-      {showScopeFilters ? (
-
-        <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-4">
-
-          <ResultsDateRangePicker
-
-            start={startDate}
-
-            end={endDate}
-
-            onApply={setDateRange}
-
-          />
-
-
-
-          <ResultsDrillPath crumbs={drillCrumbs} levelLabel={drillLevelLabel} />
-
-
-
-          <div className="grid gap-4 md:grid-cols-3">
-
-            <label className="block text-sm">
-
-              <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Agent</span>
-
-              <select
-
-                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
-
-                value={agentId}
-
-                onChange={(e) => setFilter('agent', e.target.value)}
-
-              >
-
-                <option value="">All agents</option>
-
-                {agents.map((agent) => (
-
-                  <option key={agent.agent_id} value={agent.agent_id}>
-
-                    {agent.agent_name} ({agent.counts.total})
-
-                  </option>
-
-                ))}
-
-              </select>
-
-            </label>
-
-            <label className="block text-sm">
-
-              <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Suite</span>
-
-              <select
-
-                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm disabled:bg-gray-50"
-
-                value={suiteId}
-
-                onChange={(e) => setFilter('suite', e.target.value)}
-
-                disabled={suiteOptions.length === 0}
-
-              >
-
-                <option value="">All suites</option>
-
-                {suiteOptions.map((suite) => (
-
-                  <option key={suite.suite_id} value={suite.suite_id}>
-
-                    {suite.suite_name || 'Evaluator suite'} ({suite.counts.total})
-
-                  </option>
-
-                ))}
-
-              </select>
-
-            </label>
-
-            <label className="block text-sm">
-
-              <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Scenario</span>
-
-              <select
-
-                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm disabled:bg-gray-50"
-
-                value={scenarioId}
-
-                onChange={(e) => setFilter('scenario', e.target.value)}
-
-                disabled={!suiteId || scenarioOptions.length === 0}
-
-              >
-
-                <option value="">All scenarios</option>
-
-                {scenarioOptions.map((scenario) => (
-
-                  <option key={scenario.scenario_id} value={scenario.scenario_id}>
-
-                    {scenario.scenario_name} ({scenario.counts.total})
-
-                  </option>
-
-                ))}
-
-              </select>
-
-            </label>
-
-          </div>
+          </Link>
 
         </div>
 
@@ -939,15 +875,13 @@ export default function ResultsHub() {
 
           onClick={() => setTab('dashboard')}
 
-          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
+          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${activeTab === 'dashboard'
 
-            activeTab === 'dashboard'
+            ? 'border-primary-600 text-primary-700'
 
-              ? 'border-primary-600 text-primary-700'
+            : 'border-transparent text-gray-600 hover:text-gray-900'
 
-              : 'border-transparent text-gray-600 hover:text-gray-900'
-
-          }`}
+            }`}
 
         >
 
@@ -963,15 +897,13 @@ export default function ResultsHub() {
 
             onClick={() => setTab('clusters')}
 
-            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${activeTab === 'clusters'
 
-              activeTab === 'clusters'
+              ? 'border-primary-600 text-primary-700'
 
-                ? 'border-primary-600 text-primary-700'
+              : 'border-transparent text-gray-600 hover:text-gray-900'
 
-                : 'border-transparent text-gray-600 hover:text-gray-900'
-
-            }`}
+              }`}
 
           >
 
@@ -987,15 +919,13 @@ export default function ResultsHub() {
 
           onClick={() => setTab('runs')}
 
-          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
+          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${activeTab === 'runs'
 
-            activeTab === 'runs'
+            ? 'border-primary-600 text-primary-700'
 
-              ? 'border-primary-600 text-primary-700'
+            : 'border-transparent text-gray-600 hover:text-gray-900'
 
-              : 'border-transparent text-gray-600 hover:text-gray-900'
-
-          }`}
+            }`}
 
         >
 
@@ -1005,7 +935,103 @@ export default function ResultsHub() {
 
       </div>
 
-
+      {showScopeFilters ? (
+        <div className={resultsScopeTheme.panel}>
+          <div className={`flex flex-wrap items-center gap-2 px-3 py-2 ${resultsScopeTheme.panelHeader}`}>
+            <ResultsDateRangePicker
+              start={startDate}
+              end={endDate}
+              allTime={searchParams.get('dates') === 'all'}
+              onApply={setDateRange}
+            />
+            <button
+              type="button"
+              onClick={() => setScopeFiltersOpen((open) => !open)}
+              className={`inline-flex max-w-full items-center gap-2 rounded-lg border px-2.5 py-1 text-xs font-medium ${scopeFiltersOpen || scopeActive
+                ? resultsScopeTheme.pillActive
+                : 'border-gray-200 bg-white text-gray-600 hover:bg-[#fefce8] hover:text-[#854d0e]'
+                }`}
+              aria-expanded={scopeFiltersOpen}
+            >
+              <span>{scopeFiltersOpen ? 'Hide filters' : 'Filters'}</span>
+              <span className="truncate font-normal text-[#854d0e]/75">{scopeSummary}</span>
+            </button>
+            {activeTab === 'dashboard' ? (
+              <div
+                id={RESULTS_DASHBOARD_TOOLBAR_SLOT_ID}
+                className="ml-auto flex shrink-0 items-center justify-end"
+              />
+            ) : activeTab === 'runs' ? (
+              <button
+                type="button"
+                onClick={() => {
+                  void queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })
+                  void queryClient.invalidateQueries({ queryKey: ['evaluator-results-overview-catalog'] })
+                }}
+                disabled={runsListFetching}
+                className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${runsListFetching ? 'animate-spin' : ''}`} aria-hidden />
+                Refresh
+              </button>
+            ) : null}
+          </div>
+          {scopeFiltersOpen ? (
+            <div className="space-y-2 border-t border-[#fde047]/40 px-3 py-2">
+              <ResultsDrillPath crumbs={drillCrumbs} levelLabel={drillLevelLabel} />
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex min-w-[12rem] flex-1 items-center gap-2 text-xs font-medium uppercase tracking-wide text-gray-500">
+                  Agent
+                  <select
+                    className="w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm font-normal normal-case tracking-normal text-gray-900"
+                    value={agentId}
+                    onChange={(e) => setFilter('agent', e.target.value)}
+                  >
+                    <option value="">All agents</option>
+                    {agents.map((agent) => (
+                      <option key={agent.agent_id} value={agent.agent_id}>
+                        {agent.agent_name} ({agent.counts.total})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex min-w-[12rem] flex-1 items-center gap-2 text-xs font-medium uppercase tracking-wide text-gray-500">
+                  Suite
+                  <select
+                    className="w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm font-normal normal-case tracking-normal text-gray-900 disabled:bg-gray-50"
+                    value={suiteId}
+                    onChange={(e) => setFilter('suite', e.target.value)}
+                    disabled={suiteOptions.length === 0}
+                  >
+                    <option value="">All suites</option>
+                    {suiteOptions.map((suite) => (
+                      <option key={suite.suite_id} value={suite.suite_id}>
+                        {suite.suite_name || 'Evaluator suite'} ({suite.counts.total})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex min-w-[12rem] flex-1 items-center gap-2 text-xs font-medium uppercase tracking-wide text-gray-500">
+                  Scenario
+                  <select
+                    className="w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm font-normal normal-case tracking-normal text-gray-900 disabled:bg-gray-50"
+                    value={scenarioId}
+                    onChange={(e) => setFilter('scenario', e.target.value)}
+                    disabled={!suiteId || scenarioOptions.length === 0}
+                  >
+                    <option value="">All scenarios</option>
+                    {scenarioOptions.map((scenario) => (
+                      <option key={scenario.scenario_id} value={scenario.scenario_id}>
+                        {scenario.scenario_name} ({scenario.counts.total})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {activeTab === 'dashboard' ? (
 
@@ -1017,10 +1043,35 @@ export default function ResultsHub() {
 
           scenarioId={scenarioId}
 
-          startDate={startDate}
+          startDate={effectiveHubDateRange?.start ?? null}
 
-          endDate={endDate}
+          endDate={effectiveHubDateRange?.end ?? null}
 
+          allTime={allTimeDates}
+
+          agents={agents}
+
+          onSelectAgent={(id) => setFilter('agent', id)}
+
+          onSelectScenario={(nextSuiteId, nextScenarioId, nextAgentId) => setParams({
+
+            agent: nextAgentId,
+
+            suite: nextSuiteId,
+
+            scenario: nextScenarioId,
+
+          })}
+
+          onOpenRuns={() => setTab('runs')}
+
+          onOpenResult={openRunDetail}
+
+          onDashboardAgents={setDashboardAgents}
+          runSource={runSource}
+          onRunSourceChange={(next) => {
+            setParams({ run_source: next === 'live' ? 'live' : null })
+          }}
         />
 
       ) : activeTab === 'runs' ? (
@@ -1031,9 +1082,9 @@ export default function ResultsHub() {
 
             embedded
 
-            title="Evaluation runs"
+            compactHeader
 
-            subtitle="Newest first across the current filter"
+            title="Evaluation runs"
 
             listParams={listParams}
 
@@ -1046,14 +1097,6 @@ export default function ResultsHub() {
             showPersonaColumn={Boolean(suiteId || scenarioId)}
 
             showScenarioColumn={!scenarioId}
-
-            onResultClick={(resultId) => {
-
-              const qs = searchParams.toString()
-
-              navigate(`/results/${resultId}${qs ? `?from=${encodeURIComponent(`/results?${qs}`)}` : ''}`)
-
-            }}
 
           />
 
@@ -1149,7 +1192,7 @@ export default function ResultsHub() {
 
             evaluatorScope={{
 
-              agents,
+              agents: clusterAgents,
 
               scope: clusterScope,
 
@@ -1162,6 +1205,12 @@ export default function ResultsHub() {
         </div>
 
       ) : null}
+
+      <ResultsRunDetailDrawer
+        resultId={runDetailId}
+        onClose={() => setRunDetailId(null)}
+        workspaceId={activeWorkspaceId}
+      />
 
     </div>
 

@@ -176,12 +176,10 @@ def _serialize_call_import(
     # still polls after an evaluation has already finished.
     import_rows_processing = 0
     if batch_status in {"pending", "processing"}:
-        from app.services.call_imports.bulk_ops import (
-            _aggregate_import_row_status_counts,
-        )
+        from app.services.call_imports.bulk_ops import _aggregate_import_row_status_counts
 
-        agg_total, agg_completed, agg_failed, _, agg_processing = (
-            _aggregate_import_row_status_counts(db, call_import.id)
+        agg_total, agg_completed, agg_failed, _, agg_processing = _aggregate_import_row_status_counts(
+            db, call_import.id
         )
         import_rows_processing = int(agg_processing or 0)
         if refresh_import_progress_from_rows and agg_total > 0:

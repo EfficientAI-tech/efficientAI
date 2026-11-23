@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   MessageSquare,
@@ -10,7 +11,11 @@ import {
   ListTree,
   BarChart3,
   Layers,
+  LayoutList,
 } from 'lucide-react'
+import PerCallMetricsPanel from './PerCallMetricsPanel'
+import { buildEvaluatorPerCallMetricsView } from './evaluatorPerCallMetrics'
+import { buildChildMetricIds } from '../../pages/metrics/utils/metricScoreFilters'
 import { isVoiceAiProviderPlatform } from '../../lib/callDetailRouting'
 import VoiceAiCallDetailPanel, {
   ProviderSummaryChips,
@@ -36,10 +41,22 @@ import {
   type EvaluatorCallScope,
 } from './callDetailScope'
 import { isChatEvalResult, isTranscriptOnlyEvalResult } from '../../lib/agentMedium'
+import {
+  isEvaluatorResultInProgress,
+  type EvaluatorResultStatus,
+} from '../../pages/evaluators/results/evaluatorResultStatus'
+
+function shouldPollEvaluatorResult(status: string | undefined): boolean {
+  if (!status) return false
+  const normalized = status.toLowerCase()
+  if (isEvaluatorResultInProgress(normalized as EvaluatorResultStatus)) return true
+  return normalized === 'call_started' || normalized === 'in_progress'
+}
 
 type DrawerTab =
   | 'transcript'
   | 'analysis'
+  | 'per_call_metrics'
   | 'cost'
   | 'latency'
   | 'logs'
@@ -141,9 +158,14 @@ function segmentsFromTraceTurns(turns: Array<Record<string, unknown>>): SpeakerS
 export default function EvaluatorCallDetailPanel({
   evaluatorResultId,
   onClose,
+  chartDrilldown = false,
+  fullDetailHref,
 }: {
   evaluatorResultId: string
   onClose?: () => void
+  /** Chart hub drill-down only: Run metrics tab (global + evaluation scores). */
+  chartDrilldown?: boolean
+  fullDetailHref?: string
 }) {
   const [tab, setTab] = useState<DrawerTab>('transcript')
   const [liveTranscript, setLiveTranscript] = useState<LiveTranscriptTurn[]>([])
@@ -155,7 +177,31 @@ export default function EvaluatorCallDetailPanel({
     enabled: Boolean(evaluatorResultId),
     placeholderData: () => getEvaluatorResultPlaceholder(queryClient, evaluatorResultId),
     staleTime: 30_000,
+    refetchInterval: (query) => {
+      const data = query.state.data as { status?: string } | undefined
+      return shouldPollEvaluatorResult(data?.status) ? 2000 : false
+    },
   })
+
+  const { data: metricCatalog = [] } = useQuery({
+    queryKey: ['metrics'],
+    queryFn: () => apiClient.listMetrics(),
+    enabled: chartDrilldown,
+    staleTime: 60_000,
+  })
+
+  const childMetricIds = useMemo(
+    () =>
+      buildChildMetricIds(
+        metricCatalog as Array<{ id?: string; parent_metric_id?: string | null; children?: unknown[] }>,
+      ),
+    [metricCatalog],
+  )
+
+  const perCallMetricsView = useMemo(() => {
+    if (!chartDrilldown || !result) return null
+    return buildEvaluatorPerCallMetricsView(result, childMetricIds)
+  }, [chartDrilldown, result, childMetricIds])
 
   const persistedSegments = (result?.speaker_segments ?? []) as SpeakerSegment[]
   const hasPersistedTranscript = Boolean(
@@ -164,7 +210,7 @@ export default function EvaluatorCallDetailPanel({
 
   const syntheticTraceId =
     typeof (result as { synthetic_call_trace_id?: string | null } | undefined)?.synthetic_call_trace_id ===
-    'string'
+      'string'
       ? (result as { synthetic_call_trace_id: string }).synthetic_call_trace_id
       : undefined
   const callShortIdFromData =
@@ -229,10 +275,13 @@ export default function EvaluatorCallDetailPanel({
 
   const visibleTabs = useMemo(() => {
     const tabs = [...BASE_TABS]
+    if (chartDrilldown && perCallMetricsView) {
+      tabs.push({ id: 'per_call_metrics' as DrawerTab, label: 'Run metrics', icon: LayoutList })
+    }
     if (showProviderTab) tabs.push(...PROVIDER_METRIC_TABS)
     if (hasPipelineTrace) tabs.push(...PIPELINE_SUB_TABS)
     return tabs
-  }, [hasPipelineTrace, showProviderTab])
+  }, [chartDrilldown, hasPipelineTrace, perCallMetricsView, showProviderTab])
 
   useEffect(() => {
     if (PIPELINE_TAB_IDS.includes(tab as SyntheticTraceDetailTab) && !hasPipelineTrace) {
@@ -247,9 +296,9 @@ export default function EvaluatorCallDetailPanel({
     () =>
       result
         ? {
-            provider_platform: result.provider_platform,
-            call_data: result.call_data as Record<string, unknown>,
-          }
+          provider_platform: result.provider_platform,
+          call_data: result.call_data as Record<string, unknown>,
+        }
         : null,
     [result],
   )
@@ -265,14 +314,14 @@ export default function EvaluatorCallDetailPanel({
     String(result?.transcription ?? '').trim() ||
     (speakerSegments.length > 0
       ? speakerSegments
-          .map((seg) => `${getSpeakerLabel(seg.speaker, result?.agent?.name, personaName)}: ${seg.text}`)
-          .join('\n')
+        .map((seg) => `${getSpeakerLabel(seg.speaker, result?.agent?.name, personaName)}: ${seg.text}`)
+        .join('\n')
       : '')
 
   const isLiveCall = Boolean(
     result &&
-      IN_PROGRESS_STATUSES.has(String(result.status ?? '').toLowerCase()) &&
-      (result.call_event === 'call_started' || result.call_event === 'call_in_progress'),
+    IN_PROGRESS_STATUSES.has(String(result.status ?? '').toLowerCase()) &&
+    (result.call_event === 'call_started' || result.call_event === 'call_in_progress'),
   )
 
   useEffect(() => {
@@ -387,9 +436,9 @@ export default function EvaluatorCallDetailPanel({
   const fetchError =
     isError && error
       ? (error as { response?: { data?: { detail?: string } }; message?: string }).response?.data
-          ?.detail ||
-        (error as { message?: string }).message ||
-        'Failed to load call details'
+        ?.detail ||
+      (error as { message?: string }).message ||
+      'Failed to load call details'
       : null
 
   const showLiveTranscript = isLiveCall && liveTranscript.length > 0
@@ -422,15 +471,18 @@ export default function EvaluatorCallDetailPanel({
     personaTtsLine: callScope.personaTtsLine,
   }
 
+  const detailTitle = chatEval ? 'Chat transcript' : 'Call details'
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-gray-50">
-      <div className="shrink-0 border-b border-gray-200 bg-white px-5 py-4">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="text-lg font-semibold text-gray-900">
-              {chatEval ? 'Chat transcript' : 'Call details'}
-            </h2>
-            <p className="mt-0.5 text-xs text-gray-500">
+      <div className="shrink-0 border-b border-gray-200 bg-white px-5 py-2.5">
+        <div className="flex items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <h2 className="shrink-0 text-sm font-semibold text-gray-900">{detailTitle}</h2>
+            <span className="hidden text-gray-300 sm:inline" aria-hidden>
+              ·
+            </span>
+            <p className="min-w-0 text-xs text-gray-500">
               Result{' '}
               <span className="font-mono font-medium text-primary-600">
                 {result?.result_id ?? evaluatorResultId}
@@ -443,21 +495,29 @@ export default function EvaluatorCallDetailPanel({
               ) : null}
             </p>
             {showProviderTab && providerRecording ? (
-              <div className="mt-3">
-                <ProviderSummaryChips recording={providerRecording} />
-              </div>
+              <ProviderSummaryChips recording={providerRecording} />
             ) : null}
           </div>
-          {onClose ? (
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Close"
-              className="rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-800"
-            >
-              <X className="h-5 w-5" />
-            </button>
-          ) : null}
+          <div className="flex shrink-0 items-center gap-1">
+            {fullDetailHref ? (
+              <Link
+                to={fullDetailHref}
+                className="whitespace-nowrap rounded-md px-2 py-1 text-xs font-medium text-primary-600 hover:bg-primary-50 hover:text-primary-800"
+              >
+                Full detail →
+              </Link>
+            ) : null}
+            {onClose ? (
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label="Close"
+                className="rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            ) : null}
+          </div>
         </div>
       </div>
 
@@ -485,11 +545,10 @@ export default function EvaluatorCallDetailPanel({
                 key={id}
                 type="button"
                 onClick={() => setTab(id)}
-                className={`inline-flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-2 text-sm font-medium transition-colors ${
-                  tab === id
-                    ? 'border-primary-500 text-primary-800'
-                    : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
-                }`}
+                className={`inline-flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-2 text-sm font-medium transition-colors ${tab === id
+                  ? 'border-primary-500 text-primary-800'
+                  : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
+                  }`}
               >
                 <Icon className="h-4 w-4" />
                 {label}
@@ -502,6 +561,10 @@ export default function EvaluatorCallDetailPanel({
           {tab !== 'cost' && tab !== 'latency' && tab !== 'logs' ? (
             <CallDetailScopeTags tags={tabScope.tags} hint={tabScope.hint} />
           ) : null}
+          {tab === 'per_call_metrics' && perCallMetricsView ? (
+            <PerCallMetricsPanel view={perCallMetricsView} />
+          ) : null}
+
           {tab === 'transcript' ? (
             transcriptLoading ? (
               <div className="space-y-3">
@@ -571,52 +634,52 @@ export default function EvaluatorCallDetailPanel({
                 <div className="h-32 animate-pulse rounded-xl bg-gray-100" />
               </div>
             ) : (
-            <div className="rounded-xl border border-gray-200 bg-white p-5">
-              {callAnalysis.call_summary ? (
-                <div className="mb-4 rounded-lg border border-indigo-100 bg-indigo-50 p-4">
-                  <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-indigo-900">
-                    Summary
-                  </p>
-                  <p className="text-sm leading-relaxed text-indigo-800">{callAnalysis.call_summary}</p>
+              <div className="rounded-xl border border-gray-200 bg-white p-5">
+                {callAnalysis.call_summary ? (
+                  <div className="mb-4 rounded-lg border border-indigo-100 bg-indigo-50 p-4">
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-indigo-900">
+                      Summary
+                    </p>
+                    <p className="text-sm leading-relaxed text-indigo-800">{callAnalysis.call_summary}</p>
+                  </div>
+                ) : null}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-lg bg-gray-50 p-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                      Sentiment
+                    </p>
+                    <p className="mt-1 text-sm font-medium text-gray-900">{callAnalysis.user_sentiment}</p>
+                  </div>
+                  <div className="rounded-lg bg-gray-50 p-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                      Success
+                    </p>
+                    <p className="mt-1 text-sm font-medium text-gray-900">
+                      {callAnalysis.call_successful === true
+                        ? 'Successful'
+                        : callAnalysis.call_successful === false
+                          ? 'Unsuccessful'
+                          : 'N/A'}
+                    </p>
+                  </div>
                 </div>
-              ) : null}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="rounded-lg bg-gray-50 p-3">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">
-                    Sentiment
-                  </p>
-                  <p className="mt-1 text-sm font-medium text-gray-900">{callAnalysis.user_sentiment}</p>
-                </div>
-                <div className="rounded-lg bg-gray-50 p-3">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">
-                    Success
-                  </p>
-                  <p className="mt-1 text-sm font-medium text-gray-900">
-                    {callAnalysis.call_successful === true
-                      ? 'Successful'
-                      : callAnalysis.call_successful === false
-                        ? 'Unsuccessful'
-                        : 'N/A'}
-                  </p>
-                </div>
+                {result?.call_data?.endedReason ? (
+                  <div className="mt-4 rounded-lg bg-gray-50 p-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                      End reason
+                    </p>
+                    <p className="mt-1 text-sm text-gray-900">
+                      {String(result.call_data.endedReason).replace(/-/g, ' ')}
+                    </p>
+                  </div>
+                ) : null}
+                {!callAnalysis.call_summary &&
+                  callAnalysis.call_successful == null &&
+                  callAnalysis.user_sentiment === 'Neutral' &&
+                  !result?.call_data?.endedReason ? (
+                  <p className="mt-4 text-center text-sm text-gray-500">No call analysis available.</p>
+                ) : null}
               </div>
-              {result?.call_data?.endedReason ? (
-                <div className="mt-4 rounded-lg bg-gray-50 p-3">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">
-                    End reason
-                  </p>
-                  <p className="mt-1 text-sm text-gray-900">
-                    {String(result.call_data.endedReason).replace(/-/g, ' ')}
-                  </p>
-                </div>
-              ) : null}
-              {!callAnalysis.call_summary &&
-              callAnalysis.call_successful == null &&
-              callAnalysis.user_sentiment === 'Neutral' &&
-              !result?.call_data?.endedReason ? (
-                <p className="mt-4 text-center text-sm text-gray-500">No call analysis available.</p>
-              ) : null}
-            </div>
             )
           ) : null}
 

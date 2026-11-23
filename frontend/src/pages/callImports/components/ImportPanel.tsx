@@ -94,7 +94,7 @@ export default function ImportPanel({ callImport }: ImportPanelProps) {
               <p>{submitError}</p>
               {integrationHint && (
                 <Link
-                  to="/integrations"
+                  to="/settings/integrations"
                   className="inline-block font-medium text-red-700 underline hover:text-red-900"
                 >
                   Configure telephony credentials in Integrations &rarr;

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Dict, List, Optional, Set
 from uuid import UUID
 
@@ -26,9 +27,9 @@ from app.models.schemas import (
     EvaluatorResultsUnassignedSummary,
 )
 from app.services.evaluators.evaluator_results_query import (
+    apply_playground_scope_filter,
     classify_display_status,
     is_in_progress_status,
-    playground_linked_evaluator_result_ids_subquery,
 )
 
 
@@ -70,6 +71,24 @@ def _is_unassigned(result: EvaluatorResult, suite_by_evaluator: Dict[UUID, Optio
     return suite_id is None
 
 
+def _result_matches_scope(
+    result: SimpleNamespace,
+    suite_by_evaluator: Dict[UUID, Optional[UUID]],
+    *,
+    agent_id: Optional[UUID],
+    suite_id: Optional[UUID],
+    scenario_id: Optional[UUID],
+) -> bool:
+    if agent_id is not None and result.agent_id != agent_id:
+        return False
+    ev_suite_id = suite_by_evaluator.get(result.evaluator_id) if result.evaluator_id else None
+    if suite_id is not None and ev_suite_id != suite_id:
+        return False
+    if scenario_id is not None and result.scenario_id != scenario_id:
+        return False
+    return True
+
+
 def build_evaluator_results_overview(
     db: Session,
     *,
@@ -77,20 +96,46 @@ def build_evaluator_results_overview(
     workspace_id: UUID,
     agent_id: Optional[UUID] = None,
     suite_id: Optional[UUID] = None,
+    scenario_id: Optional[UUID] = None,
     since: Optional[datetime] = None,
     until: Optional[datetime] = None,
+    playground: Optional[bool] = None,
 ) -> EvaluatorResultsOverviewResponse:
     query = db.query(EvaluatorResult).filter(
         EvaluatorResult.organization_id == organization_id,
         EvaluatorResult.workspace_id == workspace_id,
-        EvaluatorResult.evaluator_id.isnot(None),
-        ~EvaluatorResult.id.in_(playground_linked_evaluator_result_ids_subquery(db)),
+    )
+    query = apply_playground_scope_filter(
+        query,
+        db,
+        playground=playground,
+        test_agents_only=None,
     )
     if since is not None:
         query = query.filter(EvaluatorResult.timestamp >= since)
     if until is not None:
         query = query.filter(EvaluatorResult.timestamp <= until)
-    rows = query.all()
+    loaded = query.with_entities(
+        EvaluatorResult.result_id,
+        EvaluatorResult.evaluator_id,
+        EvaluatorResult.agent_id,
+        EvaluatorResult.scenario_id,
+        EvaluatorResult.timestamp,
+        EvaluatorResult.status,
+        EvaluatorResult.metric_scores,
+    ).all()
+    rows = [
+        SimpleNamespace(
+            result_id=result_id,
+            evaluator_id=evaluator_id,
+            agent_id=agent_id,
+            scenario_id=scenario_id,
+            timestamp=timestamp,
+            status=status,
+            metric_scores=metric_scores,
+        )
+        for result_id, evaluator_id, agent_id, scenario_id, timestamp, status, metric_scores in loaded
+    ]
 
     evaluator_ids: Set[UUID] = {r.evaluator_id for r in rows if r.evaluator_id}
     evaluators = (
@@ -129,6 +174,14 @@ def build_evaluator_results_overview(
     scenario_counts: Dict[tuple, _MutableCounts] = defaultdict(_MutableCounts)
 
     for result in rows:
+        if not _result_matches_scope(
+            result,
+            suite_by_evaluator,
+            agent_id=agent_id,
+            suite_id=suite_id,
+            scenario_id=scenario_id,
+        ):
+            continue
         workspace_counts.observe(result)
         if _is_unassigned(result, suite_by_evaluator):
             unassigned_counts.observe(result)

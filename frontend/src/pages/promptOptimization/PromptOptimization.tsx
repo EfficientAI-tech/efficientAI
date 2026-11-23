@@ -93,7 +93,7 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; icon: typeof
 const PROSE_CLASSES =
   'prose prose-sm max-w-none prose-headings:text-gray-900 prose-p:text-gray-700 prose-code:text-gray-800 prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-gray-900 prose-pre:text-gray-100'
 
-export default function PromptOptimization() {
+export default function PromptOptimization({ embedded = false }: { embedded?: boolean }) {
   const queryClient = useQueryClient()
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const [showNewRunDialog, setShowNewRunDialog] = useState(false)
@@ -207,7 +207,7 @@ export default function PromptOptimization() {
   }
 
   return (
-    <div className="h-[calc(100vh-7rem)] flex flex-col">
+    <div className={`${embedded ? 'h-[calc(100vh-16rem)]' : 'h-[calc(100vh-7rem)]'} flex flex-col`}>
       {/* Main layout — left sidebar + content */}
       <div className="flex-1 flex gap-3 min-h-0">
 
