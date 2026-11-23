@@ -317,7 +317,10 @@ def list_metric_studio_run_results(
     query = (
         db.query(MetricStudioRunResult)
         .filter(MetricStudioRunResult.run_id == run_id)
-        .order_by(MetricStudioRunResult.created_at.asc())
+        .order_by(
+            MetricStudioRunResult.created_at.asc(),
+            MetricStudioRunResult.id.asc(),
+        )
     )
     total = query.count()
     rows = query.offset(skip).limit(limit).all()
