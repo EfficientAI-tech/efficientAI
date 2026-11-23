@@ -1062,7 +1062,7 @@ def execute_call_import_materialization(
         if parse_result.skipped:
             call_import.error_message = (
                 f"No importable rows. {skipped_count} row(s) skipped due "
-                "to missing or invalid conversation ID or recording URL."
+                "to missing or invalid required values (see source_row_skips)."
             )
         else:
             call_import.error_message = "Source file did not contain any data rows."

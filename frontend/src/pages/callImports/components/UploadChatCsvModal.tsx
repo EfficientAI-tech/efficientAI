@@ -23,7 +23,7 @@ interface UploadChatCsvModalProps {
   initialSchemaId?: string | null
 }
 
-const MAX_BYTES = 15 * 1024 * 1024
+const MAX_BYTES = 100 * 1024 * 1024
 const ALLOWED_EXTENSIONS = ['.csv', '.xlsx', '.xlsm'] as const
 const ACCEPT_ATTR =
   '.csv,text/csv,.xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -45,7 +45,7 @@ function preflight(file: File): string | null {
     return `File must be one of: ${ALLOWED_EXTENSIONS.join(', ')}`
   }
   if (file.size > MAX_BYTES) {
-    return 'File exceeds 15 MB; please split it.'
+    return 'File exceeds 100 MB; please split it.'
   }
   return null
 }
@@ -199,9 +199,8 @@ export default function UploadChatCsvModal({
               setIsDragOver(false)
               handleFile(e.dataTransfer.files?.[0] ?? null)
             }}
-            className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
-              isDragOver ? 'border-primary-400 bg-primary-50' : 'border-gray-200'
-            }`}
+            className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${isDragOver ? 'border-primary-400 bg-primary-50' : 'border-gray-200'
+              }`}
           >
             <input
               ref={fileInputRef}
@@ -289,11 +288,10 @@ export default function UploadChatCsvModal({
                           checked ? prev.filter((id) => id !== tag.id) : [...prev, tag.id],
                         )
                       }
-                      className={`rounded-full px-3 py-1 text-xs font-medium border ${
-                        checked
+                      className={`rounded-full px-3 py-1 text-xs font-medium border ${checked
                           ? 'border-primary-600 bg-primary-50 text-primary-800'
                           : 'border-gray-200 text-gray-600'
-                      }`}
+                        }`}
                     >
                       {tag.name}
                     </button>

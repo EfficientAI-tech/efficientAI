@@ -129,6 +129,7 @@ export interface EvaluatorResultMetricScore {
   type: string
   metric_name: string
   parent_metric_id?: string | null
+  passed?: boolean | null
 }
 
 export interface EvaluatorResultRow {
@@ -145,6 +146,7 @@ export interface EvaluatorResultRow {
   status: EvaluatorResultStatus
   metric_scores: Record<string, EvaluatorResultMetricScore> | null
   error_message: string | null
+  provider_platform?: string | null
   call_data?: Record<string, unknown> | null
   agent?: { id: string; name: string; call_medium?: string | null } | null
   persona?: { id: string; name: string } | null
@@ -154,6 +156,7 @@ export interface EvaluatorResultRow {
 export interface EvaluatorResultListResponse {
   items: EvaluatorResultRow[]
   total: number
+  usage_cost_usd?: number | null
 }
 
 export interface EvaluatorResultCounts {
@@ -208,6 +211,12 @@ export interface ListEvaluatorResultsParams {
   unassignedOnly?: boolean
   playground?: boolean
   testAgentsOnly?: boolean
+  metricId?: string
+  usageModel?: string
+  toolUse?: string
+  toolProduct?: string
+  toolFailuresOnly?: boolean
+  hasToolCalls?: boolean
 }
 
 export interface APIKey {
@@ -1249,7 +1258,7 @@ export interface CallImport {
    */
   skipped_columns: string[]
   /**
-   * Source rows skipped at parse time (missing/invalid conversation ID or URL).
+   * Source rows skipped at parse time (missing/invalid required fields, URLs, etc.).
    */
   source_row_skips?: CallImportSourceRowSkip[]
   /** S3 key for the staged source file. ``null`` on legacy batches. */
@@ -2342,6 +2351,148 @@ export interface EvaluatorResultsAggregateResponse {
   completed_rows: number
   failed_rows: number
   metrics: CallImportMetricAggregate[]
+}
+
+export interface DashboardOpsModelSpend {
+  model: string
+  role: string
+  cost_usd: number
+}
+
+export interface DashboardOpsCostByAgent {
+  agent_id: string
+  agent_name: string
+  llm_usd: number
+  stt_usd: number
+  tts_usd: number
+  total_usd: number
+  agent_usd: number
+  simulator_usd: number
+  judge_usd: number
+  models: DashboardOpsModelSpend[]
+}
+
+export interface DashboardOpsModelDay {
+  day: string
+  model: string
+  cost_usd: number
+}
+
+export interface DashboardOpsAgentDay {
+  day: string
+  agent_id: string
+  role: string
+  llm_usd: number
+  stt_usd: number
+  tts_usd: number
+}
+
+export interface DashboardOpsToolAgentDay {
+  day: string
+  agent_id: string
+  agent_name: string
+  calls: number
+  errors: number
+}
+
+export interface DashboardOpsToolByTool {
+  agent_id: string
+  agent_name: string
+  tool: string
+  calls: number
+  errors: number
+}
+
+export interface DashboardOpsToolCallsPerRun {
+  agent_id: string
+  agent_name: string
+  runs: number
+  calls: number
+  avg_per_run: number
+}
+
+export interface DashboardOpsProviderTotal {
+  provider: string
+  calls: number
+}
+
+export interface DashboardOpsProviderDay {
+  day: string
+  provider: string
+  calls: number
+}
+
+export interface DashboardOpsProviderAgent {
+  agent_id: string
+  agent_name: string
+  provider: string
+  calls: number
+}
+
+export interface DashboardOpsModelLayer {
+  model: string
+  usage_kind: string
+  cost_usd: number
+  usd_per_minute?: number | null
+  usd_per_million_tokens?: number | null
+}
+
+export interface DashboardOpsPriceDay {
+  day: string
+  model: string
+  usd_per_minute?: number | null
+  usd_per_million_tokens?: number | null
+}
+
+export interface DashboardOpsRunDay {
+  day: string
+  completed: number
+  failed: number
+  duration_seconds: number
+  duration_count: number
+}
+
+export interface DashboardOpsScoreDay {
+  day: string
+  metric_id: string
+  score_sum: number
+  score_count: number
+}
+
+export interface DashboardOpsAgentMetricCount {
+  agent_id: string
+  metric_count: number
+}
+
+export interface DashboardOpsDurationBucket {
+  start_seconds: number
+  end_seconds: number
+  count: number
+}
+
+export interface EvaluatorResultsDashboardOpsResponse {
+  cost_by_agent: DashboardOpsCostByAgent[]
+  cost_by_model_day: DashboardOpsModelDay[]
+  cost_by_agent_day: DashboardOpsAgentDay[]
+  model_layers: DashboardOpsModelLayer[]
+  price_by_day?: DashboardOpsPriceDay[]
+  tool_calls_by_agent_day: DashboardOpsToolAgentDay[]
+  tool_calls_by_tool: DashboardOpsToolByTool[]
+  tool_calls_per_run: DashboardOpsToolCallsPerRun[]
+  providers: DashboardOpsProviderTotal[]
+  provider_by_day: DashboardOpsProviderDay[]
+  provider_by_agent: DashboardOpsProviderAgent[]
+  calls_with_no_tools: number
+  run_days?: DashboardOpsRunDay[]
+  score_days?: DashboardOpsScoreDay[]
+  total_rows?: number
+  completed_rows?: number
+  failed_rows?: number
+  metrics?: CallImportMetricAggregate[]
+  agents?: EvaluatorResultsAgentSummary[]
+  agent_metric_counts?: DashboardOpsAgentMetricCount[]
+  duration_buckets?: DashboardOpsDurationBucket[]
+  scenario_metric_means?: Array<{ scenario_id: string; mean: number; scored: number }>
 }
 
 export interface CallImportInsightsRunPoint {

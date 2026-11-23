@@ -3828,6 +3828,37 @@ class LLMUsageDaily(Base):
     )
 
 
+class EvaluatorResultDaily(Base):
+    """One row per day, agent, scenario, and live/simulation for dashboard charts."""
+
+    __tablename__ = "evaluator_result_daily"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    usage_date = Column(Date, nullable=False, index=True)
+    agent_id = Column(UUID(as_uuid=True), nullable=True)
+    scenario_id = Column(UUID(as_uuid=True), nullable=True)
+    is_live = Column(Boolean, nullable=False, default=False, server_default="false")
+    completed = Column(BigInteger, nullable=False, default=0, server_default="0")
+    failed = Column(BigInteger, nullable=False, default=0, server_default="0")
+    duration_seconds = Column(Float, nullable=False, default=0, server_default="0")
+    duration_count = Column(BigInteger, nullable=False, default=0, server_default="0")
+    score = Column(JSONB, nullable=False, default=dict, server_default="{}")
+    metric_ids = Column(JSONB, nullable=False, default=list, server_default="[]")
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 # Bump the Redis settings version when an evaluation's worker-visible settings
 # change, so eval workers drop their cached copy (see eval_settings_version).
 from app.services.call_imports.eval_settings_version import (  # noqa: E402

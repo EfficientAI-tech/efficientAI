@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { Chip } from '@heroui/react'
 import { ChevronDown, Filter, SlidersHorizontal } from 'lucide-react'
 import SearchableSelect from './SearchableSelect'
@@ -46,6 +46,8 @@ type UsageFiltersBarProps = {
   onModelChange: (v: string) => void
   onClearAll: () => void
   maxHistoryDays?: number | null
+  /** Currency, cost breakdown, last-updated — aligned to the right of the timeline row. */
+  trailing?: ReactNode
 }
 
 const KIND_OPTIONS: Array<{ id: Kind; label: string }> = [
@@ -78,6 +80,7 @@ export default function UsageFiltersBar({
   onModelChange,
   onClearAll,
   maxHistoryDays = null,
+  trailing,
 }: UsageFiltersBarProps) {
   const [expanded, setExpanded] = useState(false)
 
@@ -235,18 +238,21 @@ export default function UsageFiltersBar({
         />
 
         {filtersLoading ? (
-          <span className="text-xs text-gray-400 ml-1">Updating options…</span>
+          <span className="text-xs text-gray-400">Updating options…</span>
         ) : null}
 
-        {hasActiveScope ? (
-          <button
-            type="button"
-            onClick={onClearAll}
-            className={`ml-auto text-xs ${usageTheme.linkStrong}`}
-          >
-            Clear scope
-          </button>
-        ) : null}
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+          {hasActiveScope ? (
+            <button
+              type="button"
+              onClick={onClearAll}
+              className={`text-xs ${usageTheme.linkStrong}`}
+            >
+              Clear scope
+            </button>
+          ) : null}
+          {trailing}
+        </div>
       </div>
 
       {!expanded && hasScopeFilters ? (

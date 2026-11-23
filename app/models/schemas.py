@@ -2745,6 +2745,7 @@ class EvaluatorResultsOverviewResponse(BaseModel):
 class EvaluatorResultListResponse(BaseModel):
     items: List["EvaluatorResultResponse"]
     total: int
+    usage_cost_usd: Optional[float] = None
 
 
 
@@ -3807,7 +3808,8 @@ class CallImportSourceRowSkip(BaseModel):
         ...,
         description=(
             "Machine-readable skip reason, e.g. missing_conversation_id, "
-            "missing_recording_url, invalid_recording_url."
+            "missing_recording_url, missing_transcript, missing_required_parameter, "
+            "invalid_recording_url."
         ),
     )
     message: str = Field(
@@ -5514,6 +5516,148 @@ class EvaluatorResultsAggregateResponse(BaseModel):
     completed_rows: int = 0
     failed_rows: int = 0
     metrics: List[CallImportMetricAggregate] = Field(default_factory=list)
+
+
+class DashboardOpsModelSpend(BaseModel):
+    model: str
+    role: str
+    cost_usd: float = 0
+
+
+class DashboardOpsCostByAgent(BaseModel):
+    agent_id: UUID
+    agent_name: str
+    llm_usd: float = 0
+    stt_usd: float = 0
+    tts_usd: float = 0
+    total_usd: float = 0
+    agent_usd: float = 0
+    simulator_usd: float = 0
+    judge_usd: float = 0
+    models: List[DashboardOpsModelSpend] = Field(default_factory=list)
+
+
+class DashboardOpsModelDay(BaseModel):
+    day: date
+    model: str
+    cost_usd: float = 0
+
+
+class DashboardOpsAgentDay(BaseModel):
+    day: date
+    agent_id: UUID
+    role: str
+    llm_usd: float = 0
+    stt_usd: float = 0
+    tts_usd: float = 0
+
+
+class DashboardOpsToolAgentDay(BaseModel):
+    day: date
+    agent_id: UUID
+    agent_name: str
+    calls: int = 0
+    errors: int = 0
+
+
+class DashboardOpsToolByTool(BaseModel):
+    agent_id: UUID
+    agent_name: str
+    tool: str
+    calls: int = 0
+    errors: int = 0
+
+
+class DashboardOpsToolCallsPerRun(BaseModel):
+    agent_id: UUID
+    agent_name: str
+    runs: int = 0
+    calls: int = 0
+    avg_per_run: float = 0
+
+
+class DashboardOpsProviderTotal(BaseModel):
+    provider: str
+    calls: int = 0
+
+
+class DashboardOpsProviderDay(BaseModel):
+    day: date
+    provider: str
+    calls: int = 0
+
+
+class DashboardOpsProviderAgent(BaseModel):
+    agent_id: UUID
+    agent_name: str
+    provider: str
+    calls: int = 0
+
+
+class DashboardOpsModelLayer(BaseModel):
+    model: str
+    usage_kind: str
+    cost_usd: float = 0
+    usd_per_minute: Optional[float] = None
+    usd_per_million_tokens: Optional[float] = None
+
+
+class DashboardOpsRunDay(BaseModel):
+    day: date
+    completed: int = 0
+    failed: int = 0
+    duration_seconds: float = 0
+    duration_count: int = 0
+
+
+class DashboardOpsScoreDay(BaseModel):
+    day: date
+    metric_id: str
+    score_sum: float = 0
+    score_count: int = 0
+
+
+class DashboardOpsAgentMetricCount(BaseModel):
+    agent_id: UUID
+    metric_count: int = 0
+
+
+class DashboardOpsDurationBucket(BaseModel):
+    start_seconds: int
+    end_seconds: int
+    count: int = 0
+
+
+class DashboardOpsScenarioMetricMean(BaseModel):
+    scenario_id: UUID
+    mean: float
+    scored: int = 0
+
+
+class EvaluatorResultsDashboardOpsResponse(BaseModel):
+    """Cost, tool calls, daily run series, score summaries, and the agent tree."""
+
+    cost_by_agent: List[DashboardOpsCostByAgent] = Field(default_factory=list)
+    cost_by_model_day: List[DashboardOpsModelDay] = Field(default_factory=list)
+    cost_by_agent_day: List[DashboardOpsAgentDay] = Field(default_factory=list)
+    model_layers: List[DashboardOpsModelLayer] = Field(default_factory=list)
+    tool_calls_by_agent_day: List[DashboardOpsToolAgentDay] = Field(default_factory=list)
+    tool_calls_by_tool: List[DashboardOpsToolByTool] = Field(default_factory=list)
+    tool_calls_per_run: List[DashboardOpsToolCallsPerRun] = Field(default_factory=list)
+    providers: List[DashboardOpsProviderTotal] = Field(default_factory=list)
+    provider_by_day: List[DashboardOpsProviderDay] = Field(default_factory=list)
+    provider_by_agent: List[DashboardOpsProviderAgent] = Field(default_factory=list)
+    calls_with_no_tools: int = 0
+    run_days: List[DashboardOpsRunDay] = Field(default_factory=list)
+    score_days: List[DashboardOpsScoreDay] = Field(default_factory=list)
+    total_rows: int = 0
+    completed_rows: int = 0
+    failed_rows: int = 0
+    metrics: List[CallImportMetricAggregate] = Field(default_factory=list)
+    agents: List[EvaluatorResultsAgentSummary] = Field(default_factory=list)
+    agent_metric_counts: List[DashboardOpsAgentMetricCount] = Field(default_factory=list)
+    duration_buckets: List[DashboardOpsDurationBucket] = Field(default_factory=list)
+    scenario_metric_means: List[DashboardOpsScenarioMetricMean] = Field(default_factory=list)
 
 
 # --- LLM-generated TLDR for the Visualizations tab ---

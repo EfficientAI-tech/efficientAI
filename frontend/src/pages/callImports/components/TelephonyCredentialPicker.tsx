@@ -162,7 +162,7 @@ export default function TelephonyCredentialPicker({
             configure credentials below.
           </p>
           <Link
-            to="/integrations"
+            to="/settings/integrations"
             className="inline-block font-medium text-amber-900 underline hover:text-amber-700"
           >
             Configure telephony credentials in Integrations &rarr;

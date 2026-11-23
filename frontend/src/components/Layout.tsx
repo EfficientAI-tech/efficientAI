@@ -7,14 +7,13 @@ import { apiClient } from '../lib/api'
 import { Profile } from '../types/api'
 import {
   LayoutDashboard,
-  FileCheck,
   LogOut,
+  User,
   Menu,
   Phone,
   Users,
   FileText,
   Shield,
-  Play,
   BarChart3,
   Plug,
   ChevronRight,
@@ -22,7 +21,6 @@ import {
   ChevronLeft,
   Database,
   Settings,
-  Mic,
   Bot,
   Activity,
   PieChart,
@@ -34,16 +32,27 @@ import {
   Gamepad2,
   ScrollText,
   Github,
-  Sparkles,
   Upload,
   Wrench,
+  FlaskConical,
+  ClipboardCheck,
+  SlidersHorizontal,
+  MessageSquare,
+  Gauge,
+  Ruler,
+  LayoutGrid,
+  PhoneCall,
+  AudioLines,
+  ArrowLeft,
+  Info,
+  X,
 } from 'lucide-react'
-import { useState, useEffect } from 'react'
-import { Info, X } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
 import Logo from './Logo'
 import { consumeJoinNotice } from '../lib/joinNotice'
 import WorkspaceSwitcher from './WorkspaceSwitcher'
 import WalkthroughRail from './walkthrough/WalkthroughRail'
+import { getSettingsReturnPath, rememberSettingsReturnPath } from '../lib/settingsReturnPath'
 
 interface NavItem {
   name: string
@@ -61,11 +70,13 @@ interface NavSection {
 const navigationSections: NavSection[] = [
   {
     title: 'Simulations',
-    icon: Play,
+    icon: FlaskConical,
     items: [
       { name: 'Agents', href: '/agents', icon: Bot },
       { name: 'Personas', href: '/personas', icon: Users },
       { name: 'Scenarios', href: '/scenarios', icon: FileText },
+      { name: 'Evaluators', href: '/evaluate-test-agents', icon: Gauge },
+      { name: 'Results', href: '/results', icon: BarChart3 },
       { name: 'Tools', href: '/tools', icon: Wrench },
     ],
   },
@@ -73,60 +84,34 @@ const navigationSections: NavSection[] = [
     title: 'Playground',
     icon: Gamepad2,
     items: [
-      { name: 'Agent Playground', href: '/playground', icon: Play },
+      { name: 'Agent Playground', href: '/playground', icon: MessageSquare },
       { name: 'Voice Playground', href: '/voice-playground', icon: Volume2, enterpriseFeature: 'voice_playground' },
     ],
   },
   {
     title: 'Evaluations',
-    icon: FileCheck,
+    icon: ClipboardCheck,
     items: [
-      { name: 'Evaluators', href: '/evaluate-test-agents', icon: Mic },
-      { name: 'Evaluation Results', href: '/results', icon: BarChart3 },
-      { name: 'Judge Alignment', href: '/judge-alignment', icon: Sparkles },
+      { name: 'Prompts', href: '/prompts', icon: ScrollText },
       { name: 'Imports', href: '/call-imports', icon: Upload, enterpriseFeature: 'call_imports' },
     ],
   },
   {
-    title: 'Prompts',
-    icon: ScrollText,
-    items: [
-      { name: 'Partials', href: '/prompt-partials', icon: FileText },
-      { name: 'Optimization', href: '/prompt-optimization', icon: Sparkles },
-    ],
-  },
-  {
     title: 'Observability',
-    icon: BarChart3,
+    icon: Activity,
     items: [
-      { name: 'Overview', href: '/observability', icon: Activity },
-      { name: 'Calls', href: '/observability/calls', icon: Phone },
-    ],
-  },
-  {
-    title: 'Usage',
-    icon: PieChart,
-    items: [
-      { name: 'Overview', href: '/usage', icon: PieChart },
-    ],
-  },
-  {
-    title: 'Alerting',
-    icon: Bell,
-    items: [
-      { name: 'Alerts', href: '/alerts', icon: Bell, enterpriseFeature: 'alerts' },
-      { name: 'Alert History', href: '/alerts/history', icon: History, enterpriseFeature: 'alerts' },
+      { name: 'Overview', href: '/observability', icon: LayoutGrid },
+      { name: 'Calls', href: '/observability/calls', icon: PhoneCall },
+      { name: 'Usage', href: '/observability/usage', icon: PieChart },
     ],
   },
   {
     title: 'Configurations',
-    icon: Settings,
+    icon: SlidersHorizontal,
     items: [
-      { name: 'Cloud Storage', href: '/data-sources', icon: Database },
-      { name: 'VoiceBundle', href: '/voicebundles', icon: Mic },
-      { name: 'Integrations', href: '/integrations', icon: Plug },
-      { name: 'Telephony Numbers', href: '/telephony-numbers', icon: Phone },
-      { name: 'API Keys', href: '/settings', icon: Key },
+      { name: 'Voice Bundles', href: '/voicebundles', icon: AudioLines },
+      { name: 'Alerts', href: '/alerts', icon: Bell, enterpriseFeature: 'alerts' },
+      { name: 'Alert History', href: '/alerts/history', icon: History, enterpriseFeature: 'alerts' },
       { name: 'Cron Jobs', href: '/cron-jobs', icon: Clock },
     ],
   },
@@ -134,12 +119,18 @@ const navigationSections: NavSection[] = [
 
 const otherNavigation: NavItem[] = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-  { name: 'Metrics', href: '/metrics-management', icon: BarChart3 },
+  { name: 'Metrics', href: '/metrics-management', icon: Ruler },
 ]
 
-const bottomNavigation = [
-  { name: 'IAM', href: '/iam', icon: Shield },
+const settingsNavigation: NavItem[] = [
+  { name: 'API Keys', href: '/settings/api-keys', icon: Key },
+  { name: 'Integrations', href: '/settings/integrations', icon: Plug },
+  { name: 'Cloud Storage', href: '/settings/cloud-storage', icon: Database },
+  { name: 'Telephony', href: '/settings/telephony', icon: Phone },
+  { name: 'Members and Access', href: '/settings/members', icon: Shield },
 ]
+
+const settingsEntry: NavItem = { name: 'Settings', href: '/settings/api-keys', icon: Settings }
 
 const SIDEBAR_COLLAPSED_KEY = 'sidebarCollapsed'
 
@@ -148,31 +139,43 @@ function readSidebarCollapsedPreference(): boolean {
   return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true'
 }
 
-function getFlattenedNavItems(): NavItem[] {
+function getMainNavItems(): NavItem[] {
   const items: NavItem[] = [...otherNavigation]
   for (const section of navigationSections) {
     items.push(...section.items)
   }
-  items.push(...bottomNavigation)
+  items.push(settingsEntry)
   return items
 }
 
+function isSettingsPath(pathname: string): boolean {
+  return pathname === '/settings' || pathname.startsWith('/settings/')
+}
+
 function isNavItemActive(href: string, pathname: string): boolean {
+  if (href === '/') {
+    return pathname === '/'
+  }
+  if (href === '/observability') {
+    return pathname === '/observability'
+  }
   if (href === '/tools') {
     // Knowledge bases live under Tools; their detail pages keep the Tools item lit.
-    return pathname === href || pathname.startsWith('/knowledge-bases')
+    return pathname === href || pathname.startsWith('/tools/') || pathname.startsWith('/knowledge-bases')
   }
-  if (href === '/metrics-management') {
-    return (
-      pathname === href || pathname.startsWith('/metrics-management/')
+  if (href === '/alerts') {
+    return pathname === '/alerts' || (
+      pathname.startsWith('/alerts/') && !pathname.startsWith('/alerts/history')
     )
   }
-  return pathname === href
+  if (href === '/settings/api-keys') {
+    return pathname === '/settings' || pathname === href || pathname.startsWith(`${href}/`)
+  }
+  return pathname === href || pathname.startsWith(`${href}/`)
 }
 
 export default function Layout() {
   const location = useLocation()
-  const { logout } = useAuthStore()
   const { selectedAgent, setSelectedAgent, loadPreferences, isInitialized } = useAgentStore()
   const { fetchLicense } = useLicenseStore()
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -226,6 +229,10 @@ export default function Layout() {
     setJoinNotice(consumeJoinNotice())
   }, [])
 
+  useEffect(() => {
+    rememberSettingsReturnPath(location.pathname, location.search)
+  }, [location.pathname, location.search])
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Mobile sidebar */}
@@ -242,7 +249,7 @@ export default function Layout() {
           className={`fixed inset-y-0 left-0 w-64 bg-white shadow-xl transition-transform duration-300 ease-in-out ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'
             }`}
         >
-          <SidebarContent onLogout={logout} location={location} />
+          <SidebarContent location={location} />
         </div>
       </div>
 
@@ -253,7 +260,6 @@ export default function Layout() {
       >
         <div className="flex flex-col h-full w-full bg-white border-r border-gray-200 shadow-sm overflow-hidden">
           <SidebarContent
-            onLogout={logout}
             location={location}
             collapsed={desktopSidebarCollapsed}
             onToggleCollapse={toggleDesktopSidebar}
@@ -385,13 +391,24 @@ export default function Layout() {
                 <Github className="h-4 w-4" />
                 <span>Star us on GitHub</span>
               </a>
+              <Link
+                to="/settings/api-keys"
+                title="Settings"
+                aria-label="Settings"
+                className={`flex items-center justify-center w-10 h-10 rounded-lg transition-colors ${isSettingsPath(location.pathname)
+                  ? 'bg-gray-100 text-gray-900'
+                  : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'
+                  }`}
+              >
+                <Settings className="h-5 w-5" />
+              </Link>
               <ProfileAvatar />
             </div>
           </div>
         </div>
 
         {/* Page content */}
-        <main className="flex-1 px-6 pb-6 pt-[5.5rem] transition-all duration-300">
+        <main className="min-w-0 flex-1 overflow-x-clip px-6 pb-6 pt-[5.5rem] transition-all duration-300">
           {joinNotice && (
             <div
               role="status"
@@ -409,7 +426,7 @@ export default function Layout() {
               </button>
             </div>
           )}
-          <div className="min-w-0">
+          <div className="min-w-0 max-w-full overflow-x-clip">
             <Outlet />
           </div>
         </main>
@@ -421,6 +438,10 @@ export default function Layout() {
 
 function ProfileAvatar() {
   const location = useLocation()
+  const { logout } = useAuthStore()
+  const menuRef = useRef<HTMLDivElement>(null)
+  const closeTimer = useRef<number | null>(null)
+  const [open, setOpen] = useState(false)
   const { data: profile } = useQuery<Profile>({
     queryKey: ['profile'],
     queryFn: () => apiClient.getProfile(),
@@ -444,39 +465,124 @@ function ProfileAvatar() {
   }
 
   const initials = getInitials()
+  const displayName = profile?.name
+    || [profile?.first_name, profile?.last_name].filter(Boolean).join(' ')
+    || profile?.email
+    || 'Account'
+
+  const openMenu = () => {
+    if (closeTimer.current) window.clearTimeout(closeTimer.current)
+    setOpen(true)
+  }
+
+  const scheduleClose = () => {
+    if (closeTimer.current) window.clearTimeout(closeTimer.current)
+    closeTimer.current = window.setTimeout(() => setOpen(false), 120)
+  }
+
+  useEffect(() => {
+    setOpen(false)
+  }, [location.pathname])
+
+  useEffect(() => {
+    if (!open) return
+    const onPointerDown = (event: MouseEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [open])
+
+  useEffect(() => () => {
+    if (closeTimer.current) window.clearTimeout(closeTimer.current)
+  }, [])
 
   return (
-    <div className="flex items-center">
-      <Link
-        to="/profile"
-        className={`flex items-center justify-center w-10 h-10 rounded-lg transition-colors ${location.pathname === '/profile'
+    <div
+      ref={menuRef}
+      className="relative flex items-center"
+      onMouseEnter={openMenu}
+      onMouseLeave={scheduleClose}
+    >
+      <button
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="Account menu"
+        onClick={() => setOpen((current) => !current)}
+        className={`flex items-center justify-center w-10 h-10 rounded-lg transition-colors ${open || location.pathname === '/profile'
           ? 'bg-gray-100'
           : 'hover:bg-gray-50'
           }`}
-        title="Profile"
       >
         <div className="w-8 h-8 rounded-full bg-transparent border-2 border-gray-400 flex items-center justify-center text-gray-700 text-sm font-semibold">
           {initials}
         </div>
-      </Link>
+      </button>
+      <div
+        className={`absolute right-0 top-full z-50 w-56 origin-top-right pt-2 transition duration-150 ease-out ${open
+          ? 'pointer-events-auto translate-y-0 scale-100 opacity-100'
+          : 'pointer-events-none -translate-y-1 scale-95 opacity-0'
+          }`}
+      >
+        <div role="menu" className="overflow-hidden rounded-xl border border-gray-200 bg-white py-1 shadow-lg ring-1 ring-black/5">
+          <div className="border-b border-gray-100 px-3 py-2.5">
+            <p className="truncate text-sm font-medium text-gray-900">{displayName}</p>
+            {profile?.email && displayName !== profile.email && (
+              <p className="truncate text-xs text-gray-500">{profile.email}</p>
+            )}
+          </div>
+          <Link
+            to="/profile"
+            role="menuitem"
+            onClick={() => setOpen(false)}
+            className={`flex items-center gap-2 px-3 py-2 text-sm transition-colors ${location.pathname === '/profile'
+              ? 'bg-gray-50 text-gray-900'
+              : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
+              }`}
+          >
+            <User className="h-4 w-4 text-gray-400" />
+            Profile
+          </Link>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false)
+              logout()
+            }}
+            className="group flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-700 transition-colors hover:bg-red-50 hover:text-red-600"
+          >
+            <LogOut className="h-4 w-4 text-gray-400 transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-red-600" />
+            Logout
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
 
 function SidebarContent({
-  onLogout,
   location,
   collapsed = false,
   onToggleCollapse,
 }: {
-  onLogout: () => void
   location: ReturnType<typeof useLocation>
   collapsed?: boolean
   onToggleCollapse?: () => void
 }) {
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
-    new Set(['Simulations', 'Playground', 'Evaluations', 'Prompts', 'Observability', 'Alerting', 'Configurations'])
+    () => new Set(navigationSections.map((section) => section.title))
   )
+  const settingsOpen = isSettingsPath(location.pathname)
+  const backPath = getSettingsReturnPath()
 
   const toggleSection = (title: string) => {
     const newExpanded = new Set(expandedSections)
@@ -511,26 +617,54 @@ function SidebarContent({
             </button>
           )}
         </div>
-        <div className="flex-1 flex flex-col min-h-0 overflow-y-auto">
-          <nav className="flex-1 px-2 py-3 space-y-1">
-            {getFlattenedNavItems().map((item) => (
-              <SidebarIconLink
-                key={item.href}
-                item={item}
-                isActive={isNavItemActive(item.href, location.pathname)}
-              />
-            ))}
-          </nav>
-        </div>
-        <div className="flex-shrink-0 border-t border-gray-200 p-2">
-          <button
-            onClick={onLogout}
-            className="w-full flex items-center justify-center p-2 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors"
-            title="Logout"
-            aria-label="Logout"
+        <div className="relative flex-1 min-h-0 overflow-hidden">
+          <nav
+            className={`absolute inset-0 overflow-y-auto transition-transform duration-300 ease-in-out ${settingsOpen ? '-translate-x-full pointer-events-none' : 'translate-x-0'
+              }`}
+            aria-hidden={settingsOpen}
           >
-            <LogOut className="h-5 w-5" />
-          </button>
+            <div className="flex min-h-full flex-col px-2 py-3">
+              <div className="space-y-1">
+                {getMainNavItems().filter((item) => item.href !== settingsEntry.href).map((item) => (
+                  <SidebarIconLink
+                    key={item.href}
+                    item={item}
+                    isActive={isNavItemActive(item.href, location.pathname)}
+                  />
+                ))}
+              </div>
+              <div className="mt-auto border-t border-gray-200 pt-2">
+                <SidebarIconLink
+                  item={settingsEntry}
+                  isActive={isNavItemActive(settingsEntry.href, location.pathname)}
+                />
+              </div>
+            </div>
+          </nav>
+          <nav
+            className={`absolute inset-0 overflow-y-auto transition-transform duration-300 ease-in-out ${settingsOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'
+              }`}
+            aria-hidden={!settingsOpen}
+            aria-label="Settings"
+          >
+            <div className="flex min-h-full flex-col px-2 py-3">
+              <div className="space-y-1">
+                {settingsNavigation.map((item) => (
+                  <SidebarIconLink
+                    key={item.href}
+                    item={item}
+                    isActive={isNavItemActive(item.href, location.pathname)}
+                  />
+                ))}
+              </div>
+              <div className="mt-auto border-t border-gray-200 pt-2">
+                <SidebarIconLink
+                  item={{ name: 'Back to app', href: backPath, icon: ArrowLeft }}
+                  isActive={false}
+                />
+              </div>
+            </div>
+          </nav>
         </div>
       </div>
     )
@@ -565,122 +699,133 @@ function SidebarContent({
         </div>
         <WorkspaceSwitcher />
       </div>
-      <div className="flex-1 flex flex-col min-h-0 overflow-y-auto">
-        <nav className="flex-1 px-2 py-4 space-y-1">
-          {/* Other Navigation */}
-          {otherNavigation.map((item) => {
-            const isActive = isNavItemActive(item.href, location.pathname)
-            return (
-              <Link
-                key={item.name}
-                to={item.href}
-                className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md relative overflow-hidden ${isActive
-                  ? 'bg-gradient-to-r from-gray-900 via-gray-700 to-gray-400 text-white'
-                  : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
-                  }`}
-              >
-                <item.icon
-                  className={`mr-3 flex-shrink-0 h-5 w-5 ${isActive ? 'text-white' : 'text-gray-400 group-hover:text-gray-500'
-                    }`}
-                />
-                {item.name}
-              </Link>
-            )
-          })}
-
-          {/* Navigation Sections */}
-          <div className="mt-4 space-y-1">
-            {navigationSections.map((section) => {
-              const isExpanded = expandedSections.has(section.title)
-              const isActive = isSectionActive(section)
-              const SectionIcon = section.icon
-
-              return (
-                <div key={section.title}>
-                  <button
-                    onClick={() => toggleSection(section.title)}
-                    className={`w-full group flex items-center justify-between px-2 py-2 text-sm font-medium rounded-md ${isActive
-                      ? 'bg-gray-100 text-gray-900'
-                      : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
-                      }`}
-                  >
-                    <div className="flex items-center">
-                      <SectionIcon
-                        className={`mr-3 flex-shrink-0 h-5 w-5 ${isActive ? 'text-gray-700' : 'text-gray-400 group-hover:text-gray-500'
-                          }`}
-                      />
-                      {section.title}
-                    </div>
-                    {isExpanded ? (
-                      <ChevronDown className="h-4 w-4 text-gray-400" />
-                    ) : (
-                      <ChevronRight className="h-4 w-4 text-gray-400" />
-                    )}
-                  </button>
-                  {isExpanded && (
-                    <div className="ml-6 mt-1 space-y-1">
-                      {section.items.map((item) => {
-                        const isItemActive = isNavItemActive(item.href, location.pathname)
-                        return (
-                          <Link
-                            key={item.name}
-                            to={item.href}
-                            className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md relative overflow-hidden ${isItemActive
-                              ? 'bg-gradient-to-r from-gray-900 via-gray-700 to-gray-400 text-white'
-                              : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-                              }`}
-                          >
-                            <item.icon
-                              className={`mr-3 flex-shrink-0 h-4 w-4 ${isItemActive ? 'text-white' : 'text-gray-400 group-hover:text-gray-500'
-                                }`}
-                            />
-                            {item.name}
-                          </Link>
-                        )
-                      })}
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        </nav>
-        <nav className="mt-5 px-2 space-y-1 border-t border-gray-200 pt-4">
-          {bottomNavigation.map((item) => {
-            const isActive = isNavItemActive(item.href, location.pathname)
-            return (
-              <Link
-                key={item.name}
-                to={item.href}
-                className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md relative overflow-hidden ${isActive
-                  ? 'bg-gradient-to-r from-gray-900 via-gray-700 to-gray-400 text-white'
-                  : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
-                  }`}
-              >
-                <item.icon
-                  className={`mr-3 flex-shrink-0 h-5 w-5 ${isActive ? 'text-white' : 'text-gray-400 group-hover:text-gray-500'
-                    }`}
-                />
-                {item.name}
-              </Link>
-            )
-          })}
-        </nav>
-      </div>
-      <div className="flex-shrink-0 border-t border-gray-200 p-4">
-        <button
-          onClick={onLogout}
-          className="w-full group block"
+      <div className="relative flex-1 min-h-0 overflow-hidden">
+        <div
+          className={`absolute inset-0 flex flex-col transition-transform duration-300 ease-in-out ${settingsOpen ? '-translate-x-full pointer-events-none' : 'translate-x-0'
+            }`}
+          aria-hidden={settingsOpen}
         >
-          <div className="flex items-center">
-            <LogOut className="h-5 w-5 text-gray-400 group-hover:text-gray-500" />
-            <span className="ml-3 text-sm font-medium text-gray-700 group-hover:text-gray-900">
-              Logout
-            </span>
+          <nav className="flex-1 overflow-y-auto px-2 pt-4">
+            <div className="flex min-h-full flex-col">
+              <div className="space-y-1">
+                {otherNavigation.map((item) => (
+                  <SidebarTextLink
+                    key={item.href}
+                    item={item}
+                    isActive={isNavItemActive(item.href, location.pathname)}
+                  />
+                ))}
+              </div>
+
+              <div className="mt-1 space-y-1">
+                {navigationSections.map((section) => {
+                  const isExpanded = expandedSections.has(section.title)
+                  const isActive = isSectionActive(section)
+                  const SectionIcon = section.icon
+
+                  return (
+                    <div key={section.title}>
+                      <button
+                        type="button"
+                        onClick={() => toggleSection(section.title)}
+                        className={`w-full group flex items-center justify-between px-2 py-2 text-sm font-medium rounded-md ${isActive
+                          ? 'bg-gray-100 text-gray-900'
+                          : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
+                          }`}
+                      >
+                        <div className="flex items-center">
+                          <SectionIcon
+                            className={`mr-3 flex-shrink-0 h-5 w-5 ${isActive ? 'text-gray-700' : 'text-gray-400 group-hover:text-gray-500'
+                              }`}
+                          />
+                          {section.title}
+                        </div>
+                        {isExpanded ? (
+                          <ChevronDown className="h-4 w-4 text-gray-400" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4 text-gray-400" />
+                        )}
+                      </button>
+                      {isExpanded && (
+                        <div className="ml-6 mt-1 space-y-1">
+                          {section.items.map((item) => (
+                            <SidebarTextLink
+                              key={item.href}
+                              item={item}
+                              isActive={isNavItemActive(item.href, location.pathname)}
+                              iconClassName="h-4 w-4"
+                              inactiveTextClassName="text-gray-600"
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+              <div className="mt-auto border-t border-gray-200">
+                <SidebarTextLink item={settingsEntry} isActive={false} paddingClassName="py-4" />
+              </div>
+            </div>
+          </nav>
+        </div>
+        <nav
+          className={`absolute inset-0 overflow-y-auto transition-transform duration-300 ease-in-out ${settingsOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'
+            }`}
+          aria-hidden={!settingsOpen}
+          aria-label="Settings"
+        >
+          <div className="flex min-h-full flex-col px-2 pt-4">
+            <div className="space-y-1">
+              {settingsNavigation.map((item) => (
+                <SidebarTextLink
+                  key={item.href}
+                  item={item}
+                  isActive={isNavItemActive(item.href, location.pathname)}
+                />
+              ))}
+            </div>
+            <div className="mt-auto border-t border-gray-200">
+              <SidebarTextLink
+                item={{ name: 'Back to app', href: backPath, icon: ArrowLeft }}
+                isActive={false}
+                paddingClassName="py-4"
+              />
+            </div>
           </div>
-        </button>
+        </nav>
       </div>
     </div>
+  )
+}
+
+function SidebarTextLink({
+  item,
+  isActive,
+  iconClassName = 'h-5 w-5',
+  inactiveTextClassName = 'text-gray-700',
+  paddingClassName = 'py-2',
+}: {
+  item: NavItem
+  isActive: boolean
+  iconClassName?: string
+  inactiveTextClassName?: string
+  paddingClassName?: string
+}) {
+  return (
+    <Link
+      to={item.href}
+      className={`group flex items-center px-2 ${paddingClassName} text-sm font-medium rounded-md relative overflow-hidden ${isActive
+        ? 'bg-gradient-to-r from-gray-900 via-gray-700 to-gray-400 text-white'
+        : `${inactiveTextClassName} hover:bg-gray-50 hover:text-gray-900`
+        }`}
+    >
+      <item.icon
+        className={`mr-3 flex-shrink-0 ${iconClassName} ${isActive ? 'text-white' : 'text-gray-400 group-hover:text-gray-500'
+          }`}
+      />
+      {item.name}
+    </Link>
   )
 }
 
@@ -696,8 +841,8 @@ function SidebarIconLink({
       to={item.href}
       title={item.name}
       className={`group relative flex items-center justify-center p-2 rounded-md transition-colors ${isActive
-          ? 'bg-gradient-to-r from-gray-900 via-gray-700 to-gray-400 text-white'
-          : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'
+        ? 'bg-gradient-to-r from-gray-900 via-gray-700 to-gray-400 text-white'
+        : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'
         }`}
     >
       <item.icon

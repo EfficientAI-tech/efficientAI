@@ -33,9 +33,19 @@ class EvaluatorInputUnavailableError(ValueError):
     """Permanent failure: no audio or transcript available for evaluation."""
 
 
+def _record_daily_rollup(db, result) -> None:
+    try:
+        from app.services.evaluators.evaluator_result_daily import record_evaluator_result_daily
+
+        record_evaluator_result_daily(db, result)
+    except Exception as exc:
+        logger.warning(f"[EvaluatorResult] Daily rollup skipped: {exc}")
+
+
 def _commit_evaluator_result(db, result) -> None:
     from app.services.live_entity_storage import sync_evaluator_result
 
+    _record_daily_rollup(db, result)
     sync_evaluator_result(db, result)
     db.commit()
 
@@ -748,12 +758,13 @@ def _record_agent_call_usage(result, *, usage_ctx) -> None:
     if _external_usage_already_recorded(result):
         return
     try:
+        from app.services.usage.context import usage_context_as_production_agent
         from app.services.usage.llm_usage import record_call_usage
 
         record_call_usage(
             "voice-agent-call",
             organization_id=result.organization_id,
-            ctx=usage_ctx,
+            ctx=usage_context_as_production_agent(usage_ctx),
             audio_seconds=_resolve_call_duration_seconds(result),
         )
     except Exception as exc:
@@ -999,8 +1010,14 @@ def process_evaluator_result_task(self, result_id: str):
                 if isinstance(result.call_data, (dict, list)):
                     result.call_data = _make_json_serializable(result.call_data)
                     flag_modified(result, "call_data")
-                result.status = EvaluatorResultStatus.COMPLETED.value
-                result.error_message = None
+                from app.services.evaluators.evaluator_result_status import _metric_scores_mark_failed
+
+                if _metric_scores_mark_failed(result.metric_scores):
+                    result.status = EvaluatorResultStatus.FAILED.value
+                    result.error_message = result.error_message or "Evaluation metrics could not be scored"
+                else:
+                    result.status = EvaluatorResultStatus.COMPLETED.value
+                    result.error_message = None
                 _record_agent_call_usage(result, usage_ctx=usage_ctx)
                 _record_external_agent_llm_usage(result, usage_ctx=usage_ctx)
                 _commit_evaluator_result(db, result)
@@ -1071,6 +1088,7 @@ def process_evaluator_result_task(self, result_id: str):
                     if failed_result:
                         failed_result.status = EvaluatorResultStatus.FAILED.value
                         failed_result.error_message = str(e)
+                        _record_daily_rollup(db, failed_result)
                         db.commit()
                 except Exception as persist_err:
                     db.rollback()
@@ -1091,6 +1109,7 @@ def process_evaluator_result_task(self, result_id: str):
             if failed_result:
                 failed_result.status = EvaluatorResultStatus.FAILED.value
                 failed_result.error_message = str(exc)
+                _record_daily_rollup(db, failed_result)
                 db.commit()
         except Exception as persist_err:
             db.rollback()

@@ -382,56 +382,69 @@ export function ImportRunEvaluationModal(props: ImportRunEvaluationModalProps) {
                                 </div>
                               </div>
                               <div className="border border-gray-200 rounded-lg divide-y divide-gray-100 h-[calc(90vh-16rem)] overflow-y-auto">
-                                {transcriptAgreementMetrics.length > 0 ? (
+                                {transcriptAgreementSelected ? (
                                   <div className="px-3 py-2 bg-slate-50 border-b border-gray-200">
                                     <p className="text-[11px] font-semibold text-slate-700">
                                       Transcript agreement (no LLM cost)
                                     </p>
                                     <p className="text-[10px] text-slate-500 mt-0.5">
-                                      Diarized user speech is the reference; production user
-                                      speech is scored against it. Lower is better.
+                                      Compares your CSV user text to diarized user speech from
+                                      audio. Lower WER/CER is better.
                                     </p>
-                                    {transcriptAgreementSelected ? (
-                                      <p className="text-[10px] text-amber-700 mt-1">
-                                        Diarization will run for rows without a diarized
-                                        transcript.
-                                      </p>
-                                    ) : null}
+                                    <p className="text-[10px] text-violet-800 mt-1">
+                                      Diarisation settings apply for these metrics — even if you
+                                      use the production transcript for LLM scoring.
+                                    </p>
                                   </div>
                                 ) : null}
-                                {transcriptAgreementMetrics.map((metric: any) => (
-                                  <label
-                                    key={metric.id}
-                                    title={
-                                      transcriptAgreementBlocked
-                                        ? transcriptAgreementBlockReason
-                                        : undefined
-                                    }
-                                    className={`flex items-center gap-3 px-3 py-2 text-sm ${transcriptAgreementBlocked
-                                      ? 'opacity-50 cursor-not-allowed bg-gray-50'
-                                      : 'hover:bg-gray-50 cursor-pointer'
-                                      }`}
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      checked={selectedMetricIds.includes(metric.id)}
-                                      onChange={() => toggleMetric(metric.id)}
-                                      disabled={
-                                        runEvaluationMutation.isPending ||
+                                {transcriptAgreementMetrics.map((metric: any) => {
+                                  const isSelected = selectedMetricIds.includes(metric.id)
+                                  return (
+                                    <label
+                                      key={metric.id}
+                                      title={
                                         transcriptAgreementBlocked
+                                          ? transcriptAgreementBlockReason
+                                          : isSelected
+                                            ? 'Requires diarised user speech from audio to compare against your production transcript.'
+                                            : undefined
                                       }
-                                      className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 shrink-0"
-                                    />
-                                    <span className="min-w-0 flex-1">
-                                      <span className="font-medium text-gray-900 truncate block">
-                                        {metric.name}
+                                      className={`flex items-center gap-3 px-3 py-2 text-sm ${transcriptAgreementBlocked
+                                        ? 'opacity-50 cursor-not-allowed bg-gray-50'
+                                        : 'hover:bg-gray-50 cursor-pointer'
+                                        }`}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={isSelected}
+                                        onChange={() => toggleMetric(metric.id)}
+                                        disabled={
+                                          runEvaluationMutation.isPending ||
+                                          transcriptAgreementBlocked
+                                        }
+                                        className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 shrink-0"
+                                      />
+                                      <span className="min-w-0 flex-1">
+                                        <span className="flex items-center gap-1.5 min-w-0">
+                                          <span className="font-medium text-gray-900 truncate">
+                                            {metric.name}
+                                          </span>
+                                          {isSelected ? (
+                                            <span
+                                              className="shrink-0 inline-flex rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-violet-800 bg-violet-50 ring-1 ring-inset ring-violet-200"
+                                              title="Diarisation runs to build the user reference for this metric."
+                                            >
+                                              Diarization required
+                                            </span>
+                                          ) : null}
+                                        </span>
+                                        <span className="text-[11px] text-gray-500 block truncate">
+                                          {metricScopeHint(metric as MetricRow)}
+                                        </span>
                                       </span>
-                                      <span className="text-[11px] text-gray-500 block truncate">
-                                        {metricScopeHint(metric as MetricRow)}
-                                      </span>
-                                    </span>
-                                  </label>
-                                ))}
+                                    </label>
+                                  )
+                                })}
                                 {llmEnabledMetrics.map((metric: any) => {
                                   const children: any[] = Array.isArray(metric.children)
                                     ? metric.children.filter((c: any) => c.enabled)
@@ -795,6 +808,11 @@ export function ImportRunEvaluationModal(props: ImportRunEvaluationModalProps) {
                                 const sectionIncomplete = sttMissing || (
                                   evalTranscribeMode === 'llm_only' && diariserMissing
                                 )
+                                const selectedAgreementNames = transcriptAgreementMetrics
+                                  .filter((m: { id: string }) =>
+                                    selectedMetricIds.includes(m.id),
+                                  )
+                                  .map((m: { name: string }) => m.name)
                                 return (
                                   <div
                                     className={`rounded-md border p-3 space-y-2 ${sectionIncomplete
@@ -802,6 +820,17 @@ export function ImportRunEvaluationModal(props: ImportRunEvaluationModalProps) {
                                       : 'border-gray-200 bg-gray-50'
                                       }`}
                                   >
+                                    {evalTranscriptSource === 'production' &&
+                                      selectedAgreementNames.length > 0 ? (
+                                      <p className="text-[11px] text-violet-900 leading-snug rounded-md border border-violet-100 bg-violet-50/80 px-2 py-1.5">
+                                        Diarising because{' '}
+                                        <span className="font-medium">
+                                          {selectedAgreementNames.join(', ')}
+                                        </span>{' '}
+                                        need a diarised user reference alongside the
+                                        production transcript.
+                                      </p>
+                                    ) : null}
                                     <label className="flex items-start gap-2 text-sm">
                                       <input
                                         type="checkbox"

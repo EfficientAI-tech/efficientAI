@@ -27,7 +27,7 @@ const SETUP_STEPS: SetupStep[] = [
     icon: Brain,
     title: 'Configure AI Provider',
     description: 'Set up your AI provider credentials (OpenAI, Anthropic, etc.)',
-    href: '/integrations',
+    href: '/settings/integrations',
     step: 1,
   },
   {

@@ -22,6 +22,11 @@ import type {
   CallImportSchemaParameterType,
 } from '../../types/api'
 import Button from '../../components/Button'
+import InfoTooltip from '../../components/shared/InfoTooltip'
+
+const REQUIRED_COLUMN_TOOLTIP_TITLE = 'Required on import'
+const REQUIRED_COLUMN_TOOLTIP_BODY =
+  'When checked, every import must map a source column to this parameter, and each row must have a non-empty value in that column — blank rows are skipped and not imported. Uncheck if the column may be unmapped or rows may omit this field. conversation_id is always required.'
 
 const PARAMETER_TYPES: { value: CallImportSchemaParameterType; label: string }[] = [
   { value: 'recording_url', label: 'Recording URL' },
@@ -324,8 +329,16 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
 
           <div>
             <div className="flex items-center justify-between mb-2">
-              <p className="text-sm font-medium text-gray-700">
+              <p className="text-sm font-medium text-gray-700 inline-flex items-center gap-1.5">
                 Parameters <span className="text-red-500">*</span>
+                <InfoTooltip
+                  title={REQUIRED_COLUMN_TOOLTIP_TITLE}
+                  placement="bottom"
+                  align="start"
+                  widthClassName="w-80"
+                >
+                  {REQUIRED_COLUMN_TOOLTIP_BODY}
+                </InfoTooltip>
               </p>
               <div className="flex items-center gap-2">
                 {recordingUrlIdx < 0 && (
@@ -349,14 +362,16 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
                 </Button>
               </div>
             </div>
-            <div className="border border-gray-200 rounded-lg overflow-hidden">
-              <div className="grid grid-cols-[24px_1fr_1fr_2fr_auto_auto] gap-2 bg-gray-50 px-3 py-2 text-xs font-medium text-gray-600 border-b border-gray-200">
+            <div className="border border-gray-200 rounded-lg">
+              <div className="grid grid-cols-[28px_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.4fr)_5rem_2rem] gap-2 bg-gray-50 px-3 py-2.5 text-xs font-medium text-gray-600 border-b border-gray-200 items-center">
                 <div></div>
                 <div>Name</div>
                 <div>Type</div>
                 <div>Description</div>
-                <div>Required</div>
-                <div></div>
+                <div className="text-center">
+                  <span className="text-xs font-semibold text-gray-800">Required</span>
+                </div>
+                <div />
               </div>
               <div className="divide-y divide-gray-100">
                 {parameters.map((p, idx) => {
@@ -368,9 +383,8 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
                   return (
                     <div
                       key={p.key}
-                      className={`grid grid-cols-[24px_1fr_1fr_2fr_auto_auto] gap-2 items-center px-3 py-2 ${
-                        typeLocked ? 'bg-primary-50/30' : ''
-                      }`}
+                      className={`grid grid-cols-[28px_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.4fr)_5rem_2rem] gap-2 items-center px-3 py-2.5 ${typeLocked ? 'bg-primary-50/30' : ''
+                        } ${!isSystemRequired && p.is_required ? 'bg-amber-50/50' : ''}`}
                     >
                       <div className="flex flex-col items-center text-gray-400">
                         {typeLocked ? (
@@ -467,20 +481,39 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
                           className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-primary-500"
                         />
                       </div>
-                      <div className="text-center">
-                        <input
-                          type="checkbox"
-                          checked={isSystemRequired ? true : p.is_required}
-                          disabled={isSystemRequired || isSubmitting}
-                          onChange={(e) =>
-                            updateParameter(idx, {
-                              is_required: e.target.checked,
-                            })
+                      <div className="flex justify-center">
+                        <label
+                          className={`inline-flex items-center justify-center rounded border p-1 ${isSystemRequired || p.is_required
+                            ? 'border-amber-400 bg-amber-50'
+                            : 'border-gray-300 bg-white'
+                            } ${isSystemRequired ? 'cursor-default' : 'cursor-pointer hover:border-amber-300'}`}
+                          title={
+                            isSystemRequired
+                              ? 'Always required: must be mapped; rows without a value are skipped.'
+                              : p.is_required
+                                ? 'Required: must map a column; rows with an empty cell are skipped.'
+                                : 'Optional: may be unmapped or empty per row.'
                           }
-                          className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 disabled:opacity-50"
-                        />
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isSystemRequired ? true : p.is_required}
+                            disabled={isSystemRequired || isSubmitting}
+                            onChange={(e) =>
+                              updateParameter(idx, {
+                                is_required: e.target.checked,
+                              })
+                            }
+                            className="h-3.5 w-3.5 rounded border-gray-300 text-amber-600 focus:ring-amber-500 disabled:opacity-60"
+                            aria-label={
+                              isSystemRequired
+                                ? 'Always required'
+                                : `Mark ${p.name || 'parameter'} as required`
+                            }
+                          />
+                        </label>
                       </div>
-                      <div>
+                      <div className="flex justify-center">
                         {!isConversationId && (
                           <button
                             type="button"
@@ -498,14 +531,15 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
                 })}
               </div>
             </div>
-            <p className="mt-1 text-xs text-gray-500">
+            <p className="mt-2 text-xs text-gray-500 leading-relaxed">
               Every schema must include exactly one{' '}
               <code className="bg-gray-100 px-1 rounded">conversation_id</code>{' '}
-              parameter (required). Optionally add{' '}
+              parameter (always required). Add{' '}
               <code className="bg-gray-100 px-1 rounded">recording_url</code>,{' '}
               <code className="bg-gray-100 px-1 rounded">recording_date</code>, or{' '}
-              <code className="bg-gray-100 px-1 rounded">transcript</code> when
-              your uploads include those columns.
+              <code className="bg-gray-100 px-1 rounded">transcript</code> only when
+              your files include those columns — turn on <strong>Required</strong> when each
+              import must map that column and rows without a value should not be imported.
             </p>
           </div>
 
@@ -804,9 +838,8 @@ export default function CallImportSchemasPage() {
                         <span
                           key={p.name}
                           className="px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-700 font-mono"
-                          title={`${p.name} (${p.type})${
-                            p.is_required ? ' · required' : ''
-                          }`}
+                          title={`${p.name} (${p.type})${p.is_required ? ' · required' : ''
+                            }`}
                         >
                           {p.name}
                         </span>
@@ -815,9 +848,8 @@ export default function CallImportSchemasPage() {
                   </td>
                   <td className="px-6 py-3 text-sm text-gray-700">
                     {schema.usage_count > 0
-                      ? `${schema.usage_count} import${
-                          schema.usage_count === 1 ? '' : 's'
-                        }`
+                      ? `${schema.usage_count} import${schema.usage_count === 1 ? '' : 's'
+                      }`
                       : '—'}
                   </td>
                   <td className="px-6 py-3 text-right">
@@ -843,9 +875,8 @@ export default function CallImportSchemasPage() {
                         aria-label={`Delete ${schema.name}`}
                         title={
                           schema.usage_count > 0
-                            ? `In use by ${schema.usage_count} batch${
-                                schema.usage_count === 1 ? '' : 'es'
-                              } — you'll be asked to confirm a force delete that detaches them.`
+                            ? `In use by ${schema.usage_count} batch${schema.usage_count === 1 ? '' : 'es'
+                            } — you'll be asked to confirm a force delete that detaches them.`
                             : 'Delete schema'
                         }
                       >
