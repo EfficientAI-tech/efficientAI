@@ -539,6 +539,7 @@ def test_delete_evaluation_removes_row_results(
             org_id,
             call_import.id,
         )
+        assert result["status"] in {"continuing", "completed"}
         if result["status"] == "completed":
             break
 

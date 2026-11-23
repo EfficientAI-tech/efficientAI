@@ -542,12 +542,24 @@ def materialize_and_enqueue_evaluation(
         )
         return
 
+    from app.services.call_imports.evaluation_status_guard import (
+        evaluation_status_is_deleting,
+        expire_evaluation_orm,
+        update_evaluation_unless_deleting,
+    )
+
     source_row_ids = _source_row_ids_for_evaluation(db, evaluation)
 
     if not source_row_ids:
-        evaluation.total_rows = 0
-        evaluation.status = "completed"
+        if not update_evaluation_unless_deleting(
+            db,
+            evaluation_id,
+            {"total_rows": 0, "status": "completed"},
+        ):
+            expire_evaluation_orm(db, evaluation)
+            return
         db.commit()
+        expire_evaluation_orm(db, evaluation)
         return
 
     from app.db_sharding.row_ops import ShardWriteSessions
@@ -588,11 +600,20 @@ def materialize_and_enqueue_evaluation(
         if shard_sessions is not None:
             shard_sessions.rollback_open()
         db.rollback()
-        evaluation.total_rows = committed
-        evaluation.status = "failed"
         cause = getattr(exc, "cause", exc)
-        evaluation.error_message = f"Failed to materialize evaluation rows: {cause}"
+        if not update_evaluation_unless_deleting(
+            db,
+            evaluation_id,
+            {
+                "total_rows": committed,
+                "status": "failed",
+                "error_message": f"Failed to materialize evaluation rows: {cause}",
+            },
+        ):
+            expire_evaluation_orm(db, evaluation)
+            raise
         db.commit()
+        expire_evaluation_orm(db, evaluation)
         raise
     finally:
         if shard_sessions is not None:
@@ -603,6 +624,10 @@ def materialize_and_enqueue_evaluation(
     ):
         bulk_reset_diarisation_for_overwrite(db, evaluation.call_import_id)
 
+    if evaluation_status_is_deleting(db, evaluation_id):
+        expire_evaluation_orm(db, evaluation)
+        return
+
     try:
         _enqueue_eval_rows_with_optional_transcribe(
             db,
@@ -610,15 +635,30 @@ def materialize_and_enqueue_evaluation(
             [],
             transcribe_overwrite=transcribe_overwrite,
         )
-        evaluation.status = "running"
+        if not update_evaluation_unless_deleting(
+            db,
+            evaluation_id,
+            {"status": "running"},
+        ):
+            expire_evaluation_orm(db, evaluation)
+            return
     except Exception as exc:  # noqa: BLE001
         logger.exception(
             "Failed to enqueue evaluation {} after materialize",
             evaluation_id,
         )
-        evaluation.status = "failed"
-        evaluation.error_message = f"Failed to enqueue evaluation: {exc}"
+        if not update_evaluation_unless_deleting(
+            db,
+            evaluation_id,
+            {
+                "status": "failed",
+                "error_message": f"Failed to enqueue evaluation: {exc}",
+            },
+        ):
+            expire_evaluation_orm(db, evaluation)
+            return
     db.commit()
+    expire_evaluation_orm(db, evaluation)
 
 
 def execute_bulk_row_delete(

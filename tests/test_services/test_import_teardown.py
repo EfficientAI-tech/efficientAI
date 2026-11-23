@@ -134,9 +134,11 @@ def test_resume_after_partial_row_delete(
 
     clear_call_import_delete_lock(call_import.id)
     while True:
+        clear_call_import_delete_lock(call_import.id)
         result = execute_call_import_delete_chunk(
             db_session, call_import.id, org_id,
         )
+        assert result["status"] in {"continuing", "completed"}
         if result["status"] == "completed":
             break
 

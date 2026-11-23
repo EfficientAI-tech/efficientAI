@@ -191,6 +191,18 @@ def test_flip_does_not_overwrite_other_status(db_session, redis_ok):
     assert db_session.get(CallImportEvaluation, evaluation.id).status == "cancelled"
 
 
+def test_flip_does_not_overwrite_deleting(db_session, redis_ok):
+    _ci, evaluation, _rows = _evaluation(db_session, status="pending")
+    snap = load_evaluation_snapshot(db_session, evaluation.id)
+    evaluation.status = "deleting"
+    db_session.commit()
+    mark_evaluation_running_if_pending(db_session, snap)
+    db_session.expire_all()
+    row = db_session.get(CallImportEvaluation, evaluation.id)
+    assert row.status == "deleting"
+    assert snap.status == "pending"
+
+
 # --- Redis-down rollup reloads an attached object ----------------------------------------
 
 

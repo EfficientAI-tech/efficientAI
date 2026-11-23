@@ -935,7 +935,7 @@ def mark_evaluation_running_if_pending(
 
     now = now_utc()
     if needs_flip:
-        catalog_db.execute(
+        result = catalog_db.execute(
             update(CallImportEvaluation)
             .where(
                 CallImportEvaluation.id == evaluation.id,
@@ -947,7 +947,8 @@ def mark_evaluation_running_if_pending(
             )
             .execution_options(synchronize_session=False)
         )
-        evaluation.status = "running"
+        if result.rowcount:
+            evaluation.status = "running"
     else:
         catalog_db.execute(
             update(CallImportEvaluation)
