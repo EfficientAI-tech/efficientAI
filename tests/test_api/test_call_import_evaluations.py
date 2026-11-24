@@ -524,9 +524,25 @@ def test_delete_evaluation_removes_row_results(
     response = authenticated_client.delete(
         f"/api/v1/call-imports/{call_import.id}/evaluations/{created['id']}"
     )
-    assert response.status_code == 204
+    assert response.status_code == 202
+    assert response.json()["status"] == "accepted"
 
     created_uuid = UUID(created["id"])
+    from app.services.call_imports.delete_teardown_lock import clear_eval_delete_lock
+    from app.services.call_imports.evaluation_teardown import execute_evaluation_delete_chunk
+
+    while True:
+        clear_eval_delete_lock(created_uuid)
+        result = execute_evaluation_delete_chunk(
+            db_session,
+            created_uuid,
+            org_id,
+            call_import.id,
+        )
+        assert result["status"] in {"continuing", "completed"}
+        if result["status"] == "completed":
+            break
+
     leftover_parents = (
         db_session.query(CallImportEvaluation)
         .filter(CallImportEvaluation.id == created_uuid)

@@ -226,13 +226,13 @@ export default function CallImports() {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Imports</h1>
-          {activeTab !== 'platform' && (
-            <p className="mt-2 text-sm text-gray-600">
-              {activeTab === 'audio'
-                ? 'Upload recordings directly for diarisation and evaluation.'
+          <p className="mt-2 text-sm text-gray-600">
+            {activeTab === 'audio'
+              ? 'Upload recordings directly for diarisation and evaluation.'
+              : activeTab === 'platform'
+                ? 'Import call history from connected voice platforms over a time window, then transcribe and evaluate.'
                 : 'Upload CSV or Excel datasets, map columns, and import call recordings.'}
-            </p>
-          )}
+          </p>
         </div>
         <div className="flex gap-3">
           {activeTab === 'datasets' && (

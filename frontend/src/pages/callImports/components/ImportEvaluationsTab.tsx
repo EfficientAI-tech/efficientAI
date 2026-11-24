@@ -215,6 +215,7 @@ export default function ImportEvaluationsTab({
             <tbody className="bg-white divide-y divide-gray-200">
           {itemsOf<CallImportEvaluation>(evaluationsData).map((evaluation) => {
             const isSelected = selectedEvalIds.has(evaluation.id)
+            const isDeleting = evaluation.status === 'deleting'
             const bulkOperationActive = evaluationHasActiveBulkOperation(
               evaluation,
             )
@@ -241,9 +242,11 @@ export default function ImportEvaluationsTab({
                     )
                   }
                 }}
-                className={`cursor-pointer group hover:bg-gray-50 ${
-                  isSelected ? 'bg-primary-50/40' : ''
-                }`}
+                className={`group hover:bg-gray-50 ${
+                  isDeleting
+                    ? 'opacity-60 pointer-events-none'
+                    : 'cursor-pointer'
+                } ${isSelected ? 'bg-primary-50/40' : ''}`}
               >
                 <td
                   className="px-3 py-4 align-middle"
@@ -285,6 +288,11 @@ export default function ImportEvaluationsTab({
                 </td>
                 <td className="px-4 py-4 align-top whitespace-nowrap">
                   <StatusBadge status={evaluation.status} size="sm" />
+                  {isDeleting && (
+                    <p className="text-[11px] text-gray-500 mt-1 italic">
+                      Removing…
+                    </p>
+                  )}
                   {evaluation.bulk_operation && (
                     <p className="text-[11px] text-amber-700 mt-1 flex items-center gap-1">
                       <Loader2 className="h-3 w-3 animate-spin shrink-0" />

@@ -6,6 +6,7 @@ from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 import pytest
+import redis
 
 from app.models.database import (
     Agent,
@@ -20,6 +21,28 @@ from app.models.database import (
 from app.models.enums import CallRecordingStatus, TelephonyProvider
 from app.services.telephony.telephony_service import telephony_service
 from app.services.telephony.vobiz_session import create_call_session
+
+
+@pytest.fixture(autouse=True)
+def vobiz_call_sessions_in_memory(monkeypatch):
+    """Keep call_ref storage in-process; shared Redis db 0 is flushed by other tests."""
+    from app.services.telephony import vobiz_session as vs
+
+    vs._in_memory_sessions.clear()
+
+    class _RedisDown:
+        def setex(self, *_args, **_kwargs):
+            raise redis.RedisError("tests use in-memory vobiz sessions")
+
+        def get(self, *_args, **_kwargs):
+            raise redis.RedisError("tests use in-memory vobiz sessions")
+
+        def delete(self, *_args, **_kwargs):
+            raise redis.RedisError("tests use in-memory vobiz sessions")
+
+    monkeypatch.setattr(vs, "_get_redis", lambda: _RedisDown())
+    yield
+    vs._in_memory_sessions.clear()
 
 
 def _patch_vobiz_webhook_base(monkeypatch, url: str = "https://public.example.com") -> str:

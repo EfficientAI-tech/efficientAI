@@ -25,6 +25,7 @@ from app.workers.concurrency.eval_dispatch import (
     _needs_transcribe_for_eval,
     _try_dispatch_single_row,
 )
+from app.services.call_imports.evaluation_teardown import EVAL_DELETING_STATUS
 from app.workers.config import celery_app
 from app.db_sharding.scatter_gather import (
     evaluations_with_pending_rows as sharded_evaluations_with_pending_rows,
@@ -310,6 +311,7 @@ def _workspaces_with_pending_rows(
             # (or even ``completed``) while retry resets rows back to
             # ``pending`` before rollup catches up.
             CallImportEvaluation.status != "cancelled",
+            CallImportEvaluation.status != EVAL_DELETING_STATUS,
             CallImportEvaluationRow.status == "pending",
             CallImportEvaluationRow.celery_task_id.is_(None),
             Workspace.is_active.is_(True),
@@ -345,6 +347,7 @@ def _evaluations_with_pending_rows(
             .filter(
                 CallImportEvaluation.workspace_id == workspace_id,
                 CallImportEvaluation.status != "cancelled",
+                CallImportEvaluation.status != EVAL_DELETING_STATUS,
                 CallImportEvaluationRow.status == "pending",
                 CallImportEvaluationRow.celery_task_id.is_(None),
             )
@@ -386,6 +389,7 @@ def _pending_rows_for_evaluation(
         .filter(
             CallImportEvaluation.id == evaluation_id,
             CallImportEvaluation.status != "cancelled",
+            CallImportEvaluation.status != EVAL_DELETING_STATUS,
             CallImportEvaluationRow.status == "pending",
             CallImportEvaluationRow.celery_task_id.is_(None),
         )
@@ -475,15 +479,11 @@ def _dispatch_batch_for_workspace(
                 dispatched += 1
                 evaluation_dispatched = True
                 skips = 0
-                # ``started_at`` is the run start shown in the UI and the
-                # freshness cutoff for overwrite re-diarisation.
-                missing_start = getattr(evaluation, "started_at", False) is None
-                if evaluation.status == "pending" or missing_start:
-                    if evaluation.status == "pending":
-                        evaluation.status = "running"
-                    if missing_start:
-                        evaluation.started_at = datetime.now(timezone.utc)
-                    db.commit()
+                from app.workers.tasks.evaluate_call_import_row_core import (
+                    mark_evaluation_running_if_pending,
+                )
+
+                mark_evaluation_running_if_pending(db, evaluation)
                 break
             if outcome.result in ("at_capacity", "credential_throttled"):
                 hit_capacity = True

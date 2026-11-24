@@ -278,6 +278,8 @@ export interface Invitation {
   expires_at: string
   created_at: string
   organization_name?: string | null
+  workspace_ids?: string[]
+  workspace_names?: string[]
   invite_path?: string | null
   invite_url?: string | null
 }
@@ -290,11 +292,14 @@ export interface InvitationPreview {
   status: string
   user_exists: boolean
   has_password: boolean
+  workspace_ids?: string[]
+  workspace_names?: string[]
 }
 
 export interface InvitationCreate {
   email: string
   role: Role
+  workspace_ids: string[]
 }
 
 export interface RoleUpdate {
@@ -1451,6 +1456,8 @@ export interface CallImportMetricSummary {
   /** Only meaningful on multi_label parents; gates the Discovered
    *  Labels panel on the Flow tab. Defaults to false. */
   allow_discovery?: boolean
+  custom_data_type?: string | null
+  custom_config?: Record<string, unknown> | null
 }
 
 /** Per-metric LLM override (provider+model+optional credential + generation params). */
@@ -1471,7 +1478,15 @@ export interface CallImportEvaluation {
   /** parent_id -> [child_id, ...] snapshot captured at run time. */
   selected_metric_groups?: Record<string, string[]> | null
   metrics: CallImportMetricSummary[]
-  status: 'pending' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled' | 'auto_aborted'
+  status:
+    | 'pending'
+    | 'running'
+    | 'completed'
+    | 'partial'
+    | 'failed'
+    | 'cancelled'
+    | 'auto_aborted'
+    | 'deleting'
   total_rows: number
   completed_rows: number
   failed_rows: number

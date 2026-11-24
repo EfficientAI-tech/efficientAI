@@ -805,6 +805,17 @@
       "cache_read_per_1m": 1.25
     }
   },
+  "Microsoft-Decision-1.1": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Microsoft Decision 1.1 on Azure AI Inference — LiteLLM model azure_ai/Microsoft-Decision-1.1; set credential endpoint_url to your inference base URL",
+    "pricing": {
+      "source": "manual",
+      "usage_kind": "llm",
+      "input_per_1m": 0,
+      "output_per_1m": 0
+    }
+  },
   "azure-gpt-4o-mini": {
     "provider": "azure",
     "model_type": "llm",
@@ -2690,6 +2701,17 @@
       "reasoning_per_1m": 2.5
     }
   },
+  "gemini-decision-1": {
+    "provider": "google",
+    "model_type": "llm",
+    "description": "Gemini Decision 1 — via LiteLLM gemini/gemini-decision-1",
+    "pricing": {
+      "source": "manual",
+      "usage_kind": "llm",
+      "input_per_1m": 0,
+      "output_per_1m": 0
+    }
+  },
   "gemini-2.5-flash-lite": {
     "provider": "google",
     "model_type": "llm",
@@ -3263,6 +3285,18 @@
       "audio_per_minute": 0.00366
     }
   },
+  "scribe_v3": {
+    "provider": "elevenlabs",
+    "model_type": "stt",
+    "description": "ElevenLabs Scribe v3 — latest batch speech-to-text",
+    "languages": "90+ languages",
+    "featured": true,
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "stt",
+      "audio_per_minute": 0.00366
+    }
+  },
   "eleven_text_to_sound_v2": {
     "provider": "elevenlabs",
     "model_type": "sound_effects",
@@ -3394,6 +3428,17 @@
     "provider": "sarvam",
     "model_type": "stt",
     "description": "State-of-the-art Sarvam STT model with transcribe/translate modes",
+    "pricing": {
+      "source": "sarvam.ai ₹30/hour audio @ 83 INR/USD",
+      "usage_kind": "stt",
+      "audio_per_minute": 0.006
+    }
+  },
+  "saaras:v4": {
+    "provider": "sarvam",
+    "model_type": "stt",
+    "description": "Latest Sarvam Saaras STT — transcribe, translate, verbatim, translit, and codemix modes over REST",
+    "featured": true,
     "pricing": {
       "source": "sarvam.ai ₹30/hour audio @ 83 INR/USD",
       "usage_kind": "stt",
@@ -3601,6 +3646,19 @@
         "gender": "Female"
       }
     ],
+    "pricing": {
+      "source": "sarvam.ai ₹30/10K chars @ 83 INR/USD",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 36.144578
+    }
+  },
+  "bulbul:v4-flash": {
+    "provider": "sarvam",
+    "model_type": "tts",
+    "description": "Bulbul v4 Flash — low-latency Indian-language TTS with v4 persona voices (pace, pitch, loudness)",
+    "languages": "11 Indic languages + en-IN",
+    "featured": true,
+    "voices_source_file": "sarvam_bulbul_v4_flash_voices.json",
     "pricing": {
       "source": "sarvam.ai ₹30/10K chars @ 83 INR/USD",
       "usage_kind": "tts",

@@ -46,24 +46,23 @@ _TASKS_PACKAGE_DIR = str(
 )
 
 
-_EVAL_BUFFER_TEST_REDIS_URL = os.getenv(
-    "EVAL_BUFFER_TEST_REDIS_URL", "redis://localhost:6379/15"
-)
-_eval_buffer_test_client_cache: list = []
+_eval_buffer_test_client_cache: dict[str, object] = {}
 
 
-def _eval_buffer_test_client():
-    """Redis db 15 when reachable, else a client that fails fast.
+def _eval_buffer_test_client(worker_id: str = "master"):
+    """Redis for eval-buffer tests; one logical DB per xdist worker when parallel.
 
     The unreachable client makes the worker hot path take its Redis-down
     fallback (direct catalog write), which is a supported production path.
     """
-    if _eval_buffer_test_client_cache:
-        return _eval_buffer_test_client_cache[0]
+    if worker_id in _eval_buffer_test_client_cache:
+        return _eval_buffer_test_client_cache[worker_id]
     import redis
 
+    from tests.helpers.eval_buffer_test_redis import eval_buffer_test_redis_url
+
     client = redis.from_url(
-        _EVAL_BUFFER_TEST_REDIS_URL,
+        eval_buffer_test_redis_url(worker_id),
         decode_responses=True,
         socket_connect_timeout=0.2,
     )
@@ -80,12 +79,12 @@ def _eval_buffer_test_client():
             socket_connect_timeout=0.05,
             retry=Retry(NoBackoff(), 0),
         )
-    _eval_buffer_test_client_cache.append(client)
+    _eval_buffer_test_client_cache[worker_id] = client
     return client
 
 
 @pytest.fixture(autouse=True)
-def isolate_eval_progress_buffer(monkeypatch):
+def isolate_eval_progress_buffer(monkeypatch, worker_id):
     """Keep buffered eval counters off the dev Redis and the Celery broker.
 
     Yields the evaluation ids the code asked to finalize; tests settle the
@@ -95,7 +94,7 @@ def isolate_eval_progress_buffer(monkeypatch):
 
     from app.services.call_imports import eval_progress_buffer as buf
 
-    client = _eval_buffer_test_client()
+    client = _eval_buffer_test_client(worker_id)
     try:
         client.flushdb()
     except redis.RedisError:
@@ -862,6 +861,7 @@ def _wire_bulk_ops_stubs(db_session):
     fake_bulk_ops_module.bulk_diarize_call_import_task = _NoopBulkTask()
     fake_bulk_ops_module.bulk_delete_call_import_rows_task = _NoopBulkTask()
     fake_bulk_ops_module.delete_call_import_task = _NoopBulkTask()
+    fake_bulk_ops_module.delete_call_import_evaluation_task = _NoopBulkTask()
 
     def _sync_retry_delay(evaluation_id, payload_dict):
         from uuid import UUID

@@ -14,6 +14,7 @@ from . import platform_call_import_hydrate  # noqa: F401 — fail fast at worker
 from . import evaluate_call_import_row
 from . import evaluate_call_import_row_audio
 from . import sweep_stale_evaluations
+from . import sweep_stuck_deletes
 from . import finalize_call_import_evaluation
 from . import flush_eval_progress
 from . import transcribe_call_import_row

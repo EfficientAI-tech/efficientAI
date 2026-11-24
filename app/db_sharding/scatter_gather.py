@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, defer, load_only, with_expression
 from app.db_sharding.pool_manager import db_pool_manager
 from app.db_sharding.sessions import is_sharding_enabled
 from app.models.database import CallImportEvaluation, CallImportEvaluationRow, CallImportRow
+from app.services.call_imports.evaluation_teardown import EVAL_DELETING_STATUS
 
 if TYPE_CHECKING:
     from app.db_sharding.session_cache import ShardSessionCache
@@ -532,6 +533,7 @@ def pending_eval_workspaces(
         .filter(
             CallImportEvaluation.id.in_(evaluation_ids),
             CallImportEvaluation.status != "cancelled",
+            CallImportEvaluation.status != EVAL_DELETING_STATUS,
         )
         .distinct()
         .all()
@@ -550,6 +552,7 @@ def _pending_eval_workspaces_mono(db: Session) -> List[UUID]:
         )
         .filter(
             CallImportEvaluation.status != "cancelled",
+            CallImportEvaluation.status != EVAL_DELETING_STATUS,
             CallImportEvaluationRow.status == "pending",
             CallImportEvaluationRow.celery_task_id.is_(None),
         )
@@ -576,6 +579,7 @@ def evaluations_with_pending_rows(
         .filter(
             CallImportEvaluation.workspace_id == workspace_id,
             CallImportEvaluation.status != "cancelled",
+            CallImportEvaluation.status != EVAL_DELETING_STATUS,
         )
         .all()
         if row[0] is not None
@@ -621,6 +625,7 @@ def _evaluations_with_pending_mono(db: Session, workspace_id: UUID) -> List[UUID
         .filter(
             CallImportEvaluation.workspace_id == workspace_id,
             CallImportEvaluation.status != "cancelled",
+            CallImportEvaluation.status != EVAL_DELETING_STATUS,
             CallImportEvaluationRow.status == "pending",
             CallImportEvaluationRow.celery_task_id.is_(None),
         )
@@ -755,6 +760,7 @@ def pending_eval_row_triples(
             .filter(
                 CallImportEvaluation.id == evaluation_id,
                 CallImportEvaluation.status != "cancelled",
+                CallImportEvaluation.status != EVAL_DELETING_STATUS,
                 CallImportEvaluationRow.status == "pending",
                 CallImportEvaluationRow.celery_task_id.is_(None),
             )

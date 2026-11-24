@@ -13,7 +13,13 @@ import random
 from pydantic import BaseModel
 from loguru import logger
 
-from app.dependencies import get_db, get_organization_id, get_workspace_id, get_api_key
+from app.dependencies import (
+    get_db,
+    get_organization_id,
+    get_workspace_id,
+    get_api_key,
+    require_enterprise_feature,
+)
 from app.core.api_rate_limit import enforce_resource_create_rate_limit
 from app.core.oss_quotas import enforce_oss_quota
 from app.core.auth import Principal, get_principal
@@ -56,6 +62,24 @@ from app.services.testing.test_agent_template import (
 )
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+
+def _ensure_hosted_agents_license(organization_id: UUID) -> None:
+    import app.dependencies as app_dependencies
+
+    if not app_dependencies.is_feature_enabled("hosted_agents", organization_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "enterprise_feature_required",
+                "feature": "hosted_agents",
+                "message": (
+                    "'hosted_agents' is an EfficientAI Enterprise feature. "
+                    "Please set EFFICIENTAI_LICENSE in your environment to unlock it. "
+                    "Contact sales@efficientai.com to get an enterprise license key."
+                ),
+            },
+        )
 
 
 def _stored_chat_connection_config(config, *, previous=None, connection_type=None):
@@ -348,6 +372,7 @@ async def generate_production_prompt(
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
+    _: None = Depends(require_enterprise_feature("hosted_agents")),
 ):
     """Generate a production system prompt from an agent brief (hosted agents)."""
     from app.services.testing.agent_test_setup_generation import (
@@ -415,6 +440,7 @@ async def generate_test_prompt(
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
+    _: None = Depends(require_enterprise_feature("hosted_agents")),
 ):
     """Stage 1: generate foundational test agent prompt from production prompt."""
     from app.services.testing.agent_test_setup_generation import (
@@ -499,6 +525,7 @@ async def generate_scenarios_from_prompt(
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
+    _: None = Depends(require_enterprise_feature("hosted_agents")),
 ):
     """Stage 2: generate scenario drafts from a test agent prompt."""
     from app.services.testing.agent_test_setup_generation import (
@@ -569,6 +596,7 @@ async def generate_test_setup(
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
+    _: None = Depends(require_enterprise_feature("hosted_agents")),
 ):
     """Run stage 1 then stage 2: foundational test prompt + scenario drafts."""
     from app.services.testing.agent_test_setup_generation import (
@@ -772,7 +800,13 @@ async def create_agent(
     if is_chat_agent:
         from app.api.v1.routes.voicebundles import _validate_credential
 
-        conn = agent.chat_connection_type or ChatConnectionTypeEnum.INTERNAL_LLM
+        from app.services.agents.chat_connection import coerce_chat_connection_type
+
+        conn = coerce_chat_connection_type(
+            agent.chat_connection_type or ChatConnectionTypeEnum.INTERNAL_LLM
+        )
+        if conn == ChatConnectionTypeEnum.INTERNAL_LLM.value:
+            _ensure_hosted_agents_license(organization_id)
         if agent.main_llm_provider:
             _validate_credential(
                 db,
@@ -1209,12 +1243,28 @@ async def update_agent(
             if hasattr(update_data["chat_eval_mode"], "value")
             else update_data["chat_eval_mode"]
         )
-    if "chat_connection_type" in update_data and update_data["chat_connection_type"] is not None:
-        from app.services.agents.chat_connection import coerce_chat_connection_type
+    from app.models.enums import ChatConnectionTypeEnum
+    from app.services.agents.chat_connection import coerce_chat_connection_type
 
-        update_data["chat_connection_type"] = coerce_chat_connection_type(
-            update_data["chat_connection_type"]
-        )
+    effective_call_medium = (
+        agent_update.call_medium if agent_update.call_medium is not None else db_agent.call_medium
+    )
+    medium_str = (
+        effective_call_medium.value
+        if hasattr(effective_call_medium, "value")
+        else str(effective_call_medium or "")
+    ).strip().lower()
+
+    if medium_str == CallMediumEnum.CHAT.value:
+        if "chat_connection_type" in update_data:
+            update_data["chat_connection_type"] = coerce_chat_connection_type(
+                update_data["chat_connection_type"]
+            )
+
+        raw_conn = update_data.get("chat_connection_type", db_agent.chat_connection_type)
+        effective_conn = coerce_chat_connection_type(raw_conn)
+        if effective_conn == ChatConnectionTypeEnum.INTERNAL_LLM.value:
+            _ensure_hosted_agents_license(organization_id)
 
     from app.services.agents.chat_preprod_scope import apply_preprod_chat_update
 
@@ -1233,9 +1283,6 @@ async def update_agent(
         update_data["description"] = assembled_description
         update_data["test_agent_template"] = template_dict
 
-    effective_call_medium = (
-        agent_update.call_medium if agent_update.call_medium is not None else db_agent.call_medium
-    )
     effective_phone_number = (
         agent_update.phone_number
         if "phone_number" in update_data

@@ -747,6 +747,9 @@ def _apply_parent_status_from_counters(
     in_progress = total - completed - failed
     status = (evaluation.status or "").strip().lower()
 
+    if status == "deleting":
+        return
+
     if status == AUTO_ABORTED_STATUS:
         if in_progress <= 0:
             evaluation.finished_at = now_utc()
@@ -932,7 +935,7 @@ def mark_evaluation_running_if_pending(
 
     now = now_utc()
     if needs_flip:
-        catalog_db.execute(
+        result = catalog_db.execute(
             update(CallImportEvaluation)
             .where(
                 CallImportEvaluation.id == evaluation.id,
@@ -944,7 +947,8 @@ def mark_evaluation_running_if_pending(
             )
             .execution_options(synchronize_session=False)
         )
-        evaluation.status = "running"
+        if result.rowcount:
+            evaluation.status = "running"
     else:
         catalog_db.execute(
             update(CallImportEvaluation)
@@ -1149,6 +1153,8 @@ def finalize_evaluation_progress(db: Session, evaluation_id: UUID) -> str:
         return "missing"
 
     previous_status = (evaluation.status or "").strip().lower()
+    if previous_status == "deleting":
+        return "deleting"
     in_progress = recount_evaluation_counters(db, evaluation)
     if in_progress > 0:
         db.commit()

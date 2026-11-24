@@ -123,6 +123,24 @@ def test_evaluations_with_pending_rows_includes_partial_status(db_session):
     assert evaluation_id in evaluations
 
 
+def test_evaluations_with_pending_rows_excludes_deleting(db_session):
+    workspace_id, evaluation_id = _seed_partial_run_with_pending_retry(db_session)
+
+    evaluation = (
+        db_session.query(CallImportEvaluation)
+        .filter(CallImportEvaluation.id == evaluation_id)
+        .one()
+    )
+    evaluation.status = "deleting"
+    db_session.commit()
+
+    evaluations = fair_dispatch._evaluations_with_pending_rows(
+        db_session, workspace_id
+    )
+
+    assert evaluation_id not in evaluations
+
+
 def test_needs_transcribe_after_failed_diarisation_without_transcript(db_session):
     """Failed diarisation without a transcript should be eligible for re-dispatch."""
     from types import SimpleNamespace

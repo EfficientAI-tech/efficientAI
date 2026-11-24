@@ -15,6 +15,8 @@ interface MetricPickerPanelProps {
   selectedMetricIds: string[]
   onChange: (ids: string[]) => void
   emptyMessage?: string
+  /** Override scroll container classes (default caps height for inline layouts). */
+  listClassName?: string
 }
 
 export default function MetricPickerPanel({
@@ -22,6 +24,7 @@ export default function MetricPickerPanel({
   selectedMetricIds,
   onChange,
   emptyMessage = 'No metrics available.',
+  listClassName = 'max-h-80 overflow-y-auto border border-gray-200 rounded-lg p-2',
 }: MetricPickerPanelProps) {
   const [expandedParents, setExpandedParents] = useState<Set<string>>(new Set())
   const selectedSet = useMemo(() => new Set(selectedMetricIds), [selectedMetricIds])
@@ -67,7 +70,7 @@ export default function MetricPickerPanel({
   }
 
   return (
-    <div className="space-y-1 max-h-80 overflow-y-auto border border-gray-200 rounded-lg p-2">
+    <div className={`space-y-1 ${listClassName}`}>
       {metrics.map((metric) => {
         const children = (metric.children ?? []).filter(
           (c) => c.enabled !== false || c.lifecycle === 'draft',

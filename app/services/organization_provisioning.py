@@ -33,7 +33,6 @@ def provision_default_workspace(
         .first()
     )
     if existing is not None:
-        backfill_org_workspace_memberships(db, organization_id=organization_id)
         return existing
 
     workspace = Workspace(

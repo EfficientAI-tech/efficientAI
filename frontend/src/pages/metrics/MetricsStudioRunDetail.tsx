@@ -4,10 +4,14 @@ import { Link, useParams } from 'react-router-dom'
 import { apiClient } from '../../lib/api'
 import { getApiErrorMessage } from '../../lib/apiErrors'
 import { useWorkspaceStore } from '../../store/workspaceStore'
+import { CallRowDetailSplitLayout } from '../callImports/components/CallRowDetailSplitLayout'
 import MetricsStudioRunHeader from './components/MetricsStudioRunHeader'
-import MetricsStudioSourceList from './components/MetricsStudioSourceList'
 import type { StudioRunResult } from './components/MetricsStudioScorePanel'
-import MetricsStudioScorePanel from './components/MetricsStudioScorePanel'
+import MetricsStudioResultSidePanel, {
+  type StudioResultPanelTab,
+} from './components/MetricsStudioResultSidePanel'
+import MetricsStudioResultsTable from './components/MetricsStudioResultsTable'
+import { buildStudioResultTableColumns } from './components/studioRunTableColumns'
 import { buildChildMetricIds } from './utils/metricScoreFilters'
 import { asArray } from '../../lib/safeData'
 
@@ -27,6 +31,7 @@ export default function MetricsStudioRunDetail() {
   const queryClient = useQueryClient()
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const [selectedResultId, setSelectedResultId] = useState<string | null>(null)
+  const [panelTab, setPanelTab] = useState<StudioResultPanelTab>('transcript')
 
   const { data: run, isLoading: runLoading } = useQuery({
     queryKey: ['metric-studio-run', runId],
@@ -38,7 +43,7 @@ export default function MetricsStudioRunDetail() {
 
   const { data: resultsData, isLoading: resultsLoading } = useQuery({
     queryKey: ['metric-studio-run-results', runId],
-    queryFn: () => apiClient.listMetricStudioRunResults(runId),
+    queryFn: () => apiClient.listAllMetricStudioRunResults(runId),
     enabled: !!runId,
     refetchInterval: () => (run?.status === 'running' ? 3000 : false),
   })
@@ -71,7 +76,7 @@ export default function MetricsStudioRunDetail() {
   })
 
   const results = asArray<StudioRunResult>(resultsData?.items)
-  const selectedResult = results.find((r) => r.id === selectedResultId) ?? results[0]
+  const selectedResult = results.find((r) => r.id === selectedResultId) ?? null
 
   const metricNameById = useMemo(
     () => flattenMetricNames([...activeMetrics, ...draftMetrics]),
@@ -88,6 +93,16 @@ export default function MetricsStudioRunDetail() {
     [activeMetrics, draftMetrics],
   )
 
+  const allMetricDefs = useMemo(
+    () => [...activeMetrics, ...draftMetrics],
+    [activeMetrics, draftMetrics],
+  )
+
+  const tableColumns = useMemo(
+    () => buildStudioResultTableColumns(run, metricNameById, results, allMetricDefs),
+    [run, metricNameById, results, allMetricDefs],
+  )
+
   if (runLoading || resultsLoading) {
     return (
       <div className="flex items-center justify-center h-48">
@@ -99,7 +114,7 @@ export default function MetricsStudioRunDetail() {
   if (!run) {
     return (
       <div className="space-y-4">
-        <Link to="/metrics-management/studio" className="text-sm text-primary-700">
+        <Link to="/metrics-management/studio?tab=results" className="text-sm text-primary-700">
           ← Back to Studio
         </Link>
         <p className="text-sm text-gray-600">Run not found.</p>
@@ -114,10 +129,10 @@ export default function MetricsStudioRunDetail() {
   return (
     <div className="space-y-6">
       <Link
-        to="/metrics-management/studio"
+        to="/metrics-management/studio?tab=results"
         className="text-sm text-primary-700 hover:text-primary-900"
       >
-        ← Back to Studio
+        ← Back to Studio results
       </Link>
 
       <MetricsStudioRunHeader
@@ -128,26 +143,41 @@ export default function MetricsStudioRunDetail() {
 
       {retryError && <p className="text-sm text-red-600">{retryError}</p>}
 
-      <div className="flex flex-col lg:flex-row gap-5 lg:items-start">
-        <aside className="lg:w-72 xl:w-80 shrink-0">
-          <MetricsStudioSourceList
+      <p className="text-sm text-gray-600">
+        Click a row to open the transcript and scores side panel — same pattern as call import
+        evaluations.
+      </p>
+
+      <CallRowDetailSplitLayout
+        panelOpen={!!selectedResult}
+        list={
+          <MetricsStudioResultsTable
             results={results}
-            selectedResultId={selectedResultId ?? selectedResult?.id ?? null}
-            onSelect={setSelectedResultId}
+            columns={tableColumns}
+            selectedResultId={selectedResultId}
+            onSelectResult={(id) => {
+              setSelectedResultId(id)
+              if (id) setPanelTab('transcript')
+            }}
           />
-        </aside>
-        <main className="flex-1 min-w-0">
-          <MetricsStudioScorePanel
-            result={selectedResult}
-            run={run}
-            transcriptSource={run.transcript_source ?? 'diarised'}
-            metricNameById={metricNameById}
-            childMetricIds={childMetricIds}
-            draftMetricIds={draftMetricIds}
-            onPromoteDraft={(metricId) => promoteMutation.mutate(metricId)}
-          />
-        </main>
-      </div>
+        }
+        panel={
+          selectedResult ? (
+            <MetricsStudioResultSidePanel
+              result={selectedResult}
+              run={run}
+              transcriptSource={run.transcript_source ?? 'diarised'}
+              activeTab={panelTab}
+              onTabChange={setPanelTab}
+              onClose={() => setSelectedResultId(null)}
+              metricNameById={metricNameById}
+              childMetricIds={childMetricIds}
+              draftMetricIds={draftMetricIds}
+              onPromoteDraft={(metricId) => promoteMutation.mutate(metricId)}
+            />
+          ) : null
+        }
+      />
     </div>
   )
 }

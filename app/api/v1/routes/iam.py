@@ -16,8 +16,13 @@ from app.core.oss_quotas import enforce_oss_quota
 from app.core.auth import Principal, get_principal
 from app.core.auth.rbac import require_admin
 from app.models.database import (
-    User, OrganizationMember, Invitation, Organization,
-    RoleEnum, InvitationStatus
+    User,
+    OrganizationMember,
+    Invitation,
+    Organization,
+    RoleEnum,
+    InvitationStatus,
+    Workspace,
 )
 from app.models.schemas import (
     InvitationCreate, InvitationResponse, OrganizationMemberResponse,
@@ -316,6 +321,22 @@ async def invite_user(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="An invitation is already pending for this email",
             )
+
+    requested_ids = list(dict.fromkeys(invitation_data.workspace_ids))
+    workspaces = (
+        db.query(Workspace)
+        .filter(
+            Workspace.organization_id == organization_id,
+            Workspace.id.in_(requested_ids),
+            Workspace.is_active.is_(True),
+        )
+        .all()
+    )
+    if len(workspaces) != len(requested_ids):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="One or more workspaces are invalid or inactive for this organization",
+        )
     
     # Create invitation
     invitation_token = secrets.token_urlsafe(32)
@@ -329,7 +350,8 @@ async def invite_user(
         role=invitation_data.role,
         status=InvitationStatus.PENDING.value,
         token=invitation_token,
-        expires_at=expires_at
+        expires_at=expires_at,
+        workspace_ids=[str(ws_id) for ws_id in requested_ids],
     )
     
     try:

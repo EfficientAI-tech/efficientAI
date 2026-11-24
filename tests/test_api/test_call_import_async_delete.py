@@ -146,11 +146,12 @@ def test_delete_call_import_returns_202_and_sets_deleting(
     assert row.status == CallImportStatus.DELETING
 
 
-def test_delete_call_import_idempotent_while_deleting(
+def test_delete_call_import_re_enqueues_when_lock_free(
     authenticated_client,
     db_session,
     exotel_integration,
     upload_schema,
+    monkeypatch,
 ):
     enqueue_calls: list[str] = []
     fake_module = sys.modules["app.workers.tasks.call_import_bulk_ops"]
@@ -163,16 +164,34 @@ def test_delete_call_import_idempotent_while_deleting(
 
     fake_module.delete_call_import_task = _CaptureTask()
 
+    lock_held = {"value": False}
+
+    def _lock_held(_import_id):
+        return lock_held["value"]
+
+    monkeypatch.setattr(
+        "app.services.call_imports.delete_teardown_lock.call_import_delete_lock_held",
+        _lock_held,
+    )
+
     uploaded = _upload(authenticated_client, schema_id=upload_schema.id)
     call_import_id = uploaded.json()["id"]
 
     first = authenticated_client.delete(f"/api/v1/call-imports/{call_import_id}")
+    assert len(enqueue_calls) == 1
+
+    lock_held["value"] = True
     second = authenticated_client.delete(f"/api/v1/call-imports/{call_import_id}")
+    assert len(enqueue_calls) == 1
+
+    lock_held["value"] = False
+    third = authenticated_client.delete(f"/api/v1/call-imports/{call_import_id}")
 
     assert first.status_code == 202
     assert second.status_code == 202
-    assert second.json()["status"] == "accepted"
-    assert len(enqueue_calls) == 1
+    assert third.status_code == 202
+    assert third.json()["status"] == "accepted"
+    assert len(enqueue_calls) == 2
 
 
 def test_delete_missing_call_import_returns_completed(

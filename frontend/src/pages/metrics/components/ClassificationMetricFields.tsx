@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
 import type { ClassificationFormState } from '../classificationMetricUtils'
 import ClassificationQuestionGuide from './ClassificationQuestionGuide'
+import MetricTagsField from './MetricTagsField'
 
 const INPUT_CLASS =
   'block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-primary-500 focus:ring-primary-500'
@@ -82,6 +83,13 @@ export default function ClassificationMetricFields({
             rows={2}
             placeholder="Short note for your team — not sent as Jev instructions"
             className={TEXTAREA_CLASS}
+          />
+        </div>
+
+        <div className="md:col-span-2">
+          <MetricTagsField
+            value={form.tags_csv}
+            onChange={(tags_csv) => patch({ tags_csv })}
           />
         </div>
       </div>

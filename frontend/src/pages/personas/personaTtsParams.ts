@@ -91,7 +91,7 @@ export const PERSONA_TTS_PARAMS: Record<string, PersonaParamDef[]> = {
     { key: 'pace', label: 'Pace', kind: 'slider', min: 0.3, max: 3.0, step: 0.05 },
     { key: 'pitch', label: 'Pitch', kind: 'slider', min: -0.75, max: 0.75, step: 0.05 },
     { key: 'loudness', label: 'Loudness', kind: 'slider', min: 0.1, max: 3.0, step: 0.05 },
-    { key: 'temperature', label: 'Temperature', kind: 'slider', min: 0.01, max: 1.0, step: 0.01, helpText: 'Synthesis variability (bulbul v3).' },
+    { key: 'temperature', label: 'Temperature', kind: 'slider', min: 0.01, max: 1.0, step: 0.01, helpText: 'Synthesis variability (Bulbul v3 only; v4 Flash uses pace/pitch/loudness).' },
     { key: 'enable_preprocessing', label: 'Enable preprocessing', kind: 'boolean' },
   ],
   smallest: [
