@@ -589,6 +589,7 @@ class LLMAssistantAggregator(LLMContextAggregator):
                 )
 
         self._started = 0
+        self._append_to_context = True
         self._function_calls_in_progress: Dict[str, Optional[FunctionCallInProgressFrame]] = {}
         self._context_updated_tasks: Set[asyncio.Task] = set()
 
@@ -693,21 +694,22 @@ class LLMAssistantAggregator(LLMContextAggregator):
         )
 
         # Update context with the in-progress function call
-        self._context.add_message(
-            {
-                "role": "assistant",
-                "tool_calls": [
-                    {
-                        "id": frame.tool_call_id,
-                        "function": {
-                            "name": frame.function_name,
-                            "arguments": json.dumps(frame.arguments),
-                        },
-                        "type": "function",
-                    }
-                ],
-            }
-        )
+        if frame.append_to_context:
+            self._context.add_message(
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": frame.tool_call_id,
+                            "function": {
+                                "name": frame.function_name,
+                                "arguments": json.dumps(frame.arguments),
+                            },
+                            "type": "function",
+                        }
+                    ],
+                }
+            )
         self._context.add_message(
             {
                 "role": "tool",
@@ -803,15 +805,19 @@ class LLMAssistantAggregator(LLMContextAggregator):
         await self.push_aggregation()
         await self.push_context_frame(FrameDirection.UPSTREAM)
 
-    async def _handle_llm_start(self, _: LLMFullResponseStartFrame):
+    async def _handle_llm_start(self, frame: LLMFullResponseStartFrame):
         self._started += 1
+        self._append_to_context = frame.append_to_context
 
     async def _handle_llm_end(self, _: LLMFullResponseEndFrame):
         self._started -= 1
         await self.push_aggregation()
+        if not self._append_to_context:
+            await self.push_context_frame()
+            await self.push_frame(LLMContextAssistantTimestampFrame(timestamp=time_now_iso8601()))
 
     async def _handle_text(self, frame: TextFrame):
-        if not self._started or not frame.append_to_context:
+        if not self._started or not self._append_to_context or not frame.append_to_context:
             return
 
         # Make sure we really have text (spaces count, too!)

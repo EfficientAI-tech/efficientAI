@@ -128,6 +128,7 @@ class FunctionCallRunnerItem:
         arguments: The arguments for the function.
         context: The LLM context.
         run_llm: Optional flag to control LLM execution after function call.
+        append_to_context: Whether the aggregator should add the tool call to context.
     """
 
     registry_item: FunctionCallRegistryItem
@@ -136,6 +137,7 @@ class FunctionCallRunnerItem:
     arguments: Mapping[str, Any]
     context: OpenAILLMContext | LLMContext
     run_llm: Optional[bool] = None
+    append_to_context: bool = True
 
 
 class LLMService(AIService):
@@ -452,6 +454,7 @@ class LLMService(AIService):
                 tool_call_id=function_call.tool_call_id,
                 arguments=function_call.arguments,
                 context=function_call.context,
+                append_to_context=function_call.append_to_context,
             )
 
             if self._run_in_parallel:
@@ -565,6 +568,7 @@ class LLMService(AIService):
             tool_call_id=runner_item.tool_call_id,
             arguments=runner_item.arguments,
             cancel_on_interruption=item.cancel_on_interruption,
+            append_to_context=runner_item.append_to_context,
         )
 
         # Define a callback function that pushes a FunctionCallResultFrame upstream & downstream.
