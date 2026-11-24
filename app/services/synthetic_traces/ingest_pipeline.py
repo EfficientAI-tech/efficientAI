@@ -494,6 +494,43 @@ class IngestUnavailable(Exception):
     """S3 WAL or Celery enqueue failed; API should return 503."""
 
 
+def _reuse_trace_for_call_short_id(
+    *,
+    organization_id: UUID,
+    workspace_id: UUID,
+    call_short_id: str,
+    get_trace_by_call_short_id,
+    register_call_short_id_trace_uuid,
+) -> Optional[UUID]:
+    """Return the trace already opened for this call, including one that just closed.
+
+    A hang-up flush often arrives after the live trace is marked closed. Minting a
+    new id there inserts a second row with the same call id and no turns.
+    """
+    found = get_trace_by_call_short_id(
+        organization_id=organization_id,
+        call_short_id=call_short_id,
+        workspace_id=workspace_id,
+        open_only=True,
+    )
+    if not found:
+        found = get_trace_by_call_short_id(
+            organization_id=organization_id,
+            call_short_id=call_short_id,
+            workspace_id=workspace_id,
+            open_only=False,
+        )
+    if not found:
+        return None
+    register_call_short_id_trace_uuid(
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        call_short_id=call_short_id,
+        trace_uuid=found.id,
+    )
+    return found.id
+
+
 def resolve_trace_uuid_for_s3_ingest(
     db: Session,
     *,
@@ -519,20 +556,15 @@ def resolve_trace_uuid_for_s3_ingest(
         )
         if cached:
             return cached
-        found = get_trace_by_call_short_id(
+        found = _reuse_trace_for_call_short_id(
             organization_id=organization_id,
-            call_short_id=header_call_short_id,
             workspace_id=workspace_id,
-            open_only=True,
+            call_short_id=header_call_short_id,
+            get_trace_by_call_short_id=get_trace_by_call_short_id,
+            register_call_short_id_trace_uuid=register_call_short_id_trace_uuid,
         )
         if found:
-            register_call_short_id_trace_uuid(
-                organization_id=organization_id,
-                workspace_id=workspace_id,
-                call_short_id=header_call_short_id,
-                trace_uuid=found.id,
-            )
-            return found.id
+            return found
         candidate = mint_trace_uuid()
         if claim_call_short_id_trace_uuid(
             organization_id=organization_id,
@@ -548,20 +580,15 @@ def resolve_trace_uuid_for_s3_ingest(
         )
         if winner:
             return winner
-        found = get_trace_by_call_short_id(
+        found = _reuse_trace_for_call_short_id(
             organization_id=organization_id,
-            call_short_id=header_call_short_id,
             workspace_id=workspace_id,
-            open_only=True,
+            call_short_id=header_call_short_id,
+            get_trace_by_call_short_id=get_trace_by_call_short_id,
+            register_call_short_id_trace_uuid=register_call_short_id_trace_uuid,
         )
         if found:
-            register_call_short_id_trace_uuid(
-                organization_id=organization_id,
-                workspace_id=workspace_id,
-                call_short_id=header_call_short_id,
-                trace_uuid=found.id,
-            )
-            return found.id
+            return found
         raise RuntimeError(
             f"Failed to claim trace UUID for call_short_id={header_call_short_id}"
         )
