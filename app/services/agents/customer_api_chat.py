@@ -47,6 +47,7 @@ def call_customer_chat_api(
     transcript: list[dict[str, str]],
     agent_name: str,
     language: str,
+    extra_headers: Optional[dict[str, str]] = None,
 ) -> str:
     base = (config.get("api_base_url") or "").strip().rstrip("/")
     if not base:
@@ -72,6 +73,8 @@ def call_customer_chat_api(
     auth_value = (cfg.get("api_auth_value") or "").strip()
     if auth_header and auth_value:
         headers[auth_header] = auth_value
+    if extra_headers:
+        headers.update(extra_headers)
 
     from app.services.agents.chat_outbound_payload import customer_api_request_body
 

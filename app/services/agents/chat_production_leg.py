@@ -229,13 +229,19 @@ def generate_production_chat_reply(
 
     if conn == ChatConnectionTypeEnum.CUSTOMER_API.value:
         from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
+        from app.services.synthetic_traces.simulation_outbound import (
+            correlation_http_headers,
+            ensure_simulation_correlation,
+        )
 
         cfg = chat_connection_config_for_runtime(cfg_raw)
+        correlation = ensure_simulation_correlation(db, evaluator_result, transport="custom")
         reply = call_customer_chat_api(
             cfg,
             transcript=transcript,
             agent_name=(agent.name or "Agent").strip(),
             language=str(agent.language or "en"),
+            extra_headers=correlation_http_headers(correlation) if correlation else None,
         )
         meta["production_leg"] = "customer_api"
         return reply, meta
@@ -243,14 +249,27 @@ def generate_production_chat_reply(
     if conn == ChatConnectionTypeEnum.CUSTOMER_WEBSOCKET.value:
         from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
         from app.services.agents.customer_websocket_chat import call_customer_websocket_chat
+        from app.services.synthetic_traces.simulation_outbound import (
+            correlation_http_headers,
+            ensure_simulation_correlation,
+            handshake_enabled,
+            trace_handshake_message,
+        )
 
         cfg = chat_connection_config_for_runtime(cfg_raw)
+        correlation = ensure_simulation_correlation(db, evaluator_result, transport="websocket")
         reply = call_customer_websocket_chat(
             cfg,
             transcript=transcript,
             agent_name=(agent.name or "Agent").strip(),
             language=str(agent.language or "en"),
             state=provider_state,
+            extra_headers=correlation_http_headers(correlation) if correlation else None,
+            handshake=(
+                trace_handshake_message(correlation)
+                if correlation and handshake_enabled(cfg)
+                else None
+            ),
         )
         meta["production_leg"] = "customer_websocket"
         return reply, meta

@@ -352,6 +352,33 @@ async def test_activate_tags_work_in_other_threads(spans: InMemorySpanExporter) 
     assert attrs_of(span)["efficientai.call_short_id"] == "482931"
 
 
+# ---- resume a platform call ------------------------------------------------
+
+
+@respx.mock
+def test_resume_helpers_reuse_platform_call_id() -> None:
+    mint = respx.post(SESSIONS).respond(200, json=session_json("999999"))
+    client = sync_client()
+
+    with client.trace.from_request(
+        {"X-EfficientAI-Call-Short-Id": "165730", "X-EfficientAI-Run-Id": "run-1"}
+    ) as call:
+        assert call.call_short_id == "165730"
+        assert call.evaluator_result_id == "run-1"
+        assert call.owns_session is False
+
+    with client.trace.from_sip_headers({"X-VH-EfficientAI-Call-Short-Id": "569762"}) as call:
+        assert call.call_short_id == "569762"
+
+    with client.trace.from_handshake(
+        {"type": "efficientai_trace_handshake", "call_short_id": "611725", "transport": "webrtc"}
+    ) as call:
+        assert call.call_short_id == "611725"
+        assert call.transport == "webrtc"
+
+    assert mint.called is False
+
+
 # ---- pipecat ---------------------------------------------------------------
 
 
