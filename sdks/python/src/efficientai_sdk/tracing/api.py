@@ -686,6 +686,18 @@ class TraceResource(_TraceResourceBase):
         finally:
             self.end_session(call)
 
+    def from_request(self, headers: Mapping[str, Any], **kwargs: Any) -> Iterator[CallTrace]:
+        """Resume the platform call id from HTTP headers such as ``X-EfficientAI-Call-Short-Id``."""
+        return self.session(headers=headers, **kwargs)
+
+    def from_sip_headers(self, sip_headers: Mapping[str, Any], **kwargs: Any) -> Iterator[CallTrace]:
+        """Resume the platform call id from SIP headers on a phone simulation."""
+        return self.session(sip_headers=sip_headers, **kwargs)
+
+    def from_handshake(self, message: Mapping[str, Any], **kwargs: Any) -> Iterator[CallTrace]:
+        """Resume the platform call id from an ``efficientai_trace_handshake`` message."""
+        return self.session(handshake=message, **kwargs)
+
 
 class _AsyncSession:
     def __init__(self, resource: AsyncTraceResource, kwargs: dict[str, Any]) -> None:
@@ -781,3 +793,15 @@ class AsyncTraceResource(_TraceResourceBase):
         """``async with client.trace.session(...) as call:``. Same arguments as
         :meth:`start_session`."""
         return _AsyncSession(self, kwargs)
+
+    def from_request(self, headers: Mapping[str, Any], **kwargs: Any) -> _AsyncSession:
+        """Async form of :meth:`TraceResource.from_request`."""
+        return self.session(headers=headers, **kwargs)
+
+    def from_sip_headers(self, sip_headers: Mapping[str, Any], **kwargs: Any) -> _AsyncSession:
+        """Async form of :meth:`TraceResource.from_sip_headers`."""
+        return self.session(sip_headers=sip_headers, **kwargs)
+
+    def from_handshake(self, message: Mapping[str, Any], **kwargs: Any) -> _AsyncSession:
+        """Async form of :meth:`TraceResource.from_handshake`."""
+        return self.session(handshake=message, **kwargs)
