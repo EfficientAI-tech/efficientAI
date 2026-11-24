@@ -638,6 +638,15 @@ def ingest_otlp_batch_to_s3(
         store_batch_meta,
     )
 
+    if not header_call_short_id:
+        # The SDK puts the call id on span attributes, not on the HTTP header.
+        # Without this, every batch is given a new trace id before the body is read.
+        try:
+            parsed, _fmt = parse_otlp_body(body, content_type)
+        except Exception:
+            parsed = []
+        header_call_short_id = extract_correlation_ids(parsed).get("call_short_id")
+
     trace_uuid = resolve_trace_uuid_for_s3_ingest(
         db,
         organization_id=organization_id,
@@ -793,6 +802,14 @@ def correlate_batch_ch(
                 workspace_id=workspace_id,
                 open_only=True,
             )
+            if not existing:
+                # Hang-up exports arrive after the live row is already "closing".
+                existing = get_trace_by_call_short_id(
+                    organization_id=organization_id,
+                    call_short_id=call_short_id,
+                    workspace_id=workspace_id,
+                    open_only=False,
+                )
             if existing:
                 trace = existing
                 correlated = True
