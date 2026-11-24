@@ -29,10 +29,15 @@ class APIConnectionError(EfficientAIError):
 
 
 class APITimeoutError(APIConnectionError):
-    """The request timed out."""
+    """The request timed out, or a polled run did not finish in time."""
 
-    def __init__(self, *, request: Optional[httpx.Request] = None):
-        super().__init__("Request timed out.", request=request)
+    def __init__(
+        self,
+        message: str = "Request timed out.",
+        *,
+        request: Optional[httpx.Request] = None,
+    ):
+        super().__init__(message, request=request)
 
 
 class APIStatusError(EfficientAIError):

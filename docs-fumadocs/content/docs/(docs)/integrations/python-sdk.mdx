@@ -193,6 +193,37 @@ Tracing never breaks a call:
 
 To fail fast instead (for example in tests), pass `strict=True` to `session()`.
 
+## Run simulations in CI
+
+The same client can start a simulation or a suite and wait for the score. The API key needs permission to run simulations in the workspace (`simulations:manage` to create a run, `evals:run` to run a suite). Org admins and keys that are not tied to a user already have those permissions.
+
+```python
+from efficientai_sdk import EfficientAI
+
+with EfficientAI() as client:
+    run = client.simulations.run(
+        agent_id="...",
+        scenario_ids=["..."],
+        persona_ids=["..."],
+        n_attempts=2,
+    )
+    run.wait(timeout=1800)
+    assert run.passed, run.summary
+
+    suite = client.suites.run("suite-id", runs_per_combination=3).wait()
+    assert suite.passed, suite.pass_rate
+```
+
+`wait()` returns when the run finishes. It does not raise if the score is low. `passed` is that check. For a suite, each queued evaluator result is polled until it is completed or failed.
+
+From a shell or a GitHub Action:
+
+```bash
+efficientai simulate --suite "$EFFICIENTAI_SUITE_ID" --fail-under 0.8
+```
+
+Exit `0` when the pass rate is at least `--fail-under` and no result errored. Exit `1` when the suite finishes below that bar. Exit `2` when the arguments or the API call fail. The full walkthrough is [Run simulations in CI](/docs/integrations/simulations-ci/).
+
 ## Environment variables
 
 | Variable | Purpose |

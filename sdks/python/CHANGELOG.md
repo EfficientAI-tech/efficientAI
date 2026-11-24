@@ -17,3 +17,5 @@ All notable changes to `efficientai-sdk` are recorded here. The project follows 
 - Call correlation is now tracked per asyncio task / context, so concurrent calls in one process no longer mix spans. This also applies to the older `setup_worker_tracing` / `setup_efficientai_tracing` helpers.
 - Fix: when the app already has its own `TracerProvider`, the EfficientAI exporter is now added to it. Previously spans were never exported in that case.
 - Trace contexts now carry `evaluator_result_id` from the platform handshake, so spans link to simulation results.
+- `client.simulations`, `client.suites`, `client.evaluators` and `client.results` start runs and poll them. `run.wait()` returns when the run finishes; `run.passed` is whether it met the threshold.
+- CLI: `efficientai simulate --suite <id> --fail-under 0.8` exits non-zero when the suite pass rate is too low.

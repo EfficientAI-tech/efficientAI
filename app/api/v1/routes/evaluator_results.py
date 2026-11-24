@@ -694,6 +694,7 @@ def get_evaluator_result(
         "metric_scores": result.metric_scores,
         "celery_task_id": result.celery_task_id,
         "error_message": result.error_message,
+        "passed": result.passed,
         # Call tracking fields (for voice AI integrations like Retell)
         "call_event": result.call_event,
         "provider_call_id": result.provider_call_id,

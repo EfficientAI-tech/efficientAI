@@ -1,0 +1,24 @@
+# Example only. Copy this into your repo as .github/workflows/simulate.yml.
+# It is not run by the EfficientAI repository itself.
+name: Simulate
+
+on:
+  pull_request:
+
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install EfficientAI SDK
+        run: pip install "efficientai-sdk @ git+https://github.com/EfficientAI-tech/efficientAI.git#subdirectory=sdks/python"
+      - name: Run suite
+        env:
+          EFFICIENTAI_BASE_URL: ${{ secrets.EFFICIENTAI_BASE_URL }}
+          EFFICIENTAI_API_KEY: ${{ secrets.EFFICIENTAI_API_KEY }}
+          EFFICIENTAI_WORKSPACE_ID: ${{ secrets.EFFICIENTAI_WORKSPACE_ID }}
+          EFFICIENTAI_SUITE_ID: ${{ secrets.EFFICIENTAI_SUITE_ID }}
+        run: efficientai simulate --suite "$EFFICIENTAI_SUITE_ID" --fail-under 0.8

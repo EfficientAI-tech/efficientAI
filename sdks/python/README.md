@@ -78,6 +78,28 @@ async def handle_call(first_message=None):
 
 A runnable example is in [`examples/custom_agent_tracing.py`](examples/custom_agent_tracing.py). The full guide is on the "Python SDK" page of the EfficientAI docs.
 
+## Run simulations
+
+```python
+run = client.simulations.run(
+    agent_id="...", scenario_ids=["..."], persona_ids=["..."], n_attempts=2
+)
+run.wait(timeout=1800)
+assert run.passed, run.summary
+
+suite = client.suites.run("suite-id", runs_per_combination=3)
+suite.wait()
+assert suite.passed, suite.pass_rate
+```
+
+From CI:
+
+```bash
+efficientai simulate --suite "$EFFICIENTAI_SUITE_ID" --fail-under 0.8
+```
+
+The command exits `0` at or above the threshold, `1` when the suite scores lower or a result errors, and `2` when the arguments or the API call fail. See `examples/ci/simulate.yml`.
+
 ## Errors and retries
 
 Every error the SDK raises inherits from `EfficientAIError`.
