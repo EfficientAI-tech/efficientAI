@@ -778,6 +778,7 @@ class LLMAssistantContextAggregator(LLMContextResponseAggregator):
             self._params.expect_stripped_words = kwargs["expect_stripped_words"]
 
         self._started = 0
+        self._append_to_context = True
         self._function_calls_in_progress: Dict[str, Optional[FunctionCallInProgressFrame]] = {}
         self._context_updated_tasks: Set[asyncio.Task] = set()
 
@@ -972,9 +973,9 @@ class LLMAssistantContextAggregator(LLMContextResponseAggregator):
         if frame.tool_call_id not in self._function_calls_in_progress:
             return
 
-        if self._function_calls_in_progress[frame.tool_call_id].cancel_on_interruption:
-            await self.handle_function_call_cancel(frame)
-            del self._function_calls_in_progress[frame.tool_call_id]
+        # The service applies cancel_on_interruption before sending this frame.
+        await self.handle_function_call_cancel(frame)
+        del self._function_calls_in_progress[frame.tool_call_id]
 
     async def _handle_user_image_frame(self, frame: UserImageRawFrame):
         logger.debug(
@@ -993,15 +994,21 @@ class LLMAssistantContextAggregator(LLMContextResponseAggregator):
         await self.push_aggregation()
         await self.push_context_frame(FrameDirection.UPSTREAM)
 
-    async def _handle_llm_start(self, _: LLMFullResponseStartFrame):
+    async def _handle_llm_start(self, frame: LLMFullResponseStartFrame):
         self._started += 1
+        self._append_to_context = frame.append_to_context
 
     async def _handle_llm_end(self, _: LLMFullResponseEndFrame):
         self._started -= 1
         await self.push_aggregation()
+        if not self._append_to_context:
+            await self.push_context_frame()
+            await self.push_frame(
+                OpenAILLMContextAssistantTimestampFrame(timestamp=time_now_iso8601())
+            )
 
     async def _handle_text(self, frame: TextFrame):
-        if not self._started or not frame.append_to_context:
+        if not self._started or not self._append_to_context or not frame.append_to_context:
             return
 
         if self._params.expect_stripped_words:

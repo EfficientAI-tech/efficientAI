@@ -57,6 +57,8 @@ class LLMSpecificMessage:
 
     llm: str
     message: Any
+    # Other providers use this representation instead of dropping the message.
+    standard_messages: Optional[List[LLMStandardMessage]] = None
 
 
 LLMContextMessage: TypeAlias = Union[LLMStandardMessage, LLMSpecificMessage]
@@ -255,23 +257,28 @@ class LLMContext:
         Args:
             llm_specific_filter: Optional filter to return LLM-specific
                 messages for the given LLM, in addition to the standard
-                messages. If messages end up being filtered, an error will be
-                logged; this is intended to catch accidental use of
-                incompatible LLM-specific messages.
+                messages. Other providers receive standard_messages when available.
+                If incompatible messages have no standard representation, an error
+                will be logged.
 
         Returns:
             List of conversation messages.
         """
         if llm_specific_filter is None:
             return self._messages
-        filtered_messages = [
-            msg
-            for msg in self._messages
-            if not isinstance(msg, LLMSpecificMessage) or msg.llm == llm_specific_filter
-        ]
-        if len(filtered_messages) < len(self._messages):
+        filtered_messages = []
+        incompatible_messages = False
+        for msg in self._messages:
+            if not isinstance(msg, LLMSpecificMessage) or msg.llm == llm_specific_filter:
+                filtered_messages.append(msg)
+            elif msg.standard_messages is not None:
+                filtered_messages.extend(msg.standard_messages)
+            else:
+                incompatible_messages = True
+        if incompatible_messages:
             logger.error(
-                f"Attempted to use incompatible LLMSpecificMessages with LLM '{llm_specific_filter}'."
+                "Attempted to use incompatible LLMSpecificMessages "
+                f"with LLM '{llm_specific_filter}'."
             )
         return filtered_messages
 

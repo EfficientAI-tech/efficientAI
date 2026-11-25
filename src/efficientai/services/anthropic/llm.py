@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
-import httpx
+import httpx2
 from loguru import logger
 from PIL import Image
 from pydantic import BaseModel, Field
@@ -60,7 +60,14 @@ from efficientai.services.llm_service import FunctionCallFromLLM, LLMService
 from efficientai.utils.tracing.service_decorators import traced_llm
 
 try:
-    from anthropic import NOT_GIVEN, APITimeoutError, AsyncAnthropic, NotGiven
+    from anthropic import (
+        NOT_GIVEN,
+        APITimeoutError,
+        AsyncAnthropic,
+        AsyncMessageStream,
+        NotGiven,
+    )
+    from anthropic import __version__ as anthropic_version
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
     logger.error("In order to use Anthropic, you need to `pip install efficientai-ai[anthropic]`.")
@@ -115,7 +122,7 @@ class AnthropicLLMService(LLMService):
 
         Parameters:
             enable_prompt_caching: Whether to enable the prompt caching feature.
-            enable_prompt_caching_beta (deprecated): Whether to enable the beta prompt caching feature.
+            enable_prompt_caching_beta (deprecated): Whether to enable beta prompt caching.
 
                 .. deprecated:: 0.0.84
                     Use the `enable_prompt_caching` parameter instead.
@@ -151,7 +158,7 @@ class AnthropicLLMService(LLMService):
         self,
         *,
         api_key: str,
-        model: str = "claude-sonnet-4-5-20250929",
+        model: str = "claude-sonnet-5-5",
         params: Optional[InputParams] = None,
         client=None,
         retry_timeout_secs: Optional[float] = 5.0,
@@ -162,7 +169,7 @@ class AnthropicLLMService(LLMService):
 
         Args:
             api_key: Anthropic API key for authentication.
-            model: Model name to use. Defaults to "claude-sonnet-4-5-20250929".
+            model: Model name to use. Defaults to "claude-sonnet-5-5".
             params: Optional model parameters for inference.
             client: Optional custom Anthropic client instance.
             retry_timeout_secs: Request timeout in seconds for retry logic.
@@ -201,6 +208,84 @@ class AnthropicLLMService(LLMService):
             True, as Anthropic provides detailed token usage metrics.
         """
         return True
+
+    @staticmethod
+    def _uses_sonnet_5_5(params: dict) -> bool:
+        model = (params.get("extra_body") or {}).get("model", params["model"])
+        return bool(
+            re.fullmatch(
+                r"claude-sonnet-5-5|(?:(?:us|eu|apac|global)\.)?anthropic\.claude-sonnet-5-5",
+                model,
+            )
+        )
+
+    def _supports_sampling(self, params: dict) -> bool:
+        headers = {
+            key.lower(): value
+            for key, value in getattr(self._client, "default_headers", {}).items()
+        }
+        headers.update(
+            {key.lower(): value for key, value in (params.get("extra_headers") or {}).items()}
+        )
+        api_version = (params.get("extra_body") or {}).get(
+            "anthropic_version", headers.get("anthropic-version")
+        )
+        if isinstance(api_version, str):
+            return api_version.removeprefix("bedrock-").removeprefix("vertex-") < "2026-10-21"
+        # Platform clients put the SDK's API version in the body rather than headers.
+        # SDK 2.x switched to 2026-10-21, which removes sampling for every model.
+        return int(anthropic_version.split(".")[0]) < 2
+
+    def _prepare_request_params(self, params: dict) -> dict:
+        """Apply model restrictions after all request overrides have been combined."""
+        params = dict(params)
+        extra_body = dict(params.get("extra_body") or {})
+        params["extra_body"] = extra_body
+        sonnet_5_5 = self._uses_sonnet_5_5(params)
+        supports_sampling = not sonnet_5_5 and self._supports_sampling(params)
+        for key in ("temperature", "top_k", "top_p"):
+            value = params.pop(key, NOT_GIVEN)
+            if not supports_sampling:
+                extra_body.pop(key, None)
+            elif not isinstance(value, NotGiven) and value is not None:
+                # SDK 2.x removed these kwargs, even with a legacy API version.
+                extra_body.setdefault(key, value)
+        if sonnet_5_5:
+            output_config = {
+                "effort": "high",
+                **(params.get("output_config") or {}),
+                **(extra_body.pop("output_config", None) or {}),
+            }
+            params["output_config"] = output_config
+            thinking = extra_body.get("thinking", params.get("thinking", {}))
+            if thinking and thinking.get("type") not in ("adaptive", "between_tools"):
+                raise ValueError(
+                    "Sonnet 5.5 requires thinking.type 'adaptive' or 'between_tools'; "
+                    "remove legacy thinking budgets and 'disabled' settings."
+                )
+            if thinking and "budget_tokens" in thinking:
+                raise ValueError("Sonnet 5.5 uses output_config.effort instead of budget_tokens.")
+            if thinking and thinking.get("type") == "between_tools":
+                if set(thinking) != {"type"} or output_config["effort"] in ("xhigh", "max"):
+                    raise ValueError(
+                        "Sonnet 5.5 between_tools takes only 'type' "
+                        "and requires effort at most high."
+                    )
+            tool_choice = extra_body.get("tool_choice", params.get("tool_choice", {}))
+            if tool_choice and tool_choice.get("type") in ("any", "tool"):
+                raise ValueError("Sonnet 5.5 requires tool_choice 'auto' or 'none'.")
+            messages = extra_body.get("messages", params["messages"])
+            if messages and messages[-1]["role"] == "assistant":
+                raise ValueError("Sonnet 5.5 does not support assistant message prefill.")
+        return params
+
+    def _store_response_message(self, context: LLMContext | OpenAILLMContext, message: dict):
+        if isinstance(context, LLMContext):
+            specific_message = self.create_llm_specific_message(message)
+            specific_message.standard_messages = AnthropicLLMContext.to_standard_messages(message)
+            context.add_message(specific_message)
+        else:
+            AnthropicLLMContext.upgrade_to_anthropic(context).add_message(message)
 
     async def _create_message_stream(self, api_call, params):
         """Create message stream with optional timeout and retry.
@@ -252,14 +337,18 @@ class AnthropicLLMService(LLMService):
 
         # LLM completion
         response = await self._client.messages.create(
-            model=self.model_name,
-            messages=messages,
-            system=system,
-            max_tokens=8192,
-            stream=False,
+            **self._prepare_request_params(
+                {
+                    "model": self.model_name,
+                    "messages": messages,
+                    "system": system,
+                    "max_tokens": 8192,
+                    "stream": False,
+                }
+            )
         )
 
-        return response.content[0].text
+        return "".join(block.text for block in response.content if block.type == "text")
 
     def create_context_aggregator(
         self,
@@ -325,9 +414,9 @@ class AnthropicLLMService(LLMService):
         use_completion_tokens_estimate = False
         cache_creation_input_tokens = 0
         cache_read_input_tokens = 0
+        response_started = False
 
         try:
-            await self.push_frame(LLMFullResponseStartFrame())
             await self.start_processing_metrics()
 
             params_from_context = self._get_llm_invocation_params(context)
@@ -340,7 +429,8 @@ class AnthropicLLMService(LLMService):
                 context_type_for_logging = "LLM-specific"
                 messages_for_logging = context.get_messages_for_logging()
             logger.debug(
-                f"{self}: Generating chat from {context_type_for_logging} context [{params_from_context['system']}] | {messages_for_logging}"
+                f"{self}: Generating chat from {context_type_for_logging} context "
+                f"[{params_from_context['system']}] | {messages_for_logging}"
             )
 
             await self.start_ttfb_metrics()
@@ -359,94 +449,138 @@ class AnthropicLLMService(LLMService):
 
             params.update(self._settings["extra"])
 
+            params = self._prepare_request_params(params)
+            preserve_response = self._uses_sonnet_5_5(params)
+            await self.push_frame(
+                LLMFullResponseStartFrame(append_to_context=not preserve_response)
+            )
+            response_started = True
+
             response = await self._create_message_stream(self._client.messages.create, params)
 
             await self.stop_ttfb_metrics()
 
-            # Function calling
-            tool_use_block = None
-            json_accumulator = ""
+            async with AsyncMessageStream(response, output_format=NOT_GIVEN) as stream:
+                message_complete = False
+                tool_inputs = {}
+                async for event in stream:
+                    if (
+                        event.type == "content_block_start"
+                        and event.content_block.type == "tool_use"
+                    ):
+                        tool_inputs[event.index] = ""
+                    elif event.type == "content_block_delta":
+                        if event.delta.type == "text_delta":
+                            await self.push_frame(LLMTextFrame(event.delta.text))
+                            completion_tokens_estimate += self._estimate_tokens(event.delta.text)
+                        elif event.delta.type == "input_json_delta":
+                            if event.index in tool_inputs:
+                                tool_inputs[event.index] += event.delta.partial_json
+                            completion_tokens_estimate += self._estimate_tokens(
+                                event.delta.partial_json
+                            )
+                    elif event.type == "content_block_stop" and event.index in tool_inputs:
+                        encoded = tool_inputs.pop(event.index)
+                        if encoded and not isinstance(json.loads(encoded), dict):
+                            raise ValueError("Anthropic tool input must be a JSON object.")
+
+                    # SDK helpers emit additional events containing message snapshots. Count
+                    # only the raw usage events; message_delta totals are cumulative.
+                    if event.type == "message_delta":
+                        completion_tokens = event.usage.output_tokens
+                    elif event.type == "message_start":
+                        prompt_tokens = event.message.usage.input_tokens
+                        completion_tokens = event.message.usage.output_tokens
+                        cache_creation_input_tokens = (
+                            event.message.usage.cache_creation_input_tokens or 0
+                        )
+                        cache_read_input_tokens = event.message.usage.cache_read_input_tokens or 0
+                        total_input_tokens = (
+                            prompt_tokens + cache_creation_input_tokens + cache_read_input_tokens
+                        )
+                        cache_threshold = 512 if preserve_response else 1024
+                        if total_input_tokens >= cache_threshold and hasattr(
+                            context, "turns_above_cache_threshold"
+                        ):
+                            context.turns_above_cache_threshold += 1
+                    elif event.type == "message_stop":
+                        message_complete = True
+
+                if not message_complete:
+                    raise ValueError("Anthropic response ended before message_stop.")
+                if tool_inputs:
+                    raise ValueError("Anthropic response ended before tool inputs completed.")
+                message = await stream.get_final_message()
+
+            prompt_tokens = message.usage.input_tokens
+            completion_tokens = message.usage.output_tokens
+            cache_creation_input_tokens = message.usage.cache_creation_input_tokens or 0
+            cache_read_input_tokens = message.usage.cache_read_input_tokens or 0
+
+            if (
+                preserve_response
+                and message.stop_reason != "tool_use"
+                and any(block.type == "tool_use" for block in message.content)
+            ):
+                raise ValueError(
+                    f"Anthropic tool response stopped with {message.stop_reason}; "
+                    "retry before continuing, and increase max_tokens if truncated."
+                )
+
+            if preserve_response and message.content:
+                # Thinking signatures bind to the complete response. Store it before tools
+                # execute, keeping text, empty thinking and redacted blocks in their order.
+                assistant_message = {
+                    "role": "assistant",
+                    "content": [block.to_dict() for block in message.content],
+                }
+                self._store_response_message(context, assistant_message)
 
             function_calls = []
-            async for event in response:
-                # Aggregate streaming content, create frames, trigger events
-
-                if event.type == "content_block_delta":
-                    if hasattr(event.delta, "text"):
-                        await self.push_frame(LLMTextFrame(event.delta.text))
-                        completion_tokens_estimate += self._estimate_tokens(event.delta.text)
-                    elif hasattr(event.delta, "partial_json") and tool_use_block:
-                        json_accumulator += event.delta.partial_json
-                        completion_tokens_estimate += self._estimate_tokens(
-                            event.delta.partial_json
-                        )
-                elif event.type == "content_block_start":
-                    if event.content_block.type == "tool_use":
-                        tool_use_block = event.content_block
-                        json_accumulator = ""
-                elif (
-                    event.type == "message_delta"
-                    and hasattr(event.delta, "stop_reason")
-                    and event.delta.stop_reason == "tool_use"
-                ):
-                    if tool_use_block:
-                        args = json.loads(json_accumulator) if json_accumulator else {}
+            tool_errors = []
+            if message.stop_reason == "tool_use":
+                for block in message.content:
+                    if block.type == "tool_use":
+                        # Save every result before yielding: all tool calls are already
+                        # in the signed response, including tools waiting in the queue.
+                        error = None
+                        if preserve_response and not self.has_function(block.name):
+                            error = f"No handler registered for tool '{block.name}'."
+                            tool_errors.append(error)
+                        if preserve_response:
+                            if isinstance(context, LLMContext) and not error:
+                                context.add_message(
+                                    {
+                                        "role": "tool",
+                                        "tool_call_id": block.id,
+                                        "content": "IN_PROGRESS",
+                                    }
+                                )
+                            else:
+                                result = {
+                                    "type": "tool_result",
+                                    "tool_use_id": block.id,
+                                    "content": error or "IN_PROGRESS",
+                                }
+                                if error:
+                                    result["is_error"] = True
+                                self._store_response_message(
+                                    context, {"role": "user", "content": [result]}
+                                )
+                        if error:
+                            continue
                         function_calls.append(
                             FunctionCallFromLLM(
                                 context=context,
-                                tool_call_id=tool_use_block.id,
-                                function_name=tool_use_block.name,
-                                arguments=args,
+                                tool_call_id=block.id,
+                                function_name=block.name,
+                                arguments=block.input,
+                                append_to_context=not preserve_response,
                             )
                         )
 
-                # Calculate usage. Do this here in its own if statement, because there may be usage
-                # data embedded in messages that we do other processing for, above.
-                if hasattr(event, "usage"):
-                    prompt_tokens += (
-                        event.usage.input_tokens if hasattr(event.usage, "input_tokens") else 0
-                    )
-                    completion_tokens += (
-                        event.usage.output_tokens if hasattr(event.usage, "output_tokens") else 0
-                    )
-                elif hasattr(event, "message") and hasattr(event.message, "usage"):
-                    prompt_tokens += (
-                        event.message.usage.input_tokens
-                        if hasattr(event.message.usage, "input_tokens")
-                        else 0
-                    )
-                    completion_tokens += (
-                        event.message.usage.output_tokens
-                        if hasattr(event.message.usage, "output_tokens")
-                        else 0
-                    )
-                    cache_creation_input_tokens += (
-                        event.message.usage.cache_creation_input_tokens
-                        if (
-                            hasattr(event.message.usage, "cache_creation_input_tokens")
-                            and event.message.usage.cache_creation_input_tokens is not None
-                        )
-                        else 0
-                    )
-                    logger.debug(f"Cache creation input tokens: {cache_creation_input_tokens}")
-                    cache_read_input_tokens += (
-                        event.message.usage.cache_read_input_tokens
-                        if (
-                            hasattr(event.message.usage, "cache_read_input_tokens")
-                            and event.message.usage.cache_read_input_tokens is not None
-                        )
-                        else 0
-                    )
-                    logger.debug(f"Cache read input tokens: {cache_read_input_tokens}")
-                    total_input_tokens = (
-                        prompt_tokens + cache_creation_input_tokens + cache_read_input_tokens
-                    )
-                    if total_input_tokens >= 1024:
-                        if hasattr(
-                            context, "turns_above_cache_threshold"
-                        ):  # LLMContext doesn't have this attribute
-                            context.turns_above_cache_threshold += 1
-
+            for error in tool_errors:
+                await self.push_error(ErrorFrame(error))
             await self.run_function_calls(function_calls)
 
         except asyncio.CancelledError:
@@ -455,14 +589,15 @@ class AnthropicLLMService(LLMService):
             # also get cancelled.
             use_completion_tokens_estimate = True
             raise
-        except httpx.TimeoutException:
+        except (APITimeoutError, httpx2.TimeoutException):
             await self._call_event_handler("on_completion_timeout")
         except Exception as e:
             logger.exception(f"{self} exception: {e}")
             await self.push_error(ErrorFrame(f"{e}"))
         finally:
             await self.stop_processing_metrics()
-            await self.push_frame(LLMFullResponseEndFrame())
+            if response_started:
+                await self.push_frame(LLMFullResponseEndFrame())
             comp_tokens = (
                 completion_tokens
                 if not use_completion_tokens_estimate
@@ -631,7 +766,8 @@ class AnthropicLLMContext(OpenAILLMContext):
         self._messages[:] = messages
         self._restructure_from_openai_messages()
 
-    def to_standard_messages(self, obj):
+    @staticmethod
+    def to_standard_messages(obj):
         """Convert Anthropic message format to standard structured format.
 
         Handles text content and function calls for both user and assistant messages.
@@ -894,7 +1030,7 @@ class AnthropicLLMContext(OpenAILLMContext):
             return self.messages
 
     def _restructure_from_openai_messages(self):
-        # first, map across self._messages calling self.from_standard_message(m) to modify messages in place
+        # Map standard messages to Anthropic format in place.
         try:
             self._messages[:] = [self.from_standard_message(m) for m in self._messages]
         except Exception as e:
@@ -1000,6 +1136,8 @@ class AnthropicAssistantContextAggregator(LLMAssistantContextAggregator):
     result handling, and cancellation for Anthropic's tool use format.
     """
 
+    _context: AnthropicLLMContext
+
     async def handle_function_call_in_progress(self, frame: FunctionCallInProgressFrame):
         """Handle a function call that is starting.
 
@@ -1008,28 +1146,32 @@ class AnthropicAssistantContextAggregator(LLMAssistantContextAggregator):
         Args:
             frame: Frame containing function call details.
         """
-        assistant_message = {"role": "assistant", "content": []}
-        assistant_message["content"].append(
-            {
-                "type": "tool_use",
-                "id": frame.tool_call_id,
-                "name": frame.function_name,
-                "input": frame.arguments,
-            }
-        )
-        self._context.add_message(assistant_message)
-        self._context.add_message(
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": frame.tool_call_id,
-                        "content": "IN_PROGRESS",
-                    }
-                ],
-            }
-        )
+        if frame.append_to_context:
+            self._context.add_message(
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": frame.tool_call_id,
+                            "name": frame.function_name,
+                            "input": frame.arguments,
+                        }
+                    ],
+                }
+            )
+            self._context.add_message(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": frame.tool_call_id,
+                            "content": "IN_PROGRESS",
+                        }
+                    ],
+                }
+            )
 
     async def handle_function_call_result(self, frame: FunctionCallResultFrame):
         """Handle the result of a completed function call.

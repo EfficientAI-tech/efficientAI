@@ -589,6 +589,7 @@ class LLMAssistantAggregator(LLMContextAggregator):
                 )
 
         self._started = 0
+        self._append_to_context = True
         self._function_calls_in_progress: Dict[str, Optional[FunctionCallInProgressFrame]] = {}
         self._context_updated_tasks: Set[asyncio.Task] = set()
 
@@ -693,28 +694,29 @@ class LLMAssistantAggregator(LLMContextAggregator):
         )
 
         # Update context with the in-progress function call
-        self._context.add_message(
-            {
-                "role": "assistant",
-                "tool_calls": [
-                    {
-                        "id": frame.tool_call_id,
-                        "function": {
-                            "name": frame.function_name,
-                            "arguments": json.dumps(frame.arguments),
-                        },
-                        "type": "function",
-                    }
-                ],
-            }
-        )
-        self._context.add_message(
-            {
-                "role": "tool",
-                "content": "IN_PROGRESS",
-                "tool_call_id": frame.tool_call_id,
-            }
-        )
+        if frame.append_to_context:
+            self._context.add_message(
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": frame.tool_call_id,
+                            "function": {
+                                "name": frame.function_name,
+                                "arguments": json.dumps(frame.arguments),
+                            },
+                            "type": "function",
+                        }
+                    ],
+                }
+            )
+            self._context.add_message(
+                {
+                    "role": "tool",
+                    "content": "IN_PROGRESS",
+                    "tool_call_id": frame.tool_call_id,
+                }
+            )
 
         self._function_calls_in_progress[frame.tool_call_id] = frame
 
@@ -772,10 +774,9 @@ class LLMAssistantAggregator(LLMContextAggregator):
         if frame.tool_call_id not in self._function_calls_in_progress:
             return
 
-        if self._function_calls_in_progress[frame.tool_call_id].cancel_on_interruption:
-            # Update context with the function call cancellation
-            self._update_function_call_result(frame.function_name, frame.tool_call_id, "CANCELLED")
-            del self._function_calls_in_progress[frame.tool_call_id]
+        # The service applies cancel_on_interruption before sending this frame.
+        self._update_function_call_result(frame.function_name, frame.tool_call_id, "CANCELLED")
+        del self._function_calls_in_progress[frame.tool_call_id]
 
     def _update_function_call_result(self, function_name: str, tool_call_id: str, result: Any):
         for message in self._context.get_messages():
@@ -803,15 +804,19 @@ class LLMAssistantAggregator(LLMContextAggregator):
         await self.push_aggregation()
         await self.push_context_frame(FrameDirection.UPSTREAM)
 
-    async def _handle_llm_start(self, _: LLMFullResponseStartFrame):
+    async def _handle_llm_start(self, frame: LLMFullResponseStartFrame):
         self._started += 1
+        self._append_to_context = frame.append_to_context
 
     async def _handle_llm_end(self, _: LLMFullResponseEndFrame):
         self._started -= 1
         await self.push_aggregation()
+        if not self._append_to_context:
+            await self.push_context_frame()
+            await self.push_frame(LLMContextAssistantTimestampFrame(timestamp=time_now_iso8601()))
 
     async def _handle_text(self, frame: TextFrame):
-        if not self._started or not frame.append_to_context:
+        if not self._started or not self._append_to_context or not frame.append_to_context:
             return
 
         # Make sure we really have text (spaces count, too!)

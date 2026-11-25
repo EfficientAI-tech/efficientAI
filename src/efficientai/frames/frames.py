@@ -1065,12 +1065,14 @@ class FunctionCallFromLLM:
         tool_call_id: A unique identifier for the function call.
         arguments: The arguments to pass to the function.
         context: The LLM context when the function call was made.
+        append_to_context: Whether the aggregator should add the tool call to context.
     """
 
     function_name: str
     tool_call_id: str
     arguments: Mapping[str, Any]
     context: Any
+    append_to_context: bool = True
 
 
 @dataclass
@@ -1096,12 +1098,14 @@ class FunctionCallInProgressFrame(SystemFrame):
         tool_call_id: Unique identifier for this function call.
         arguments: Arguments passed to the function.
         cancel_on_interruption: Whether to cancel this call if interrupted.
+        append_to_context: Whether to add the tool call, if not already stored by the service.
     """
 
     function_name: str
     tool_call_id: str
     arguments: Any
     cancel_on_interruption: bool = False
+    append_to_context: bool = True
 
 
 @dataclass
@@ -1628,8 +1632,13 @@ class LLMFullResponseStartFrame(ControlFrame):
 
     Used to indicate the beginning of an LLM response. Followed by one or
     more TextFrames and a final LLMFullResponseEndFrame.
+
+    Parameters:
+        append_to_context: Whether to aggregate streamed text into context. Services that
+            store the complete provider response themselves set this to False.
     """
 
+    append_to_context: bool = True
     skip_tts: bool = field(init=False)
 
     def __post_init__(self):
