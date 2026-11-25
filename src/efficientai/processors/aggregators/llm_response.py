@@ -973,9 +973,9 @@ class LLMAssistantContextAggregator(LLMContextResponseAggregator):
         if frame.tool_call_id not in self._function_calls_in_progress:
             return
 
-        if self._function_calls_in_progress[frame.tool_call_id].cancel_on_interruption:
-            await self.handle_function_call_cancel(frame)
-            del self._function_calls_in_progress[frame.tool_call_id]
+        # The service applies cancel_on_interruption before sending this frame.
+        await self.handle_function_call_cancel(frame)
+        del self._function_calls_in_progress[frame.tool_call_id]
 
     async def _handle_user_image_frame(self, frame: UserImageRawFrame):
         logger.debug(

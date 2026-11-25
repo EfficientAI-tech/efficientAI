@@ -29,6 +29,7 @@ from efficientai.adapters.services.open_ai_adapter import OpenAILLMAdapter
 from efficientai.frames.frames import (
     CancelFrame,
     EndFrame,
+    ErrorFrame,
     Frame,
     FunctionCallCancelFrame,
     FunctionCallFromLLM,
@@ -457,6 +458,11 @@ class LLMService(AIService):
                 append_to_context=function_call.append_to_context,
             )
 
+            if not runner_item.append_to_context:
+                # The service has already stored this call and its result placeholder.
+                # Track queued calls too, so cancellation can resolve their results.
+                await self._broadcast_function_call_in_progress(runner_item)
+
             if self._run_in_parallel:
                 task = self.create_task(self._run_function_call(runner_item))
                 self._function_call_tasks[task] = runner_item
@@ -530,8 +536,32 @@ class LLMService(AIService):
 
     async def _cancel_sequential_runner_task(self):
         if self._sequential_runner_task:
+            await self._cancel_queued_function_calls(cancel_all=True)
             await self.cancel_task(self._sequential_runner_task)
             self._sequential_runner_task = None
+
+    async def _cancel_queued_function_calls(
+        self, function_name: Optional[str] = None, *, cancel_all: bool = False
+    ):
+        if self._run_in_parallel or not self._sequential_runner_task:
+            return
+        pending = []
+        cancelled = []
+        while not self._sequential_runner_queue.empty():
+            runner_item = self._sequential_runner_queue.get_nowait()
+            if cancel_all or runner_item.registry_item.function_name == function_name:
+                cancelled.append(runner_item)
+            else:
+                pending.append(runner_item)
+        for runner_item in pending:
+            self._sequential_runner_queue.put_nowait(runner_item)
+        for runner_item in cancelled:
+            await self.push_frame(
+                FunctionCallCancelFrame(
+                    function_name=runner_item.function_name,
+                    tool_call_id=runner_item.tool_call_id,
+                )
+            )
 
     async def _sequential_runner_handler(self):
         while True:
@@ -540,8 +570,38 @@ class LLMService(AIService):
             self._function_call_tasks[task] = runner_item
             # Since we run tasks sequentially we don't need to call
             # task.add_done_callback(self._function_call_task_finished).
-            await task
-            del self._function_call_tasks[task]
+            try:
+                await task
+            except asyncio.CancelledError:
+                await self.push_frame(
+                    FunctionCallCancelFrame(
+                        function_name=runner_item.function_name,
+                        tool_call_id=runner_item.tool_call_id,
+                    )
+                )
+                if asyncio.current_task().cancelling():
+                    raise
+                # Cancelling a single tool must not stop the runner or strand its queue.
+            except Exception as e:
+                await self.push_error(ErrorFrame(str(e)))
+                await self.push_frame(
+                    FunctionCallCancelFrame(
+                        function_name=runner_item.function_name,
+                        tool_call_id=runner_item.tool_call_id,
+                    )
+                )
+            finally:
+                self._function_call_task_finished(task)
+
+    async def _broadcast_function_call_in_progress(self, runner_item: FunctionCallRunnerItem):
+        await self.broadcast_frame(
+            FunctionCallInProgressFrame,
+            function_name=runner_item.function_name,
+            tool_call_id=runner_item.tool_call_id,
+            arguments=runner_item.arguments,
+            cancel_on_interruption=runner_item.registry_item.cancel_on_interruption,
+            append_to_context=runner_item.append_to_context,
+        )
 
     async def _run_function_call(self, runner_item: FunctionCallRunnerItem):
         if runner_item.function_name in self._functions.keys():
@@ -562,14 +622,8 @@ class LLMService(AIService):
         # context aggregator know that we are in the middle of a function
         # call. Some contexts/aggregators may not need this. But some definitely
         # do (Anthropic, for example).
-        await self.broadcast_frame(
-            FunctionCallInProgressFrame,
-            function_name=runner_item.function_name,
-            tool_call_id=runner_item.tool_call_id,
-            arguments=runner_item.arguments,
-            cancel_on_interruption=item.cancel_on_interruption,
-            append_to_context=runner_item.append_to_context,
-        )
+        if runner_item.append_to_context:
+            await self._broadcast_function_call_in_progress(runner_item)
 
         # Define a callback function that pushes a FunctionCallResultFrame upstream & downstream.
         async def function_call_result_callback(
@@ -621,8 +675,9 @@ class LLMService(AIService):
                 await item.handler(params)
 
     async def _cancel_function_call(self, function_name: Optional[str]):
+        await self._cancel_queued_function_calls(function_name)
         cancelled_tasks = set()
-        for task, runner_item in self._function_call_tasks.items():
+        for task, runner_item in list(self._function_call_tasks.items()):
             if runner_item.registry_item.function_name == function_name:
                 name = runner_item.function_name
                 tool_call_id = runner_item.tool_call_id

@@ -4,18 +4,24 @@ import asyncio
 import copy
 import json
 import socket
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx2
 import pytest
 from anthropic import AsyncAnthropic, AsyncAnthropicBedrock, AsyncAnthropicVertex
 
+from efficientai.adapters.services.open_ai_adapter import OpenAILLMAdapter
 from efficientai.frames.frames import (
+    InterruptionFrame,
     LLMContextFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
+    ManuallySwitchServiceFrame,
     TextFrame,
 )
+from efficientai.pipeline.llm_switcher import LLMSwitcher
+from efficientai.pipeline.service_switcher import ServiceSwitcherStrategyManual
 from efficientai.processors.aggregators.llm_context import LLMContext
 from efficientai.processors.aggregators.llm_response_universal import LLMAssistantAggregator
 from efficientai.processors.aggregators.openai_llm_context import OpenAILLMContextFrame
@@ -26,6 +32,7 @@ from efficientai.services.anthropic.llm import (
     AnthropicLLMService,
 )
 from efficientai.services.llm_service import LLMService
+from efficientai.services.openai.llm import OpenAILLMService
 
 
 def message_events(message):
@@ -154,6 +161,39 @@ async def anthropic_service(monkeypatch):
     yield make_service
     for client in clients:
         await client.close()
+
+
+@pytest.fixture
+def connect_assistant(monkeypatch):
+    def connect(service, context):
+        assistant = (
+            LLMAssistantAggregator(context)
+            if isinstance(context, LLMContext)
+            else AnthropicAssistantContextAggregator(context)
+        )
+        monkeypatch.setattr(assistant, "push_frame", AsyncMock())
+
+        async def relay(frame, direction=FrameDirection.DOWNSTREAM):
+            if direction == FrameDirection.DOWNSTREAM:
+                await assistant.process_frame(frame, direction)
+
+        async def broadcast(frame_class, **kwargs):
+            await relay(frame_class(**kwargs))
+
+        async def cancel_task(task):
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        monkeypatch.setattr(service, "push_frame", relay)
+        monkeypatch.setattr(service, "broadcast_frame", broadcast)
+        monkeypatch.setattr(service, "create_task", asyncio.create_task)
+        monkeypatch.setattr(service, "cancel_task", cancel_task)
+        monkeypatch.setattr(
+            service, "run_function_calls", LLMService.run_function_calls.__get__(service)
+        )
+        return assistant
+
+    return connect
 
 
 @pytest.mark.parametrize("context_class", [LLMContext, AnthropicLLMContext])
@@ -287,7 +327,7 @@ async def test_assistant_prefill_fails_before_request(anthropic_service):
 @pytest.mark.parametrize("context_class", [LLMContext, AnthropicLLMContext])
 @pytest.mark.parametrize("thinking", ["", "a summary"])
 async def test_tool_round_trip_preserves_complete_response(
-    anthropic_service, monkeypatch, context_class, thinking
+    anthropic_service, connect_assistant, context_class, thinking
 ):
     content = [
         {"type": "thinking", "thinking": thinking, "signature": "signed-thinking"},
@@ -299,30 +339,12 @@ async def test_tool_round_trip_preserves_complete_response(
     ]
     service, requests = anthropic_service(content, stop_reason="tool_use")
     context = context_class([{"role": "user", "content": "compare the weather"}])
-    assistant = (
-        LLMAssistantAggregator(context)
-        if context_class is LLMContext
-        else AnthropicAssistantContextAggregator(context)
-    )
-    monkeypatch.setattr(assistant, "push_frame", AsyncMock())
-
-    async def relay(frame, direction=FrameDirection.DOWNSTREAM):
-        if direction == FrameDirection.DOWNSTREAM:
-            await assistant.process_frame(frame, direction)
-
-    async def broadcast(frame_class, **kwargs):
-        await relay(frame_class(**kwargs))
+    connect_assistant(service, context)
 
     async def weather(params):
         await params.result_callback({"city": params.arguments["city"], "temperature": 20})
 
     service.register_function("weather", weather)
-    monkeypatch.setattr(service, "push_frame", relay)
-    monkeypatch.setattr(service, "broadcast_frame", broadcast)
-    monkeypatch.setattr(service, "create_task", asyncio.create_task)
-    monkeypatch.setattr(
-        service, "run_function_calls", LLMService.run_function_calls.__get__(service)
-    )
 
     await service._process_context(context)
     await asyncio.gather(*list(service._function_call_tasks))
@@ -342,6 +364,222 @@ async def test_tool_round_trip_preserves_complete_response(
     assert messages[2]["role"] == "user"
     assert [block["tool_use_id"] for block in messages[2]["content"]] == ["call_1", "call_2"]
     assert all("IN_PROGRESS" not in block["content"] for block in messages[2]["content"])
+
+    if context_class is LLMContext:
+        messages = OpenAILLMAdapter().get_llm_invocation_params(context)["messages"]
+        assert messages[1] == {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "  Checking both cities.\n"}],
+        }
+        assert [call["id"] for call in messages[2]["tool_calls"]] == ["call_1", "call_2"]
+        assert [
+            json.loads(call["function"]["arguments"]) for call in messages[2]["tool_calls"]
+        ] == [
+            {"city": "Paris"},
+            {"city": "東京"},
+        ]
+        assert [m["tool_call_id"] for m in messages[3:]] == ["call_1", "call_2"]
+        assert all(m["role"] == "tool" and "temperature" in m["content"] for m in messages[3:])
+
+
+async def test_switch_to_openai_keeps_replies_and_back_preserves_signature(
+    anthropic_service, connect_assistant, monkeypatch
+):
+    content = [
+        {"type": "thinking", "thinking": "", "signature": "signed-thinking"},
+        {"type": "text", "text": "hello "},
+        {"type": "text", "text": "world"},
+    ]
+    service, requests = anthropic_service(content)
+    context = LLMContext([{"role": "user", "content": "hi"}])
+    connect_assistant(service, context)
+    await service._process_context(context)
+    service.push_error.assert_not_called()
+    context.add_message({"role": "user", "content": "continue"})
+
+    openai = OpenAILLMService(api_key="test-key")
+    create = AsyncMock(
+        return_value=SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="openai reply"))]
+        )
+    )
+    monkeypatch.setattr(openai._client.chat.completions, "create", create)
+    try:
+        switcher = LLMSwitcher([service, openai], ServiceSwitcherStrategyManual)
+        switcher.strategy.handle_frame(
+            ManuallySwitchServiceFrame(service=openai), FrameDirection.DOWNSTREAM
+        )
+        assert await switcher.run_inference(context) == "openai reply"
+        assert create.call_args.kwargs["messages"] == [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "hello "}, {"type": "text", "text": "world"}],
+            },
+            {"role": "user", "content": "continue"},
+        ]
+        context.add_message({"role": "assistant", "content": "openai reply"})
+        context.add_message({"role": "user", "content": "back to Claude"})
+        switcher.strategy.handle_frame(
+            ManuallySwitchServiceFrame(service=service), FrameDirection.DOWNSTREAM
+        )
+        assert await switcher.run_inference(context) == "hello world"
+        assert requests[1]["messages"][1] == {"role": "assistant", "content": content}
+        assert len(requests[1]["messages"]) == 5
+    finally:
+        await openai._client.close()
+
+
+@pytest.mark.parametrize("context_class", [LLMContext, AnthropicLLMContext])
+@pytest.mark.parametrize("outcome", ["complete", "interrupt", "stop", "error"])
+async def test_sequential_tools_have_results_while_queued_and_when_stopped(
+    anthropic_service, connect_assistant, context_class, outcome
+):
+    content = [
+        {"type": "thinking", "thinking": "", "signature": "signed"},
+        {"type": "tool_use", "id": "call_1", "name": "work", "input": {}},
+        {"type": "tool_use", "id": "call_2", "name": "work", "input": {}},
+    ]
+    service, requests = anthropic_service(content, stop_reason="tool_use", run_in_parallel=False)
+    context = context_class([{"role": "user", "content": "do both"}])
+    assistant = connect_assistant(service, context)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+    executed = []
+
+    async def work(params):
+        executed.append(params.tool_call_id)
+        if params.tool_call_id == "call_1":
+            started.set()
+            await release.wait()
+            if outcome == "error":
+                raise ValueError("tool failed")
+        await params.result_callback({"done": params.tool_call_id})
+        if params.tool_call_id == "call_2":
+            finished.set()
+
+    # Shutdown must resolve placeholders even for tools protected from interruptions.
+    service.register_function("work", work, cancel_on_interruption=outcome != "stop")
+    await service._create_sequential_runner_task()
+    try:
+        await service._process_context(context)
+        await asyncio.wait_for(started.wait(), timeout=2)
+        assert executed == ["call_1"]
+        # A new user turn arrives while the second call is still queued.
+        context.add_message({"role": "user", "content": "status?"})
+        await service.run_inference(context)
+        messages = requests[1]["messages"]
+        assert messages[1] == {"role": "assistant", "content": content}
+        results = [b for b in messages[2]["content"] if b["type"] == "tool_result"]
+        assert [b["tool_use_id"] for b in results] == ["call_1", "call_2"]
+        assert [b["content"] for b in results] == ["IN_PROGRESS", "IN_PROGRESS"]
+
+        if outcome == "interrupt":
+            await service._handle_interruptions(InterruptionFrame())
+            assert not service._sequential_runner_task.done()
+        elif outcome == "stop":
+            await service._cancel_sequential_runner_task()
+        else:
+            release.set()
+            await asyncio.wait_for(finished.wait(), timeout=2)
+
+        await service.run_inference(context)
+        results = [b for b in requests[2]["messages"][2]["content"] if b["type"] == "tool_result"]
+        assert [b["tool_use_id"] for b in results] == ["call_1", "call_2"]
+        expected = (
+            ["CANCELLED", "CANCELLED"]
+            if outcome in ("interrupt", "stop")
+            else [
+                "CANCELLED" if outcome == "error" else json.dumps({"done": "call_1"}),
+                json.dumps({"done": "call_2"}),
+            ]
+        )
+        assert [b["content"] for b in results] == expected
+        assert not assistant.has_function_calls_in_progress
+        assert service._sequential_runner_queue.empty()
+        assert executed == (
+            ["call_1"] if outcome in ("interrupt", "stop") else ["call_1", "call_2"]
+        )
+        if outcome == "error":
+            assert "tool failed" in service.push_error.call_args.args[0].error
+        else:
+            service.push_error.assert_not_called()
+    finally:
+        await service._cancel_sequential_runner_task()
+
+
+@pytest.mark.parametrize("context_class", [LLMContext, AnthropicLLMContext])
+@pytest.mark.parametrize("handler_name", ["work", None])
+async def test_interruption_keeps_protected_queued_tools_running(
+    anthropic_service, connect_assistant, context_class, handler_name
+):
+    content = [
+        {"type": "tool_use", "id": "call_1", "name": "work", "input": {}},
+        {"type": "tool_use", "id": "call_2", "name": "work", "input": {}},
+        {"type": "tool_use", "id": "call_3", "name": "keep", "input": {}},
+    ]
+    service, requests = anthropic_service(content, stop_reason="tool_use", run_in_parallel=False)
+    context = context_class([{"role": "user", "content": "do all three"}])
+    assistant = connect_assistant(service, context)
+    started = asyncio.Event()
+    finished = asyncio.Event()
+    executed = []
+
+    async def work(params):
+        executed.append(params.tool_call_id)
+        started.set()
+        await asyncio.Event().wait()
+
+    async def keep(params):
+        executed.append(params.tool_call_id)
+        await params.result_callback({"done": True})
+        finished.set()
+
+    service.register_function(handler_name, work)
+    service.register_function("keep", keep, cancel_on_interruption=False)
+    await service._create_sequential_runner_task()
+    try:
+        await service._process_context(context)
+        await asyncio.wait_for(started.wait(), timeout=2)
+        await service._handle_interruptions(InterruptionFrame())
+        await asyncio.wait_for(finished.wait(), timeout=2)
+        await service.run_inference(context)
+        results = requests[1]["messages"][2]["content"]
+        assert [b["tool_use_id"] for b in results] == ["call_1", "call_2", "call_3"]
+        assert [b["content"] for b in results] == ["CANCELLED", "CANCELLED", '{"done": true}']
+        assert executed == ["call_1", "call_3"]
+        assert not assistant.has_function_calls_in_progress
+        assert not service._sequential_runner_task.done()
+        service.push_error.assert_not_called()
+    finally:
+        await service._cancel_sequential_runner_task()
+
+
+@pytest.mark.parametrize("context_class", [LLMContext, AnthropicLLMContext])
+async def test_all_results_exist_before_reporting_missing_handler(
+    anthropic_service, monkeypatch, context_class
+):
+    content = [
+        {"type": "tool_use", "id": "call_1", "name": "missing", "input": {}},
+        {"type": "tool_use", "id": "call_2", "name": "work", "input": {}},
+    ]
+    service, _ = anthropic_service(content, stop_reason="tool_use")
+    service.register_function("work", AsyncMock())
+    context = context_class([{"role": "user", "content": "do both"}])
+
+    async def check_results(_):
+        messages = service._get_llm_invocation_params(context)["messages"]
+        assert messages[1] == {"role": "assistant", "content": content}
+        results = messages[2]["content"]
+        assert [b["tool_use_id"] for b in results] == ["call_1", "call_2"]
+        assert results[0]["is_error"] is True
+        assert results[1]["content"] == "IN_PROGRESS"
+
+    push_error = AsyncMock(side_effect=check_results)
+    monkeypatch.setattr(service, "push_error", push_error)
+    await service._process_context(context)
+    push_error.assert_awaited_once()
 
 
 @pytest.mark.parametrize("context_class", [LLMContext, AnthropicLLMContext])
@@ -524,6 +762,14 @@ async def test_unregistered_tool_leaves_valid_history(anthropic_service, context
     assert result["type"] == "tool_result"
     assert result["tool_use_id"] == "missing"
     assert result["is_error"] is True
+    if context_class is LLMContext:
+        messages = OpenAILLMAdapter().get_llm_invocation_params(context)["messages"]
+        assert messages[1]["tool_calls"][0]["id"] == "missing"
+        assert messages[2] == {
+            "role": "tool",
+            "tool_call_id": "missing",
+            "content": "No handler registered for tool 'missing_handler'.",
+        }
 
 
 async def test_stream_timeout_uses_completion_timeout_event(anthropic_service, monkeypatch):

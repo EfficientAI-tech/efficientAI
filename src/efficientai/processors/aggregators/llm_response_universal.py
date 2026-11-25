@@ -710,13 +710,13 @@ class LLMAssistantAggregator(LLMContextAggregator):
                     ],
                 }
             )
-        self._context.add_message(
-            {
-                "role": "tool",
-                "content": "IN_PROGRESS",
-                "tool_call_id": frame.tool_call_id,
-            }
-        )
+            self._context.add_message(
+                {
+                    "role": "tool",
+                    "content": "IN_PROGRESS",
+                    "tool_call_id": frame.tool_call_id,
+                }
+            )
 
         self._function_calls_in_progress[frame.tool_call_id] = frame
 
@@ -774,10 +774,9 @@ class LLMAssistantAggregator(LLMContextAggregator):
         if frame.tool_call_id not in self._function_calls_in_progress:
             return
 
-        if self._function_calls_in_progress[frame.tool_call_id].cancel_on_interruption:
-            # Update context with the function call cancellation
-            self._update_function_call_result(frame.function_name, frame.tool_call_id, "CANCELLED")
-            del self._function_calls_in_progress[frame.tool_call_id]
+        # The service applies cancel_on_interruption before sending this frame.
+        self._update_function_call_result(frame.function_name, frame.tool_call_id, "CANCELLED")
+        del self._function_calls_in_progress[frame.tool_call_id]
 
     def _update_function_call_result(self, function_name: str, tool_call_id: str, result: Any):
         for message in self._context.get_messages():

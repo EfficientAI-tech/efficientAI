@@ -281,7 +281,9 @@ class AnthropicLLMService(LLMService):
 
     def _store_response_message(self, context: LLMContext | OpenAILLMContext, message: dict):
         if isinstance(context, LLMContext):
-            context.add_message(self.create_llm_specific_message(message))
+            specific_message = self.create_llm_specific_message(message)
+            specific_message.standard_messages = AnthropicLLMContext.to_standard_messages(message)
+            context.add_message(specific_message)
         else:
             AnthropicLLMContext.upgrade_to_anthropic(context).add_message(message)
 
@@ -535,26 +537,37 @@ class AnthropicLLMService(LLMService):
                 self._store_response_message(context, assistant_message)
 
             function_calls = []
+            tool_errors = []
             if message.stop_reason == "tool_use":
                 for block in message.content:
                     if block.type == "tool_use":
+                        # Save every result before yielding: all tool calls are already
+                        # in the signed response, including tools waiting in the queue.
+                        error = None
                         if preserve_response and not self.has_function(block.name):
                             error = f"No handler registered for tool '{block.name}'."
-                            self._store_response_message(
-                                context,
-                                {
-                                    "role": "user",
-                                    "content": [
-                                        {
-                                            "type": "tool_result",
-                                            "tool_use_id": block.id,
-                                            "content": error,
-                                            "is_error": True,
-                                        }
-                                    ],
-                                },
-                            )
-                            await self.push_error(ErrorFrame(error))
+                            tool_errors.append(error)
+                        if preserve_response:
+                            if isinstance(context, LLMContext) and not error:
+                                context.add_message(
+                                    {
+                                        "role": "tool",
+                                        "tool_call_id": block.id,
+                                        "content": "IN_PROGRESS",
+                                    }
+                                )
+                            else:
+                                result = {
+                                    "type": "tool_result",
+                                    "tool_use_id": block.id,
+                                    "content": error or "IN_PROGRESS",
+                                }
+                                if error:
+                                    result["is_error"] = True
+                                self._store_response_message(
+                                    context, {"role": "user", "content": [result]}
+                                )
+                        if error:
                             continue
                         function_calls.append(
                             FunctionCallFromLLM(
@@ -566,6 +579,8 @@ class AnthropicLLMService(LLMService):
                             )
                         )
 
+            for error in tool_errors:
+                await self.push_error(ErrorFrame(error))
             await self.run_function_calls(function_calls)
 
         except asyncio.CancelledError:
@@ -751,7 +766,8 @@ class AnthropicLLMContext(OpenAILLMContext):
         self._messages[:] = messages
         self._restructure_from_openai_messages()
 
-    def to_standard_messages(self, obj):
+    @staticmethod
+    def to_standard_messages(obj):
         """Convert Anthropic message format to standard structured format.
 
         Handles text content and function calls for both user and assistant messages.
@@ -1144,18 +1160,18 @@ class AnthropicAssistantContextAggregator(LLMAssistantContextAggregator):
                     ],
                 }
             )
-        self._context.add_message(
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": frame.tool_call_id,
-                        "content": "IN_PROGRESS",
-                    }
-                ],
-            }
-        )
+            self._context.add_message(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": frame.tool_call_id,
+                            "content": "IN_PROGRESS",
+                        }
+                    ],
+                }
+            )
 
     async def handle_function_call_result(self, frame: FunctionCallResultFrame):
         """Handle the result of a completed function call.
