@@ -60,7 +60,14 @@ from efficientai.services.llm_service import FunctionCallFromLLM, LLMService
 from efficientai.utils.tracing.service_decorators import traced_llm
 
 try:
-    from anthropic import NOT_GIVEN, APITimeoutError, AsyncAnthropic, AsyncMessageStream, NotGiven
+    from anthropic import (
+        NOT_GIVEN,
+        APITimeoutError,
+        AsyncAnthropic,
+        AsyncMessageStream,
+        NotGiven,
+    )
+    from anthropic import __version__ as anthropic_version
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
     logger.error("In order to use Anthropic, you need to `pip install efficientai-ai[anthropic]`.")
@@ -212,15 +219,38 @@ class AnthropicLLMService(LLMService):
             )
         )
 
+    def _supports_sampling(self, params: dict) -> bool:
+        headers = {
+            key.lower(): value
+            for key, value in getattr(self._client, "default_headers", {}).items()
+        }
+        headers.update(
+            {key.lower(): value for key, value in (params.get("extra_headers") or {}).items()}
+        )
+        api_version = (params.get("extra_body") or {}).get(
+            "anthropic_version", headers.get("anthropic-version")
+        )
+        if isinstance(api_version, str):
+            return api_version.removeprefix("bedrock-").removeprefix("vertex-") < "2026-10-21"
+        # Platform clients put the SDK's API version in the body rather than headers.
+        # SDK 2.x switched to 2026-10-21, which removes sampling for every model.
+        return int(anthropic_version.split(".")[0]) < 2
+
     def _prepare_request_params(self, params: dict) -> dict:
         """Apply model restrictions after all request overrides have been combined."""
         params = dict(params)
         extra_body = dict(params.get("extra_body") or {})
         params["extra_body"] = extra_body
-        if self._uses_sonnet_5_5(params):
-            for key in ("temperature", "top_k", "top_p"):
-                params.pop(key, None)
+        sonnet_5_5 = self._uses_sonnet_5_5(params)
+        supports_sampling = not sonnet_5_5 and self._supports_sampling(params)
+        for key in ("temperature", "top_k", "top_p"):
+            value = params.pop(key, NOT_GIVEN)
+            if not supports_sampling:
                 extra_body.pop(key, None)
+            elif not isinstance(value, NotGiven) and value is not None:
+                # SDK 2.x removed these kwargs, even with a legacy API version.
+                extra_body.setdefault(key, value)
+        if sonnet_5_5:
             output_config = {
                 "effort": "high",
                 **(params.get("output_config") or {}),
@@ -247,12 +277,6 @@ class AnthropicLLMService(LLMService):
             messages = extra_body.get("messages", params["messages"])
             if messages and messages[-1]["role"] == "assistant":
                 raise ValueError("Sonnet 5.5 does not support assistant message prefill.")
-        else:
-            # Current SDKs expose legacy sampling settings through extra_body.
-            for key in ("temperature", "top_k", "top_p"):
-                value = params.pop(key, NOT_GIVEN)
-                if not isinstance(value, NotGiven) and value is not None:
-                    extra_body.setdefault(key, value)
         return params
 
     def _store_response_message(self, context: LLMContext | OpenAILLMContext, message: dict):
@@ -436,15 +460,27 @@ class AnthropicLLMService(LLMService):
 
             async with AsyncMessageStream(response, output_format=NOT_GIVEN) as stream:
                 message_complete = False
+                tool_inputs = {}
                 async for event in stream:
-                    if event.type == "content_block_delta":
+                    if (
+                        event.type == "content_block_start"
+                        and event.content_block.type == "tool_use"
+                    ):
+                        tool_inputs[event.index] = ""
+                    elif event.type == "content_block_delta":
                         if event.delta.type == "text_delta":
                             await self.push_frame(LLMTextFrame(event.delta.text))
                             completion_tokens_estimate += self._estimate_tokens(event.delta.text)
                         elif event.delta.type == "input_json_delta":
+                            if event.index in tool_inputs:
+                                tool_inputs[event.index] += event.delta.partial_json
                             completion_tokens_estimate += self._estimate_tokens(
                                 event.delta.partial_json
                             )
+                    elif event.type == "content_block_stop" and event.index in tool_inputs:
+                        encoded = tool_inputs.pop(event.index)
+                        if encoded and not isinstance(json.loads(encoded), dict):
+                            raise ValueError("Anthropic tool input must be a JSON object.")
 
                     # SDK helpers emit additional events containing message snapshots. Count
                     # only the raw usage events; message_delta totals are cumulative.
@@ -470,12 +506,24 @@ class AnthropicLLMService(LLMService):
 
                 if not message_complete:
                     raise ValueError("Anthropic response ended before message_stop.")
+                if tool_inputs:
+                    raise ValueError("Anthropic response ended before tool inputs completed.")
                 message = await stream.get_final_message()
 
             prompt_tokens = message.usage.input_tokens
             completion_tokens = message.usage.output_tokens
             cache_creation_input_tokens = message.usage.cache_creation_input_tokens or 0
             cache_read_input_tokens = message.usage.cache_read_input_tokens or 0
+
+            if (
+                preserve_response
+                and message.stop_reason != "tool_use"
+                and any(block.type == "tool_use" for block in message.content)
+            ):
+                raise ValueError(
+                    f"Anthropic tool response stopped with {message.stop_reason}; "
+                    "retry before continuing, and increase max_tokens if truncated."
+                )
 
             if preserve_response and message.content:
                 # Thinking signatures bind to the complete response. Store it before tools

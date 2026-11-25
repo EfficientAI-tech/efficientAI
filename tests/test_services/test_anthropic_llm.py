@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import httpx2
 import pytest
-from anthropic import AsyncAnthropic
+from anthropic import AsyncAnthropic, AsyncAnthropicBedrock, AsyncAnthropicVertex
 
 from efficientai.frames.frames import (
     LLMContextFrame,
@@ -93,6 +93,7 @@ async def anthropic_service(monkeypatch):
         events=None,
         stream_error=None,
         input_tokens=10,
+        api_version=None,
         **kwargs,
     ):
         requests = []
@@ -100,6 +101,17 @@ async def anthropic_service(monkeypatch):
         def handle(request):
             body = json.loads(request.content)
             requests.append(body)
+            if (
+                request.headers["anthropic-version"] >= "2026-10-21"
+                or body["model"] == "claude-sonnet-5-5"
+            ) and {"temperature", "top_p", "top_k"} & body.keys():
+                return httpx2.Response(
+                    400,
+                    json={
+                        "type": "error",
+                        "error": {"type": "invalid_request_error", "message": "Sampling removed"},
+                    },
+                )
             message = {
                 "id": "msg_test",
                 "type": "message",
@@ -131,6 +143,7 @@ async def anthropic_service(monkeypatch):
             api_key="test-key",
             http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handle)),
             max_retries=0,
+            default_headers={"anthropic-version": api_version} if api_version else None,
         )
         clients.append(client)
         service = AnthropicLLMService(api_key="test-key", client=client, **kwargs)
@@ -172,14 +185,15 @@ async def test_inference_without_text(anthropic_service, content):
     "model", ["claude-sonnet-5-5", "claude-haiku-4-5-20251001", "claude-sonnet-4-5-20250929"]
 )
 @pytest.mark.parametrize("source", ["fields", "extra", "extra_body"])
-async def test_stream_sampling_parameters(anthropic_service, model, source):
+@pytest.mark.parametrize("api_version", ["2023-06-01", "2026-10-21"])
+async def test_stream_sampling_parameters(anthropic_service, model, source, api_version):
     sampling = {"temperature": 0.7, "top_p": 0.9, "top_k": 10}
     settings = sampling if source == "fields" else {"extra": sampling}
     if source == "extra_body":
         settings = {"extra": {"extra_body": sampling}}
     params = AnthropicLLMService.InputParams(max_tokens=1234, **settings)
     original = copy.deepcopy(params.extra)
-    service, requests = anthropic_service([], model=model, params=params)
+    service, requests = anthropic_service([], model=model, params=params, api_version=api_version)
 
     await service._process_context(LLMContext([{"role": "user", "content": "hi"}]))
 
@@ -188,7 +202,7 @@ async def test_stream_sampling_parameters(anthropic_service, model, source):
     assert requests[0]["max_tokens"] == 1234
     assert requests[0]["stream"] is True
     for key, value in sampling.items():
-        if model == "claude-sonnet-5-5":
+        if model == "claude-sonnet-5-5" or api_version >= "2026-10-21":
             assert key not in requests[0]
         else:
             assert requests[0][key] == value
@@ -355,18 +369,29 @@ async def test_aggregator_defaults_still_append_text(monkeypatch, context_class)
     assert len(context_frames) == 2
 
 
+@pytest.mark.parametrize("context_class", [LLMContext, AnthropicLLMContext])
 @pytest.mark.parametrize("stop_reason", ["max_tokens", "refusal"])
-async def test_partial_or_refused_tool_is_not_executed(anthropic_service, stop_reason):
+async def test_partial_or_refused_tool_is_not_executed(
+    anthropic_service, stop_reason, context_class
+):
     service, _ = anthropic_service(
         [{"type": "tool_use", "id": "call_1", "name": "search", "input": {}}],
         stop_reason=stop_reason,
     )
-    await service._process_context(LLMContext([{"role": "user", "content": "hi"}]))
-    service.push_error.assert_not_called()
-    service.run_function_calls.assert_awaited_once_with([])
+    context = context_class([{"role": "user", "content": "hi"}])
+    await service._process_context(context)
+    assert stop_reason in service.push_error.call_args.args[0].error
+    service.run_function_calls.assert_not_called()
+    assert len(context.get_messages()) == 1
 
 
-async def test_malformed_stream_does_not_commit_partial_response(anthropic_service):
+@pytest.mark.parametrize(
+    "encoded, block_stopped",
+    [("not JSON", True), ('{"q": "unfinished"', True), ('["not an object"]', True), ("{}", False)],
+)
+async def test_malformed_stream_does_not_commit_partial_response(
+    anthropic_service, encoded, block_stopped
+):
     events = [
         {
             "type": "message_start",
@@ -387,9 +412,20 @@ async def test_malformed_stream_does_not_commit_partial_response(anthropic_servi
         {
             "type": "content_block_delta",
             "index": 0,
-            "delta": {"type": "input_json_delta", "partial_json": "not JSON"},
+            "delta": {"type": "input_json_delta", "partial_json": encoded},
+        },
+        {"type": "content_block_stop", "index": 0},
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "tool_use", "stop_sequence": None},
+            "usage": {"output_tokens": 5},
+        },
+        {
+            "type": "message_stop",
         },
     ]
+    if not block_stopped:
+        events = [event for event in events if event["type"] != "content_block_stop"]
     service, _ = anthropic_service([], events=events)
     context = LLMContext([{"role": "user", "content": "hi"}])
     await service._process_context(context)
@@ -509,3 +545,90 @@ async def test_legacy_context_cache_threshold(anthropic_service, model, expected
     await service._process_context(context)
     service.push_error.assert_not_called()
     assert context.turns_above_cache_threshold == expected
+
+
+@pytest.mark.parametrize("api_version", ["2023-06-01", "2026-10-21"])
+async def test_request_api_version_overrides_client_version(anthropic_service, api_version):
+    service, requests = anthropic_service(
+        [],
+        model="claude-haiku-4-5-20251001",
+        api_version="2026-10-21" if api_version == "2023-06-01" else "2023-06-01",
+        params=AnthropicLLMService.InputParams(
+            temperature=0.7,
+            extra={"extra_headers": {"Anthropic-Version": api_version}},
+        ),
+    )
+    await service._process_context(LLMContext([{"role": "user", "content": "hi"}]))
+    service.push_error.assert_not_called()
+    assert ("temperature" in requests[0]) == (api_version == "2023-06-01")
+
+
+@pytest.mark.parametrize("platform", ["bedrock", "vertex"])
+@pytest.mark.parametrize("api_version", [None, "2023-06-01", "2026-10-21"])
+@pytest.mark.parametrize("sonnet_5_5", [False, True])
+async def test_cloud_client_sampling_matches_wire_api_version(platform, api_version, sonnet_5_5):
+    requests = []
+
+    def handle(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        assert ("temperature" in body) == (
+            not sonnet_5_5
+            and body["anthropic_version"].removeprefix("bedrock-").removeprefix("vertex-")
+            < "2026-10-21"
+        )
+        return httpx2.Response(
+            200,
+            json={
+                "id": "msg_test",
+                "type": "message",
+                "role": "assistant",
+                "model": model,
+                "content": [{"type": "text", "text": "hello"}],
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        )
+
+    http_client = httpx2.AsyncClient(transport=httpx2.MockTransport(handle))
+    if platform == "bedrock":
+        model = (
+            "anthropic.claude-sonnet-5-5"
+            if sonnet_5_5
+            else "anthropic.claude-haiku-4-5-20251001-v1:0"
+        )
+        client = AsyncAnthropicBedrock(
+            aws_region="us-east-1",
+            aws_access_key="test-access",
+            aws_secret_key="test-secret",
+            http_client=http_client,
+            max_retries=0,
+        )
+        if api_version == "2023-06-01":
+            api_version = "bedrock-2023-05-31"
+    else:
+        model = "claude-sonnet-5-5" if sonnet_5_5 else "claude-haiku-4-5@20251001"
+        if api_version == "2023-06-01":
+            api_version = "vertex-2023-10-16"
+        client = AsyncAnthropicVertex(
+            project_id="test-project",
+            region="us-east5",
+            access_token="test-token",
+            http_client=http_client,
+            max_retries=0,
+        )
+    async with client:
+        service = AnthropicLLMService(api_key="test-key", client=client, model=model)
+        params = service._prepare_request_params(
+            {
+                "model": model,
+                "max_tokens": 32,
+                "messages": [{"role": "user", "content": "hi"}],
+                "temperature": 0.7,
+                "extra_body": {"anthropic_version": api_version} if api_version else {},
+            }
+        )
+        response = await client.messages.create(**params)
+        assert response.content[0].text == "hello"
+    assert len(requests) == 1
