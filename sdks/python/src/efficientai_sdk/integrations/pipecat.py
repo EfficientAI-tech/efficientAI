@@ -2,12 +2,18 @@
 Pipecat themselves, so they work with any Pipecat version that supports
 ``enable_tracing`` and ``additional_span_attributes``.
 
-Example::
+Recommended (one session per call, safe with concurrent calls)::
 
-    task = PipelineTask(
-        pipeline,
-        **configure_pipecat_tracing(sip_headers=inbound_headers),
-    )
+    client = AsyncEfficientAI()
+
+    async def run_bot(transport, first_message=None):
+        async with client.trace.session(transport="webrtc", handshake=first_message) as call:
+            task = PipelineTask(pipeline, **task_kwargs(call))
+            await PipelineRunner().run(task)
+
+Older one-liner (process-wide setup)::
+
+    task = PipelineTask(pipeline, **configure_pipecat_tracing(sip_headers=inbound_headers))
 """
 
 from __future__ import annotations
@@ -16,6 +22,7 @@ import os
 from collections.abc import Mapping
 from typing import Any, Optional
 
+from efficientai_sdk.tracing.api import CallTrace
 from efficientai_sdk.tracing.correlation import span_correlation_attributes
 from efficientai_sdk.tracing.handshake import parse_trace_handshake
 from efficientai_sdk.tracing.otel import _resolve_call_short_id, setup_efficientai_tracing
@@ -25,6 +32,7 @@ __all__ = [
     "configure_pipecat_tracing",
     "configure_pipecat_tracing_from_handshake",
     "setup_pipecat_worker_tracing",
+    "task_kwargs",
 ]
 
 
@@ -108,3 +116,15 @@ def configure_pipecat_tracing_from_handshake(
 
 
 setup_pipecat_worker_tracing = setup_worker_tracing
+
+
+def task_kwargs(call: CallTrace, **extra_attributes: str) -> dict[str, Any]:
+    """``PipelineTask`` keyword arguments that trace the pipeline into ``call``.
+
+    Returns ``{}`` when the call is disabled, so the pipeline runs untraced.
+    """
+    if not call.enabled:
+        return {}
+    attrs = call.attributes
+    attrs.update(extra_attributes)
+    return {"enable_tracing": True, "additional_span_attributes": attrs}
