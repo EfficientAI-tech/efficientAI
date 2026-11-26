@@ -1288,7 +1288,41 @@ def _group_chat_spans(spans: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]
             groups.setdefault(key, []).append(span)
             order.setdefault(key, key + 1)
 
-    return [groups[k] for k in sorted(groups, key=lambda k: order[k]) if groups[k]]
+    return _split_greeting_openers(
+        [groups[k] for k in sorted(groups, key=lambda k: order[k]) if groups[k]]
+    )
+
+
+def _split_greeting_openers(groups: List[List[Dict[str, Any]]]) -> List[List[Dict[str, Any]]]:
+    """Keep assistant greetings before the first user message in their own opener turn."""
+    result: List[List[Dict[str, Any]]] = []
+    for group in groups:
+        ordered = sorted(group, key=lambda s: (_span_start_ns(s) or 0, _span_end_ns(s) or 0))
+        first_user_at: Optional[int] = None
+        for span in ordered:
+            op, name = _span_op(span)
+            if op in _CHAT_USER_OPS or name in _CHAT_USER_OPS:
+                first_user_at = _span_start_ns(span) or 0
+                break
+        if first_user_at is None:
+            result.append(group)
+            continue
+        opener_spans: List[Dict[str, Any]] = []
+        rest: List[Dict[str, Any]] = []
+        for span in ordered:
+            start = _span_start_ns(span) or 0
+            if start < first_user_at:
+                op, name = _span_op(span)
+                if op in _CHAT_ASSISTANT_OPS or name in _CHAT_ASSISTANT_OPS:
+                    opener_spans.append(span)
+                    continue
+            rest.append(span)
+        if opener_spans and rest:
+            result.append(opener_spans)
+            result.append(rest)
+        else:
+            result.append(group)
+    return result
 
 
 def _chat_message_text(attrs: Dict[str, Any]) -> Optional[str]:
