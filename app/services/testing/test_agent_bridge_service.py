@@ -315,6 +315,7 @@ class TestAgentBridgeService:
                     provider_platform=platform_value,
                     evaluator_result_id=evaluator_result_id,
                     voice_bundle_id=agent.voice_bundle_id,
+                    bridge_metadata=metadata,
                     db=db,
                 )
             )
@@ -407,6 +408,7 @@ class TestAgentBridgeService:
         provider_platform: str,
         evaluator_result_id: UUID,
         voice_bundle_id: UUID,
+        bridge_metadata: Optional[Dict[str, Any]] = None,
         db,
     ):
         """
@@ -494,7 +496,7 @@ class TestAgentBridgeService:
                 webrtc_bridge = ElevenLabsWSBridge(
                     signed_url=signed_url,
                     sample_rate=sample_rate,
-                    dynamic_variables=metadata,
+                    dynamic_variables=bridge_metadata or {},
                 )
                 webrtc_bridge.on_call_ended = on_call_ended
 
