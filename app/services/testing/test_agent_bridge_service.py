@@ -494,6 +494,7 @@ class TestAgentBridgeService:
                 webrtc_bridge = ElevenLabsWSBridge(
                     signed_url=signed_url,
                     sample_rate=sample_rate,
+                    dynamic_variables=metadata,
                 )
                 webrtc_bridge.on_call_ended = on_call_ended
 

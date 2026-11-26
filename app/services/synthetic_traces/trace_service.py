@@ -169,6 +169,18 @@ def enrich_trace_summaries(
                 turn_count = len(live_turns)
             elif trace.turns:
                 turn_count = len(trace.turns)
+        session_modality = None
+        if isinstance(trace.component_aggregates, dict):
+            stored = trace.component_aggregates.get("session_modality")
+            if stored in ("chat", "voice"):
+                session_modality = stored
+            elif any(
+                key in trace.component_aggregates
+                for key in ("stt_ttfb_ms", "tts_ttfb_ms", "s2s_ttfb_ms")
+            ):
+                session_modality = "voice"
+            elif trace.component_aggregates.get("llm_ttfb_ms"):
+                session_modality = "chat"
         base = {
             "id": trace.id,
             "evaluator_result_id": trace.evaluator_result_id,
@@ -176,6 +188,7 @@ def enrich_trace_summaries(
             "call_short_id": trace.call_short_id,
             "environment": trace.environment,
             "transport": trace.transport,
+            "session_modality": session_modality,
             "tier": trace.tier,
             "status": trace.status,
             "started_at": trace.started_at,
@@ -344,6 +357,14 @@ def open_trace_for_call_recording(
         return None
 
 
+def _session_modality_for_transport(transport: str) -> Optional[str]:
+    if transport in ("websocket", "custom"):
+        return "chat"
+    if transport in ("phone", "webrtc", "sip"):
+        return "voice"
+    return None
+
+
 def open_trace_session(
     db: Session,
     *,
@@ -399,7 +420,7 @@ def open_trace_session(
             scenario_id = result.scenario_id
             evaluator_id = result.evaluator_id
 
-    return open_trace(
+    trace = open_trace(
         db,
         organization_id=organization_id,
         workspace_id=workspace_id,
@@ -413,6 +434,12 @@ def open_trace_session(
         provider_platform=provider_platform,
         tier="component",
     )
+    modality = _session_modality_for_transport(transport)
+    if modality and not (trace.component_aggregates or {}).get("session_modality"):
+        trace.component_aggregates = {**(trace.component_aggregates or {}), "session_modality": modality}
+        db.commit()
+        db.refresh(trace)
+    return trace
 
 
 def _sync_trace_from_otel_spans(db: Session, trace: SyntheticCallTrace) -> None:
@@ -469,6 +496,33 @@ def _sync_trace_from_otel_spans(db: Session, trace: SyntheticCallTrace) -> None:
     if otel_turns:
         trace.tier = "mixed" if tier1_turns else "component"
     _update_latency_aggregates(trace, merged)
+
+
+def close_simulation_trace_for_result(
+    db: Session,
+    *,
+    organization_id: UUID,
+    evaluator_result_id: UUID,
+    workspace_id: Optional[UUID] = None,
+) -> None:
+    """Close a platform-opened simulation trace when the evaluator run finishes."""
+    trace = get_trace_for_result(
+        db,
+        organization_id=organization_id,
+        evaluator_result_id=evaluator_result_id,
+        workspace_id=workspace_id,
+        auto_close=False,
+    )
+    if not trace or not trace.call_short_id:
+        return
+    if trace.status in ("closed", "finalized", "closing"):
+        return
+    close_trace_session(
+        db,
+        organization_id=organization_id,
+        call_short_id=str(trace.call_short_id),
+        workspace_id=workspace_id or trace.workspace_id,
+    )
 
 
 def close_trace_session(
@@ -1877,8 +1931,16 @@ def sweep_idle_traces(db: Session) -> int:
         db.query(SyntheticCallTrace)
         .filter(
             SyntheticCallTrace.status == "open",
-            SyntheticCallTrace.last_span_at.isnot(None),
-            SyntheticCallTrace.last_span_at < cutoff,
+            or_(
+                and_(
+                    SyntheticCallTrace.last_span_at.isnot(None),
+                    SyntheticCallTrace.last_span_at < cutoff,
+                ),
+                and_(
+                    SyntheticCallTrace.last_span_at.is_(None),
+                    SyntheticCallTrace.started_at < cutoff,
+                ),
+            ),
         )
         .limit(200)
         .all()

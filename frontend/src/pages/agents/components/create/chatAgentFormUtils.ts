@@ -52,6 +52,9 @@ export function chatConfigFromAgent(agent: TestAgent): ChatConnectionConfigForm 
       cfg.twilio_sms_trial_body_template ||
         ((cfg.messaging_channel as string) === 'sms' ? 'sms_appointment_reminders' : ''),
     ),
+    traceHandshakeEnabled: cfg.efficientai_trace_handshake_enabled !== false
+      && cfg.efficientai_trace_handshake_enabled !== 'false'
+      && cfg.efficientai_trace_handshake_enabled !== '0',
   }
 }
 
@@ -81,6 +84,9 @@ export function buildChatConnectionConfigPayload(
             websocket_auth_header: config.websocketAuthHeader.trim(),
             websocket_auth_value: authValue,
           }
+        : {}),
+      ...(config.traceHandshakeEnabled === false
+        ? { efficientai_trace_handshake_enabled: false }
         : {}),
     }
   }

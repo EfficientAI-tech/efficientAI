@@ -69,12 +69,14 @@ class ElevenLabsWSBridge:
         self,
         signed_url: str,
         sample_rate: int = ELEVENLABS_SAMPLE_RATE,
+        dynamic_variables: Optional[dict] = None,
     ):
         if not WEBSOCKETS_AVAILABLE:
             raise ImportError("websockets not available. Install with: pip install websockets")
 
         self.signed_url = signed_url
         self.sample_rate = sample_rate
+        self.dynamic_variables = dynamic_variables or {}
 
         # WebSocket connection
         self._ws = None
@@ -155,10 +157,15 @@ class ElevenLabsWSBridge:
             )
 
             # Send the initiation message (required by the protocol)
+            variables = {
+                key: value if isinstance(value, str) else json.dumps(value)
+                for key, value in self.dynamic_variables.items()
+                if value is not None
+            }
             initiation = {
                 "type": "conversation_initiation_client_data",
                 "conversation_config_override": {},
-                "dynamic_variables": {},
+                "dynamic_variables": variables,
             }
             await self._ws.send(json.dumps(initiation))
             logger.info("[ElevenLabsWS] Sent conversation_initiation_client_data")
