@@ -781,6 +781,23 @@ def correlate_batch_ch(
     call_short_id = correlation.get("call_short_id") or header_call_short_id
     _ = header_agent_id or correlation.get("agent_id")
 
+    if call_short_id:
+        existing = get_trace_by_call_short_id(
+            organization_id=organization_id,
+            call_short_id=call_short_id,
+            workspace_id=workspace_id,
+            open_only=True,
+        )
+        if not existing:
+            existing = get_trace_by_call_short_id(
+                organization_id=organization_id,
+                call_short_id=call_short_id,
+                workspace_id=workspace_id,
+                open_only=False,
+            )
+        if existing:
+            trace_uuid = existing.id
+
     with trace_header_lock(trace_uuid):
         trace = get_trace_by_uuid(trace_uuid)
         correlated = trace is not None
@@ -794,25 +811,6 @@ def correlate_batch_ch(
                 started_at=_utcnow(),
                 spans_storage="clickhouse",
             )
-
-        if not correlated and call_short_id:
-            existing = get_trace_by_call_short_id(
-                organization_id=organization_id,
-                call_short_id=call_short_id,
-                workspace_id=workspace_id,
-                open_only=True,
-            )
-            if not existing:
-                # Hang-up exports arrive after the live row is already "closing".
-                existing = get_trace_by_call_short_id(
-                    organization_id=organization_id,
-                    call_short_id=call_short_id,
-                    workspace_id=workspace_id,
-                    open_only=False,
-                )
-            if existing:
-                trace = existing
-                correlated = True
 
         if call_short_id:
             trace.call_short_id = call_short_id
@@ -906,12 +904,19 @@ def process_s3_otlp_batch(
 
         groups = group_spans_by_call_short_id(spans, header_call_short_id=header_call_short_id)
         for group_call_short_id, group_spans in groups.items():
+            group_trace_uuid = resolve_trace_uuid_for_s3_ingest(
+                session,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                header_evaluator_result_id=header_evaluator_result_id,
+                header_call_short_id=group_call_short_id or header_call_short_id,
+            )
             trace, _correlated = correlate_batch_ch(
                 session,
                 organization_id=organization_id,
                 workspace_id=workspace_id,
                 spans=group_spans,
-                trace_uuid=trace_uuid,
+                trace_uuid=group_trace_uuid,
                 header_evaluator_result_id=header_evaluator_result_id,
                 header_agent_id=header_agent_id,
                 header_call_short_id=group_call_short_id or header_call_short_id,
