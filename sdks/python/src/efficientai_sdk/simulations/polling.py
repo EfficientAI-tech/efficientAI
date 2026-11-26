@@ -34,6 +34,8 @@ def poll_sync(
         if remaining <= 0:
             raise _timeout(timeout)
         current = fetch(remaining)
+        if not done(current) and time.monotonic() >= deadline:
+            raise _timeout(timeout)
     return current
 
 
@@ -55,4 +57,6 @@ async def poll_async(
         if remaining <= 0:
             raise _timeout(timeout)
         current = await fetch(remaining)
+        if not done(current) and time.monotonic() >= deadline:
+            raise _timeout(timeout)
     return current

@@ -148,9 +148,12 @@ class ResultBatchData(APIModel):
             data["results"] = data.get("evaluator_results") or []
         return data
 
+    def _planned_run_count(self) -> int:
+        return max(len(self.results), self.total_runs, len(self.task_ids))
+
     @property
     def pass_rate(self) -> float:
-        planned = max(len(self.results), self.total_runs)
+        planned = self._planned_run_count()
         if planned == 0:
             return 0.0
         return sum(1 for result in self.results if result.succeeded) / planned
@@ -158,16 +161,17 @@ class ResultBatchData(APIModel):
     @property
     def passed(self) -> bool:
         """True when every planned result finished successfully."""
-        planned = max(len(self.results), self.total_runs)
+        planned = self._planned_run_count()
         if planned == 0:
             return False
-        return len(self.results) >= self.total_runs and all(
-            result.succeeded for result in self.results
-        )
+        return len(self.results) >= planned and all(result.succeeded for result in self.results)
 
     def meets(self, threshold: float) -> bool:
         """True when every planned run finished and the pass rate meets the threshold."""
-        if self.total_runs and len(self.results) < self.total_runs:
+        planned = self._planned_run_count()
+        if planned == 0:
+            return False
+        if len(self.results) < planned:
             return False
         if any(result.status == "failed" for result in self.results):
             return False

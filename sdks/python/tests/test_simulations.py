@@ -157,10 +157,6 @@ def test_suite_and_evaluator_wait_polls_results() -> None:
             httpx.Response(200, json=result_payload(RESULT_B, "completed", False)),
         ]
     )
-    evaluators = respx.post(f"{EVALUATORS}/run").respond(
-        200,
-        json={"evaluator_results": [result_payload(RESULT_A, "completed", True)]},
-    )
     with client() as sdk:
         finished = sdk.suites.run("suite-1", runs_per_combination=3).wait(timeout=5, interval=0)
         assert json.loads(suite.calls.last.request.content) == {"runs_per_combination": 3}
@@ -170,6 +166,35 @@ def test_suite_and_evaluator_wait_polls_results() -> None:
         assert finished.meets(0.5) is True
         assert finished.meets(0.8) is False
 
+
+@respx.mock
+def test_meets_rejects_incomplete_suite() -> None:
+    respx.post(f"{SUITES}/suite-1/run").respond(
+        200,
+        json={
+            "total_runs": 5,
+            "evaluator_results": [result_payload(RESULT_A, "completed", True)],
+        },
+    )
+    with client() as sdk:
+        batch = sdk.suites.run("suite-1")
+        assert batch.meets(1.0) is False
+        assert batch.pass_rate == pytest.approx(0.2)
+
+
+@respx.mock
+def test_evaluator_wait_polls_results() -> None:
+    evaluators = respx.post(f"{EVALUATORS}/run").respond(
+        200,
+        json={"evaluator_results": [result_payload(RESULT_A, "queued")]},
+    )
+    respx.get(f"{RESULTS}/{RESULT_A}").mock(
+        side_effect=[
+            httpx.Response(200, json=result_payload(RESULT_A, "queued")),
+            httpx.Response(200, json=result_payload(RESULT_A, "completed", True)),
+        ]
+    )
+    with client() as sdk:
         batch = sdk.evaluators.run([RESULT_A])
         assert json.loads(evaluators.calls.last.request.content) == {"evaluator_ids": [RESULT_A]}
         assert batch.wait(timeout=5, interval=0).passed is True

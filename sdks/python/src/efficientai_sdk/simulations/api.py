@@ -132,8 +132,11 @@ class AsyncResultBatch(ResultBatchData):
 
 
 def _batch_done(batch: ResultBatchData) -> bool:
+    planned = max(batch.total_runs, len(batch.task_ids))
+    if planned and len(batch.results) < planned:
+        return False
     if not batch.results:
-        return True
+        return planned == 0
     return all(result.status in TERMINAL_RESULT_STATUSES for result in batch.results)
 
 
@@ -255,7 +258,7 @@ def _run_body(
 
 def _suite_body(
     *,
-    runs_per_combination: Optional[int] = 1,
+    runs_per_combination: Optional[int] = None,
     to_number: Optional[str] = None,
     from_number: Optional[str] = None,
 ) -> dict[str, Any]:
