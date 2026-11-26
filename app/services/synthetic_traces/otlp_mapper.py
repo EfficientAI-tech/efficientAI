@@ -1568,6 +1568,20 @@ def merge_tier1_and_otel_turns(
     return merged
 
 
+def infer_session_modality_from_turns(turns: List[Dict[str, Any]]) -> str:
+    if any((t.get("extra") or {}).get("pipeline_mode") == "chat" for t in turns):
+        return "chat"
+    has_voice = any(
+        t.get(field) is not None
+        for t in turns
+        for field in ("stt_ttfb_ms", "tts_ttfb_ms", "s2s_ttfb_ms")
+    )
+    has_llm = any(t.get("llm_ttfb_ms") is not None for t in turns)
+    if has_llm and not has_voice:
+        return "chat"
+    return "voice"
+
+
 def compute_component_aggregates(turns: List[Dict[str, Any]]) -> Dict[str, Any]:
     agg: Dict[str, Any] = {}
     for field in (
@@ -1593,6 +1607,8 @@ def compute_component_aggregates(turns: List[Dict[str, Any]]) -> Dict[str, Any]:
             "p95": latency_percentile(sut_values, 95),
             "count": len(sut_values),
         }
+    if turns:
+        agg["session_modality"] = infer_session_modality_from_turns(turns)
     return agg
 
 
@@ -1736,35 +1752,49 @@ def filter_spans_for_trace(
 
 
 def extract_correlation_ids(spans: List[Dict[str, Any]]) -> Dict[str, Optional[str]]:
+    from collections import Counter
+
+    calls: Counter[str] = Counter()
+    runs: Counter[str] = Counter()
+    agents: Counter[str] = Counter()
+    transports: Counter[str] = Counter()
+    workspaces: Counter[str] = Counter()
+
     for span in spans:
         attrs = span.get("attributes") or {}
-        result_id = (
-            attrs.get("efficientai.evaluator_result_id")
-            or attrs.get("efficientai.run_id")
-        )
+        result_id = attrs.get("efficientai.evaluator_result_id") or attrs.get("efficientai.run_id")
+        if result_id:
+            runs[str(result_id)] += 1
         call_short_raw = attrs.get("efficientai.call_short_id")
-        call_short = (
-            str(call_short_raw).strip()
-            if call_short_raw and _CALL_SHORT_ID_RE.match(str(call_short_raw).strip())
-            else None
-        )
+        if call_short_raw:
+            call_short = str(call_short_raw).strip()
+            if _CALL_SHORT_ID_RE.match(call_short):
+                calls[call_short] += 1
         agent_id = attrs.get("efficientai.agent_id")
+        if agent_id:
+            agents[str(agent_id)] += 1
         transport_raw = attrs.get("efficientai.transport")
-        transport = (
-            str(transport_raw).strip().lower()
-            if transport_raw and str(transport_raw).strip().lower() in {"webrtc", "websocket", "phone", "custom"}
-            else None
-        )
+        if transport_raw:
+            transport = str(transport_raw).strip().lower()
+            if transport in {"webrtc", "websocket", "phone", "custom"}:
+                transports[transport] += 1
         workspace_raw = attrs.get("efficientai.workspace_id")
-        workspace_id = (
-            str(workspace_raw).strip() if workspace_raw and str(workspace_raw).strip() else None
-        )
-        if result_id or call_short or agent_id or transport or workspace_id:
-            return {
-                "evaluator_result_id": str(result_id) if result_id else None,
-                "call_short_id": call_short,
-                "agent_id": str(agent_id) if agent_id else None,
-                "transport": transport,
-                "workspace_id": workspace_id,
-            }
-    return {}
+        if workspace_raw and str(workspace_raw).strip():
+            workspaces[str(workspace_raw).strip()] += 1
+
+    def _pick(counter: Counter[str]) -> Optional[str]:
+        if not counter:
+            return None
+        return counter.most_common(1)[0][0]
+
+    call_short = _pick(calls)
+    result_id = _pick(runs)
+    if not (call_short or result_id or agents or transports or workspaces):
+        return {}
+    return {
+        "evaluator_result_id": result_id,
+        "call_short_id": call_short,
+        "agent_id": _pick(agents),
+        "transport": _pick(transports),
+        "workspace_id": _pick(workspaces),
+    }
