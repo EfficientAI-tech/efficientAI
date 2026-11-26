@@ -638,14 +638,18 @@ def ingest_otlp_batch_to_s3(
         store_batch_meta,
     )
 
-    if not header_call_short_id:
-        # The SDK puts the call id on span attributes, not on the HTTP header.
-        # Without this, every batch is given a new trace id before the body is read.
-        try:
-            parsed, _fmt = parse_otlp_body(body, content_type)
-        except Exception:
-            parsed = []
-        header_call_short_id = extract_correlation_ids(parsed).get("call_short_id")
+    # Parse once so span attributes can supply correlation when HTTP headers do not.
+    parsed: List[Dict[str, Any]] = []
+    try:
+        parsed, _fmt = parse_otlp_body(body, content_type)
+    except Exception:
+        parsed = []
+    if parsed:
+        span_correlation = extract_correlation_ids(parsed)
+        header_call_short_id = header_call_short_id or span_correlation.get("call_short_id")
+        header_evaluator_result_id = (
+            header_evaluator_result_id or span_correlation.get("evaluator_result_id")
+        )
 
     trace_uuid = resolve_trace_uuid_for_s3_ingest(
         db,
