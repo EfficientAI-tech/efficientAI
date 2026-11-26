@@ -175,4 +175,4 @@ Full examples: `docs/examples/pipecat_multi_agent_webrtc_tracing.py`, `pipecat_m
 
 ## Other transports
 
-WebSocket and phone use the same env vars and session API. See `docs/examples/pipecat_inbound_phone_tracing.py`.
+WebSocket and phone use the same env vars and session API. See the [Pipecat guide](/docs/integrations/pipecat/).

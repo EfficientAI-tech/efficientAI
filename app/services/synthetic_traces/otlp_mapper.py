@@ -603,9 +603,12 @@ def _append_user_utterance(
     text: str,
     *,
     span_id: Any = None,
+    typed: bool = False,
 ) -> None:
     cleaned = text.strip()
-    if not cleaned or _looks_like_chat_json(cleaned) or _is_low_signal_transcript(cleaned):
+    if not cleaned:
+        return
+    if not typed and (_looks_like_chat_json(cleaned) or _is_low_signal_transcript(cleaned)):
         return
     if _turn_already_has_user_text(turn, cleaned):
         if span_id:
@@ -1047,12 +1050,14 @@ def _is_low_signal_transcript(text: str) -> bool:
     return False
 
 
-def _set_turn_text(turn: Dict[str, Any], role: str, text: str) -> None:
+def _set_turn_text(turn: Dict[str, Any], role: str, text: str, *, typed: bool = False) -> None:
     cleaned = text.strip()
-    if not cleaned or _looks_like_chat_json(cleaned):
+    if not cleaned:
+        return
+    if not typed and _looks_like_chat_json(cleaned):
         return
     if role == "user":
-        _append_user_utterance(turn, cleaned)
+        _append_user_utterance(turn, cleaned, typed=typed)
         return
     extra = turn.setdefault("extra", {})
     existing = extra.get("assistant_text")
@@ -1323,7 +1328,7 @@ def _build_chat_turn(group: List[Dict[str, Any]]) -> Dict[str, Any]:
         if op in _CHAT_USER_OPS or name in _CHAT_USER_OPS:
             text = _chat_message_text(attrs)
             if text:
-                _set_turn_text(turn, "user", text)
+                _set_turn_text(turn, "user", text, typed=True)
             if user_start is None:
                 user_start = _span_start_ns(span)
             continue
@@ -1353,7 +1358,11 @@ def _build_chat_turn(group: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "name": str(attrs.get("gen_ai.tool.name") or span.get("name") or "tool"),
                 "latency_ms": _ms_from_span_duration(span),
             }
-            if attrs.get("error") or attrs.get("exception.type"):
+            events = span.get("events") or []
+            failed = attrs.get("error") or attrs.get("exception.type") or any(
+                str((event or {}).get("name") or "").lower() == "exception" for event in events
+            )
+            if failed:
                 call["error"] = True
             tool_calls.append(call)
             continue
@@ -1368,7 +1377,7 @@ def _build_chat_turn(group: List[Dict[str, Any]]) -> Dict[str, Any]:
             retrievals.append(row)
 
     if answer:
-        _set_turn_text(turn, "assistant", answer)
+        _set_turn_text(turn, "assistant", answer, typed=True)
     if first_llm_latency is not None:
         turn["llm_ttfb_ms"] = first_llm_latency
     if llm_calls:

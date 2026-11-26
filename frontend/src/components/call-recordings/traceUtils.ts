@@ -108,6 +108,22 @@ function chatMessageRole(span: OtelSpanLike): 'user' | 'agent' | null {
 }
 
 /** An explicit reply later in the same turn replaces the raw LLM output. */
+function isChatTranscript(spans: OtelSpanLike[]): boolean {
+  return spans.some((span) => {
+    if (chatMessageRole(span) === 'user') return true
+    return attrString(span.attributes, 'efficientai.channel')?.toLowerCase() === 'chat'
+  })
+}
+
+function hasLaterLlmWithSameParent(spans: OtelSpanLike[], llmSpan: OtelSpanLike): boolean {
+  const start = parseUnixNano(llmSpan.start_time_unix_nano) ?? 0n
+  return spans.some((other) => {
+    if (other.span_id === llmSpan.span_id || spanComponentKind(other) !== 'llm') return false
+    if (other.parent_span_id !== llmSpan.parent_span_id) return false
+    return (parseUnixNano(other.start_time_unix_nano) ?? 0n) > start
+  })
+}
+
 function hasLaterAssistantMessage(spans: OtelSpanLike[], llmSpan: OtelSpanLike): boolean {
   if (!llmSpan.parent_span_id) return false
   const llmStart = parseUnixNano(llmSpan.start_time_unix_nano) ?? 0n
@@ -204,7 +220,12 @@ export function buildSpanTranscriptMessages(
       role = 'agent'
     } else if (kind === 'llm') {
       text = spokenTextFromSpan(span, kind)
-      if (!text || hasMatchingTts(sorted, span, text) || hasLaterAssistantMessage(sorted, span)) {
+      if (
+        !text ||
+        hasMatchingTts(sorted, span, text) ||
+        hasLaterAssistantMessage(sorted, span) ||
+        (isChatTranscript(sorted) && hasLaterLlmWithSameParent(sorted, span))
+      ) {
         continue
       }
       role = 'agent'
