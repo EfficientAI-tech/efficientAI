@@ -12,7 +12,7 @@ from typing import Any, Optional, Union
 
 import httpx
 
-from efficientai_sdk._config import ClientConfig
+from efficientai_sdk._config import DEFAULT_API_PREFIX, ClientConfig
 from efficientai_sdk._exceptions import (
     APIConnectionError,
     APITimeoutError,
@@ -67,10 +67,23 @@ class _BaseClient:
             headers[HEADER_WORKSPACE_ID] = self._config.workspace_id
         return headers
 
+    def api_path(self, suffix: str) -> str:
+        return self._config.api_path(suffix)
+
     def _url(self, path: str) -> str:
         if path.startswith(("http://", "https://")):
             return path
-        return f"{self._config.base_url}/{path.lstrip('/')}"
+        if path.startswith("/"):
+            legacy = DEFAULT_API_PREFIX
+            if path.startswith(legacy):
+                suffix = path[len(legacy) :].lstrip("/")
+                path = self._config.api_path(suffix)
+            elif path.startswith(self._config.api_prefix):
+                pass
+            else:
+                path = self._config.api_path(path.lstrip("/"))
+            return f"{self._config.base_url}{path}"
+        return f"{self._config.base_url}/{self._config.api_path(path).lstrip('/')}"
 
     def _merge_headers(self, extra: Optional[Mapping[str, str]]) -> dict[str, str]:
         headers = self._default_headers()

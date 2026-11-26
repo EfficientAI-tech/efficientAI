@@ -31,6 +31,13 @@ def make_client(**kwargs: object) -> EfficientAI:
 
 
 @respx.mock
+def test_verify_honours_custom_api_prefix() -> None:
+    route = respx.post(f"{BASE_URL}/api/auth/validate").respond(200, json={"valid": True})
+    make_client(api_prefix="/api").verify()
+    assert route.called
+
+
+@respx.mock
 def test_verify_sends_auth_headers() -> None:
     route = respx.post(VALIDATE).respond(200, json={"valid": True})
     with make_client(workspace_id="ws-123") as client:

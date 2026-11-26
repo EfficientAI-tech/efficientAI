@@ -52,6 +52,12 @@ def test_normalize_base_url(raw: str, expected: str) -> None:
     assert normalize_base_url(raw) == expected
 
 
+def test_custom_api_prefix_strips_from_base_url() -> None:
+    cfg = resolve_config(api_key="k", base_url="https://x.example/api", api_prefix="/api")
+    assert cfg.base_url == "https://x.example"
+    assert cfg.api_path("auth/validate") == "/api/auth/validate"
+
+
 def test_base_url_requires_scheme() -> None:
     with pytest.raises(ConfigurationError):
         normalize_base_url("x.example")

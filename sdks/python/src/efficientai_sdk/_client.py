@@ -10,14 +10,13 @@ import httpx
 from efficientai_sdk._base_client import AsyncAPIClient, SyncAPIClient
 from efficientai_sdk._config import resolve_config
 
-_VALIDATE_PATH = "/api/v1/auth/validate"
-
 
 class EfficientAI(SyncAPIClient):
     """Synchronous EfficientAI client.
 
     Every argument falls back to an environment variable:
-    ``EFFICIENTAI_API_KEY``, ``EFFICIENTAI_WORKSPACE_ID`` and ``EFFICIENTAI_BASE_URL``.
+    ``EFFICIENTAI_API_KEY``, ``EFFICIENTAI_WORKSPACE_ID``, ``EFFICIENTAI_BASE_URL``,
+    and ``EFFICIENTAI_API_PREFIX`` (defaults to ``/api/v1``).
 
     >>> client = EfficientAI()
     >>> client.verify()
@@ -30,6 +29,7 @@ class EfficientAI(SyncAPIClient):
         api_key: Optional[str] = None,
         workspace_id: Optional[str] = None,
         base_url: Optional[str] = None,
+        api_prefix: Optional[str] = None,
         timeout: Optional[float] = None,
         max_retries: Optional[int] = None,
         http_client: Optional[httpx.Client] = None,
@@ -38,6 +38,7 @@ class EfficientAI(SyncAPIClient):
             api_key=api_key,
             workspace_id=workspace_id,
             base_url=base_url,
+            api_prefix=api_prefix,
             timeout=timeout,
             max_retries=max_retries,
         )
@@ -49,7 +50,7 @@ class EfficientAI(SyncAPIClient):
         Returns ``True``, or raises ``AuthenticationError`` for a bad key and
         ``APIConnectionError`` when the server can't be reached.
         """
-        self.request("POST", _VALIDATE_PATH, retry=True)
+        self.request("POST", self.api_path("auth/validate"), retry=True)
         return True
 
     def __enter__(self) -> EfficientAI:
@@ -76,6 +77,7 @@ class AsyncEfficientAI(AsyncAPIClient):
         api_key: Optional[str] = None,
         workspace_id: Optional[str] = None,
         base_url: Optional[str] = None,
+        api_prefix: Optional[str] = None,
         timeout: Optional[float] = None,
         max_retries: Optional[int] = None,
         http_client: Optional[httpx.AsyncClient] = None,
@@ -84,6 +86,7 @@ class AsyncEfficientAI(AsyncAPIClient):
             api_key=api_key,
             workspace_id=workspace_id,
             base_url=base_url,
+            api_prefix=api_prefix,
             timeout=timeout,
             max_retries=max_retries,
         )
@@ -91,7 +94,7 @@ class AsyncEfficientAI(AsyncAPIClient):
 
     async def verify(self) -> bool:
         """Async version of :meth:`EfficientAI.verify`."""
-        await self.request("POST", _VALIDATE_PATH, retry=True)
+        await self.request("POST", self.api_path("auth/validate"), retry=True)
         return True
 
     async def __aenter__(self) -> AsyncEfficientAI:
