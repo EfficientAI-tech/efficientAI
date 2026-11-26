@@ -182,12 +182,15 @@ async def mint_trace_session(
     if agent_id:
         payload["agent_id"] = str(agent_id)
 
-    client = AsyncEfficientAI(
-        api_key=api_key,
-        workspace_id=workspace_id,
-        base_url=api_base_url,
-        timeout=_SESSION_TIMEOUT,
-    )
+    try:
+        client = AsyncEfficientAI(
+            api_key=api_key,
+            workspace_id=workspace_id,
+            base_url=api_base_url,
+            timeout=_SESSION_TIMEOUT,
+        )
+    except ConfigurationError as exc:
+        raise TraceSessionError(str(exc)) from exc
     url = f"{client.base_url}{SESSIONS_PATH}"
     try:
         body = await client.request("POST", SESSIONS_PATH, json=payload)
