@@ -183,6 +183,15 @@ def test_rate_limit_error_exposes_retry_after(sleeps: list[float]) -> None:
     assert info.value.retry_after == 7.0
 
 
+def test_connect_timeout_retries_writes_read_timeout_does_not() -> None:
+    connect = httpx.ConnectTimeout("opening")
+    read = httpx.ReadTimeout("reading")
+    assert EfficientAI._should_retry_exception("POST", connect, None) is True
+    assert EfficientAI._should_retry_exception("PATCH", connect, None) is True
+    assert EfficientAI._should_retry_exception("POST", read, None) is False
+    assert EfficientAI._should_retry_exception("GET", read, None) is True
+
+
 def test_backoff_grows_and_stays_bounded() -> None:
     delays = [EfficientAI._retry_delay(attempt, None) for attempt in range(10)]
     assert 0.25 <= delays[0] <= 0.5

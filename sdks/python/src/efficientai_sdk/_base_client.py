@@ -92,7 +92,7 @@ class _BaseClient:
     def _should_retry_exception(method: str, exc: Exception, retry: Optional[bool]) -> bool:
         if retry is False:
             return False
-        if isinstance(exc, httpx.ConnectError):
+        if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
             return True  # the request was never sent
         if not isinstance(exc, httpx.TransportError):
             return False
