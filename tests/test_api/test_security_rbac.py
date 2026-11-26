@@ -90,3 +90,56 @@ def test_reader_blocked_when_auth_via_query_access_token_only(
 
     assert response.status_code == 403
     assert "reader" in response.json()["detail"].lower()
+
+
+def test_reader_can_post_auth_validate(
+    db_session,
+    org_id,
+    seed_org,
+    enable_local_password,
+    default_workspace,
+    monkeypatch,
+):
+    user = User(
+        id=uuid4(),
+        email="reader-validate@example.com",
+        password_hash=hash_password("ReaderPass1!"),
+        is_active=True,
+        session_epoch=1,
+    )
+    db_session.add(user)
+    db_session.add(
+        OrganizationMember(
+            organization_id=org_id,
+            user_id=user.id,
+            role=RoleEnum.READER.value,
+        )
+    )
+    db_session.commit()
+    token, _, _ = create_access_token(
+        user_id=user.id,
+        organization_id=org_id,
+        email=user.email,
+        session_epoch=user.session_epoch,
+    )
+
+    def _override_db():
+        yield db_session
+
+    monkeypatch.setattr("app.core.rbac_middleware.get_db", _override_db)
+
+    app = FastAPI()
+    app.add_middleware(ReaderReadOnlyMiddleware)
+
+    @app.post("/api/v1/auth/validate")
+    def validate():
+        return {"valid": True}
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/auth/validate",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["valid"] is True

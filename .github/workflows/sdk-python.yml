@@ -1,0 +1,112 @@
+name: Python SDK
+
+on:
+  pull_request:
+    paths:
+      - 'sdks/python/**'
+      - '.github/workflows/sdk-python.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'sdks/python/**'
+      - '.github/workflows/sdk-python.yml'
+    tags:
+      - 'sdk-py-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-python-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: sdks/python
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: sdks/python/uv.lock
+
+      - name: Install dependencies
+        run: uv sync --locked --python ${{ matrix.python-version }}
+
+      - name: Lint
+        if: matrix.python-version == '3.12'
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Type-check
+        if: matrix.python-version == '3.12'
+        run: uv run mypy
+
+      - name: Test
+        run: uv run pytest
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Check tag matches package version
+        if: startsWith(github.ref, 'refs/tags/sdk-py-v')
+        run: |
+          tag_version="${GITHUB_REF_NAME#sdk-py-v}"
+          pkg_version="$(sed -nE 's/^__version__ = "(.*)"/\1/p' src/efficientai_sdk/_version.py)"
+          if [[ "$tag_version" != "$pkg_version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match package version $pkg_version" >&2
+            exit 1
+          fi
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Smoke-test the wheel in a clean environment
+        run: |
+          uv venv /tmp/wheel-check --python 3.12
+          uv pip install --python /tmp/wheel-check dist/*.whl
+          /tmp/wheel-check/bin/python -c "import efficientai_sdk; print(efficientai_sdk.__version__)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-python-dist
+          path: sdks/python/dist/
+
+  publish:
+    # Trusted publishing: configure the PyPI project to trust this repo + workflow + "pypi" environment.
+    if: startsWith(github.ref, 'refs/tags/sdk-py-v')
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk-python-dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

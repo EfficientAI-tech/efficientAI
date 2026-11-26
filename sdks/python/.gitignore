@@ -1,0 +1,4 @@
+.venv/
+dist/
+# The root .gitignore ignores uv.lock everywhere; CI installs with --locked, so keep this one.
+!uv.lock

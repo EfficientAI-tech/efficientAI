@@ -35,6 +35,7 @@ _READER_WRITE_ALLOWLIST: tuple[str, ...] = (
     "auth/login",
     "auth/signup",
     "auth/logout",
+    "auth/validate",
     "auth/refresh",
     "auth/password",
     "auth/switch-org",
