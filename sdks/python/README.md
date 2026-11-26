@@ -48,6 +48,45 @@ async with AsyncEfficientAI() as client:
     await client.verify()
 ```
 
+## Live call tracing
+
+Install the `otel` extra, then wrap each call in a trace session:
+
+```python
+from efficientai_sdk.tracing import (
+    close_trace_session,
+    ensure_trace_session,
+    setup_worker_tracing,
+)
+
+
+async def handle_call(first_message=None):
+    # Uses the platform's handshake on test calls, otherwise opens a new session.
+    trace_ctx = await ensure_trace_session(transport="websocket", handshake=first_message)
+    tracing = setup_worker_tracing(trace_ctx)  # OTLP export now carries this call's id
+    try:
+        ...  # run the call; OpenTelemetry spans go to EfficientAI
+    finally:
+        await close_trace_session(trace_ctx)
+```
+
+Pipecat users can pass the result straight to the pipeline:
+
+```python
+from efficientai_sdk.integrations.pipecat import configure_pipecat_tracing
+
+task = PipelineTask(pipeline, **configure_pipecat_tracing(handshake=first_message))
+```
+
+Tracing never breaks a call. If EfficientAI can't be reached, the session is disabled, a warning is logged, and the agent keeps running. Pass `strict=True` to `ensure_trace_session` to raise instead.
+
+| Variable | Purpose |
+|---|---|
+| `EFFICIENTAI_OTLP_ENDPOINT` | Override the span ingest URL (defaults to `<base URL>/api/v1/observability/traces`) |
+| `EFFICIENTAI_AGENT_ID` | Agent to attach traces to |
+| `EFFICIENTAI_CALL_SHORT_ID` | Development only: reuse an existing call id instead of opening a session |
+| `EFFICIENTAI_TRACE_TRANSPORT` | Force the transport label: `webrtc`, `websocket`, `phone` or `custom` |
+
 ## Errors and retries
 
 Every error the SDK raises inherits from `EfficientAIError`.

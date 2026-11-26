@@ -1,4 +1,8 @@
-"""EfficientAI call-trace helpers for self-hosted voice agents (OTLP + session API)."""
+"""EfficientAI call-trace helpers for self-hosted voice agents (OTLP + session API).
+
+The implementation now lives in the standalone ``efficientai-sdk`` package
+(:mod:`efficientai_sdk.tracing`); this package re-exports it for backwards compatibility.
+"""
 
 from efficientai.integrations.efficientai_traces.correlation import (
     build_outbound_sip_headers,

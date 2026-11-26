@@ -11,8 +11,11 @@ class EfficientAIError(Exception):
     """Base class for all SDK errors."""
 
 
-class ConfigurationError(EfficientAIError):
-    """The client was configured incorrectly (for example, no API key)."""
+class ConfigurationError(EfficientAIError, ValueError):
+    """The client was configured incorrectly (for example, no API key).
+
+    Also a ``ValueError``, so code written against the older trace helpers keeps working.
+    """
 
 
 class APIConnectionError(EfficientAIError):
