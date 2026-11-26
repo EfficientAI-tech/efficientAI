@@ -84,11 +84,11 @@ A runnable example is in [`examples/custom_agent_tracing.py`](examples/custom_ag
 run = client.simulations.run(
     agent_id="...", scenario_ids=["..."], persona_ids=["..."], n_attempts=2
 )
-run.wait(timeout=1800)
+run = run.wait(timeout=1800)
 assert run.passed, run.summary
 
 suite = client.suites.run("suite-id", runs_per_combination=3)
-suite.wait()
+suite = suite.wait()
 assert suite.passed, suite.pass_rate
 ```
 

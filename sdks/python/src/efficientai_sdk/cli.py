@@ -31,8 +31,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     simulate.add_argument(
         "--runs-per-combination",
         type=int,
-        default=1,
-        help="Repeat each scenario/persona pair this many times (default 1)",
+        default=None,
+        help="Repeat each scenario/persona pair this many times (default: the suite's saved count)",
+    )
+    simulate.add_argument(
+        "--to-number",
+        default=None,
+        help="Recipient number for phone or messaging suites",
+    )
+    simulate.add_argument(
+        "--from-number",
+        default=None,
+        help="Caller number when the suite places an outbound call",
     )
     simulate.add_argument(
         "--timeout", type=float, default=1800, help="Seconds to wait (default 1800)"
@@ -60,6 +70,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             batch = client.suites.run(
                 args.suite,
                 runs_per_combination=args.runs_per_combination,
+                to_number=args.to_number,
+                from_number=args.from_number,
             )
             finished = batch.wait(timeout=args.timeout, interval=args.interval)
     except EfficientAIError as exc:

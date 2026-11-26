@@ -177,7 +177,7 @@ def test_suite_and_evaluator_wait_polls_results() -> None:
 
 @respx.mock
 def test_result_errors_fail_the_threshold() -> None:
-    respx.post(f"{SUITES}/suite-1/run").respond(
+    posted = respx.post(f"{SUITES}/suite-1/run").respond(
         200,
         json={
             "evaluator_results": [
@@ -188,8 +188,35 @@ def test_result_errors_fail_the_threshold() -> None:
     )
     with client() as sdk:
         batch = sdk.suites.run("suite-1")
+        assert json.loads(posted.calls.last.request.content) == {}
         assert batch.passed is False
         assert batch.meets(0.0) is False
+
+
+@respx.mock
+def test_completed_without_a_pass_flag_does_not_count() -> None:
+    respx.post(f"{SUITES}/suite-1/run").respond(
+        200,
+        json={
+            "total_runs": 3,
+            "evaluator_results": [
+                {
+                    "id": RESULT_A,
+                    "status": "completed",
+                    "metric_scores": {"successful": {"value": False}},
+                },
+                result_payload(RESULT_B, "completed", True),
+            ],
+        },
+    )
+    with client() as sdk:
+        batch = sdk.suites.run("suite-1")
+        assert batch.pass_rate == pytest.approx(1 / 3)
+        assert batch.meets(0.3) is False
+    from efficientai_sdk.simulations.models import EvaluatorResult
+
+    bare = EvaluatorResult.model_validate({"id": RESULT_A, "status": "completed"})
+    assert bare.succeeded is False
 
 
 @respx.mock

@@ -238,7 +238,7 @@ def _suite_body(
 ) -> dict[str, Any]:
     return _compact(
         {
-            "runs_per_combination": 1 if runs_per_combination is None else runs_per_combination,
+            "runs_per_combination": runs_per_combination,
             "to_number": to_number,
             "from_number": from_number,
         }

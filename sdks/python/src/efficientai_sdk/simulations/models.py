@@ -95,6 +95,8 @@ class EvaluatorResult(APIModel):
     result_id: Optional[str] = None
     passed: Optional[bool] = None
     error_message: Optional[str] = None
+    metric_scores: Optional[dict[str, Any]] = None
+    call_data: Optional[dict[str, Any]] = None
 
     @field_validator("id", "result_id", mode="before")
     @classmethod
@@ -108,10 +110,24 @@ class EvaluatorResult(APIModel):
             return value.strip().lower()
         return value
 
+    def _quality_passed(self) -> Optional[bool]:
+        """Explicit pass flag, else the successful metric or call analysis."""
+        if self.passed is not None:
+            return bool(self.passed)
+        scores = self.metric_scores if isinstance(self.metric_scores, dict) else {}
+        successful = scores.get("successful")
+        if isinstance(successful, dict) and "value" in successful:
+            return bool(successful["value"])
+        data = self.call_data if isinstance(self.call_data, dict) else {}
+        analysis = data.get("call_analysis")
+        if isinstance(analysis, dict) and analysis.get("call_successful") is not None:
+            return bool(analysis["call_successful"])
+        return None
+
     @property
     def succeeded(self) -> bool:
-        """Finished without an error, and was not marked failed by a success rule."""
-        return self.status == "completed" and self.passed is not False
+        """Completed and marked passed by a score, not merely finished."""
+        return self.status == "completed" and self._quality_passed() is True
 
 
 class ResultBatchData(APIModel):
@@ -134,17 +150,26 @@ class ResultBatchData(APIModel):
 
     @property
     def pass_rate(self) -> float:
-        if not self.results:
+        planned = max(len(self.results), self.total_runs)
+        if planned == 0:
             return 0.0
-        return sum(1 for result in self.results if result.succeeded) / len(self.results)
+        return sum(1 for result in self.results if result.succeeded) / planned
 
     @property
     def passed(self) -> bool:
-        """True when every result finished successfully."""
-        return bool(self.results) and all(result.succeeded for result in self.results)
+        """True when every planned result finished successfully."""
+        planned = max(len(self.results), self.total_runs)
+        if planned == 0:
+            return False
+        return (
+            len(self.results) >= self.total_runs
+            and all(result.succeeded for result in self.results)
+        )
 
     def meets(self, threshold: float) -> bool:
-        """True when no result errored and the pass rate is at least ``threshold``."""
+        """True when every planned run is present, none errored, and the pass rate is high enough."""
+        if self.total_runs and len(self.results) < self.total_runs:
+            return False
         if any(result.status == "failed" for result in self.results):
             return False
         return self.pass_rate >= threshold
