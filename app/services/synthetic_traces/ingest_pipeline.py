@@ -79,7 +79,17 @@ def correlate_batch(
     trace: Optional[SyntheticCallTrace] = None
     correlated = False
 
-    if evaluator_result_id:
+    if call_short_id:
+        trace = get_trace_by_call_short_id(
+            db,
+            organization_id=organization_id,
+            call_short_id=call_short_id,
+            workspace_id=workspace_id,
+            auto_close=False,
+        )
+        correlated = trace is not None
+
+    if not trace and evaluator_result_id:
         try:
             result_uuid = UUID(str(evaluator_result_id))
             trace = get_trace_for_result(
@@ -117,16 +127,6 @@ def correlate_batch(
             correlated = trace is not None
         except ValueError:
             trace = None
-
-    if not trace and call_short_id:
-        trace = get_trace_by_call_short_id(
-            db,
-            organization_id=organization_id,
-            call_short_id=call_short_id,
-            workspace_id=workspace_id,
-            auto_close=False,
-        )
-        correlated = trace is not None
 
     if not trace and call_short_id and workspace_id:
         transport = correlation.get("transport") or "custom"
@@ -844,9 +844,13 @@ def correlate_batch_ch(
                     trace.persona_id = result.persona_id
                     trace.scenario_id = result.scenario_id
                     trace.evaluator_id = result.evaluator_id
-                    result.synthetic_call_trace_id = trace.id
-                    db.commit()
-                    correlated = True
+                    prior = result.synthetic_call_trace_id
+                    if prior is None or prior == trace.id:
+                        result.synthetic_call_trace_id = trace.id
+                        db.commit()
+                        correlated = True
+                    elif call_short_id and trace.call_short_id == call_short_id:
+                        correlated = True
             except ValueError:
                 pass
 
