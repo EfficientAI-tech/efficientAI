@@ -115,21 +115,71 @@ function isChatTranscript(spans: OtelSpanLike[]): boolean {
   })
 }
 
-function hasLaterLlmWithSameParent(spans: OtelSpanLike[], llmSpan: OtelSpanLike): boolean {
+function resolveSpanTurnNumber(
+  span: OtelSpanLike,
+  byId: Map<string, OtelSpanLike>,
+): number | null {
+  const display = span.attributes?.['efficientai.display_turn_number']
+  if (display != null) {
+    const n = Number(display)
+    if (!Number.isNaN(n)) return n
+  }
+  const visited = new Set<string>()
+  let current: OtelSpanLike | undefined = span
+  while (current) {
+    const raw = current.attributes?.['turn.number']
+    if (raw != null) {
+      const n = Number(raw)
+      if (!Number.isNaN(n)) return n
+    }
+    const spanId = current.span_id
+    if (spanId) {
+      if (visited.has(spanId)) break
+      visited.add(spanId)
+    }
+    const parentId = current.parent_span_id
+    if (!parentId) break
+    current = byId.get(parentId)
+  }
+  return null
+}
+
+function hasLaterLlmInTurn(
+  spans: OtelSpanLike[],
+  llmSpan: OtelSpanLike,
+  byId: Map<string, OtelSpanLike>,
+): boolean {
+  const turn = resolveSpanTurnNumber(llmSpan, byId)
   const start = parseUnixNano(llmSpan.start_time_unix_nano) ?? 0n
   return spans.some((other) => {
     if (other.span_id === llmSpan.span_id || spanComponentKind(other) !== 'llm') return false
+    if (turn != null) {
+      return (
+        resolveSpanTurnNumber(other, byId) === turn
+        && (parseUnixNano(other.start_time_unix_nano) ?? 0n) > start
+      )
+    }
     if (other.parent_span_id !== llmSpan.parent_span_id) return false
     return (parseUnixNano(other.start_time_unix_nano) ?? 0n) > start
   })
 }
 
-function hasLaterAssistantMessage(spans: OtelSpanLike[], llmSpan: OtelSpanLike): boolean {
-  if (!llmSpan.parent_span_id) return false
+function hasLaterAssistantInTurn(
+  spans: OtelSpanLike[],
+  llmSpan: OtelSpanLike,
+  byId: Map<string, OtelSpanLike>,
+): boolean {
+  const turn = resolveSpanTurnNumber(llmSpan, byId)
   const llmStart = parseUnixNano(llmSpan.start_time_unix_nano) ?? 0n
   return spans.some((other) => {
     if (chatMessageRole(other) !== 'agent') return false
-    if (other.parent_span_id !== llmSpan.parent_span_id) return false
+    if (turn != null) {
+      return (
+        resolveSpanTurnNumber(other, byId) === turn
+        && (parseUnixNano(other.start_time_unix_nano) ?? 0n) >= llmStart
+      )
+    }
+    if (!llmSpan.parent_span_id || other.parent_span_id !== llmSpan.parent_span_id) return false
     const start = parseUnixNano(other.start_time_unix_nano) ?? 0n
     return start >= llmStart
   })
@@ -187,6 +237,18 @@ export function buildSpanTranscriptMessages(
     return startA < startB ? -1 : 1
   })
 
+  const byId = new Map(sorted.map((span) => [span.span_id, span]))
+  const chatTranscript = isChatTranscript(sorted)
+  const lastLlmByTurn = new Map<number, string>()
+  if (chatTranscript) {
+    for (const span of sorted) {
+      if (spanComponentKind(span) !== 'llm') continue
+      const turn = resolveSpanTurnNumber(span, byId)
+      if (turn == null) continue
+      lastLlmByTurn.set(turn, span.span_id)
+    }
+  }
+
   const messages: SpanTranscriptMessage[] = []
   for (const span of sorted) {
     const chatRole = chatMessageRole(span)
@@ -220,11 +282,15 @@ export function buildSpanTranscriptMessages(
       role = 'agent'
     } else if (kind === 'llm') {
       text = spokenTextFromSpan(span, kind)
+      const turn = resolveSpanTurnNumber(span, byId)
       if (
         !text ||
         hasMatchingTts(sorted, span, text) ||
-        hasLaterAssistantMessage(sorted, span) ||
-        (isChatTranscript(sorted) && hasLaterLlmWithSameParent(sorted, span))
+        hasLaterAssistantInTurn(sorted, span, byId) ||
+        (chatTranscript && hasLaterLlmInTurn(sorted, span, byId)) ||
+        (chatTranscript
+          && turn != null
+          && lastLlmByTurn.get(turn) !== span.span_id)
       ) {
         continue
       }

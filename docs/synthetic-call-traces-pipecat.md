@@ -155,7 +155,7 @@ async def on_client_disconnected(transport, client):
     await close_trace_session(trace_ctx)
 ```
 
-Full examples: `docs/examples/pipecat_multi_agent_webrtc_tracing.py`, `pipecat_multi_provider_webrtc_tracing.py`
+See `sdks/python/examples/custom_agent_tracing.py` for a minimal OTLP setup with the Python SDK.
 
 ---
 
