@@ -24,7 +24,7 @@ import asyncio
 import contextvars
 import logging
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from typing import TYPE_CHECKING, Any, Optional, Union
 
 from efficientai_sdk._exceptions import EfficientAIError
@@ -57,11 +57,17 @@ __all__ = [
     "AsyncTraceResource",
     "CallTrace",
     "ComponentSpan",
+    "RetrievalSpan",
+    "ToolSpan",
     "TraceResource",
     "TurnSpan",
 ]
 
 AttributeValue = Union[str, bool, int, float]
+
+# Long tool arguments/results or prompts are truncated so a single span can't blow up
+# the OTLP request (the server keeps attributes as strings).
+MAX_ATTRIBUTE_CHARS = 8192
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +87,8 @@ class ComponentSpan:
 
     def set_attribute(self, key: str, value: Optional[AttributeValue]) -> ComponentSpan:
         if self._span is not None and value is not None:
+            if isinstance(value, str) and len(value) > MAX_ATTRIBUTE_CHARS:
+                value = value[:MAX_ATTRIBUTE_CHARS] + "...[truncated]"
             try:
                 self._span.set_attribute(key, value)
             except Exception:
@@ -122,6 +130,31 @@ class ComponentSpan:
         return self.set_attribute("text", text)
 
 
+class ToolSpan(ComponentSpan):
+    """A tool/function call made by the agent."""
+
+    def set_arguments(self, arguments: str) -> ToolSpan:
+        self.set_attribute("gen_ai.tool.call.arguments", arguments)
+        return self
+
+    def set_result(self, result: str) -> ToolSpan:
+        self.set_attribute("gen_ai.tool.call.result", result)
+        return self
+
+    def set_error(self, message: str) -> ToolSpan:
+        self.set_attribute("error", True)
+        self.set_attribute("error.message", message)
+        return self
+
+
+class RetrievalSpan(ComponentSpan):
+    """A knowledge-base / RAG lookup."""
+
+    def set_documents(self, count: int) -> RetrievalSpan:
+        self.set_attribute("retrieval.documents.count", int(count))
+        return self
+
+
 class TurnSpan(ComponentSpan):
     """The span grouping one user/agent exchange."""
 
@@ -148,8 +181,11 @@ def _component_attributes(
     if provider:
         attrs["gen_ai.provider.name"] = provider.lower()
     for key, value in extra.items():
-        if value is not None:
-            attrs[key] = value
+        if value is None:
+            continue
+        if isinstance(value, str) and len(value) > MAX_ATTRIBUTE_CHARS:
+            value = value[:MAX_ATTRIBUTE_CHARS] + "...[truncated]"
+        attrs[key] = value
     return attrs
 
 
@@ -174,6 +210,7 @@ class CallTrace:
         owns_session: bool = False,
         error: Optional[str] = None,
         extra_attributes: Optional[Mapping[str, str]] = None,
+        channel: Optional[str] = None,
     ) -> None:
         self.call_short_id = call_short_id
         self.enabled = enabled and bool(call_short_id)
@@ -184,6 +221,7 @@ class CallTrace:
         self.trace_id = trace_id
         self.owns_session = owns_session
         self.error = error
+        self.channel = channel
         self._turns = 0
         self._token: Optional[contextvars.Token[Optional[dict[str, str]]]] = None
         attrs = (
@@ -197,6 +235,8 @@ class CallTrace:
             if self.enabled
             else {}
         )
+        if self.enabled and channel:
+            attrs["efficientai.channel"] = channel
         if self.enabled and extra_attributes:
             attrs.update(extra_attributes)
         self._attributes = attrs
@@ -267,12 +307,20 @@ class CallTrace:
             yield wrapper()
             return
         try:
-            yield wrapper(span)
+            yielded = wrapper(span)
+            yield yielded
         except BaseException as exc:
             manager.__exit__(type(exc), exc, exc.__traceback__)
             raise
         else:
             try:
+                if name in ("stt", "tts", "llm"):
+                    existing = getattr(span, "attributes", None) or {}
+                    start_ns = getattr(span, "start_time", None)
+                    if "metrics.ttfb" not in existing and start_ns:
+                        import time
+
+                        yielded.set_ttfb(max(0.0, (time.time_ns() - int(start_ns)) / 1_000_000_000))
                 manager.__exit__(None, None, None)
             except Exception:
                 logger.debug("EfficientAI: failed to end span %r", name, exc_info=True)
@@ -344,6 +392,63 @@ class CallTrace:
             _component_attributes("s2s", model=model, provider=provider, extra=attributes),
         )
 
+    # ---- chat ------------------------------------------------------------
+
+    def _message(self, name: str, text: str, attributes: Mapping[str, AttributeValue]) -> None:
+        message = text
+        if len(message) > MAX_ATTRIBUTE_CHARS:
+            message = message[:MAX_ATTRIBUTE_CHARS] + "...[truncated]"
+        with self._span(name, {"gen_ai.operation.name": name, "message": message, **attributes}):
+            pass
+
+    def user_message(self, text: str, **attributes: AttributeValue) -> None:
+        """Record what the user typed. Call it when the message arrives."""
+        self._message("user_message", text, attributes)
+
+    def assistant_message(self, text: str, **attributes: AttributeValue) -> None:
+        """Record the reply sent to the user.
+
+        Optional: without it, the last LLM output in the turn is used as the reply.
+        Useful when the agent post-processes the LLM output before sending it.
+        """
+        self._message("assistant_message", text, attributes)
+
+    def tool(
+        self, name: str, *, arguments: Optional[str] = None, **attributes: AttributeValue
+    ) -> Any:
+        """A tool/function call. Yields a :class:`ToolSpan` (``set_result``, ``set_error``)."""
+        if arguments is not None and len(arguments) > MAX_ATTRIBUTE_CHARS:
+            arguments = arguments[:MAX_ATTRIBUTE_CHARS] + "...[truncated]"
+        extra: dict[str, Optional[AttributeValue]] = {
+            "gen_ai.tool.name": name,
+            "gen_ai.tool.call.arguments": arguments,
+            **attributes,
+        }
+        return self._span(
+            f"execute_tool {name}",
+            _component_attributes("execute_tool", model=None, provider=None, extra=extra),
+            ToolSpan,
+        )
+
+    def retrieval(
+        self,
+        *,
+        source: Optional[str] = None,
+        query: Optional[str] = None,
+        **attributes: AttributeValue,
+    ) -> Any:
+        """A knowledge-base / RAG lookup. Yields a :class:`RetrievalSpan` (``set_documents``)."""
+        extra: dict[str, Optional[AttributeValue]] = {
+            "retrieval.source": source,
+            "retrieval.query": query,
+            **attributes,
+        }
+        return self._span(
+            "retrieval",
+            _component_attributes("retrieval", model=None, provider=None, extra=extra),
+            RetrievalSpan,
+        )
+
     def span(self, name: str, **attributes: AttributeValue) -> Any:
         """Any other span you want attached to this call (tool calls, retrieval, ...)."""
         return self._span(name, attributes)
@@ -367,6 +472,7 @@ def _session_payload(
 
 def _call_from_correlation(
     *,
+    channel: Optional[str],
     handshake: Optional[Mapping[str, Any]],
     call_short_id: Optional[str],
     sip_headers: Optional[Mapping[str, Any]],
@@ -394,6 +500,7 @@ def _call_from_correlation(
                 evaluator_result_id=_run_id_from(otel_block, evaluator_result_id),
                 trace_id=parsed.get("trace_id"),
                 extra_attributes=attributes,
+                channel=channel,
             ),
             otel_block.get("otlp_endpoint"),
         )
@@ -415,6 +522,7 @@ def _call_from_correlation(
                 transport=transport,
                 evaluator_result_id=run_id,
                 extra_attributes=attributes,
+                channel=channel,
             ),
             None,
         )
@@ -424,6 +532,7 @@ def _call_from_correlation(
 def _call_from_session(
     body: Any,
     *,
+    channel: Optional[str],
     transport: str,
     agent_id: Optional[str],
     workspace_id: Optional[str],
@@ -443,6 +552,7 @@ def _call_from_session(
             trace_id=str(body["trace_id"]) if body.get("trace_id") else None,
             owns_session=True,
             extra_attributes=attributes,
+            channel=channel,
         ),
         otel_block.get("otlp_endpoint"),
     )
@@ -519,15 +629,19 @@ class TraceResource(_TraceResourceBase):
         sip_headers: Optional[Mapping[str, Any]] = None,
         headers: Optional[Mapping[str, Any]] = None,
         attributes: Optional[Mapping[str, str]] = None,
+        channel: Optional[str] = None,
         strict: bool = False,
     ) -> CallTrace:
         """Open a call and activate it in the current context. Pair with :meth:`end_session`.
 
         Reuses the platform's call id when one is supplied (``handshake``,
         ``call_short_id``, ``sip_headers`` or ``headers``); otherwise opens a new session.
+        Pass ``channel="chat"`` for text agents so turns are built from messages, tool
+        calls and LLM output instead of STT/TTS.
         """
         transport = _check_transport(transport)
         call, hint = _call_from_correlation(
+            channel=channel,
             handshake=handshake,
             call_short_id=call_short_id,
             sip_headers=sip_headers,
@@ -547,6 +661,7 @@ class TraceResource(_TraceResourceBase):
                 )
                 call, hint = _call_from_session(
                     body,
+                    channel=channel,
                     transport=transport,
                     agent_id=agent_id,
                     workspace_id=self._client.workspace_id,
@@ -587,6 +702,24 @@ class TraceResource(_TraceResourceBase):
         finally:
             self.end_session(call)
 
+    def from_request(
+        self, headers: Mapping[str, Any], **kwargs: Any
+    ) -> AbstractContextManager[CallTrace]:
+        """Resume the platform call id from HTTP headers such as ``X-EfficientAI-Call-Short-Id``."""
+        return self.session(headers=headers, **kwargs)
+
+    def from_sip_headers(
+        self, sip_headers: Mapping[str, Any], **kwargs: Any
+    ) -> AbstractContextManager[CallTrace]:
+        """Resume the platform call id from SIP headers on a phone simulation."""
+        return self.session(sip_headers=sip_headers, **kwargs)
+
+    def from_handshake(
+        self, message: Mapping[str, Any], **kwargs: Any
+    ) -> AbstractContextManager[CallTrace]:
+        """Resume the platform call id from an ``efficientai_trace_handshake`` message."""
+        return self.session(handshake=message, **kwargs)
+
 
 class _AsyncSession:
     def __init__(self, resource: AsyncTraceResource, kwargs: dict[str, Any]) -> None:
@@ -619,6 +752,7 @@ class AsyncTraceResource(_TraceResourceBase):
         sip_headers: Optional[Mapping[str, Any]] = None,
         headers: Optional[Mapping[str, Any]] = None,
         attributes: Optional[Mapping[str, str]] = None,
+        channel: Optional[str] = None,
         strict: bool = False,
     ) -> CallTrace:
         """Async version of :meth:`TraceResource.start_session`.
@@ -628,6 +762,7 @@ class AsyncTraceResource(_TraceResourceBase):
         """
         transport = _check_transport(transport)
         call, hint = _call_from_correlation(
+            channel=channel,
             handshake=handshake,
             call_short_id=call_short_id,
             sip_headers=sip_headers,
@@ -647,6 +782,7 @@ class AsyncTraceResource(_TraceResourceBase):
                 )
                 call, hint = _call_from_session(
                     body,
+                    channel=channel,
                     transport=transport,
                     agent_id=agent_id,
                     workspace_id=self._client.workspace_id,
@@ -679,3 +815,15 @@ class AsyncTraceResource(_TraceResourceBase):
         """``async with client.trace.session(...) as call:``. Same arguments as
         :meth:`start_session`."""
         return _AsyncSession(self, kwargs)
+
+    def from_request(self, headers: Mapping[str, Any], **kwargs: Any) -> _AsyncSession:
+        """Async form of :meth:`TraceResource.from_request`."""
+        return self.session(headers=headers, **kwargs)
+
+    def from_sip_headers(self, sip_headers: Mapping[str, Any], **kwargs: Any) -> _AsyncSession:
+        """Async form of :meth:`TraceResource.from_sip_headers`."""
+        return self.session(sip_headers=sip_headers, **kwargs)
+
+    def from_handshake(self, message: Mapping[str, Any], **kwargs: Any) -> _AsyncSession:
+        """Async form of :meth:`TraceResource.from_handshake`."""
+        return self.session(handshake=message, **kwargs)
