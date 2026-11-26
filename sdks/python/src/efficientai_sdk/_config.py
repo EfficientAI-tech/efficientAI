@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from typing import Optional
-from urllib.parse import urlunparse, urlparse
+from urllib.parse import urlparse, urlunparse
 
 from efficientai_sdk._exceptions import ConfigurationError
 
