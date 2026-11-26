@@ -94,7 +94,7 @@ export const DEFAULT_CHAT_CONNECTION_CONFIG: ChatConnectionConfigForm = {
   messagingTelephonyIntegrationId: '',
   twilioInboundWebhookToken: '',
   twilioSmsTrialBodyTemplate: 'sms_appointment_reminders',
-  traceHandshakeEnabled: true,
+  traceHandshakeEnabled: false,
 }
 
 interface ChatConnectionDetailsStepProps {

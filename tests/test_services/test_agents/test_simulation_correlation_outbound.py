@@ -29,7 +29,9 @@ def test_correlation_headers_and_handshake():
     assert message["type"] == "efficientai_trace_handshake"
     assert message["call_short_id"] == "165730"
     assert message["otel_correlation"]["suggested_span_attributes"]["efficientai.evaluator_result_id"] == "run-1"
-    assert handshake_enabled({}) is True
+    assert handshake_enabled({}) is False
+    assert handshake_enabled({"efficientai_trace_handshake_enabled": True}) is True
+    assert handshake_enabled({"efficientai_trace_handshake_enabled": "on"}) is True
     assert handshake_enabled({"efficientai_trace_handshake_enabled": False}) is False
     assert handshake_enabled({"efficientai_trace_handshake_enabled": "off"}) is False
 

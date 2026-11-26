@@ -43,15 +43,17 @@ def trace_handshake_message(correlation: dict[str, Any]) -> dict[str, Any]:
 
 
 def handshake_enabled(config: Optional[dict[str, Any]]) -> bool:
-    """Customer servers that reject unknown messages can set this false."""
+    """Send the extra handshake frame only when the agent opts in.
+
+    Existing WebSocket servers expect one request frame per turn, so a missing
+    setting stays off.
+    """
     if not config:
-        return True
+        return False
     flag = config.get("efficientai_trace_handshake_enabled")
-    if flag is None:
-        return True
     if isinstance(flag, str):
-        return flag.strip().lower() not in {"0", "false", "no", "off"}
-    return bool(flag)
+        return flag.strip().lower() in {"1", "true", "yes", "on"}
+    return flag is True
 
 
 def ensure_simulation_correlation(
