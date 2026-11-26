@@ -14,7 +14,10 @@ import threading
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Optional
 
+from efficientai_sdk.tracing.context import get_call_attributes, set_call_attributes
 from efficientai_sdk.tracing.correlation import (
+    ATTR_CALL_SHORT_ID,
+    ATTR_OTLP_EXPORT_ENDPOINT,
     extract_call_short_id,
     otlp_export_headers,
     span_correlation_attributes,
@@ -49,6 +52,7 @@ if TYPE_CHECKING:
 __all__ = [
     "OTEL_AVAILABLE",
     "create_otlp_exporter",
+    "ensure_export_pipeline",
     "flush_efficientai_tracing",
     "is_tracing_available",
     "setup_efficientai_tracing",
@@ -59,10 +63,12 @@ _OTEL_MISSING = (
     "OpenTelemetry is not installed. Install the extra: pip install 'efficientai-sdk[otel]'"
 )
 
-_state_lock = threading.Lock()
+_state_lock = threading.RLock()
 _correlation_processor: Optional[_CorrelationSpanProcessor] = None
 _mutable_exporter: Optional[_MutableOtlpExporter] = None
 _exporter_attached = False
+# Export pipelines added by ensure_export_pipeline, keyed by (endpoint, api_key, workspace).
+_pipelines: dict[tuple[str, str, Optional[str]], Any] = {}
 
 
 def is_tracing_available() -> bool:
@@ -93,21 +99,10 @@ class _MutableOtlpExporter(SpanExporter):
     def endpoint(self) -> str:
         return self._endpoint
 
-    def configure(
-        self,
-        *,
-        call_short_id: Optional[str] = None,
-        evaluator_result_id: Optional[str] = None,
-        workspace_id: Optional[str] = None,
-    ) -> None:
+    def configure(self, *, workspace_id: Optional[str] = None) -> None:
         inner = OTLPSpanExporter(
             endpoint=self._endpoint,
-            headers=otlp_export_headers(
-                api_key=self._api_key,
-                call_short_id=call_short_id,
-                evaluator_result_id=evaluator_result_id,
-                workspace_id=workspace_id,
-            ),
+            headers=otlp_export_headers(api_key=self._api_key, workspace_id=workspace_id),
         )
         with self._lock:
             self._inner = inner
@@ -120,7 +115,10 @@ class _MutableOtlpExporter(SpanExporter):
                     headers=otlp_export_headers(api_key=self._api_key),
                 )
             inner = self._inner
-        result: SpanExportResult = inner.export(spans)
+        owned = _spans_for_destination(spans, self._endpoint.rstrip("/"))
+        if not owned:
+            return SpanExportResult.SUCCESS
+        result: SpanExportResult = inner.export(owned)
         return result
 
     def shutdown(self) -> None:
@@ -134,18 +132,86 @@ class _MutableOtlpExporter(SpanExporter):
         return True if inner is None else bool(inner.force_flush(timeout_millis))
 
 
+_EFFICIENTAI_PREFIX = "efficientai."
+
+
+def _active_export_destinations() -> set[str]:
+    with _state_lock:
+        destinations = {ep.rstrip("/") for ep, _, _ in _pipelines}
+        if _mutable_exporter is not None:
+            destinations.add(_mutable_exporter.endpoint.rstrip("/"))
+        return destinations
+
+
+def _spans_for_destination(spans: Sequence[ReadableSpan], destination: str) -> list[ReadableSpan]:
+    dest = destination.rstrip("/")
+    allow_untagged = len(_active_export_destinations()) <= 1
+    owned: list[ReadableSpan] = []
+    for span in spans:
+        attrs = span.attributes or {}
+        stamped = attrs.get(ATTR_OTLP_EXPORT_ENDPOINT)
+        if stamped is not None:
+            if str(stamped).rstrip("/") == dest:
+                owned.append(span)
+        elif allow_untagged:
+            owned.append(span)
+    return owned
+
+
+class _DestinationFilteredExporter(SpanExporter):
+    """Drop spans that belong to a different EfficientAI deployment."""
+
+    def __init__(self, destination: str, inner: SpanExporter) -> None:
+        self._destination = destination.rstrip("/")
+        self._inner = inner
+
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        owned = _spans_for_destination(spans, self._destination)
+        if not owned:
+            return SpanExportResult.SUCCESS
+        return self._inner.export(owned)
+
+    def shutdown(self) -> None:
+        self._inner.shutdown()
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return bool(self._inner.force_flush(timeout_millis))
+
+
+def _parent_call_attributes(parent_context: Optional[Context]) -> Optional[dict[str, str]]:
+    """``efficientai.*`` attributes of the parent span, when it belongs to a call."""
+    parent = trace.get_current_span(parent_context)
+    attrs = getattr(parent, "attributes", None)
+    if not attrs or ATTR_CALL_SHORT_ID not in attrs:
+        return None
+    return {k: str(v) for k, v in attrs.items() if k.startswith(_EFFICIENTAI_PREFIX)}
+
+
 class _CorrelationSpanProcessor(SpanProcessor):
-    """Stamps EfficientAI correlation attributes on every span when it starts."""
+    """Stamps EfficientAI correlation attributes on every span when it starts.
+
+    Source, in order: the call active in the current context, the parent span's call,
+    then the process-wide default set by :func:`setup_efficientai_tracing`. Attributes
+    already set on the span (for example by the SDK's own span helpers) are kept.
+    """
 
     def __init__(self, attributes: Mapping[str, str]) -> None:
         self._attributes = dict(attributes)
+        self.active = True
 
     def update_attributes(self, attributes: Mapping[str, str]) -> None:
         self._attributes = dict(attributes)
 
     def on_start(self, span: Span, parent_context: Optional[Context] = None) -> None:
-        for key, value in self._attributes.items():
-            span.set_attribute(key, value)
+        if not self.active:
+            return
+        attrs = get_call_attributes() or _parent_call_attributes(parent_context) or self._attributes
+        if not attrs:
+            return
+        existing = getattr(span, "attributes", None) or {}
+        for key, value in attrs.items():
+            if key not in existing:
+                span.set_attribute(key, value)
 
     def on_end(self, span: ReadableSpan) -> None:
         return
@@ -180,12 +246,15 @@ def create_otlp_exporter(
     sip_headers: Optional[Mapping[str, Any]] = None,
     webhook_params: Optional[Mapping[str, Any]] = None,
     mutable: bool = True,
+    shared: bool = False,
 ) -> Any:
     """Build an OTLP/HTTP span exporter pointed at EfficientAI trace ingest.
 
-    With ``mutable=True`` (default) a single process-wide exporter is reused and its
-    correlation headers are updated for the new call. Its endpoint and API key are
-    fixed by the first call.
+      With ``shared=True`` (used by :func:`setup_efficientai_tracing`) a single process-wide
+    exporter is reused; call ids stay on span attributes, not HTTP headers.
+
+      Factory callers should leave ``shared=False`` so each exporter keeps wire correlation
+      headers unless they set attributes on every span themselves.
     """
     global _mutable_exporter
     if not OTEL_AVAILABLE:
@@ -204,31 +273,32 @@ def create_otlp_exporter(
     run_id = evaluator_result_id or _env("EFFICIENTAI_RUN_ID")
     workspace = workspace_id or _env("EFFICIENTAI_WORKSPACE_ID")
 
-    if not mutable:
-        return OTLPSpanExporter(
-            endpoint=resolved_endpoint,
-            headers=otlp_export_headers(
-                api_key=resolved_key,
-                call_short_id=cid,
-                evaluator_result_id=run_id,
-                workspace_id=workspace,
-            ),
-        )
+    headers = otlp_export_headers(
+        api_key=resolved_key,
+        call_short_id=cid,
+        evaluator_result_id=run_id,
+        workspace_id=workspace,
+    )
+
+    if not mutable or not shared:
+        return OTLPSpanExporter(endpoint=resolved_endpoint, headers=headers)
 
     with _state_lock:
         if _mutable_exporter is None:
             _mutable_exporter = _MutableOtlpExporter(
                 endpoint=resolved_endpoint, api_key=resolved_key
             )
-        elif _mutable_exporter.endpoint != resolved_endpoint:
-            logger.warning(
-                "EfficientAI OTLP exporter already targets %s; ignoring new endpoint %s",
-                _mutable_exporter.endpoint,
-                resolved_endpoint,
+        elif (
+            _mutable_exporter.endpoint.rstrip("/") != resolved_endpoint.rstrip("/")
+            or _mutable_exporter._api_key != resolved_key
+        ):
+            raise ValueError(
+                f"EfficientAI OTLP exporter already targets {_mutable_exporter.endpoint}; "
+                f"refusing {resolved_endpoint}"
             )
         exporter = _mutable_exporter
-    exporter.configure(call_short_id=cid, evaluator_result_id=run_id, workspace_id=workspace)
-    return exporter
+        exporter.configure(workspace_id=workspace)
+        return exporter
 
 
 def setup_tracer_provider(
@@ -260,14 +330,76 @@ def setup_tracer_provider(
         return False
 
 
-def _attach_correlation_processor(provider: Any, attrs: dict[str, str]) -> None:
+def _attach_correlation_processor(provider: Any, attrs: Optional[dict[str, str]]) -> None:
+    """Add the correlation processor once. ``attrs`` (if given) become the default."""
     global _correlation_processor
     with _state_lock:
         if _correlation_processor is None:
-            _correlation_processor = _CorrelationSpanProcessor(attrs)
+            _correlation_processor = _CorrelationSpanProcessor(attrs or {})
             provider.add_span_processor(_correlation_processor)
-        else:
+        elif attrs is not None:
             _correlation_processor.update_attributes(attrs)
+
+
+def ensure_export_pipeline(
+    *,
+    endpoint: str,
+    api_key: str,
+    workspace_id: Optional[str] = None,
+    service_name: str = "efficientai-agent",
+    console_export: bool = False,
+) -> bool:
+    """Make sure spans from this process are exported to EfficientAI. Idempotent.
+
+    Uses the app's ``TracerProvider`` if it has one, otherwise installs one. The exporter
+    carries only the API key and workspace; each span carries its own call id (see
+    :mod:`efficientai_sdk.tracing.context`), so one pipeline serves concurrent calls.
+    Returns ``False`` when OpenTelemetry is not installed or setup failed.
+    """
+    if not OTEL_AVAILABLE:
+        return False
+    key = (endpoint.rstrip("/"), api_key, workspace_id or None)
+    with _state_lock:
+        if key in _pipelines:
+            return True
+        if _pipelines:
+            logger.warning(
+                "EfficientAI span export already targets another deployment; ignoring %s",
+                key[0],
+            )
+            return False
+        try:
+            base_exporter = OTLPSpanExporter(
+                endpoint=key[0],
+                headers=otlp_export_headers(api_key=api_key, workspace_id=workspace_id),
+            )
+            exporter = _DestinationFilteredExporter(key[0], base_exporter)
+            provider = trace.get_tracer_provider()
+            if not isinstance(provider, TracerProvider):
+                if not setup_tracer_provider(
+                    service_name, exporter=exporter, console_export=console_export
+                ):
+                    return False
+                _exporter_attached = True
+                _pipelines[key] = exporter
+                provider = trace.get_tracer_provider()
+            else:
+                if _mutable_exporter is not None and (
+                    _mutable_exporter.endpoint.rstrip("/") == key[0].rstrip("/")
+                    and _mutable_exporter._api_key == api_key
+                ):
+                    _pipelines[key] = _mutable_exporter
+                    _exporter_attached = True
+                else:
+                    provider.add_span_processor(BatchSpanProcessor(exporter))
+                    _pipelines[key] = exporter
+                    _exporter_attached = True
+        except Exception:
+            logger.exception("Failed to set up EfficientAI span export")
+            return False
+    if isinstance(provider, TracerProvider):
+        _attach_correlation_processor(provider, None)
+    return True
 
 
 def setup_efficientai_tracing(
@@ -294,6 +426,11 @@ def setup_efficientai_tracing(
     if not OTEL_AVAILABLE:
         return False
 
+    resolved_endpoint = (otlp_endpoint or _env("EFFICIENTAI_OTLP_ENDPOINT") or "").rstrip("/")
+    resolved_key = api_key or _env("EFFICIENTAI_API_KEY")
+    if not resolved_endpoint or not resolved_key:
+        return False
+
     cid = _resolve_call_short_id(
         call_short_id=call_short_id, sip_headers=sip_headers, webhook_params=webhook_params
     )
@@ -306,31 +443,65 @@ def setup_efficientai_tracing(
         agent_id=agent,
         workspace_id=workspace,
         transport=transport,
-    )
-    exporter = create_otlp_exporter(
-        endpoint=otlp_endpoint,
-        api_key=api_key,
-        call_short_id=cid,
-        evaluator_result_id=run_id,
-        workspace_id=workspace,
-        mutable=True,
+        export_endpoint=resolved_endpoint,
     )
 
-    provider = trace.get_tracer_provider()
-    if not isinstance(provider, TracerProvider):
-        if not setup_tracer_provider(
-            service_name, exporter=exporter, console_export=console_export
+    with _state_lock:
+        if _mutable_exporter is not None and (
+            _mutable_exporter.endpoint.rstrip("/") != resolved_endpoint
+            or _mutable_exporter._api_key != resolved_key
         ):
+            logger.warning(
+                "EfficientAI export already targets %s; refusing %s",
+                _mutable_exporter.endpoint,
+                resolved_endpoint,
+            )
             return False
-        _exporter_attached = True
-        provider = trace.get_tracer_provider()
-    elif not _exporter_attached:
-        # The app installed its own provider: add our exporter to it once.
-        provider.add_span_processor(BatchSpanProcessor(exporter))
-        _exporter_attached = True
+        for pipeline_endpoint, pipeline_api_key, _ in _pipelines:
+            same_ep = pipeline_endpoint.rstrip("/") == resolved_endpoint.rstrip("/")
+            if not same_ep or pipeline_api_key != resolved_key:
+                logger.warning(
+                    "EfficientAI export pipeline already uses another deployment; refused"
+                )
+                return False
 
-    if isinstance(provider, TracerProvider):
-        _attach_correlation_processor(provider, attrs)
+    try:
+        exporter = create_otlp_exporter(
+            endpoint=resolved_endpoint,
+            api_key=resolved_key,
+            call_short_id=cid,
+            evaluator_result_id=run_id,
+            workspace_id=workspace,
+            mutable=True,
+            shared=True,
+        )
+    except ValueError:
+        logger.warning("EfficientAI export refused due to endpoint conflict")
+        return False
+
+    dest = resolved_endpoint.rstrip("/")
+    pipeline_key = (dest, resolved_key, workspace or None)
+    with _state_lock:
+        provider = trace.get_tracer_provider()
+        export_attached = _exporter_attached or pipeline_key in _pipelines
+        if not isinstance(provider, TracerProvider):
+            if not setup_tracer_provider(
+                service_name, exporter=exporter, console_export=console_export
+            ):
+                return False
+            _exporter_attached = True
+            _pipelines.setdefault(pipeline_key, exporter)
+            provider = trace.get_tracer_provider()
+        elif not export_attached:
+            provider.add_span_processor(BatchSpanProcessor(exporter))
+            _exporter_attached = True
+            _pipelines.setdefault(pipeline_key, exporter)
+
+        if isinstance(provider, TracerProvider):
+            _attach_correlation_processor(provider, attrs)
+    # Tag spans from this task/thread with this call even when other calls run
+    # concurrently in the same process (the processor default is only a fallback).
+    set_call_attributes(attrs)
     return True
 
 
@@ -351,6 +522,10 @@ def _reset_for_tests() -> None:
     """Forget process-wide exporter state (tests only)."""
     global _correlation_processor, _mutable_exporter, _exporter_attached
     with _state_lock:
+        # Processors can't be removed from a TracerProvider; switch the old one off.
+        if _correlation_processor is not None:
+            _correlation_processor.active = False
         _correlation_processor = None
         _mutable_exporter = None
         _exporter_attached = False
+        _pipelines.clear()
