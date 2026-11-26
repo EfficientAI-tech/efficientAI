@@ -1022,6 +1022,24 @@ def process_evaluator_result_task(self, result_id: str):
                 _record_external_agent_llm_usage(result, usage_ctx=usage_ctx)
                 _commit_evaluator_result(db, result)
 
+                from app.services.synthetic_traces.trace_service import (
+                    close_simulation_trace_for_result,
+                )
+
+                try:
+                    close_simulation_trace_for_result(
+                        db,
+                        organization_id=result.organization_id,
+                        evaluator_result_id=result.id,
+                        workspace_id=result.workspace_id,
+                    )
+                except Exception as close_exc:
+                    logger.warning(
+                        "[EvaluatorResult {}] Simulation trace close failed (ignored): {}",
+                        result.result_id,
+                        close_exc,
+                    )
+
                 from app.services.billing.flexprice_service import (
                     record_evaluator_recording_minutes_billed,
                     record_evaluator_run_completed,
@@ -1090,6 +1108,23 @@ def process_evaluator_result_task(self, result_id: str):
                         failed_result.error_message = str(e)
                         _record_daily_rollup(db, failed_result)
                         db.commit()
+                        from app.services.synthetic_traces.trace_service import (
+                            close_simulation_trace_for_result,
+                        )
+
+                        try:
+                            close_simulation_trace_for_result(
+                                db,
+                                organization_id=failed_result.organization_id,
+                                evaluator_result_id=failed_result.id,
+                                workspace_id=failed_result.workspace_id,
+                            )
+                        except Exception as close_exc:
+                            logger.warning(
+                                "[EvaluatorResult {}] Simulation trace close failed (ignored): {}",
+                                result_id,
+                                close_exc,
+                            )
                 except Exception as persist_err:
                     db.rollback()
                     logger.error(
