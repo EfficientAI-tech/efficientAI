@@ -1,35 +1,30 @@
 ---
 title: Python SDK
 icon: Code
-description: Send live call traces from any Python voice or chat agent to your EfficientAI deployment.
+description: Install the Python SDK, point it at your workspace, and confirm the key works.
 ---
 
 # Python SDK
 
-`efficientai-sdk` sends live traces from your agent to EfficientAI. Each call shows up under **Observability → Calls** with a per-turn transcript, plus STT, LLM and TTS latency and the models used.
+The Python SDK sends traces from your agent to EfficientAI. Each call shows up under **Observability → Calls**.
 
-It works with any stack:
-
-- **Pipecat**: Pipecat creates the spans; the SDK attaches them to the call.
-- **Custom agents**: mark each turn and step with `call.turn()`, `call.stt()`, `call.llm()` and `call.tts()`.
-- **Existing OpenTelemetry setups**: the SDK exports the spans you already create.
-
-Related: [Traces and Logs](/docs/platform/traces-and-logs/)
+Start here. Then pick the next page for what you want to do.
 
 ## Before you start
 
-1. In EfficientAI, open the **workspace** where traces should appear.
-2. **Settings → API keys**: create a key, and copy your workspace **ID**.
+1. Open the **workspace** where traces should appear.
+2. Go to **Settings → API keys**.
+3. Create a key and copy the workspace **ID**.
 
 ## Install
 
-The SDK isn't on PyPI yet, so install it from the repository:
+The SDK is not on PyPI yet. Install it from the repository:
 
 ```bash
 pip install "efficientai-sdk[otel] @ git+https://github.com/EfficientAI-tech/efficientAI.git#subdirectory=sdks/python"
 ```
 
-Python 3.9 or newer. The `otel` extra pulls in OpenTelemetry for span export.
+You need Python 3.9 or newer. The `otel` extra installs OpenTelemetry so spans can be exported.
 
 ## Configure
 
@@ -44,12 +39,14 @@ load_dotenv()
 Example `.env` or shell values:
 
 ```bash
-EFFICIENTAI_BASE_URL=https://efficientai.your-company.com   # default: http://localhost:8000
+EFFICIENTAI_BASE_URL=https://efficientai.your-company.com
 EFFICIENTAI_API_KEY=...
 EFFICIENTAI_WORKSPACE_ID=...
 ```
 
-You can also download a pre-filled block from your deployment:
+`EFFICIENTAI_BASE_URL` defaults to `http://localhost:8000` when you omit it.
+
+You can also download a filled-in block from your deployment:
 
 ```bash
 curl -s "$EFFICIENTAI_BASE_URL/api/v1/observability/traces/setup" \
@@ -57,7 +54,7 @@ curl -s "$EFFICIENTAI_BASE_URL/api/v1/observability/traces/setup" \
   -H "X-Workspace-Id: $EFFICIENTAI_WORKSPACE_ID" | jq -r .env_block
 ```
 
-Check the key works:
+## Check the key
 
 ```python
 from efficientai_sdk import EfficientAI
@@ -65,164 +62,14 @@ from efficientai_sdk import EfficientAI
 EfficientAI().verify()  # True, or raises AuthenticationError
 ```
 
-## Trace a call
+## Next
 
-Wrap each call in a trace session. The session:
-
-- opens a trace and gets a six-digit **Call ID**
-- tags every span created inside it with that Call ID
-- flushes the spans and closes the trace when the block ends
-
-```python
-from efficientai_sdk import AsyncEfficientAI
-
-efficientai = AsyncEfficientAI()  # reads EFFICIENTAI_* from the environment
-
-
-async def handle_call(first_message=None):
-    async with efficientai.trace.session(transport="websocket", handshake=first_message) as call:
-        while conversation_is_active():
-            with call.turn():
-                with call.stt(model="nova-3", provider="deepgram") as stt:
-                    user_text = await transcribe()
-                    stt.set_transcript(user_text)
-                with call.llm(model="gpt-4o", provider="openai") as llm:
-                    reply = await generate(user_text)
-                    llm.set_output(reply).set_ttfb(first_token_seconds)
-                with call.tts(model="sonic", provider="cartesia") as tts:
-                    await speak(reply)
-                    tts.set_text(reply)
-```
-
-Synchronous code works the same way with `EfficientAI()` and a plain `with`.
-
-| Helper | Use it for | Setters |
-|---|---|---|
-| `call.turn()` | One user/agent exchange | `set_user_bot_latency(seconds)`, `set_interrupted()` |
-| `call.stt(...)` | Speech-to-text | `set_transcript(text)`, `set_ttfb(seconds)` |
-| `call.llm(...)` | LLM call | `set_output(text)`, `set_input(text)`, `set_usage(...)`, `set_ttfb(seconds)` |
-| `call.tts(...)` | Text-to-speech | `set_text(text)`, `set_ttfb(seconds)` |
-| `call.s2s(...)` | Speech-to-speech / realtime models | `set_transcript(text)`, `set_output(text)` |
-| `call.span(name)` | Anything else (tool calls, retrieval) | `set_attribute(key, value)` |
-
-`set_ttfb` is time to first byte or token, in seconds. It's shown as that component's latency. If you don't set it, the span's duration is used.
-
-### Chat agents
-
-For text agents, open the session with `channel="chat"` and record the user's message, any tool calls and lookups, and the LLM calls:
-
-```python
-async with efficientai.trace.session(channel="chat", headers=request.headers) as call:
-    with call.turn():
-        call.user_message(user_text)
-        with call.llm(model="gpt-4o", provider="openai") as llm:
-            ...  # the model decides to call a tool
-        with call.tool("lookup_order", arguments=args_json) as tool:
-            tool.set_result(result_json)
-        with call.retrieval(source="help-center", query=user_text) as kb:
-            kb.set_documents(len(docs))
-        with call.llm(model="gpt-4o", provider="openai") as llm:
-            llm.set_output(reply).set_ttfb(first_token_seconds)
-```
-
-Each turn on the Calls page shows:
-
-- **Transcript:** the user's message and the reply.
-- **LLM latency:** time to first token of the first LLM call.
-- **Response time:** from the user's message to the final reply.
-- **Tool calls and lookups:** each one, with its duration.
-
-By default, the last LLM output in a turn is used as the reply. If your agent changes the text before sending it, record what was actually sent with `call.assistant_message(text)`.
-
-| Helper | Use it for | Setters |
-|---|---|---|
-| `call.user_message(text)` | The message the user sent | n/a |
-| `call.assistant_message(text)` | The reply actually sent (optional) | n/a |
-| `call.tool(name, arguments=...)` | A tool or function call | `set_result(text)`, `set_error(message)` |
-| `call.retrieval(source=..., query=...)` | A knowledge-base or RAG lookup | `set_documents(count)` |
-
-Long tool arguments and results are cut off at 8,192 characters.
-
-### Pipecat
-
-Let Pipecat create the spans, and attach them to the call:
-
-```python
-from efficientai_sdk.integrations.pipecat import task_kwargs
-
-async with efficientai.trace.session(transport="webrtc", handshake=first_message) as call:
-    task = PipelineTask(pipeline, **task_kwargs(call))
-    await PipelineRunner().run(task)
-```
-
-### Existing OpenTelemetry setup
-
-If your agent already creates OpenTelemetry spans, export them to EfficientAI once at startup:
-
-```python
-efficientai.trace.instrument()
-```
-
-Spans created while a session is open are tagged with that session's Call ID. Work that runs in another thread can be tagged with `with call.activate():`.
-
-## Test calls from EfficientAI
-
-When EfficientAI calls your agent during a simulation, it sends the agent the Call ID, so traces link to the simulation result. Pass whatever your transport received to `session()`:
-
-| Transport | What to pass |
+| Goal | Page |
 |---|---|
-| WebSocket / web call | The first message, as `handshake=first_message` |
-| HTTP chat API | The request headers, as `headers=request.headers` |
-| Phone / SIP | The SIP headers, as `sip_headers=...` |
-
-If none of these carry a Call ID, the SDK opens a new session instead.
-
-> Today only phone test calls (through Vobiz) send the Call ID. The WebSocket, web call and HTTP chat routes are being added. Until then, those test calls get a separate trace that isn't linked to the simulation result.
-
-## Concurrent calls
-
-One agent process can handle many calls at once. Each session is tracked per asyncio task, so every span goes to the right call. Tasks started inside a session belong to that session automatically.
-
-## When EfficientAI is unreachable
-
-Tracing never breaks a call:
-
-- If the session can't be opened, a warning is logged, the call runs untraced, and `call.enabled` is `False`.
-- Span helpers become no-ops.
-- Exceptions from your own code still propagate as usual, and are recorded on the span.
-
-To fail fast instead (for example in tests), pass `strict=True` to `session()`.
-
-## Run simulations in CI
-
-The same client can start a simulation or a suite and wait for the score. The API key needs permission to run simulations in the workspace (`simulations:manage` to create a run, `evals:run` to run a suite). Org admins and keys that are not tied to a user already have those permissions.
-
-```python
-from efficientai_sdk import EfficientAI
-
-with EfficientAI() as client:
-    run = client.simulations.run(
-        agent_id="...",
-        scenario_ids=["..."],
-        persona_ids=["..."],
-        n_attempts=2,
-    )
-    run.wait(timeout=1800)
-    assert run.passed, run.summary
-
-    suite = client.suites.run("suite-id", runs_per_combination=3).wait()
-    assert suite.passed, suite.pass_rate
-```
-
-`wait()` returns when the run finishes. It does not raise if the score is low. `passed` is that check. For a suite, each queued evaluator result is polled until it is completed or failed.
-
-From a shell or a GitHub Action:
-
-```bash
-efficientai simulate --suite "$EFFICIENTAI_SUITE_ID" --fail-under 0.8
-```
-
-Exit `0` when the pass rate is at least `--fail-under` and no result errored. Exit `1` when the suite finishes below that bar. Exit `2` when the arguments or the API call fail. The full walkthrough is [Run simulations in CI](/docs/integrations/simulations-ci/).
+| Record a voice or chat call yourself | [Trace a call](/docs/integrations/python-sdk-tracing/) |
+| Attach those traces to an EfficientAI simulation | [Link traces to a simulation](/docs/integrations/python-sdk-simulations/) |
+| Pipecat already creates the spans | [Pipecat](/docs/integrations/pipecat/) |
+| Fail a pull request when a suite score is low | [Run simulations in CI](/docs/integrations/simulations-ci/) |
 
 ## Environment variables
 
@@ -235,4 +82,4 @@ Exit `0` when the pass rate is at least `--fail-under` and no result errored. Ex
 
 ## Upgrading from `efficientai.integrations.efficientai_traces`
 
-The old helpers (`ensure_trace_session`, `setup_efficientai_tracing`, `close_trace_session`, ...) still work and now live in `efficientai_sdk.tracing`. The `trace.session()` API replaces them for new code. Unlike the old setup, it keeps concurrent calls in one process apart.
+The old helpers still work. They now live in `efficientai_sdk.tracing`. New code should use `trace.session()`. Unlike the old setup, it keeps concurrent calls in one process apart.

@@ -1,0 +1,82 @@
+---
+title: Trace a call
+icon: Activity
+description: Record a voice or chat call with the Python SDK so it shows up under Observability.
+---
+
+# Trace a call
+
+Install and check your key first: [Python SDK](/docs/integrations/python-sdk/).
+
+Wrap each call in a trace session. The session opens a trace, tags every span inside it with a six-digit **Call ID**, then flushes and closes the trace when the block ends.
+
+You should see a new row under **Observability → Calls** with that Call ID.
+
+Synchronous code uses `EfficientAI()` and a plain `with`. The samples below use `AsyncEfficientAI`.
+
+## Voice
+
+Open a session, then mark each turn and each speech, model, and speech step.
+
+```python
+from efficientai_sdk import AsyncEfficientAI
+
+efficientai = AsyncEfficientAI()
+
+
+async def handle_call():
+    async with efficientai.trace.session(transport="websocket") as call:
+        while conversation_is_active():
+            with call.turn():
+                with call.stt(model="nova-3", provider="deepgram") as stt:
+                    user_text = await transcribe()
+                    stt.set_transcript(user_text)
+                with call.llm(model="gpt-4o", provider="openai") as llm:
+                    reply = await generate(user_text)
+                    llm.set_output(reply).set_ttfb(first_token_seconds)
+                with call.tts(model="sonic", provider="cartesia") as tts:
+                    await speak(reply)
+                    tts.set_text(reply)
+```
+
+`set_ttfb` is time to first byte or token, in seconds. The Calls page shows it as that step's latency. If you skip it, the span duration is used instead.
+
+On **Observability → Calls**, the row is labeled **Voice**, with the transport (WebSocket, Web call, or Phone).
+
+## Chat
+
+Open the session with `channel="chat"`. Record the user's message, any tools or lookups, and the model call.
+
+```python
+async with efficientai.trace.session(channel="chat") as call:
+    with call.turn():
+        call.user_message(user_text)
+        with call.tool("lookup_order", arguments=args_json) as tool:
+            tool.set_result(result_json)
+        with call.retrieval(source="help-center", query=user_text) as kb:
+            kb.set_documents(len(docs))
+        with call.llm(model="gpt-4o", provider="openai") as llm:
+            llm.set_output(reply).set_ttfb(first_token_seconds)
+```
+
+The last model output in the turn is the reply. If you change the text before sending it, record what you sent with `call.assistant_message(text)`.
+
+On **Observability → Calls**, the row is labeled **Chat**, with **HTTP API** or **WebSocket**. It is not labeled as a voice platform.
+
+## You already use OpenTelemetry
+
+Call this once at startup:
+
+```python
+efficientai.trace.instrument()
+```
+
+Spans created while a session is open are tagged with that session's Call ID. Work on another thread can be tagged with `with call.activate():`.
+
+## If EfficientAI is unreachable
+
+Tracing does not stop the call. The SDK logs a warning, `call.enabled` is `False`, and the span helpers do nothing. Your own exceptions still propagate.
+
+Pass `strict=True` to `session()` when you want a failed open to raise, for example in tests.
+
+One process can handle many calls at once. Each session follows the current asyncio task, so spans stay on the right call.

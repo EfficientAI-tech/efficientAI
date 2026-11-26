@@ -8,6 +8,8 @@ description: Start an EfficientAI suite from code or GitHub Actions and fail the
 
 Use the Python SDK to run a suite on every pull request. The job exits non-zero when the pass rate is below the threshold you set.
 
+Install and configure the client first: [Python SDK](/docs/integrations/python-sdk/).
+
 The API key must be allowed to run evaluations in that workspace. Org admins, and API keys that are not tied to a user, already can. A key tied to a member only works when that member's role includes `evals:run`.
 
 ## From code
