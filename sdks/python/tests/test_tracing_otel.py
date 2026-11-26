@@ -77,10 +77,14 @@ def test_create_exporter_sets_correlation_headers() -> None:
 
 
 def test_mutable_exporter_is_reused_and_reconfigured() -> None:
-    first = otel.create_otlp_exporter(endpoint="http://x", api_key="k", call_short_id="111111")
-    second = otel.create_otlp_exporter(endpoint="http://x", api_key="k", call_short_id="222222")
+    first = otel.create_otlp_exporter(
+        endpoint="http://x", api_key="k", call_short_id="111111", shared=True
+    )
+    second = otel.create_otlp_exporter(
+        endpoint="http://x", api_key="k", call_short_id="222222", shared=True
+    )
     assert first is second
-    assert latest().headers["X-EfficientAI-Call-Short-Id"] == "222222"
+    assert "X-EfficientAI-Call-Short-Id" not in (latest().headers or {})
 
 
 def test_call_id_read_from_sip_headers() -> None:
@@ -130,7 +134,7 @@ def test_second_call_updates_attributes_without_duplicate_export(
     exported = latest().spans
     assert len(exported) == 1
     assert dict(exported[0].attributes or {})["efficientai.call_short_id"] == "222222"
-    assert latest().headers["X-EfficientAI-Call-Short-Id"] == "222222"
+    assert "X-EfficientAI-Call-Short-Id" not in (latest().headers or {})
 
 
 def test_configure_pipecat_tracing_returns_task_kwargs(provider: TracerProvider) -> None:
