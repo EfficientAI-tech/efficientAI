@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urlparse, urlunparse
@@ -22,21 +23,24 @@ DEFAULT_API_PREFIX = "/api/v1"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_MAX_RETRIES = 2
 
+_dotenv_lock = threading.Lock()
 _dotenv_loaded = False
 
 
 def _load_dotenv_once() -> None:
     global _dotenv_loaded
-    if _dotenv_loaded:
-        return
-    _dotenv_loaded = True
-    try:
-        from dotenv import find_dotenv, load_dotenv
-    except ImportError:
-        return
-    path = find_dotenv(usecwd=True)
-    if path:
-        load_dotenv(path)
+    with _dotenv_lock:
+        if _dotenv_loaded:
+            return
+        try:
+            from dotenv import find_dotenv, load_dotenv
+        except ImportError:
+            _dotenv_loaded = True
+            return
+        path = find_dotenv(usecwd=True)
+        if path:
+            load_dotenv(path)
+        _dotenv_loaded = True
 
 
 def _env(name: str) -> Optional[str]:
