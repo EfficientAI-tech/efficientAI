@@ -1266,10 +1266,15 @@ def _group_chat_spans(spans: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]
             key = _ancestor_turn_id(span, by_id, turn_ids)
             if key is None:
                 start = _span_start_ns(span) or 0
-                key = next(
-                    (tid for tstart, tid in reversed(starts) if tstart <= start),
-                    starts[0][1],
-                )
+                if start < starts[0][0]:
+                    key = "opener"
+                    order.setdefault(key, -1)
+                    groups.setdefault(key, [])
+                else:
+                    key = next(
+                        (tid for tstart, tid in reversed(starts) if tstart <= start),
+                        starts[0][1],
+                    )
             groups[key].append(span)
     else:
         boundaries = sorted(
