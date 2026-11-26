@@ -60,9 +60,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=cache,target=/root/.cache/pip \
     if [ -n "$INSTALL_EXTRAS" ]; then \
-        uv pip install --system -e ".[$INSTALL_EXTRAS]"; \
+        uv pip install --system -e sdks/python -e ".[$INSTALL_EXTRAS]"; \
     else \
-        uv pip install --system -e .; \
+        uv pip install --system -e sdks/python -e .; \
     fi
 
 # Security: fail build if compromised litellm .pth file is present (CVE: supply chain attack on litellm 1.82.8)
@@ -78,7 +78,7 @@ COPY app/ ./app/
 COPY scripts/ ./scripts/
 
 # Re-run editable install to link the actual code
-RUN uv pip install --system -e .
+RUN uv pip install --system -e sdks/python -e .
 
 # Create uploads directory
 RUN mkdir -p /app/uploads

@@ -23,4 +23,4 @@ runs:
 
     - name: Install dependencies
       shell: bash
-      run: uv pip install --system -e ".[dev]"
+      run: uv pip install --system -e sdks/python -e ".[dev]"
