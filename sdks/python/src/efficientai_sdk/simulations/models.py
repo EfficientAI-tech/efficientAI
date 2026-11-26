@@ -161,13 +161,12 @@ class ResultBatchData(APIModel):
         planned = max(len(self.results), self.total_runs)
         if planned == 0:
             return False
-        return (
-            len(self.results) >= self.total_runs
-            and all(result.succeeded for result in self.results)
+        return len(self.results) >= self.total_runs and all(
+            result.succeeded for result in self.results
         )
 
     def meets(self, threshold: float) -> bool:
-        """True when every planned run is present, none errored, and the pass rate is high enough."""
+        """True when every planned run finished and the pass rate meets the threshold."""
         if self.total_runs and len(self.results) < self.total_runs:
             return False
         if any(result.status == "failed" for result in self.results):

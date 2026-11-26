@@ -28,6 +28,13 @@ EVALUATORS_SUFFIX = "evaluators"
 RESULTS_SUFFIX = "evaluator-results"
 
 
+def _api_subpath(client: Any, suffix: str, *parts: object) -> str:
+    path = str(client.api_path(suffix))
+    for part in parts:
+        path = f"{path}/{part}"
+    return path
+
+
 def _compact(data: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in data.items() if value is not None}
 
@@ -171,7 +178,7 @@ def _bind_batch(client: SyncAPIClient, payload: dict[str, Any]) -> ResultBatch:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise APITimeoutError("Timed out while refreshing suite results.")
-            path = client.api_path(f"{RESULTS_SUFFIX}/{result_id}")
+            path = _api_subpath(client, RESULTS_SUFFIX, result_id)
             body = client.request("GET", path, timeout=remaining)
             results.append(EvaluatorResult.model_validate(_expect_dict(body, "evaluator result")))
         nxt = ResultBatch.model_validate(
@@ -200,7 +207,7 @@ def _bind_async_batch(client: AsyncAPIClient, payload: dict[str, Any]) -> AsyncR
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise APITimeoutError("Timed out while refreshing suite results.")
-            path = client.api_path(f"{RESULTS_SUFFIX}/{result_id}")
+            path = _api_subpath(client, RESULTS_SUFFIX, result_id)
             body = _expect_dict(
                 await client.request("GET", path, timeout=remaining),
                 "evaluator result",
@@ -305,7 +312,7 @@ class SimulationsResource:
         return _bind_run(self._client, _expect_dict(payload, "simulation run"))
 
     def get(self, run_id: object) -> SimulationRun:
-        payload = self._client.request("GET", f"{self._client.api_path(RUNS_SUFFIX)}/{run_id}")
+        payload = self._client.request("GET", _api_subpath(self._client, RUNS_SUFFIX, run_id))
         return _bind_run(self._client, _expect_dict(payload, "simulation run"))
 
     def list(
@@ -326,19 +333,23 @@ class SimulationsResource:
         ]
 
     def cancel(self, run_id: object) -> SimulationRun:
-        payload = self._client.request("POST", f"{self._client.api_path(RUNS_SUFFIX)}/{run_id}/cancel")
+        payload = self._client.request(
+            "POST", _api_subpath(self._client, RUNS_SUFFIX, run_id, "cancel")
+        )
         return _bind_run(self._client, _expect_dict(payload, "simulation run"))
 
     def rerun(self, run_id: object, *, only_failed: bool = False) -> SimulationRun:
         payload = self._client.request(
             "POST",
-            f"{self._client.api_path(RUNS_SUFFIX)}/{run_id}/rerun",
+            _api_subpath(self._client, RUNS_SUFFIX, run_id, "rerun"),
             params={"only_failed": only_failed},
         )
         return _bind_run(self._client, _expect_dict(payload, "simulation run"))
 
     def trials(self, run_id: object) -> Sequence[SimulationTrial]:
-        payload = self._client.request("GET", f"{self._client.api_path(RUNS_SUFFIX)}/{run_id}/trials")
+        payload = self._client.request(
+            "GET", _api_subpath(self._client, RUNS_SUFFIX, run_id, "trials")
+        )
         return [
             SimulationTrial.model_validate(item)
             for item in _expect_list(payload, "trial list")
@@ -346,7 +357,9 @@ class SimulationsResource:
         ]
 
     def trial(self, run_id: object, trial_id: object) -> SimulationTrial:
-        payload = self._client.request("GET", f"{self._client.api_path(RUNS_SUFFIX)}/{run_id}/trials/{trial_id}")
+        payload = self._client.request(
+            "GET", _api_subpath(self._client, RUNS_SUFFIX, run_id, "trials", trial_id)
+        )
         return SimulationTrial.model_validate(_expect_dict(payload, "trial"))
 
     def failure_analysis(
@@ -358,7 +371,7 @@ class SimulationsResource:
         model: Optional[str] = None,
     ) -> FailureAnalysis:
         """Return the cached analysis, or start a new one when ``generate`` is set."""
-        path = f"{self._client.api_path(RUNS_SUFFIX)}/{run_id}/failure-analysis"
+        path = _api_subpath(self._client, RUNS_SUFFIX, run_id, "failure-analysis")
         if generate:
             payload = self._client.request(
                 "POST",
@@ -405,7 +418,7 @@ class AsyncSimulationsResource:
         return _bind_async_run(self._client, _expect_dict(payload, "simulation run"))
 
     async def get(self, run_id: object) -> AsyncSimulationRun:
-        payload = await self._client.request("GET", f"{self._client.api_path(RUNS_SUFFIX)}/{run_id}")
+        payload = await self._client.request("GET", _api_subpath(self._client, RUNS_SUFFIX, run_id))
         return _bind_async_run(self._client, _expect_dict(payload, "simulation run"))
 
     async def list(
@@ -426,19 +439,23 @@ class AsyncSimulationsResource:
         ]
 
     async def cancel(self, run_id: object) -> AsyncSimulationRun:
-        payload = await self._client.request("POST", f"{self._client.api_path(RUNS_SUFFIX)}/{run_id}/cancel")
+        payload = await self._client.request(
+            "POST", _api_subpath(self._client, RUNS_SUFFIX, run_id, "cancel")
+        )
         return _bind_async_run(self._client, _expect_dict(payload, "simulation run"))
 
     async def rerun(self, run_id: object, *, only_failed: bool = False) -> AsyncSimulationRun:
         payload = await self._client.request(
             "POST",
-            f"{self._client.api_path(RUNS_SUFFIX)}/{run_id}/rerun",
+            _api_subpath(self._client, RUNS_SUFFIX, run_id, "rerun"),
             params={"only_failed": only_failed},
         )
         return _bind_async_run(self._client, _expect_dict(payload, "simulation run"))
 
     async def trials(self, run_id: object) -> Sequence[SimulationTrial]:
-        payload = await self._client.request("GET", f"{self._client.api_path(RUNS_SUFFIX)}/{run_id}/trials")
+        payload = await self._client.request(
+            "GET", _api_subpath(self._client, RUNS_SUFFIX, run_id, "trials")
+        )
         return [
             SimulationTrial.model_validate(item)
             for item in _expect_list(payload, "trial list")
@@ -446,7 +463,9 @@ class AsyncSimulationsResource:
         ]
 
     async def trial(self, run_id: object, trial_id: object) -> SimulationTrial:
-        payload = await self._client.request("GET", f"{self._client.api_path(RUNS_SUFFIX)}/{run_id}/trials/{trial_id}")
+        payload = await self._client.request(
+            "GET", _api_subpath(self._client, RUNS_SUFFIX, run_id, "trials", trial_id)
+        )
         return SimulationTrial.model_validate(_expect_dict(payload, "trial"))
 
     async def failure_analysis(
@@ -457,7 +476,7 @@ class AsyncSimulationsResource:
         provider: Optional[str] = None,
         model: Optional[str] = None,
     ) -> FailureAnalysis:
-        path = f"{self._client.api_path(RUNS_SUFFIX)}/{run_id}/failure-analysis"
+        path = _api_subpath(self._client, RUNS_SUFFIX, run_id, "failure-analysis")
         if generate:
             payload = await self._client.request(
                 "POST", path, json=_analysis_body(provider=provider, model=model)
@@ -578,15 +597,19 @@ class ResultsResource:
         return EvaluatorResultPage.model_validate(_expect_dict(payload, "evaluator result list"))
 
     def get(self, result_id: object) -> EvaluatorResult:
-        payload = self._client.request("GET", self._client.api_path(f"{RESULTS_SUFFIX}/{result_id}"))
+        payload = self._client.request("GET", _api_subpath(self._client, RESULTS_SUFFIX, result_id))
         return EvaluatorResult.model_validate(_expect_dict(payload, "evaluator result"))
 
     def metrics(self, result_id: object) -> dict[str, Any]:
-        payload = self._client.request("GET", self._client.api_path(f"{RESULTS_SUFFIX}/{result_id}/metrics"))
+        payload = self._client.request(
+            "GET", _api_subpath(self._client, RESULTS_SUFFIX, result_id, "metrics")
+        )
         return _expect_dict(payload, "evaluator result metrics")
 
     def otel_correlation(self, result_id: object) -> dict[str, Any]:
-        payload = self._client.request("GET", self._client.api_path(f"{RESULTS_SUFFIX}/{result_id}/otel-correlation"))
+        payload = self._client.request(
+            "GET", _api_subpath(self._client, RESULTS_SUFFIX, result_id, "otel-correlation")
+        )
         return _expect_dict(payload, "otel correlation")
 
 
@@ -621,15 +644,22 @@ class AsyncResultsResource:
         return EvaluatorResultPage.model_validate(_expect_dict(payload, "evaluator result list"))
 
     async def get(self, result_id: object) -> EvaluatorResult:
-        payload = await self._client.request("GET", self._client.api_path(f"{RESULTS_SUFFIX}/{result_id}"))
+        payload = await self._client.request(
+            "GET", _api_subpath(self._client, RESULTS_SUFFIX, result_id)
+        )
         return EvaluatorResult.model_validate(_expect_dict(payload, "evaluator result"))
 
     async def metrics(self, result_id: object) -> dict[str, Any]:
-        payload = await self._client.request("GET", self._client.api_path(f"{RESULTS_SUFFIX}/{result_id}/metrics"))
+        payload = await self._client.request(
+            "GET", _api_subpath(self._client, RESULTS_SUFFIX, result_id, "metrics")
+        )
         return _expect_dict(payload, "evaluator result metrics")
 
     async def otel_correlation(self, result_id: object) -> dict[str, Any]:
-        payload = await self._client.request("GET", self._client.api_path(f"{RESULTS_SUFFIX}/{result_id}/otel-correlation"))
+        payload = await self._client.request(
+            "GET",
+            _api_subpath(self._client, RESULTS_SUFFIX, result_id, "otel-correlation"),
+        )
         return _expect_dict(payload, "otel correlation")
 
 
