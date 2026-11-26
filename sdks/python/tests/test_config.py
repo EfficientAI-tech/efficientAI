@@ -11,6 +11,17 @@ def test_missing_api_key_raises() -> None:
         EfficientAI()
 
 
+def test_dotenv_file_is_loaded(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    import efficientai_sdk._config as cfgmod
+
+    monkeypatch.delenv("EFFICIENTAI_API_KEY", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("EFFICIENTAI_API_KEY=dotenv-key\n", encoding="utf-8")
+    cfgmod._dotenv_loaded = False
+    cfg = resolve_config()
+    assert cfg.api_key == "dotenv-key"
+
+
 def test_reads_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EFFICIENTAI_API_KEY", " env-key ")
     monkeypatch.setenv("EFFICIENTAI_WORKSPACE_ID", "ws-1")

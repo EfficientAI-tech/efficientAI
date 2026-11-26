@@ -22,8 +22,25 @@ DEFAULT_API_PREFIX = "/api/v1"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_MAX_RETRIES = 2
 
+_dotenv_loaded = False
+
+
+def _load_dotenv_once() -> None:
+    global _dotenv_loaded
+    if _dotenv_loaded:
+        return
+    _dotenv_loaded = True
+    try:
+        from dotenv import find_dotenv, load_dotenv
+    except ImportError:
+        return
+    path = find_dotenv(usecwd=True)
+    if path:
+        load_dotenv(path)
+
 
 def _env(name: str) -> Optional[str]:
+    _load_dotenv_once()
     value = os.environ.get(name)
     if value is None:
         return None
