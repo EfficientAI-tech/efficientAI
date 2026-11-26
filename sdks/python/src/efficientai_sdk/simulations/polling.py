@@ -18,7 +18,7 @@ def _timeout(timeout: float) -> APITimeoutError:
 
 def poll_sync(
     current: T,
-    fetch: Callable[[], T],
+    fetch: Callable[[float], T],
     done: Callable[[T], bool],
     *,
     timeout: float,
@@ -30,13 +30,16 @@ def poll_sync(
         if remaining <= 0:
             raise _timeout(timeout)
         time.sleep(min(interval, remaining) if interval > 0 else 0)
-        current = fetch()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise _timeout(timeout)
+        current = fetch(remaining)
     return current
 
 
 async def poll_async(
     current: T,
-    fetch: Callable[[], Awaitable[T]],
+    fetch: Callable[[float], Awaitable[T]],
     done: Callable[[T], bool],
     *,
     timeout: float,
@@ -48,5 +51,8 @@ async def poll_async(
         if remaining <= 0:
             raise _timeout(timeout)
         await asyncio.sleep(min(interval, remaining) if interval > 0 else 0)
-        current = await fetch()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise _timeout(timeout)
+        current = await fetch(remaining)
     return current
