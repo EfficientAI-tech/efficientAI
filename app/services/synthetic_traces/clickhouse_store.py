@@ -511,7 +511,7 @@ def list_traces(
             conditions.append("status = {status:String}")
             params["status"] = status
     if exclude_playground_websocket:
-        conditions.append("transport != 'websocket'")
+        conditions.append("(transport != 'websocket' OR evaluator_result_id IS NOT NULL)")
     where = " AND ".join(conditions)
     cols = ", ".join(_TRACE_COLUMNS)
 

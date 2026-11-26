@@ -983,7 +983,12 @@ def list_traces(
         SyntheticCallTrace.workspace_id == workspace_id,
     )
     if exclude_playground_websocket:
-        query = query.filter(SyntheticCallTrace.transport != "websocket")
+        query = query.filter(
+            or_(
+                SyntheticCallTrace.transport != "websocket",
+                SyntheticCallTrace.evaluator_result_id.isnot(None),
+            )
+        )
     if since is not None:
         query = query.filter(SyntheticCallTrace.started_at >= since)
     if status:
