@@ -174,7 +174,7 @@ def open_trace_session_ch(
             scenario_id = result.scenario_id
             evaluator_id = result.evaluator_id
 
-    return open_trace_ch(
+    trace = open_trace_ch(
         db,
         organization_id=organization_id,
         workspace_id=workspace_id,
@@ -188,6 +188,19 @@ def open_trace_session_ch(
         provider_platform=provider_platform,
         tier="component",
     )
+    if transport in ("websocket", "custom"):
+        modality = "chat"
+    elif transport in ("phone", "webrtc"):
+        modality = "voice"
+    else:
+        modality = None
+    if modality:
+        aggs = dict(trace.component_aggregates or {})
+        if aggs.get("session_modality") not in ("chat", "voice"):
+            aggs["session_modality"] = modality
+            trace.component_aggregates = aggs
+            upsert_trace_header(trace)
+    return trace
 
 
 def _derive_turns_for_trace(trace: TraceRecord, spans: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
