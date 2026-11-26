@@ -39,12 +39,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             from efficientai_sdk import EfficientAI
 
-            with EfficientAI() as client:
-                with client.trace.from_request(headers, channel="chat") as call:
-                    with call.turn():
-                        call.user_message(last_user or "(empty)")
-                        with call.llm(model="mock", provider="local") as llm:
-                            llm.set_output(reply).set_ttfb(0.05)
+            with EfficientAI() as client, client.trace.from_request(
+                headers, channel="chat"
+            ) as call, call.turn():
+                call.user_message(last_user or "(empty)")
+                with call.llm(model="mock", provider="local") as llm:
+                    llm.set_output(reply).set_ttfb(0.05)
         except Exception as exc:
             print(f"tracing skipped: {exc}")
 
