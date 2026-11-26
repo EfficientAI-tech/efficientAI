@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from typing import Optional
+from urllib.parse import urlunparse, urlparse
 
 from efficientai_sdk._exceptions import ConfigurationError
 
@@ -38,15 +39,26 @@ def normalize_api_prefix(prefix: str) -> str:
 
 
 def normalize_base_url(url: str, *, api_prefix: str = DEFAULT_API_PREFIX) -> str:
-    """Strip trailing slashes and a trailing API prefix so paths can be appended."""
-    cleaned = url.strip().rstrip("/")
-    norm_prefix = normalize_api_prefix(api_prefix)
-    for suffix in (norm_prefix, DEFAULT_API_PREFIX):
-        if cleaned.endswith(suffix):
-            cleaned = cleaned[: -len(suffix)].rstrip("/")
+    """Strip a trailing API prefix from the URL path (not the hostname)."""
+    cleaned = url.strip()
     if not cleaned.startswith(("http://", "https://")):
         raise ConfigurationError(f"base_url must start with http:// or https:// (got {url!r})")
-    return cleaned
+    parsed = urlparse(cleaned)
+    if not parsed.scheme or not parsed.netloc:
+        raise ConfigurationError(f"base_url must include a hostname (got {url!r})")
+
+    path = (parsed.path or "").rstrip("/")
+    norm_prefix = normalize_api_prefix(api_prefix)
+    for suffix in (norm_prefix, DEFAULT_API_PREFIX):
+        if path == suffix:
+            path = ""
+            break
+        if path.endswith(suffix) and len(path) > len(suffix):
+            path = path[: -len(suffix)].rstrip("/")
+            break
+
+    normalized = urlunparse((parsed.scheme, parsed.netloc, path or "", "", "", ""))
+    return normalized.rstrip("/")
 
 
 @dataclass(frozen=True)

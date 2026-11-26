@@ -58,6 +58,11 @@ def test_custom_api_prefix_strips_from_base_url() -> None:
     assert cfg.api_path("auth/validate") == "/api/auth/validate"
 
 
+def test_api_hostname_is_not_stripped_as_prefix() -> None:
+    cfg = resolve_config(api_key="k", base_url="http://api", api_prefix="/api")
+    assert cfg.base_url == "http://api"
+
+
 def test_base_url_requires_scheme() -> None:
     with pytest.raises(ConfigurationError):
         normalize_base_url("x.example")
