@@ -59,14 +59,16 @@ def call_customer_chat_api(
     if not path.startswith("/"):
         path = f"/{path}"
 
+    from app.config import settings
     from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
     from app.services.agents.chat_outbound_urls import assert_chat_connection_urls_safe
 
-    assert_chat_connection_urls_safe(config)
+    allow_loopback = bool(settings.DEBUG)
+    assert_chat_connection_urls_safe(config, allow_loopback=allow_loopback)
     url = urljoin(f"{base}/", path.lstrip("/"))
     from app.services.telephony.recording_download import assert_outbound_http_url_safe
 
-    assert_outbound_http_url_safe(url)
+    assert_outbound_http_url_safe(url, allow_loopback=allow_loopback)
     cfg = chat_connection_config_for_runtime(config)
     headers: dict[str, str] = {"Content-Type": "application/json"}
     auth_header = (cfg.get("api_auth_header") or config.get("api_auth_header") or "").strip()
