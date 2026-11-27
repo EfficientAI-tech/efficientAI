@@ -408,7 +408,6 @@ class TestAgentBridgeService:
         provider_platform: str,
         evaluator_result_id: UUID,
         voice_bundle_id: UUID,
-        bridge_metadata: Optional[Dict[str, Any]] = None,
         db,
         bridge_metadata: Optional[Dict[str, Any]] = None,
     ):
