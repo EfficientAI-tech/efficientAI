@@ -188,12 +188,9 @@ def open_trace_session_ch(
         provider_platform=provider_platform,
         tier="component",
     )
-    if transport in ("websocket", "custom"):
-        modality = "chat"
-    elif transport in ("phone", "webrtc"):
+    modality = "chat" if transport == "custom" else None
+    if modality is None and transport in ("phone", "webrtc", "sip"):
         modality = "voice"
-    else:
-        modality = None
     if modality:
         aggs = dict(trace.component_aggregates or {})
         if aggs.get("session_modality") not in ("chat", "voice"):

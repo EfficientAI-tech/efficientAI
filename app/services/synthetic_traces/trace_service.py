@@ -187,8 +187,6 @@ def enrich_trace_summaries(
                     session_modality = "voice"
         if session_modality is None and transport in ("phone", "webrtc", "sip"):
             session_modality = "voice"
-        elif session_modality is None and transport in ("custom", "websocket"):
-            session_modality = "chat"
         base = {
             "id": trace.id,
             "evaluator_result_id": trace.evaluator_result_id,
@@ -196,7 +194,7 @@ def enrich_trace_summaries(
             "call_short_id": trace.call_short_id,
             "environment": trace.environment,
             "transport": trace.transport,
-            "session_modality": session_modality,
+            **({"session_modality": session_modality} if session_modality else {}),
             "tier": trace.tier,
             "status": trace.status,
             "started_at": trace.started_at,
@@ -443,8 +441,6 @@ def open_trace_session(
         tier="component",
     )
     modality = _session_modality_for_transport(transport)
-    if modality is None and transport == "websocket":
-        modality = "chat"
     if modality and not (trace.component_aggregates or {}).get("session_modality"):
         trace.component_aggregates = {**(trace.component_aggregates or {}), "session_modality": modality}
         db.commit()

@@ -8,6 +8,7 @@ from uuid import UUID
 from loguru import logger
 from sqlalchemy.orm import Session
 
+from app.services.synthetic_traces import ch_trace_ops
 from app.services.synthetic_traces.trace_service import (
     get_trace_for_result,
     open_trace_session,
@@ -93,6 +94,18 @@ def ensure_simulation_correlation(
                 evaluator_result_id=result_id,
                 transport=transport,
             )
+        if trace and transport == "websocket":
+            aggs = dict(getattr(trace, "component_aggregates", None) or {})
+            if aggs.get("session_modality") not in ("chat", "voice"):
+                aggs["session_modality"] = "chat"
+                trace.component_aggregates = aggs
+                if ch_trace_ops.use_ch():
+                    from app.services.synthetic_traces.ch_trace_ops import upsert_trace_header
+
+                    upsert_trace_header(trace)
+                else:
+                    db.commit()
+                    db.refresh(trace)
     except Exception as exc:
         logger.warning("EfficientAI simulation trace was not opened: {}", exc)
         return None

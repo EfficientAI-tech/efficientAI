@@ -37,8 +37,6 @@ def _trace_row_modality(trace: Any) -> Optional[str]:
             return stored
         if isinstance(agg, dict) and bool(agg.get("llm_ttfb_ms")) and not has_voice:
             return "chat"
-        if transport == "custom":
-            return "chat"
     return None
 
 
@@ -280,7 +278,7 @@ def list_calls_hub_page(
                     "span_count": getattr(payload, "span_count", 0),
                     "derive_pending": getattr(payload, "derive_pending", False),
                 }
-            if isinstance(trace_payload, dict) and trace_payload.get("session_modality") is None:
+            if isinstance(trace_payload, dict) and not trace_payload.get("session_modality"):
                 inferred = _trace_row_modality(payload)
                 if inferred:
                     trace_payload = dict(trace_payload)
