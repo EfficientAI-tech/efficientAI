@@ -1817,8 +1817,10 @@ def extract_correlation_ids(spans: List[Dict[str, Any]]) -> Dict[str, Optional[s
     if pairs:
         (call_short, result_id), _ = pairs.most_common(1)[0]
     else:
-        call_short = _pick(calls)
+        call_short = _pick(calls) if len(calls) == 1 else None
         if len(calls) == 1 and len(runs) == 1:
+            result_id = _pick(runs)
+        elif not calls and len(runs) == 1:
             result_id = _pick(runs)
         else:
             result_id = None

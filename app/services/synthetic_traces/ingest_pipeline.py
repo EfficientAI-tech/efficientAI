@@ -94,17 +94,33 @@ def correlate_batch(
             and not trace.evaluator_result_id
             and (trace.call_short_id or call_short_id)
         ):
+            from app.models.database import EvaluatorResult
             from app.services.synthetic_traces.trace_service import link_trace_to_evaluator_result
 
             try:
-                link_trace_to_evaluator_result(
-                    db,
-                    organization_id=organization_id,
-                    call_short_id=str(trace.call_short_id or call_short_id),
-                    evaluator_result_id=UUID(str(evaluator_result_id)),
-                    workspace_id=workspace_id or trace.workspace_id,
+                result_uuid = UUID(str(evaluator_result_id))
+                result = (
+                    db.query(EvaluatorResult)
+                    .filter(
+                        EvaluatorResult.id == result_uuid,
+                        EvaluatorResult.organization_id == organization_id,
+                    )
+                    .first()
                 )
-                db.refresh(trace)
+                target_workspace = workspace_id or trace.workspace_id
+                if result and target_workspace is not None and result.workspace_id != target_workspace:
+                    result = None
+                if result and trace.workspace_id and result.workspace_id != trace.workspace_id:
+                    result = None
+                if result:
+                    link_trace_to_evaluator_result(
+                        db,
+                        organization_id=organization_id,
+                        call_short_id=str(trace.call_short_id or call_short_id),
+                        evaluator_result_id=result_uuid,
+                        workspace_id=target_workspace,
+                    )
+                    db.refresh(trace)
             except ValueError:
                 pass
 
