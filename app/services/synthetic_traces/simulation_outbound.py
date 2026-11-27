@@ -94,7 +94,7 @@ def ensure_simulation_correlation(
                 evaluator_result_id=result_id,
                 transport=transport,
             )
-        if trace and transport in ("websocket", "custom"):
+        if trace and transport == "websocket":
             aggs = dict(getattr(trace, "component_aggregates", None) or {})
             if aggs.get("session_modality") not in ("chat", "voice"):
                 aggs["session_modality"] = "chat"
