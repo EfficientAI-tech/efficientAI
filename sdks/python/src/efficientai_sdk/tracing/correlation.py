@@ -31,12 +31,14 @@ ATTR_WORKSPACE_ID = "efficientai.workspace_id"
 ATTR_ORGANIZATION_ID = "efficientai.organization_id"
 ATTR_ENVIRONMENT = "efficientai.environment"
 ATTR_TRANSPORT = "efficientai.transport"
+ATTR_OTLP_EXPORT_ENDPOINT = "efficientai.otlp_export_endpoint"
 
 __all__ = [
     "ATTR_AGENT_ID",
     "ATTR_CALL_SHORT_ID",
     "ATTR_ENVIRONMENT",
     "ATTR_ORGANIZATION_ID",
+    "ATTR_OTLP_EXPORT_ENDPOINT",
     "ATTR_RUN_ID",
     "ATTR_TRANSPORT",
     "ATTR_WORKSPACE_ID",
@@ -167,6 +169,7 @@ def span_correlation_attributes(
     workspace_id: Optional[str] = None,
     organization_id: Optional[str] = None,
     transport: Optional[str] = None,
+    export_endpoint: Optional[str] = None,
     environment: str = "pre_prod",
 ) -> dict[str, str]:
     attrs: dict[str, str] = {ATTR_ENVIRONMENT: environment}
@@ -183,4 +186,6 @@ def span_correlation_attributes(
         attrs[ATTR_ORGANIZATION_ID] = str(organization_id)
     if transport:
         attrs[ATTR_TRANSPORT] = str(transport)
+    if export_endpoint:
+        attrs[ATTR_OTLP_EXPORT_ENDPOINT] = str(export_endpoint).rstrip("/")
     return attrs

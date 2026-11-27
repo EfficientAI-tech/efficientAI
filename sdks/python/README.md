@@ -50,42 +50,32 @@ async with AsyncEfficientAI() as client:
 
 ## Live call tracing
 
-Install the `otel` extra, then wrap each call in a trace session:
+Install the `otel` extra, then wrap each call in a trace session. Spans created inside the session are tagged with the call's id and exported to EfficientAI. The session closes when the block ends.
 
 ```python
-from efficientai_sdk.tracing import (
-    close_trace_session,
-    ensure_trace_session,
-    setup_worker_tracing,
-)
+from efficientai_sdk import AsyncEfficientAI
+
+efficientai = AsyncEfficientAI()
 
 
 async def handle_call(first_message=None):
-    # Uses the platform's handshake on test calls, otherwise opens a new session.
-    trace_ctx = await ensure_trace_session(transport="websocket", handshake=first_message)
-    tracing = setup_worker_tracing(trace_ctx)  # OTLP export now carries this call's id
-    try:
-        ...  # run the call; OpenTelemetry spans go to EfficientAI
-    finally:
-        await close_trace_session(trace_ctx)
+    async with efficientai.trace.session(transport="websocket", handshake=first_message) as call:
+        with call.turn():
+            with call.stt(model="nova-3", provider="deepgram") as stt:
+                stt.set_transcript(user_text)
+            with call.llm(model="gpt-4o", provider="openai") as llm:
+                llm.set_output(reply).set_ttfb(0.31)
+            with call.tts(model="sonic", provider="cartesia") as tts:
+                tts.set_text(reply)
 ```
 
-Pipecat users can pass the result straight to the pipeline:
+- **Pipecat:** `PipelineTask(pipeline, **task_kwargs(call))` with `from efficientai_sdk.integrations.pipecat import task_kwargs`.
+- **Existing OpenTelemetry setup:** call `efficientai.trace.instrument()` once at startup.
+- **Test calls from EfficientAI:** pass the platform's `handshake=`, `headers=` or `sip_headers=` so traces link to the simulation result.
+- **Concurrent calls:** each session is tracked per asyncio task, so one process can serve many calls.
+- **Failures:** tracing never breaks a call. If EfficientAI is unreachable, the call runs untraced and a warning is logged. Pass `strict=True` to raise instead.
 
-```python
-from efficientai_sdk.integrations.pipecat import configure_pipecat_tracing
-
-task = PipelineTask(pipeline, **configure_pipecat_tracing(handshake=first_message))
-```
-
-Tracing never breaks a call. If EfficientAI can't be reached, the session is disabled, a warning is logged, and the agent keeps running. Pass `strict=True` to `ensure_trace_session` to raise instead.
-
-| Variable | Purpose |
-|---|---|
-| `EFFICIENTAI_OTLP_ENDPOINT` | Override the span ingest URL (defaults to `<base URL>/api/v1/observability/traces`) |
-| `EFFICIENTAI_AGENT_ID` | Agent to attach traces to |
-| `EFFICIENTAI_CALL_SHORT_ID` | Development only: reuse an existing call id instead of opening a session |
-| `EFFICIENTAI_TRACE_TRANSPORT` | Force the transport label: `webrtc`, `websocket`, `phone` or `custom` |
+A runnable example is in [`examples/custom_agent_tracing.py`](examples/custom_agent_tracing.py). The full guide is on the "Python SDK" page of the EfficientAI docs.
 
 ## Errors and retries
 
