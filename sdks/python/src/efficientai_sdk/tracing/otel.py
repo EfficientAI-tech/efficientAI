@@ -330,9 +330,7 @@ def setup_tracer_provider(
         return False
 
 
-def _attach_correlation_processor_unlocked(
-    provider: Any, attrs: Optional[dict[str, str]]
-) -> None:
+def _attach_correlation_processor_unlocked(provider: Any, attrs: Optional[dict[str, str]]) -> None:
     """Like :func:`_attach_correlation_processor` but caller holds ``_state_lock``."""
     global _correlation_processor
     if _correlation_processor is None:
