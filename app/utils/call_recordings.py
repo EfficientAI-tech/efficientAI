@@ -33,11 +33,16 @@ def generate_unique_call_short_id(db: Session, max_attempts: int = 100) -> str:
             continue
         trace_existing = None
         try:
-            trace_existing = (
-                db.query(SyntheticCallTrace)
-                .filter(SyntheticCallTrace.call_short_id == call_short_id)
-                .first()
-            )
+            from app.services.synthetic_traces import ch_trace_ops
+
+            # After migration 092, legacy trace rows may live only in ClickHouse.
+            if not ch_trace_ops.use_ch():
+                with db.begin_nested():
+                    trace_existing = (
+                        db.query(SyntheticCallTrace)
+                        .filter(SyntheticCallTrace.call_short_id == call_short_id)
+                        .first()
+                    )
         except Exception:
             trace_existing = None
         if trace_existing:

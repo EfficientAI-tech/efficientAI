@@ -108,6 +108,10 @@ def ensure_simulation_correlation(
                     db.refresh(trace)
     except Exception as exc:
         logger.warning("EfficientAI simulation trace was not opened: {}", exc)
+        try:
+            db.rollback()
+        except Exception:
+            pass
         return None
 
     call_short_id = getattr(trace, "call_short_id", None)
