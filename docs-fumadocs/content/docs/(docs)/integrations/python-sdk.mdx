@@ -18,23 +18,19 @@ Start here. Then pick the next page for what you want to do.
 
 ## Install
 
-The SDK is not on PyPI yet. Install it from the repository:
+```bash
+pip install "efficientai-sdk[otel]"
+```
+
+You need Python 3.9 or newer. The `otel` extra installs OpenTelemetry so spans can be exported. Until the package is on PyPI, install from the repository:
 
 ```bash
 pip install "efficientai-sdk[otel] @ git+https://github.com/EfficientAI-tech/efficientAI.git#subdirectory=sdks/python"
 ```
 
-You need Python 3.9 or newer. The `otel` extra installs OpenTelemetry so spans can be exported.
-
 ## Configure
 
-EfficientAI is self-hosted, so point the SDK at your deployment. Set these as environment variables, or load a `.env` file before constructing the client (the SDK does not load `.env` automatically):
-
-```python
-from dotenv import load_dotenv
-
-load_dotenv()
-```
+EfficientAI is self-hosted, so point the SDK at your deployment. Set environment variables, or place a `.env` file in the working directory—the client loads it once when you first construct `EfficientAI` or `AsyncEfficientAI`. Existing environment variables are not overridden.
 
 Example `.env` or shell values:
 
@@ -44,7 +40,9 @@ EFFICIENTAI_API_KEY=...
 EFFICIENTAI_WORKSPACE_ID=...
 ```
 
-`EFFICIENTAI_BASE_URL` defaults to `http://localhost:8000` when you omit it.
+`EFFICIENTAI_BASE_URL` defaults to `http://localhost:8000` when you omit it. Use `https://` for production deployments on your own domain.
+
+The API key is sent only to that host. Do not pass absolute URLs to another origin, and avoid turning HTTP client libraries (for example `httpx` or `httpcore`) to debug logging in production—that can print request headers.
 
 You can also download a filled-in block from your deployment:
 
