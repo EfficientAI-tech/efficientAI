@@ -69,6 +69,8 @@ def _link_evaluator_result(
         query = query.filter(EvaluatorResult.organization_id == organization_id)
     result = query.first()
     if result:
+        if trace.workspace_id and result.workspace_id != trace.workspace_id:
+            return
         result.synthetic_call_trace_id = trace.id
         db.commit()
 
@@ -188,8 +190,8 @@ def open_trace_session_ch(
         provider_platform=provider_platform,
         tier="component",
     )
-    modality = "chat" if transport == "custom" else None
-    if modality is None and transport in ("phone", "webrtc", "sip"):
+    modality: Optional[str] = None
+    if transport in ("phone", "webrtc", "sip"):
         modality = "voice"
     if modality:
         aggs = dict(trace.component_aggregates or {})
