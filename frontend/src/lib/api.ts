@@ -4498,6 +4498,7 @@ class ApiClient {
     status?: string
     search?: string
     event?: string
+    modality?: string
   }): Promise<{
     items: Array<{ kind: 'obs' | 'trace'; sort_at?: string; obs?: ObservabilityCall; trace?: Record<string, unknown> }>
     total: number
