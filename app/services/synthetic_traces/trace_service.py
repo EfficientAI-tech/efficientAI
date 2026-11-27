@@ -181,7 +181,7 @@ def enrich_trace_summaries(
             ):
                 session_modality = "voice"
             elif trace.component_aggregates.get("llm_ttfb_ms"):
-                if transport in ("custom", "websocket"):
+                if transport == "custom":
                     session_modality = "chat"
                 elif transport in ("phone", "webrtc", "sip"):
                     session_modality = "voice"
