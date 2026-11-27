@@ -170,6 +170,7 @@ def enrich_trace_summaries(
             elif trace.turns:
                 turn_count = len(trace.turns)
         session_modality = None
+        transport = (trace.transport or "").lower()
         if isinstance(trace.component_aggregates, dict):
             stored = trace.component_aggregates.get("session_modality")
             if stored in ("chat", "voice"):
@@ -180,7 +181,16 @@ def enrich_trace_summaries(
             ):
                 session_modality = "voice"
             elif trace.component_aggregates.get("llm_ttfb_ms"):
-                session_modality = "chat"
+                if transport == "custom":
+                    session_modality = "chat"
+                elif transport in ("phone", "webrtc", "sip", "websocket"):
+                    session_modality = "voice"
+                else:
+                    session_modality = "chat"
+        if session_modality is None and transport in ("phone", "webrtc", "sip"):
+            session_modality = "voice"
+        elif session_modality is None and transport == "custom":
+            session_modality = "chat"
         base = {
             "id": trace.id,
             "evaluator_result_id": trace.evaluator_result_id,
