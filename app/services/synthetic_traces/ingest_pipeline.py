@@ -88,6 +88,25 @@ def correlate_batch(
             auto_close=False,
         )
         correlated = trace is not None
+        if (
+            trace
+            and evaluator_result_id
+            and not trace.evaluator_result_id
+            and (trace.call_short_id or call_short_id)
+        ):
+            from app.services.synthetic_traces.trace_service import link_trace_to_evaluator_result
+
+            try:
+                link_trace_to_evaluator_result(
+                    db,
+                    organization_id=organization_id,
+                    call_short_id=str(trace.call_short_id or call_short_id),
+                    evaluator_result_id=UUID(str(evaluator_result_id)),
+                    workspace_id=workspace_id or trace.workspace_id,
+                )
+                db.refresh(trace)
+            except ValueError:
+                pass
 
     if not trace and evaluator_result_id:
         try:
@@ -647,9 +666,6 @@ def ingest_otlp_batch_to_s3(
     if parsed:
         span_correlation = extract_correlation_ids(parsed)
         header_call_short_id = header_call_short_id or span_correlation.get("call_short_id")
-        header_evaluator_result_id = (
-            header_evaluator_result_id or span_correlation.get("evaluator_result_id")
-        )
 
     trace_uuid = resolve_trace_uuid_for_s3_ingest(
         db,
@@ -912,11 +928,15 @@ def process_s3_otlp_batch(
 
         groups = group_spans_by_call_short_id(spans, header_call_short_id=header_call_short_id)
         for group_call_short_id, group_spans in groups.items():
+            group_correlation = extract_correlation_ids(group_spans)
+            group_evaluator_result_id = group_correlation.get("evaluator_result_id")
+            if group_evaluator_result_id is None and len(groups) == 1:
+                group_evaluator_result_id = header_evaluator_result_id
             group_trace_uuid = resolve_trace_uuid_for_s3_ingest(
                 session,
                 organization_id=organization_id,
                 workspace_id=workspace_id,
-                header_evaluator_result_id=header_evaluator_result_id,
+                header_evaluator_result_id=group_evaluator_result_id,
                 header_call_short_id=group_call_short_id or header_call_short_id,
             )
             trace, _correlated = correlate_batch_ch(
@@ -925,7 +945,7 @@ def process_s3_otlp_batch(
                 workspace_id=workspace_id,
                 spans=group_spans,
                 trace_uuid=group_trace_uuid,
-                header_evaluator_result_id=header_evaluator_result_id,
+                header_evaluator_result_id=group_evaluator_result_id,
                 header_agent_id=header_agent_id,
                 header_call_short_id=group_call_short_id or header_call_short_id,
             )

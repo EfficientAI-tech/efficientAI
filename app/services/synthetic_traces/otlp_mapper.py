@@ -1209,6 +1209,7 @@ def _is_chat_trace(spans: List[Dict[str, Any]]) -> bool:
         if (
             op in _CHAT_USER_OPS
             or name in _CHAT_USER_OPS
+            or op == "chat"
             or str(attrs.get("efficientai.channel") or "").lower() == "chat"
         ):
             chat_marker = True
@@ -1568,7 +1569,14 @@ def merge_tier1_and_otel_turns(
     return merged
 
 
-def infer_session_modality_from_turns(turns: List[Dict[str, Any]]) -> str:
+def infer_session_modality_from_turns(
+    turns: List[Dict[str, Any]],
+    *,
+    transport: Optional[str] = None,
+) -> str:
+    transport = (transport or "").lower()
+    if transport in ("phone", "webrtc", "sip"):
+        return "voice"
     if any((t.get("extra") or {}).get("pipeline_mode") == "chat" for t in turns):
         return "chat"
     has_voice = any(
@@ -1577,12 +1585,19 @@ def infer_session_modality_from_turns(turns: List[Dict[str, Any]]) -> str:
         for field in ("stt_ttfb_ms", "tts_ttfb_ms", "s2s_ttfb_ms")
     )
     has_llm = any(t.get("llm_ttfb_ms") is not None for t in turns)
-    if has_llm and not has_voice:
-        return "chat"
+    if has_voice:
+        return "voice"
+    if has_llm:
+        return "chat" if transport == "custom" else "voice"
     return "voice"
 
 
-def compute_component_aggregates(turns: List[Dict[str, Any]]) -> Dict[str, Any]:
+def compute_component_aggregates(
+    turns: List[Dict[str, Any]],
+    *,
+    transport: Optional[str] = None,
+    existing_aggregates: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     agg: Dict[str, Any] = {}
     for field in (
         "stt_ttfb_ms",
@@ -1608,7 +1623,13 @@ def compute_component_aggregates(turns: List[Dict[str, Any]]) -> Dict[str, Any]:
             "count": len(sut_values),
         }
     if turns:
-        agg["session_modality"] = infer_session_modality_from_turns(turns)
+        stored = (existing_aggregates or {}).get("session_modality")
+        if stored in ("chat", "voice"):
+            agg["session_modality"] = stored
+        else:
+            agg["session_modality"] = infer_session_modality_from_turns(
+                turns, transport=transport
+            )
     return agg
 
 
@@ -1797,7 +1818,10 @@ def extract_correlation_ids(spans: List[Dict[str, Any]]) -> Dict[str, Optional[s
         (call_short, result_id), _ = pairs.most_common(1)[0]
     else:
         call_short = _pick(calls)
-        result_id = _pick(runs)
+        if len(calls) == 1 and len(runs) == 1:
+            result_id = _pick(runs)
+        else:
+            result_id = None
     if not (call_short or result_id or agents or transports or workspaces):
         return {}
     return {

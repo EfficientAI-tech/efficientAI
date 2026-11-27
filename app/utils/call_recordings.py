@@ -31,11 +31,15 @@ def generate_unique_call_short_id(db: Session, max_attempts: int = 100) -> str:
         )
         if existing:
             continue
-        trace_existing = (
-            db.query(SyntheticCallTrace)
-            .filter(SyntheticCallTrace.call_short_id == call_short_id)
-            .first()
-        )
+        trace_existing = None
+        try:
+            trace_existing = (
+                db.query(SyntheticCallTrace)
+                .filter(SyntheticCallTrace.call_short_id == call_short_id)
+                .first()
+            )
+        except Exception:
+            trace_existing = None
         if trace_existing:
             continue
         try:

@@ -33,7 +33,15 @@ Python 3.9 or newer. The `otel` extra pulls in OpenTelemetry for span export.
 
 ## Configure
 
-EfficientAI is self-hosted, so point the SDK at your deployment. Put this in the agent's `.env`, or set the values as environment variables:
+EfficientAI is self-hosted, so point the SDK at your deployment. Set these as environment variables, or load a `.env` file before constructing the client (the SDK does not load `.env` automatically):
+
+```python
+from dotenv import load_dotenv
+
+load_dotenv()
+```
+
+Example `.env` or shell values:
 
 ```bash
 EFFICIENTAI_BASE_URL=https://efficientai.your-company.com   # default: http://localhost:8000

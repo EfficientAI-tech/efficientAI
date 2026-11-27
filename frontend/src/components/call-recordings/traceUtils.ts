@@ -255,10 +255,11 @@ export function buildSpanTranscriptMessages(
     if (chatRole) {
       const text = attrString(span.attributes, 'message')
       if (text) {
+        const turnNum = resolveSpanTurnNumber(span, byId)
         messages.push({
           role: chatRole,
           text,
-          turn: 0,
+          turn: turnNum ?? 0,
           offsetMs: unixNanoOffsetMs(span.start_time_unix_nano, traceStartNs),
           agentRole: attrString(span.attributes, 'efficientai.agent_role'),
           spanId: span.span_id,
@@ -309,7 +310,18 @@ export function buildSpanTranscriptMessages(
     })
   }
 
-  assignTranscriptTurnNumbers(messages)
+  if (chatTranscript) {
+    let lastTurn = 0
+    for (const message of messages) {
+      if (message.turn > 0) {
+        lastTurn = message.turn
+        continue
+      }
+      message.turn = lastTurn > 0 ? lastTurn : 1
+    }
+  } else {
+    assignTranscriptTurnNumbers(messages)
+  }
   return messages
 }
 

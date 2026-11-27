@@ -461,7 +461,11 @@ def _sync_trace_from_otel_spans(db: Session, trace: SyntheticCallTrace) -> None:
         )
 
     trace.turn_count = len(merged)
-    trace.component_aggregates = compute_component_aggregates(merged)
+    trace.component_aggregates = compute_component_aggregates(
+        merged,
+        transport=trace.transport,
+        existing_aggregates=trace.component_aggregates,
+    )
     if otel_turns:
         trace.tier = "mixed" if tier1_turns else "component"
     _update_latency_aggregates(trace, merged)
@@ -1554,7 +1558,11 @@ def _ingest_otlp_span_group(
         )
 
     trace.turn_count = len(merged)
-    trace.component_aggregates = compute_component_aggregates(merged)
+    trace.component_aggregates = compute_component_aggregates(
+        merged,
+        transport=trace.transport,
+        existing_aggregates=trace.component_aggregates,
+    )
     transport = correlation.get("transport")
     if transport in VALID_TRACE_TRANSPORTS:
         trace.transport = transport
@@ -1797,7 +1805,11 @@ def _apply_derived_turns(
         )
 
     trace.turn_count = len(merged)
-    trace.component_aggregates = compute_component_aggregates(merged)
+    trace.component_aggregates = compute_component_aggregates(
+        merged,
+        transport=trace.transport,
+        existing_aggregates=trace.component_aggregates,
+    )
     if otel_turns:
         trace.tier = "mixed" if tier1_turns else "component"
     _update_latency_aggregates(trace, merged)
