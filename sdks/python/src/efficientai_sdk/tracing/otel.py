@@ -330,15 +330,22 @@ def setup_tracer_provider(
         return False
 
 
+def _attach_correlation_processor_unlocked(
+    provider: Any, attrs: Optional[dict[str, str]]
+) -> None:
+    """Like :func:`_attach_correlation_processor` but caller holds ``_state_lock``."""
+    global _correlation_processor
+    if _correlation_processor is None:
+        _correlation_processor = _CorrelationSpanProcessor(attrs or {})
+        provider.add_span_processor(_correlation_processor)
+    elif attrs is not None:
+        _correlation_processor.update_attributes(attrs)
+
+
 def _attach_correlation_processor(provider: Any, attrs: Optional[dict[str, str]]) -> None:
     """Add the correlation processor once. ``attrs`` (if given) become the default."""
-    global _correlation_processor
     with _state_lock:
-        if _correlation_processor is None:
-            _correlation_processor = _CorrelationSpanProcessor(attrs or {})
-            provider.add_span_processor(_correlation_processor)
-        elif attrs is not None:
-            _correlation_processor.update_attributes(attrs)
+        _attach_correlation_processor_unlocked(provider, attrs)
 
 
 def ensure_export_pipeline(
@@ -381,24 +388,23 @@ def ensure_export_pipeline(
                 ):
                     return False
                 _exporter_attached = True
-                _pipelines[key] = exporter
                 provider = trace.get_tracer_provider()
             else:
                 if _mutable_exporter is not None and (
                     _mutable_exporter.endpoint.rstrip("/") == key[0].rstrip("/")
                     and _mutable_exporter._api_key == api_key
                 ):
-                    _pipelines[key] = _mutable_exporter
+                    exporter = _mutable_exporter
                     _exporter_attached = True
                 else:
                     provider.add_span_processor(BatchSpanProcessor(exporter))
-                    _pipelines[key] = exporter
                     _exporter_attached = True
+            if isinstance(provider, TracerProvider):
+                _attach_correlation_processor_unlocked(provider, None)
+            _pipelines[key] = exporter
         except Exception:
             logger.exception("Failed to set up EfficientAI span export")
             return False
-    if isinstance(provider, TracerProvider):
-        _attach_correlation_processor(provider, None)
     return True
 
 
@@ -500,7 +506,7 @@ def setup_efficientai_tracing(
             _pipelines.setdefault(pipeline_key, exporter)
 
         if isinstance(provider, TracerProvider):
-            _attach_correlation_processor(provider, attrs)
+            _attach_correlation_processor_unlocked(provider, attrs)
     return True
 
 
