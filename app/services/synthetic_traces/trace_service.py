@@ -181,10 +181,12 @@ def enrich_trace_summaries(
             ):
                 session_modality = "voice"
             elif trace.component_aggregates.get("llm_ttfb_ms"):
-                if transport == "custom":
-                    session_modality = "chat"
-                elif transport in ("phone", "webrtc", "sip"):
+                if transport in ("phone", "webrtc", "sip"):
                     session_modality = "voice"
+                elif transport == "custom":
+                    session_modality = "chat"
+                elif transport == "websocket" and trace.component_aggregates.get("session_modality") == "chat":
+                    session_modality = "chat"
         if session_modality is None and transport in ("phone", "webrtc", "sip"):
             session_modality = "voice"
         base = {
@@ -364,8 +366,6 @@ def open_trace_for_call_recording(
 
 
 def _session_modality_for_transport(transport: str) -> Optional[str]:
-    if transport == "custom":
-        return "chat"
     if transport in ("phone", "webrtc", "sip"):
         return "voice"
     return None
@@ -680,14 +680,13 @@ def link_trace_to_evaluator_result(
         )
         .first()
     )
-    if not result:
-        return trace
-    if trace.workspace_id and result.workspace_id != trace.workspace_id:
+    if result and trace.workspace_id and result.workspace_id != trace.workspace_id:
         raise ValueError("Evaluator result workspace does not match trace workspace")
     trace.evaluator_result_id = evaluator_result_id
     if call_recording_id:
         trace.call_recording_id = call_recording_id
-    result.synthetic_call_trace_id = trace.id
+    if result:
+        result.synthetic_call_trace_id = trace.id
     db.commit()
     db.refresh(trace)
     return trace
