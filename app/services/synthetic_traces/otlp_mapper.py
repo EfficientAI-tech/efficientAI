@@ -603,9 +603,12 @@ def _append_user_utterance(
     text: str,
     *,
     span_id: Any = None,
+    typed: bool = False,
 ) -> None:
     cleaned = text.strip()
-    if not cleaned or _looks_like_chat_json(cleaned) or _is_low_signal_transcript(cleaned):
+    if not cleaned:
+        return
+    if not typed and (_looks_like_chat_json(cleaned) or _is_low_signal_transcript(cleaned)):
         return
     if _turn_already_has_user_text(turn, cleaned):
         if span_id:
@@ -1047,12 +1050,14 @@ def _is_low_signal_transcript(text: str) -> bool:
     return False
 
 
-def _set_turn_text(turn: Dict[str, Any], role: str, text: str) -> None:
+def _set_turn_text(turn: Dict[str, Any], role: str, text: str, *, typed: bool = False) -> None:
     cleaned = text.strip()
-    if not cleaned or _looks_like_chat_json(cleaned):
+    if not cleaned:
+        return
+    if not typed and _looks_like_chat_json(cleaned):
         return
     if role == "user":
-        _append_user_utterance(turn, cleaned)
+        _append_user_utterance(turn, cleaned, typed=typed)
         return
     extra = turn.setdefault("extra", {})
     existing = extra.get("assistant_text")
@@ -1168,10 +1173,280 @@ def _finalize_turn_metrics(turn: Dict[str, Any]) -> None:
 
 def derive_turns_from_spans(spans: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Project OTLP spans onto per-turn records for Tier 1+2 combined view."""
+    if _is_chat_trace(spans):
+        return _derive_chat_turns(spans)
     rebuilt = _rebuild_conversation_turns(spans)
     if rebuilt is not None:
         return rebuilt
     return _derive_turns_by_pipecat_turn(spans)
+
+
+# ---------------------------------------------------------------------------
+# Chat traces (text agents: user message -> LLM / tools / retrieval -> reply)
+# ---------------------------------------------------------------------------
+
+_CHAT_USER_OPS = frozenset({"user_message"})
+_CHAT_ASSISTANT_OPS = frozenset({"assistant_message"})
+_TOOL_OPS = frozenset({"execute_tool", "tool"})
+_RETRIEVAL_OPS = frozenset({"retrieval", "retrieve"})
+_VOICE_OPS = frozenset({"stt", "tts", "s2s"})
+
+
+def _span_op(span: Dict[str, Any]) -> tuple[str, str]:
+    attrs = span.get("attributes") or {}
+    op = (_attr_str(attrs, "gen_ai.operation.name") or "").lower()
+    return op, (span.get("name") or "").lower()
+
+
+def _is_chat_trace(spans: List[Dict[str, Any]]) -> bool:
+    """Chat traces carry user_message spans or efficientai.channel=chat and no voice spans."""
+    chat_marker = False
+    for span in spans:
+        op, name = _span_op(span)
+        attrs = span.get("attributes") or {}
+        if op in _VOICE_OPS or name in _VOICE_OPS:
+            return False
+        if (
+            op in _CHAT_USER_OPS
+            or name in _CHAT_USER_OPS
+            or op == "chat"
+            or str(attrs.get("efficientai.channel") or "").lower() == "chat"
+        ):
+            chat_marker = True
+    return chat_marker
+
+
+def _span_end_ns(span: Dict[str, Any]) -> Optional[int]:
+    end = span.get("end_time_unix_nano")
+    try:
+        return int(end) if end is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _ancestor_turn_id(
+    span: Dict[str, Any], by_id: Dict[str, Dict[str, Any]], turn_ids: set
+) -> Optional[str]:
+    visited: set = set()
+    parent_id = span.get("parent_span_id")
+    while parent_id and str(parent_id) not in visited:
+        pid = str(parent_id)
+        if pid in turn_ids:
+            return pid
+        visited.add(pid)
+        parent = by_id.get(pid)
+        parent_id = parent.get("parent_span_id") if parent else None
+    return None
+
+
+def _group_chat_spans(spans: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    """Group spans into turns: by ancestor ``turn`` span, else by time window.
+
+    Without turn spans, every user_message starts a new turn; anything before the
+    first user message is an opener turn (e.g. a greeting).
+    """
+    by_id = _span_index(spans)
+    turn_spans = sorted(
+        (s for s in spans if (s.get("name") or "").lower() == "turn" and s.get("span_id")),
+        key=lambda s: _span_start_ns(s) or 0,
+    )
+    groups: Dict[Any, List[Dict[str, Any]]] = {}
+    order: Dict[Any, int] = {}
+
+    if turn_spans:
+        turn_ids = {str(s["span_id"]) for s in turn_spans}
+        starts = [(_span_start_ns(s) or 0, str(s["span_id"])) for s in turn_spans]
+        for idx, (_, sid) in enumerate(starts):
+            order[sid] = idx
+            groups[sid] = []
+        for span in spans:
+            sid = str(span.get("span_id") or "")
+            if sid in turn_ids:
+                groups[sid].append(span)
+                continue
+            key = _ancestor_turn_id(span, by_id, turn_ids)
+            if key is None:
+                start = _span_start_ns(span) or 0
+                if start < starts[0][0]:
+                    key = "opener"
+                    order.setdefault(key, -1)
+                    groups.setdefault(key, [])
+                else:
+                    key = next(
+                        (tid for tstart, tid in reversed(starts) if tstart <= start),
+                        starts[0][1],
+                    )
+            groups[key].append(span)
+    else:
+        boundaries = sorted(
+            _span_start_ns(s) or 0
+            for s in spans
+            if _span_op(s)[0] in _CHAT_USER_OPS or _span_op(s)[1] in _CHAT_USER_OPS
+        )
+        for span in spans:
+            start = _span_start_ns(span) or 0
+            key = sum(1 for b in boundaries if b <= start) - 1  # -1 = opener
+            groups.setdefault(key, []).append(span)
+            order.setdefault(key, key + 1)
+
+    return _split_greeting_openers(
+        [groups[k] for k in sorted(groups, key=lambda k: order[k]) if groups[k]]
+    )
+
+
+def _split_greeting_openers(groups: List[List[Dict[str, Any]]]) -> List[List[Dict[str, Any]]]:
+    """Keep assistant greetings before the first user message in their own opener turn."""
+    result: List[List[Dict[str, Any]]] = []
+    for group in groups:
+        ordered = sorted(group, key=lambda s: (_span_start_ns(s) or 0, _span_end_ns(s) or 0))
+        first_user_at: Optional[int] = None
+        for span in ordered:
+            op, name = _span_op(span)
+            if op in _CHAT_USER_OPS or name in _CHAT_USER_OPS:
+                first_user_at = _span_start_ns(span) or 0
+                break
+        if first_user_at is None:
+            result.append(group)
+            continue
+        opener_spans: List[Dict[str, Any]] = []
+        rest: List[Dict[str, Any]] = []
+        for span in ordered:
+            start = _span_start_ns(span) or 0
+            if start < first_user_at:
+                op, name = _span_op(span)
+                if op in _CHAT_ASSISTANT_OPS or name in _CHAT_ASSISTANT_OPS:
+                    opener_spans.append(span)
+                    continue
+            rest.append(span)
+        if opener_spans and rest:
+            result.append(opener_spans)
+            result.append(rest)
+        else:
+            result.append(group)
+    return result
+
+
+def _chat_message_text(attrs: Dict[str, Any]) -> Optional[str]:
+    for key in ("message", "content", "text", "output", "transcript", "input"):
+        value = attrs.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _build_chat_turn(group: List[Dict[str, Any]]) -> Dict[str, Any]:
+    turn: Dict[str, Any] = {"turn_number": 0, "extra": {"_span_ids": [], "pipeline_mode": "chat"}}
+    extra = turn["extra"]
+    ordered = sorted(group, key=lambda s: (_span_start_ns(s) or 0, _span_end_ns(s) or 0))
+
+    user_start: Optional[int] = None
+    answer: Optional[str] = None
+    answer_end: Optional[int] = None
+    explicit_answer = False
+    first_llm_latency: Optional[float] = None
+    llm_calls = 0
+    tool_calls: List[Dict[str, Any]] = []
+    retrievals: List[Dict[str, Any]] = []
+
+    for span in ordered:
+        _track_span(turn, span.get("span_id"))
+        op, name = _span_op(span)
+        attrs = span.get("attributes") or {}
+        agent_id = attrs.get("efficientai.agent_id")
+        if agent_id and not extra.get("agent_id"):
+            extra["agent_id"] = str(agent_id)
+
+        if name == "turn":
+            user_bot_s = _attr_float(attrs, "turn.user_bot_latency_seconds")
+            if user_bot_s is not None:
+                _set_max_ms(turn, "sut_response_latency_ms", round(user_bot_s * 1000.0, 1))
+                extra["sut_measured_e2e"] = True
+            if attrs.get("turn.was_interrupted"):
+                extra["was_interrupted"] = True
+            continue
+
+        if op in _CHAT_USER_OPS or name in _CHAT_USER_OPS:
+            text = _chat_message_text(attrs)
+            if text:
+                _set_turn_text(turn, "user", text, typed=True)
+            if user_start is None:
+                user_start = _span_start_ns(span)
+            continue
+
+        if op in _CHAT_ASSISTANT_OPS or name in _CHAT_ASSISTANT_OPS:
+            text = _chat_message_text(attrs)
+            if text:
+                answer, explicit_answer = text, True
+                answer_end = _span_end_ns(span) or _span_start_ns(span)
+            continue
+
+        if op in _LLM_OPS or name in _LLM_NAMES:
+            llm_calls += 1
+            latency = _component_latency_ms(span, attrs, "llm_ttfb_ms")
+            if first_llm_latency is None and latency is not None:
+                first_llm_latency = latency
+            if not extra.get("llm_model") and not extra.get("llm_provider"):
+                _set_component_meta(turn, "llm", attrs)
+            output = attrs.get("output") or attrs.get("text_output")
+            if output and not explicit_answer:
+                answer = str(output)
+                answer_end = _span_end_ns(span)
+            continue
+
+        if op in _TOOL_OPS or name.startswith("execute_tool") or name == "tool":
+            call: Dict[str, Any] = {
+                "name": str(attrs.get("gen_ai.tool.name") or span.get("name") or "tool"),
+                "latency_ms": _ms_from_span_duration(span),
+            }
+            events = span.get("events") or []
+            failed = attrs.get("error") or attrs.get("exception.type") or any(
+                str((event or {}).get("name") or "").lower() == "exception" for event in events
+            )
+            if failed:
+                call["error"] = True
+            tool_calls.append(call)
+            continue
+
+        if op in _RETRIEVAL_OPS or name in _RETRIEVAL_OPS:
+            row: Dict[str, Any] = {"latency_ms": _ms_from_span_duration(span)}
+            if attrs.get("retrieval.source"):
+                row["source"] = str(attrs["retrieval.source"])
+            count = _attr_float(attrs, "retrieval.documents.count")
+            if count is not None:
+                row["documents"] = int(count)
+            retrievals.append(row)
+
+    if answer:
+        _set_turn_text(turn, "assistant", answer, typed=True)
+    if first_llm_latency is not None:
+        turn["llm_ttfb_ms"] = first_llm_latency
+    if llm_calls:
+        extra["llm_calls"] = llm_calls
+    if tool_calls:
+        extra["tool_calls"] = tool_calls
+    if retrievals:
+        extra["retrievals"] = retrievals
+
+    if (
+        turn.get("sut_response_latency_ms") is None
+        and user_start is not None
+        and answer_end is not None
+    ):
+        delta_ms = round((answer_end - user_start) / 1_000_000.0, 1)
+        if delta_ms > 0:
+            turn["sut_response_latency_ms"] = delta_ms
+            extra["sut_derived_from_spans"] = True
+
+    _build_transcript_display(turn)
+    return turn
+
+
+def _derive_chat_turns(spans: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    turns = [_build_chat_turn(group) for group in _group_chat_spans(spans)]
+    turns = [t for t in turns if _turn_has_content(t)]
+    for idx, turn in enumerate(turns, start=1):
+        turn["turn_number"] = idx
+    return turns
 
 
 def _span_display_map_from_turns(turns: List[Dict[str, Any]]) -> Dict[str, int]:
@@ -1294,7 +1569,35 @@ def merge_tier1_and_otel_turns(
     return merged
 
 
-def compute_component_aggregates(turns: List[Dict[str, Any]]) -> Dict[str, Any]:
+def infer_session_modality_from_turns(
+    turns: List[Dict[str, Any]],
+    *,
+    transport: Optional[str] = None,
+) -> str:
+    transport = (transport or "").lower()
+    if transport in ("phone", "webrtc", "sip"):
+        return "voice"
+    if any((t.get("extra") or {}).get("pipeline_mode") == "chat" for t in turns):
+        return "chat"
+    has_voice = any(
+        t.get(field) is not None
+        for t in turns
+        for field in ("stt_ttfb_ms", "tts_ttfb_ms", "s2s_ttfb_ms")
+    )
+    has_llm = any(t.get("llm_ttfb_ms") is not None for t in turns)
+    if has_voice:
+        return "voice"
+    if has_llm:
+        return "chat" if transport == "custom" else "voice"
+    return "voice"
+
+
+def compute_component_aggregates(
+    turns: List[Dict[str, Any]],
+    *,
+    transport: Optional[str] = None,
+    existing_aggregates: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     agg: Dict[str, Any] = {}
     for field in (
         "stt_ttfb_ms",
@@ -1319,6 +1622,14 @@ def compute_component_aggregates(turns: List[Dict[str, Any]]) -> Dict[str, Any]:
             "p95": latency_percentile(sut_values, 95),
             "count": len(sut_values),
         }
+    if turns:
+        stored = (existing_aggregates or {}).get("session_modality")
+        if stored in ("chat", "voice"):
+            agg["session_modality"] = stored
+        else:
+            agg["session_modality"] = infer_session_modality_from_turns(
+                turns, transport=transport
+            )
     return agg
 
 
@@ -1462,35 +1773,63 @@ def filter_spans_for_trace(
 
 
 def extract_correlation_ids(spans: List[Dict[str, Any]]) -> Dict[str, Optional[str]]:
+    from collections import Counter
+
+    calls: Counter[str] = Counter()
+    runs: Counter[str] = Counter()
+    pairs: Counter[tuple[str, str]] = Counter()
+    agents: Counter[str] = Counter()
+    transports: Counter[str] = Counter()
+    workspaces: Counter[str] = Counter()
+
     for span in spans:
         attrs = span.get("attributes") or {}
-        result_id = (
-            attrs.get("efficientai.evaluator_result_id")
-            or attrs.get("efficientai.run_id")
-        )
+        result_id = attrs.get("efficientai.evaluator_result_id") or attrs.get("efficientai.run_id")
+        call_short: Optional[str] = None
         call_short_raw = attrs.get("efficientai.call_short_id")
-        call_short = (
-            str(call_short_raw).strip()
-            if call_short_raw and _CALL_SHORT_ID_RE.match(str(call_short_raw).strip())
-            else None
-        )
+        if call_short_raw:
+            candidate = str(call_short_raw).strip()
+            if _CALL_SHORT_ID_RE.match(candidate):
+                call_short = candidate
+                calls[candidate] += 1
+        if result_id:
+            run_key = str(result_id)
+            runs[run_key] += 1
+            if call_short:
+                pairs[(call_short, run_key)] += 1
         agent_id = attrs.get("efficientai.agent_id")
+        if agent_id:
+            agents[str(agent_id)] += 1
         transport_raw = attrs.get("efficientai.transport")
-        transport = (
-            str(transport_raw).strip().lower()
-            if transport_raw and str(transport_raw).strip().lower() in {"webrtc", "websocket", "phone", "custom"}
-            else None
-        )
+        if transport_raw:
+            transport = str(transport_raw).strip().lower()
+            if transport in {"webrtc", "websocket", "phone", "custom"}:
+                transports[transport] += 1
         workspace_raw = attrs.get("efficientai.workspace_id")
-        workspace_id = (
-            str(workspace_raw).strip() if workspace_raw and str(workspace_raw).strip() else None
-        )
-        if result_id or call_short or agent_id or transport or workspace_id:
-            return {
-                "evaluator_result_id": str(result_id) if result_id else None,
-                "call_short_id": call_short,
-                "agent_id": str(agent_id) if agent_id else None,
-                "transport": transport,
-                "workspace_id": workspace_id,
-            }
-    return {}
+        if workspace_raw and str(workspace_raw).strip():
+            workspaces[str(workspace_raw).strip()] += 1
+
+    def _pick(counter: Counter[str]) -> Optional[str]:
+        if not counter:
+            return None
+        return counter.most_common(1)[0][0]
+
+    if pairs:
+        (call_short, result_id), _ = pairs.most_common(1)[0]
+    else:
+        call_short = _pick(calls) if len(calls) == 1 else None
+        if len(calls) == 1 and len(runs) == 1:
+            result_id = _pick(runs)
+        elif not calls and len(runs) == 1:
+            result_id = _pick(runs)
+        else:
+            result_id = None
+    if not (call_short or result_id or agents or transports or workspaces):
+        return {}
+    return {
+        "evaluator_result_id": result_id,
+        "call_short_id": call_short,
+        "agent_id": _pick(agents),
+        "transport": _pick(transports),
+        "workspace_id": _pick(workspaces),
+    }

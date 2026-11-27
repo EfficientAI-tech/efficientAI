@@ -219,7 +219,11 @@ def apply_derived_to_trace(trace: TraceRecord, scoped_spans: List[Dict[str, Any]
         latest = get_trace_by_uuid(trace.id) or trace
         latest.turns = turns
         latest.turn_count = len(turns)
-        latest.component_aggregates = compute_component_aggregates(turns)
+        latest.component_aggregates = compute_component_aggregates(
+            turns,
+            transport=latest.transport,
+            existing_aggregates=latest.component_aggregates,
+        )
         if summary.get("response_latency_p50_ms") is not None:
             latest.response_latency_p50_ms = summary["response_latency_p50_ms"]
             latest.response_latency_p90_ms = summary.get("response_latency_p90_ms")
@@ -502,7 +506,11 @@ def finalize_trace_ch(
             latest.turns = merged
             latest.turn_count = len(merged)
             summary = compute_trace_latency_summary(merged) if merged else {}
-            latest.component_aggregates = compute_component_aggregates(merged)
+            latest.component_aggregates = compute_component_aggregates(
+                merged,
+                transport=latest.transport,
+                existing_aggregates=latest.component_aggregates,
+            )
             if summary.get("response_latency_p50_ms") is not None:
                 latest.response_latency_p50_ms = summary["response_latency_p50_ms"]
                 latest.response_latency_p90_ms = summary.get("response_latency_p90_ms")

@@ -461,7 +461,11 @@ def _sync_trace_from_otel_spans(db: Session, trace: SyntheticCallTrace) -> None:
         )
 
     trace.turn_count = len(merged)
-    trace.component_aggregates = compute_component_aggregates(merged)
+    trace.component_aggregates = compute_component_aggregates(
+        merged,
+        transport=trace.transport,
+        existing_aggregates=trace.component_aggregates,
+    )
     if otel_turns:
         trace.tier = "mixed" if tier1_turns else "component"
     _update_latency_aggregates(trace, merged)
@@ -599,20 +603,15 @@ def link_trace_to_evaluator_result(
         )
 
     _require_pg_trace_storage(db)
-    trace = (
-        db.query(SyntheticCallTrace)
-        .filter(
-            SyntheticCallTrace.organization_id == organization_id,
-            SyntheticCallTrace.call_short_id == call_short_id,
-        )
-        .order_by(SyntheticCallTrace.created_at.desc())
-        .first()
+    trace_query = db.query(SyntheticCallTrace).filter(
+        SyntheticCallTrace.organization_id == organization_id,
+        SyntheticCallTrace.call_short_id == call_short_id,
     )
+    if workspace_id is not None:
+        trace_query = trace_query.filter(SyntheticCallTrace.workspace_id == workspace_id)
+    trace = trace_query.order_by(SyntheticCallTrace.created_at.desc()).first()
     if not trace:
         return None
-    trace.evaluator_result_id = evaluator_result_id
-    if call_recording_id:
-        trace.call_recording_id = call_recording_id
     result = (
         db.query(EvaluatorResult)
         .filter(
@@ -621,8 +620,14 @@ def link_trace_to_evaluator_result(
         )
         .first()
     )
-    if result:
-        result.synthetic_call_trace_id = trace.id
+    if not result:
+        return trace
+    if trace.workspace_id and result.workspace_id != trace.workspace_id:
+        raise ValueError("Evaluator result workspace does not match trace workspace")
+    trace.evaluator_result_id = evaluator_result_id
+    if call_recording_id:
+        trace.call_recording_id = call_recording_id
+    result.synthetic_call_trace_id = trace.id
     db.commit()
     db.refresh(trace)
     return trace
@@ -983,7 +988,12 @@ def list_traces(
         SyntheticCallTrace.workspace_id == workspace_id,
     )
     if exclude_playground_websocket:
-        query = query.filter(SyntheticCallTrace.transport != "websocket")
+        query = query.filter(
+            or_(
+                SyntheticCallTrace.transport != "websocket",
+                SyntheticCallTrace.evaluator_result_id.isnot(None),
+            )
+        )
     if since is not None:
         query = query.filter(SyntheticCallTrace.started_at >= since)
     if status:
@@ -1549,7 +1559,11 @@ def _ingest_otlp_span_group(
         )
 
     trace.turn_count = len(merged)
-    trace.component_aggregates = compute_component_aggregates(merged)
+    trace.component_aggregates = compute_component_aggregates(
+        merged,
+        transport=trace.transport,
+        existing_aggregates=trace.component_aggregates,
+    )
     transport = correlation.get("transport")
     if transport in VALID_TRACE_TRANSPORTS:
         trace.transport = transport
@@ -1792,7 +1806,11 @@ def _apply_derived_turns(
         )
 
     trace.turn_count = len(merged)
-    trace.component_aggregates = compute_component_aggregates(merged)
+    trace.component_aggregates = compute_component_aggregates(
+        merged,
+        transport=trace.transport,
+        existing_aggregates=trace.component_aggregates,
+    )
     if otel_turns:
         trace.tier = "mixed" if tier1_turns else "component"
     _update_latency_aggregates(trace, merged)

@@ -36,10 +36,10 @@ Paste the output into your Pipecat project `.env`, then set `EFFICIENTAI_API_KEY
 
 ```bash
 uv pip install "pipecat-ai[runner,webrtc]>=1.4.0" python-dotenv
-uv pip install "efficientai[otel] @ git+https://github.com/EfficientAI-tech/efficientAI.git@main"
+uv pip install "efficientai-sdk[otel]"
 ```
 
-Use a [starter `bot.py`](https://github.com/EfficientAI-tech/efficientAI/tree/main/docs/examples) from the repo (`pipecat_multi_agent_webrtc_tracing.py` is a good default). Example bots already include trace wiring.
+Keep your own `bot.py`. The SDK does not ship a bot. Wrap each call as shown below.
 
 ### 3. Run a call
 
@@ -55,20 +55,28 @@ In sandbox, open **Observability → Calls**, refresh, and open a **Pipeline tra
 
 ## Already have a custom `bot.py`?
 
-Add the EfficientAI trace helpers around your `PipelineWorker` (same pattern as our examples):
+Install `efficientai-sdk` and wrap the call. Pipecat still creates the STT, LLM, and TTS spans. The SDK attaches them to one call and closes the trace when the block ends.
 
-- `ensure_trace_session()` when a call starts  
-- `setup_pipecat_worker_tracing()` and `enable_tracing=True` on the worker  
-- `close_trace_session()` when the client disconnects  
+```python
+from efficientai_sdk import AsyncEfficientAI
+from efficientai_sdk.integrations.pipecat import task_kwargs
 
-Imports live in `efficientai.integrations.efficientai_traces`. Copy the hook block from [`docs/examples/pipecat_multi_agent_webrtc_tracing.py`](https://github.com/EfficientAI-tech/efficientAI/blob/main/docs/examples/pipecat_multi_agent_webrtc_tracing.py).
+efficientai = AsyncEfficientAI()
+
+async def run_bot(pipeline):
+    async with efficientai.trace.session(transport="webrtc") as call:
+        task = PipelineTask(pipeline, **task_kwargs(call))
+        await PipelineRunner().run(task)
+```
+
+`task_kwargs(call)` sets `enable_tracing` and the call id attributes. If your stack uses `PipelineWorker` instead of `PipelineTask`, pass those same two arguments to the worker. Do not import `efficientai.integrations.efficientai_traces`.
 
 ## Common issues
 
 | Problem | What to check |
 | --- | --- |
 | No rows in Calls | Workspace ID and API key in `.env` match sandbox; refresh after hang-up |
-| Bot starts but no trace | `efficientai[otel]` installed; tracing enabled on the worker |
+| Bot starts but no trace | `efficientai-sdk[otel]` installed; `EFFICIENTAI_OTLP_ENDPOINT` is the same host as `EFFICIENTAI_BASE_URL` |
 | Testing from Pipecat dev UI | Prefer **WebRTC** transport so traces appear in the Calls hub |
 
-For self-hosted EfficientAI or phone/SIP bots, use the detailed guide in the [efficientAI repository](https://github.com/EfficientAI-tech/efficientAI/tree/main/docs/examples).
+For self-hosted EfficientAI or phone and SIP bots, use the same session API as this page. Install and keys are on the [Python SDK](/docs/integrations/python-sdk/) page.

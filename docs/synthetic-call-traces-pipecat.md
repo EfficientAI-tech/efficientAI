@@ -155,7 +155,7 @@ async def on_client_disconnected(transport, client):
     await close_trace_session(trace_ctx)
 ```
 
-Full examples: `docs/examples/pipecat_multi_agent_webrtc_tracing.py`, `pipecat_multi_provider_webrtc_tracing.py`
+See `sdks/python/examples/custom_agent_tracing.py` for a minimal OTLP setup with the Python SDK.
 
 ---
 
@@ -175,4 +175,4 @@ Full examples: `docs/examples/pipecat_multi_agent_webrtc_tracing.py`, `pipecat_m
 
 ## Other transports
 
-WebSocket and phone use the same env vars and session API. See `docs/examples/pipecat_inbound_phone_tracing.py`.
+WebSocket and phone use the same env vars and session API. See the [Pipecat guide](/docs/integrations/pipecat/).

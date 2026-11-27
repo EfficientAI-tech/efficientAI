@@ -64,6 +64,7 @@ def test_ingest_otlp_batch_ch_persists_and_schedules_derive(
 @patch("app.services.synthetic_traces.ingest_pipeline.schedule_derive")
 @patch("app.services.synthetic_traces.ch_trace_ops.persist_spans_ch")
 @patch("app.services.synthetic_traces.ingest_pipeline.correlate_batch_ch")
+@patch("app.services.synthetic_traces.ingest_pipeline.resolve_trace_uuid_for_s3_ingest")
 @patch("app.services.synthetic_traces.clickhouse_store.is_batch_processed", return_value=False)
 @patch("app.services.synthetic_traces.clickhouse_store.mark_batch_processed")
 @patch("app.services.storage.blob_storage_service.blob_storage_service.download_file_by_key")
@@ -73,6 +74,7 @@ def test_process_s3_otlp_batch_downloads_parses_and_persists(
     mock_download,
     _mock_mark_batch,
     _mock_is_batch_done,
+    mock_resolve,
     mock_correlate,
     mock_persist,
     mock_derive,
@@ -81,6 +83,7 @@ def test_process_s3_otlp_batch_downloads_parses_and_persists(
     default_workspace,
 ):
     trace_id = uuid4()
+    mock_resolve.return_value = trace_id
     mock_download.return_value = b'{"resourceSpans":[]}'
     mock_parse.return_value = ([_stt_span("482931")], "json")
     trace = MagicMock()

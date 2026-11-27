@@ -37,8 +37,11 @@ import {
   PIPELINE_MODE_LABELS,
   sessionPipelineMode,
   spanHasError,
+  turnToolCalls,
+  type TraceToolCall,
 } from './traceUtils'
 import { transcriptBubbleClass, transcriptMetaClass } from './transcriptBubbleStyles'
+import { traceListModality, traceTransportDisplayLabel } from '../../lib/traceListLabels'
 
 interface SyntheticCallTracePanelProps {
   evaluatorResultId?: string
@@ -72,7 +75,9 @@ interface TraceTurnExtra {
   agent_role?: string
   turn_type?: string
   was_interrupted?: boolean
-  pipeline_mode?: 'stt_llm_tts' | 's2s'
+  pipeline_mode?: 'stt_llm_tts' | 's2s' | 'chat'
+  tool_calls?: Array<{ name?: string | null; latency_ms?: number | null; error?: boolean | null }>
+  retrievals?: Array<{ source?: string; documents?: number; latency_ms?: number | null }>
   stt_model?: string
   llm_model?: string
   tts_model?: string
@@ -109,13 +114,6 @@ interface OtelSpan {
 export type SyntheticTraceDetailTab = 'trace' | 'waterfall' | 'transcript' | 'timeline' | 'spans'
 type DetailTab = SyntheticTraceDetailTab
 type ComponentKind = 'stt' | 'llm' | 'tts' | 's2s'
-
-const COMPONENT_LABELS: Record<ComponentKind, string> = {
-  stt: 'STT',
-  llm: 'LLM',
-  tts: 'TTS',
-  s2s: 'S2S',
-}
 
 const TABS: Array<{ id: DetailTab; label: string; icon: typeof Activity }> = [
   { id: 'trace', label: 'Trace', icon: Activity },
@@ -168,25 +166,43 @@ function TraceTabBar({
 }) {
   return (
     <div
-      className={`flex flex-nowrap gap-0.5 overflow-x-auto border-b border-gray-200 bg-white px-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${
-        compact ? '' : 'px-5'
-      }`}
+      className={`flex flex-nowrap gap-0.5 overflow-x-auto border-b border-gray-200 bg-white px-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${compact ? '' : 'px-5'
+        }`}
     >
       {tabs.map(({ id, label, icon: Icon }) => (
         <button
           key={id}
           type="button"
           onClick={() => onSelect(id)}
-          className={`inline-flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-1.5 text-sm font-medium transition-colors ${
-            activeTab === id
-              ? 'border-primary-500 text-primary-800'
-              : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
-          }`}
+          className={`inline-flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-1.5 text-sm font-medium transition-colors ${activeTab === id
+            ? 'border-primary-500 text-primary-800'
+            : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
+            }`}
         >
           <Icon className="h-4 w-4" />
           {label}
         </button>
       ))}
+    </div>
+  )
+}
+
+function ToolCallNotes({ calls }: { calls: TraceToolCall[] }) {
+  if (calls.length === 0) return null
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[85%] space-y-1">
+        {calls.map((call, index) => (
+          <div
+            key={`${call.name}-${index}`}
+            className="inline-flex items-center gap-2 rounded-lg border border-primary-200 bg-white px-3 py-1.5 text-xs text-gray-700"
+          >
+            <span className="font-mono font-medium text-gray-900">{call.name}</span>
+            <span className="tabular-nums text-gray-500">{formatMs(call.latencyMs)}</span>
+            {call.error ? <span className="font-semibold text-rose-700">error</span> : null}
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -213,16 +229,29 @@ function attrStr(attrs: Record<string, unknown> | undefined, key: string): strin
   return String(val)
 }
 
-function spanKind(span: OtelSpan): ComponentKind | null {
+type SpanStageKind = ComponentKind | 'tool' | 'retrieval' | null
+
+function spanKind(span: OtelSpan): SpanStageKind {
   const op = attrStr(span.attributes, 'gen_ai.operation.name')?.toLowerCase()
   const name = span.name.toLowerCase()
   if (op === 's2s' || name === 's2s') return 's2s'
   if (op === 'stt' || name === 'stt') return 'stt'
   if (op === 'tts' || name === 'tts') return 'tts'
+  if (op === 'tool' || name === 'tool' || name.startsWith('execute_tool')) return 'tool'
+  if (op === 'retrieval' || name === 'retrieval') return 'retrieval'
   if (op === 'chat' || op === 'llm' || op === 'llm_response' || name === 'llm' || name === 'llm_response') {
     return 'llm'
   }
   return null
+}
+
+const SPAN_STAGE_LABELS: Record<NonNullable<SpanStageKind>, string> = {
+  stt: 'STT',
+  llm: 'LLM',
+  tts: 'TTS',
+  s2s: 'S2S',
+  tool: 'Tool',
+  retrieval: 'Retrieval',
 }
 
 function metaFromSpan(span: OtelSpan): ComponentMeta {
@@ -291,10 +320,10 @@ function turnMetaFromSpans(spans: OtelSpan[]): Partial<TraceTurnExtra> {
     if (!kind) continue
     const meta = metaFromSpan(span)
     if (meta.model && !out[`${kind}_model` as keyof TraceTurnExtra]) {
-      ;(out as Record<string, string>)[`${kind}_model`] = meta.model
+      ; (out as Record<string, string>)[`${kind}_model`] = meta.model
     }
     if (meta.provider && !out[`${kind}_provider` as keyof TraceTurnExtra]) {
-      ;(out as Record<string, string>)[`${kind}_provider`] = meta.provider
+      ; (out as Record<string, string>)[`${kind}_provider`] = meta.provider
     }
   }
   return out
@@ -310,10 +339,10 @@ function mergeTurnMeta(
     const modelKey = `${kind}_model` as keyof TraceTurnExtra
     const providerKey = `${kind}_provider` as keyof TraceTurnExtra
     if (!extra[modelKey] && sessionModels[kind]?.model) {
-      ;(extra as Record<string, string>)[modelKey] = sessionModels[kind]!.model!
+      ; (extra as Record<string, string>)[modelKey] = sessionModels[kind]!.model!
     }
     if (!extra[providerKey] && sessionModels[kind]?.provider) {
-      ;(extra as Record<string, string>)[providerKey] = sessionModels[kind]!.provider!
+      ; (extra as Record<string, string>)[providerKey] = sessionModels[kind]!.provider!
     }
   }
   if (isS2sTurn(turn)) fill('s2s')
@@ -378,15 +407,13 @@ function MetricTile({
 }) {
   return (
     <div
-      className={`rounded-lg border px-3 py-3 ${
-        highlight ? 'border-primary-400 bg-primary-50/40' : 'border-gray-200 bg-white'
-      }`}
+      className={`rounded-lg border px-3 py-3 ${highlight ? 'border-primary-400 bg-primary-50/40' : 'border-gray-200 bg-white'
+        }`}
       title={hint}
     >
       <p
-        className={`text-[10px] font-semibold uppercase tracking-wider ${
-          highlight ? 'text-primary-800/70' : 'text-gray-400'
-        }`}
+        className={`text-[10px] font-semibold uppercase tracking-wider ${highlight ? 'text-primary-800/70' : 'text-gray-400'
+          }`}
       >
         {label}
       </p>
@@ -408,7 +435,7 @@ function RawSpanRow({ span }: { span: OtelSpan }) {
   const durationMs = start != null && end != null ? Number((end - start) / 1_000_000n) : null
   const hasError = spanHasError(span)
 
-  const stageLabel = kind ? COMPONENT_LABELS[kind] : 'Other'
+  const stageLabel = kind ? SPAN_STAGE_LABELS[kind] : 'Other'
   const spanLabel = span.name
   const modelLabel =
     meta.model && meta.model !== span.name ? meta.model : meta.provider ?? '—'
@@ -424,11 +451,10 @@ function RawSpanRow({ span }: { span: OtelSpan }) {
           <span className="flex items-center gap-1.5 text-xs font-medium text-gray-500">
             {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
             <span
-              className={`inline-flex rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${
-                kind
-                  ? 'border-primary-300 bg-primary-50/60 text-primary-800'
-                  : 'border-gray-200 bg-gray-50 text-gray-600'
-              }`}
+              className={`inline-flex rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${kind
+                ? 'border-primary-300 bg-primary-50/60 text-primary-800'
+                : 'border-gray-200 bg-gray-50 text-gray-600'
+                }`}
             >
               {stageLabel}
             </span>
@@ -570,18 +596,24 @@ export default function SyntheticCallTracePanel({
         talkOver: turn.talk_over,
         interrupted: extra.was_interrupted,
         incomplete: isTurnIncomplete(turn, pipelineMode),
+        toolCalls: turnToolCalls(extra),
+        retrievals: Array.isArray(extra.retrievals) ? extra.retrievals : [],
         models,
-        spans: turnSpans.map((span) => ({
-          id: span.span_id,
-          kind: spanKind(span),
-          name: span.name,
-          model: metaFromSpan(span).model ?? undefined,
-          durationMs: (() => {
-            const start = parseUnixNano(span.start_time_unix_nano)
-            const end = parseUnixNano(span.end_time_unix_nano)
-            return start != null && end != null ? Number((end - start) / 1_000_000n) : null
-          })(),
-        })),
+        spans: turnSpans.map((span) => {
+          const stage = spanKind(span)
+          const kind: ComponentKind | 'tool' | 'retrieval' | null = stage
+          return {
+            id: span.span_id,
+            kind,
+            name: span.name,
+            model: metaFromSpan(span).model ?? undefined,
+            durationMs: (() => {
+              const start = parseUnixNano(span.start_time_unix_nano)
+              const end = parseUnixNano(span.end_time_unix_nano)
+              return start != null && end != null ? Number((end - start) / 1_000_000n) : null
+            })(),
+          }
+        }),
       }
     })
   }, [turns, spansByTurn, pipelineModels, pipelineMode, traceStartNs])
@@ -694,6 +726,13 @@ export default function SyntheticCallTracePanel({
   const isDrawer = Boolean(onClose)
   const isOpen = trace.status === 'open'
   const transport = (trace.transport ?? 'webrtc').toLowerCase()
+  const storedModality = (trace.component_aggregates as { session_modality?: string } | undefined)
+    ?.session_modality
+  const listModality = traceListModality(
+    storedModality === 'chat' || storedModality === 'voice' ? storedModality : null,
+    trace.transport,
+  )
+  const transportDetail = traceTransportDisplayLabel(trace.transport)
   const showPhonePipelineHint = transport === 'phone' && otelSpans.length === 0 && !isOpen
 
   const medianMs =
@@ -715,13 +754,13 @@ export default function SyntheticCallTracePanel({
 
   const startedLabel = trace.started_at
     ? new Date(trace.started_at).toLocaleString(undefined, {
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-      })
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    })
     : null
 
   const callDuration = formatCallDuration(trace.started_at, trace.ended_at)
@@ -745,6 +784,7 @@ export default function SyntheticCallTracePanel({
           <TraceTurnDetail
             rows={traceTurnRows}
             pipelineModels={pipelineModels}
+            pipelineMode={pipelineMode}
             componentAggregates={
               trace.component_aggregates as Record<string, { p50?: number; p90?: number; p95?: number }> | undefined
             }
@@ -772,23 +812,37 @@ export default function SyntheticCallTracePanel({
             <div className="space-y-4 max-w-2xl mx-auto">
               {transcriptMessages.map((msg, idx) => {
                 const isUser = msg.role === 'user'
+                const turnTools = traceTurnRows.find((row) => row.turnNumber === msg.turn)?.toolCalls ?? []
+                const earlierAgent = transcriptMessages.some(
+                  (other, otherIdx) => other.role === 'agent' && other.turn === msg.turn && otherIdx < idx,
+                )
+                const hasAgent = transcriptMessages.some((other) => other.role === 'agent' && other.turn === msg.turn)
+                const laterInTurn = transcriptMessages.some(
+                  (other, otherIdx) => other.turn === msg.turn && otherIdx > idx,
+                )
+                const showTools =
+                  turnTools.length > 0 && ((msg.role === 'agent' && !earlierAgent) || (!hasAgent && !laterInTurn))
                 return (
-                  <div key={`${msg.turn}-${msg.role}-${idx}`} className={isUser ? 'flex justify-end' : 'flex justify-start'}>
-                    <div className={transcriptBubbleClass(isUser)}>
-                      <div className={transcriptMetaClass(isUser)}>
-                        <span>{msg.speakerLabel}</span>
-                        <span className="text-[10px] font-normal normal-case tracking-normal tabular-nums opacity-90">
-                          Turn {msg.turn} {formatOffset(msg.offsetMs)}
-                          {msg.latencyMs != null ? ` · ${formatMs(msg.latencyMs)}` : ''}
-                        </span>
-                        <TurnSignalBadges
-                          talkOver={isUser ? msg.talkOver : undefined}
-                          interrupted={!isUser ? msg.interrupted : undefined}
-                          incomplete={msg.incomplete}
-                        />
+                  <div key={`${msg.turn}-${msg.role}-${idx}`} className="space-y-2">
+                    {showTools && msg.role === 'agent' ? <ToolCallNotes calls={turnTools} /> : null}
+                    <div className={isUser ? 'flex justify-end' : 'flex justify-start'}>
+                      <div className={transcriptBubbleClass(isUser)}>
+                        <div className={transcriptMetaClass(isUser)}>
+                          <span>{msg.speakerLabel}</span>
+                          <span className="text-[10px] font-normal normal-case tracking-normal tabular-nums opacity-90">
+                            Turn {msg.turn} {formatOffset(msg.offsetMs)}
+                            {msg.latencyMs != null ? ` · ${formatMs(msg.latencyMs)}` : ''}
+                          </span>
+                          <TurnSignalBadges
+                            talkOver={isUser ? msg.talkOver : undefined}
+                            interrupted={!isUser ? msg.interrupted : undefined}
+                            incomplete={msg.incomplete}
+                          />
+                        </div>
+                        <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.text}</p>
                       </div>
-                      <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.text}</p>
                     </div>
+                    {showTools && msg.role !== 'agent' ? <ToolCallNotes calls={turnTools} /> : null}
                   </div>
                 )
               })}
@@ -869,19 +923,24 @@ export default function SyntheticCallTracePanel({
             </h2>
             <div className="mt-2.5 flex flex-wrap items-center gap-2">
               <span
-                className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium capitalize ${
-                  isOpen
-                    ? 'border-primary-300 bg-primary-50/60 text-primary-800'
-                    : 'border-gray-200 bg-gray-50 text-gray-600'
-                }`}
+                className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium capitalize ${isOpen
+                  ? 'border-primary-300 bg-primary-50/60 text-primary-800'
+                  : 'border-gray-200 bg-gray-50 text-gray-600'
+                  }`}
               >
                 {isOpen && <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-primary-500" />}
                 {statusLabel}
               </span>
-              <span className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2.5 py-0.5 text-xs font-medium capitalize text-gray-700">
-                <Radio className="h-3 w-3 text-gray-400" />
-                {trace.transport ?? 'webrtc'}
-              </span>
+              {listModality === 'chat' ? (
+                <span className="inline-flex items-center gap-1 rounded-full border border-sky-200 bg-sky-50 px-2.5 py-0.5 text-xs font-medium text-sky-900">
+                  Chat{transportDetail ? ` · ${transportDetail}` : ''}
+                </span>
+              ) : transportDetail ? (
+                <span className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2.5 py-0.5 text-xs font-medium text-gray-700">
+                  <Radio className="h-3 w-3 text-gray-400" />
+                  {transportDetail}
+                </span>
+              ) : null}
               {data?.spans_storage && (
                 <span className="inline-flex items-center rounded-full border border-gray-200 bg-white px-2.5 py-0.5 text-xs font-medium text-gray-600">
                   {data.spans_storage === 's3' ? 'Archived' : data.spans_storage === 'batches' ? 'Live' : 'Legacy'}
@@ -963,7 +1022,7 @@ export default function SyntheticCallTracePanel({
               subtitle={latencySampleLabel}
               hint={
                 latencySampleCount != null &&
-                turnCountForLatency > latencySampleCount
+                  turnCountForLatency > latencySampleCount
                   ? RESPONSE_LATENCY_SAMPLE_HINT
                   : undefined
               }

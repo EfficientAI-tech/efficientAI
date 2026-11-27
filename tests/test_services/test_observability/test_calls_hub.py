@@ -28,3 +28,14 @@ def test_merge_window_slices_by_global_time_order():
     )
     kinds = [row[1] for row in merged]
     assert kinds == ["obs", "trace", "obs"]
+
+
+def test_infer_session_modality_from_turns():
+    from app.services.synthetic_traces.otlp_mapper import infer_session_modality_from_turns
+
+    assert infer_session_modality_from_turns([{"extra": {"pipeline_mode": "chat"}}]) == "chat"
+    assert infer_session_modality_from_turns([{"llm_ttfb_ms": 120.0}]) == "voice"
+    assert infer_session_modality_from_turns([{"llm_ttfb_ms": 120.0}], transport="custom") == "chat"
+    assert infer_session_modality_from_turns([{"llm_ttfb_ms": 120.0}], transport="webrtc") == "voice"
+    assert infer_session_modality_from_turns([{"stt_ttfb_ms": 80.0}]) == "voice"
+    assert infer_session_modality_from_turns([{"extra": {}}]) == "voice"

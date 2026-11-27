@@ -417,6 +417,35 @@ def test_extract_correlation_ids_validates_call_short_id():
     assert ids["call_short_id"] == "482931"
 
 
+def test_extract_correlation_ids_run_only_without_call_short_id():
+  spans = [{"attributes": {"efficientai.evaluator_result_id": "run-only"}}]
+  ids = extract_correlation_ids(spans)
+  assert ids.get("call_short_id") is None
+  assert ids["evaluator_result_id"] == "run-only"
+
+
+def test_extract_correlation_ids_pairs_call_short_id_with_run_id():
+    spans = [
+        {
+            "attributes": {
+                "efficientai.call_short_id": "482931",
+                "efficientai.evaluator_result_id": "run-a",
+            }
+        },
+        {"attributes": {"efficientai.call_short_id": "482932", "efficientai.evaluator_result_id": "run-b"}},
+        {
+            "attributes": {
+                "efficientai.call_short_id": "482931",
+                "efficientai.evaluator_result_id": "run-a",
+            }
+        },
+        {"attributes": {"efficientai.call_short_id": "482932"}},
+    ]
+    ids = extract_correlation_ids(spans)
+    assert ids["call_short_id"] == "482931"
+    assert ids["evaluator_result_id"] == "run-a"
+
+
 def test_merge_tier1_and_otel_turns():
     tier1 = [{"turn_number": 1, "sut_response_latency_ms": 900.0}]
     otel = [{"turn_number": 1, "llm_ttfb_ms": 400.0}]

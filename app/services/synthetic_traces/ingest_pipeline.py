@@ -79,7 +79,52 @@ def correlate_batch(
     trace: Optional[SyntheticCallTrace] = None
     correlated = False
 
-    if evaluator_result_id:
+    if call_short_id:
+        trace = get_trace_by_call_short_id(
+            db,
+            organization_id=organization_id,
+            call_short_id=call_short_id,
+            workspace_id=workspace_id,
+            auto_close=False,
+        )
+        correlated = trace is not None
+        if (
+            trace
+            and evaluator_result_id
+            and not trace.evaluator_result_id
+            and (trace.call_short_id or call_short_id)
+        ):
+            from app.models.database import EvaluatorResult
+            from app.services.synthetic_traces.trace_service import link_trace_to_evaluator_result
+
+            try:
+                result_uuid = UUID(str(evaluator_result_id))
+                result = (
+                    db.query(EvaluatorResult)
+                    .filter(
+                        EvaluatorResult.id == result_uuid,
+                        EvaluatorResult.organization_id == organization_id,
+                    )
+                    .first()
+                )
+                target_workspace = workspace_id or trace.workspace_id
+                if result and target_workspace is not None and result.workspace_id != target_workspace:
+                    result = None
+                if result and trace.workspace_id and result.workspace_id != trace.workspace_id:
+                    result = None
+                if result:
+                    link_trace_to_evaluator_result(
+                        db,
+                        organization_id=organization_id,
+                        call_short_id=str(trace.call_short_id or call_short_id),
+                        evaluator_result_id=result_uuid,
+                        workspace_id=target_workspace,
+                    )
+                    db.refresh(trace)
+            except ValueError:
+                pass
+
+    if not trace and evaluator_result_id:
         try:
             result_uuid = UUID(str(evaluator_result_id))
             trace = get_trace_for_result(
@@ -117,16 +162,6 @@ def correlate_batch(
             correlated = trace is not None
         except ValueError:
             trace = None
-
-    if not trace and call_short_id:
-        trace = get_trace_by_call_short_id(
-            db,
-            organization_id=organization_id,
-            call_short_id=call_short_id,
-            workspace_id=workspace_id,
-            auto_close=False,
-        )
-        correlated = trace is not None
 
     if not trace and call_short_id and workspace_id:
         transport = correlation.get("transport") or "custom"
@@ -494,6 +529,43 @@ class IngestUnavailable(Exception):
     """S3 WAL or Celery enqueue failed; API should return 503."""
 
 
+def _reuse_trace_for_call_short_id(
+    *,
+    organization_id: UUID,
+    workspace_id: UUID,
+    call_short_id: str,
+    get_trace_by_call_short_id,
+    register_call_short_id_trace_uuid,
+) -> Optional[UUID]:
+    """Return the trace already opened for this call, including one that just closed.
+
+    A hang-up flush often arrives after the live trace is marked closed. Minting a
+    new id there inserts a second row with the same call id and no turns.
+    """
+    found = get_trace_by_call_short_id(
+        organization_id=organization_id,
+        call_short_id=call_short_id,
+        workspace_id=workspace_id,
+        open_only=True,
+    )
+    if not found:
+        found = get_trace_by_call_short_id(
+            organization_id=organization_id,
+            call_short_id=call_short_id,
+            workspace_id=workspace_id,
+            open_only=False,
+        )
+    if not found:
+        return None
+    register_call_short_id_trace_uuid(
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        call_short_id=call_short_id,
+        trace_uuid=found.id,
+    )
+    return found.id
+
+
 def resolve_trace_uuid_for_s3_ingest(
     db: Session,
     *,
@@ -501,6 +573,7 @@ def resolve_trace_uuid_for_s3_ingest(
     workspace_id: UUID,
     header_evaluator_result_id: Optional[str] = None,
     header_call_short_id: Optional[str] = None,
+    default_trace_uuid: Optional[UUID] = None,
 ) -> UUID:
     from app.services.synthetic_traces.clickhouse_store import (
         claim_call_short_id_trace_uuid,
@@ -519,20 +592,15 @@ def resolve_trace_uuid_for_s3_ingest(
         )
         if cached:
             return cached
-        found = get_trace_by_call_short_id(
+        found = _reuse_trace_for_call_short_id(
             organization_id=organization_id,
-            call_short_id=header_call_short_id,
             workspace_id=workspace_id,
-            open_only=True,
+            call_short_id=header_call_short_id,
+            get_trace_by_call_short_id=get_trace_by_call_short_id,
+            register_call_short_id_trace_uuid=register_call_short_id_trace_uuid,
         )
         if found:
-            register_call_short_id_trace_uuid(
-                organization_id=organization_id,
-                workspace_id=workspace_id,
-                call_short_id=header_call_short_id,
-                trace_uuid=found.id,
-            )
-            return found.id
+            return found
         candidate = mint_trace_uuid()
         if claim_call_short_id_trace_uuid(
             organization_id=organization_id,
@@ -548,20 +616,15 @@ def resolve_trace_uuid_for_s3_ingest(
         )
         if winner:
             return winner
-        found = get_trace_by_call_short_id(
+        found = _reuse_trace_for_call_short_id(
             organization_id=organization_id,
-            call_short_id=header_call_short_id,
             workspace_id=workspace_id,
-            open_only=True,
+            call_short_id=header_call_short_id,
+            get_trace_by_call_short_id=get_trace_by_call_short_id,
+            register_call_short_id_trace_uuid=register_call_short_id_trace_uuid,
         )
         if found:
-            register_call_short_id_trace_uuid(
-                organization_id=organization_id,
-                workspace_id=workspace_id,
-                call_short_id=header_call_short_id,
-                trace_uuid=found.id,
-            )
-            return found.id
+            return found
         raise RuntimeError(
             f"Failed to claim trace UUID for call_short_id={header_call_short_id}"
         )
@@ -585,10 +648,13 @@ def resolve_trace_uuid_for_s3_ingest(
                 .first()
             )
             if result and result.synthetic_call_trace_id:
-                return result.synthetic_call_trace_id
+                if workspace_id is None or result.workspace_id == workspace_id:
+                    return result.synthetic_call_trace_id
         except ValueError:
             pass
 
+    if default_trace_uuid is not None:
+        return default_trace_uuid
     return mint_trace_uuid()
 
 
@@ -610,6 +676,16 @@ def ingest_otlp_batch_to_s3(
         next_batch_seq,
         store_batch_meta,
     )
+
+    # Parse once so span attributes can supply correlation when HTTP headers do not.
+    parsed: List[Dict[str, Any]] = []
+    try:
+        parsed, _fmt = parse_otlp_body(body, content_type)
+    except Exception:
+        parsed = []
+    if parsed:
+        span_correlation = extract_correlation_ids(parsed)
+        header_call_short_id = header_call_short_id or span_correlation.get("call_short_id")
 
     trace_uuid = resolve_trace_uuid_for_s3_ingest(
         db,
@@ -745,6 +821,23 @@ def correlate_batch_ch(
     call_short_id = correlation.get("call_short_id") or header_call_short_id
     _ = header_agent_id or correlation.get("agent_id")
 
+    if call_short_id:
+        existing = get_trace_by_call_short_id(
+            organization_id=organization_id,
+            call_short_id=call_short_id,
+            workspace_id=workspace_id,
+            open_only=True,
+        )
+        if not existing:
+            existing = get_trace_by_call_short_id(
+                organization_id=organization_id,
+                call_short_id=call_short_id,
+                workspace_id=workspace_id,
+                open_only=False,
+            )
+        if existing:
+            trace_uuid = existing.id
+
     with trace_header_lock(trace_uuid):
         trace = get_trace_by_uuid(trace_uuid)
         correlated = trace is not None
@@ -758,17 +851,6 @@ def correlate_batch_ch(
                 started_at=_utcnow(),
                 spans_storage="clickhouse",
             )
-
-        if not correlated and call_short_id:
-            existing = get_trace_by_call_short_id(
-                organization_id=organization_id,
-                call_short_id=call_short_id,
-                workspace_id=workspace_id,
-                open_only=True,
-            )
-            if existing:
-                trace = existing
-                correlated = True
 
         if call_short_id:
             trace.call_short_id = call_short_id
@@ -793,14 +875,20 @@ def correlate_batch_ch(
                 if result:
                     if workspace_id is not None and result.workspace_id != workspace_id:
                         result = None
+                    if result and trace.workspace_id and result.workspace_id != trace.workspace_id:
+                        result = None
                 if result:
                     trace.agent_id = result.agent_id
                     trace.persona_id = result.persona_id
                     trace.scenario_id = result.scenario_id
                     trace.evaluator_id = result.evaluator_id
-                    result.synthetic_call_trace_id = trace.id
-                    db.commit()
-                    correlated = True
+                    prior = result.synthetic_call_trace_id
+                    if prior is None or prior == trace.id:
+                        result.synthetic_call_trace_id = trace.id
+                        db.commit()
+                        correlated = True
+                    elif call_short_id and trace.call_short_id == call_short_id:
+                        correlated = True
             except ValueError:
                 pass
 
@@ -862,13 +950,27 @@ def process_s3_otlp_batch(
 
         groups = group_spans_by_call_short_id(spans, header_call_short_id=header_call_short_id)
         for group_call_short_id, group_spans in groups.items():
+            group_correlation = extract_correlation_ids(group_spans)
+            group_evaluator_result_id = group_correlation.get("evaluator_result_id")
+            if group_evaluator_result_id is None and len(groups) == 1:
+                group_evaluator_result_id = header_evaluator_result_id
+            group_call = group_call_short_id or header_call_short_id
+            use_batch_trace_uuid = not (group_call or group_evaluator_result_id)
+            group_trace_uuid = resolve_trace_uuid_for_s3_ingest(
+                session,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                header_evaluator_result_id=group_evaluator_result_id,
+                header_call_short_id=group_call,
+                default_trace_uuid=trace_uuid if use_batch_trace_uuid else None,
+            )
             trace, _correlated = correlate_batch_ch(
                 session,
                 organization_id=organization_id,
                 workspace_id=workspace_id,
                 spans=group_spans,
-                trace_uuid=trace_uuid,
-                header_evaluator_result_id=header_evaluator_result_id,
+                trace_uuid=group_trace_uuid,
+                header_evaluator_result_id=group_evaluator_result_id,
                 header_agent_id=header_agent_id,
                 header_call_short_id=group_call_short_id or header_call_short_id,
             )
