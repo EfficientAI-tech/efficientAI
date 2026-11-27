@@ -1,0 +1,78 @@
+---
+title: Run simulations in CI
+icon: GitBranch
+description: Start an EfficientAI suite from code or GitHub Actions and fail the build when the score is too low.
+---
+
+# Run simulations in CI
+
+Use the Python SDK to run a suite on every pull request. The job exits non-zero when the pass rate is below the threshold you set.
+
+Install and configure the client first: [Python SDK](/docs/integrations/python-sdk/).
+
+The API key must be allowed to run suites and read their results in that workspace. Org admins, and API keys that are not tied to a user, already can. A key tied to a member needs both `sim.manage` and `sim.view` in that member's role.
+
+## From code
+
+```python
+from efficientai_sdk import EfficientAI
+
+with EfficientAI() as client:
+    suite = client.suites.run("suite-id", runs_per_combination=3)
+    suite = suite.wait(timeout=1800)
+    assert suite.meets(0.8), suite.pass_rate
+```
+
+`wait()` polls each evaluator result until it is completed or failed. `pass_rate` is the share of results that `succeeded`: status `completed` plus an explicit pass from `passed`, `metric_scores`, or `call_data.call_analysis`. `meets(0.8)` is false while any result is still queued, any result failed, or the pass rate is under 0.8.
+
+To run one agent against chosen scenarios and personas instead of a suite:
+
+```python
+run = client.simulations.run(
+    agent_id="...",
+    scenario_ids=["..."],
+    persona_ids=["..."],
+    n_attempts=2,
+)
+run = run.wait(timeout=1800)
+assert run.passed, run.summary
+```
+
+`run.passed` is true only when the run status is `completed` and `summary.pass_rate` is at least the run's `pass_threshold`.
+
+## CLI
+
+```bash
+export EFFICIENTAI_BASE_URL=https://efficientai.your-company.com
+export EFFICIENTAI_API_KEY=...
+export EFFICIENTAI_WORKSPACE_ID=...
+
+efficientai simulate --suite "$SUITE_ID" --fail-under 0.8
+```
+
+| Exit code | Meaning |
+|---|---|
+| 0 | Pass rate is at least `--fail-under`, and no result errored |
+| 1 | The suite finished below the threshold, or a result errored |
+| 2 | Bad arguments, or the API call failed |
+
+Optional flags: `--runs-per-combination` (omit it to use the suite's saved count), `--to-number`, `--from-number`, `--timeout` (default 1800 seconds), `--interval` (default 2 seconds).
+
+## GitHub Actions
+
+Copy [`sdks/python/examples/ci/simulate.yml`](https://github.com/EfficientAI-tech/efficientAI/blob/main/sdks/python/examples/ci/simulate.yml) into `.github/workflows/`. Store these repository secrets:
+
+| Secret | Value |
+|---|---|
+| `EFFICIENTAI_BASE_URL` | Your EfficientAI deployment, with no trailing path |
+| `EFFICIENTAI_API_KEY` | API key that can run suites in the workspace |
+| `EFFICIENTAI_WORKSPACE_ID` | Workspace id |
+| `EFFICIENTAI_SUITE_ID` | Suite to run |
+
+The workflow installs the SDK and runs:
+
+```bash
+efficientai simulate --suite "$EFFICIENTAI_SUITE_ID" --fail-under 0.8
+```
+
+The job fails when the command exits `1` or `2`.

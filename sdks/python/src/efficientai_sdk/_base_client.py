@@ -9,6 +9,7 @@ import random
 import time
 from collections.abc import Mapping
 from typing import Any, Optional, Union
+from urllib.parse import urlparse
 
 import httpx
 
@@ -16,6 +17,7 @@ from efficientai_sdk._config import DEFAULT_API_PREFIX, ClientConfig
 from efficientai_sdk._exceptions import (
     APIConnectionError,
     APITimeoutError,
+    ConfigurationError,
     make_status_error,
     parse_retry_after,
 )
@@ -39,6 +41,24 @@ MAX_RETRY_AFTER = 60.0
 
 QueryParams = Mapping[str, Any]
 Timeout = Union[float, httpx.Timeout, None]
+
+
+def _host_key(url: str) -> tuple[str, str, int]:
+    parsed = urlparse(url.strip())
+    host = (parsed.hostname or "").lower()
+    scheme = (parsed.scheme or "http").lower()
+    port = parsed.port
+    if port is None:
+        port = 443 if scheme == "https" else 80
+    return scheme, host, port
+
+
+def _assert_url_allowed(absolute_url: str, *, base_url: str) -> None:
+    if _host_key(absolute_url) != _host_key(base_url):
+        raise ConfigurationError(
+            "Absolute request URLs must use the same host as base_url so the API key "
+            f"is not sent elsewhere (got {absolute_url!r}, base_url={base_url!r})"
+        )
 
 
 class _BaseClient:
@@ -72,6 +92,7 @@ class _BaseClient:
 
     def _url(self, path: str) -> str:
         if path.startswith(("http://", "https://")):
+            _assert_url_allowed(path, base_url=self._config.base_url)
             return path
         if path.startswith("/"):
             legacy = DEFAULT_API_PREFIX
@@ -144,7 +165,7 @@ class SyncAPIClient(_BaseClient):
     def __init__(self, config: ClientConfig, *, http_client: Optional[httpx.Client] = None) -> None:
         super().__init__(config)
         self._owns_http_client = http_client is None
-        self._http = http_client or httpx.Client(timeout=config.timeout)
+        self._http = http_client or httpx.Client(timeout=config.timeout, follow_redirects=False)
 
     def request(
         self,
@@ -222,7 +243,9 @@ class AsyncAPIClient(_BaseClient):
     ) -> None:
         super().__init__(config)
         self._owns_http_client = http_client is None
-        self._http = http_client or httpx.AsyncClient(timeout=config.timeout)
+        self._http = http_client or httpx.AsyncClient(
+            timeout=config.timeout, follow_redirects=False
+        )
 
     async def request(
         self,

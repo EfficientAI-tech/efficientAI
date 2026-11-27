@@ -10,6 +10,7 @@ from efficientai_sdk import (
     APITimeoutError,
     AsyncEfficientAI,
     AuthenticationError,
+    ConfigurationError,
     EfficientAI,
     InternalServerError,
     NotFoundError,
@@ -17,14 +18,47 @@ from efficientai_sdk import (
     UnprocessableEntityError,
     __version__,
 )
+from efficientai_sdk._config import resolve_config
 
 from .conftest import BASE_URL
 
 VALIDATE = f"{BASE_URL}/api/v1/auth/validate"
 
 
+SECRET_KEY = "sk-test-secret"
+
+
 def make_client(**kwargs: object) -> EfficientAI:
     return EfficientAI(api_key="test-key", base_url=BASE_URL, **kwargs)  # type: ignore[arg-type]
+
+
+def test_off_host_absolute_url_raises_configuration_error() -> None:
+    client = EfficientAI(api_key="k", base_url=BASE_URL)
+    with pytest.raises(ConfigurationError, match="same host"):
+        client._url("https://evil.example/api/v1/x")
+
+
+@respx.mock
+def test_absolute_url_same_host_still_sends() -> None:
+    path = f"{BASE_URL}/api/v1/things"
+    route = respx.get(path).respond(200, json={"ok": True})
+    assert make_client().request("GET", path) == {"ok": True}
+    assert route.called
+
+
+def test_api_key_never_appears_in_repr_or_error_message() -> None:
+    config = resolve_config(api_key=SECRET_KEY, base_url=BASE_URL)
+    client = EfficientAI(api_key=SECRET_KEY, base_url=BASE_URL)
+    assert SECRET_KEY not in repr(config)
+    assert SECRET_KEY not in repr(client)
+    err = APIConnectionError("Connection error.")
+    assert SECRET_KEY not in str(err)
+    auth_err = AuthenticationError("401: Invalid API key", response=httpx.Response(401), body={})
+    assert SECRET_KEY not in str(auth_err)
+    req = httpx.Request("GET", f"{BASE_URL}/api/v1/x", headers={"X-API-Key": SECRET_KEY})
+    conn_err = APIConnectionError("Connection error.", request=req)
+    assert SECRET_KEY not in str(conn_err)
+    assert SECRET_KEY not in repr(conn_err)
 
 
 # ---- headers and verify ------------------------------------------------

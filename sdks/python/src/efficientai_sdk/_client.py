@@ -12,6 +12,16 @@ from efficientai_sdk._base_client import AsyncAPIClient, SyncAPIClient
 from efficientai_sdk._config import resolve_config
 
 if TYPE_CHECKING:
+    from efficientai_sdk.simulations.api import (
+        AsyncEvaluatorsResource,
+        AsyncResultsResource,
+        AsyncSimulationsResource,
+        AsyncSuitesResource,
+        EvaluatorsResource,
+        ResultsResource,
+        SimulationsResource,
+        SuitesResource,
+    )
     from efficientai_sdk.tracing.api import AsyncTraceResource, TraceResource
 
 
@@ -64,6 +74,34 @@ class EfficientAI(SyncAPIClient):
 
         return TraceResource(self)
 
+    @cached_property
+    def simulations(self) -> SimulationsResource:
+        """Start and inspect simulation runs. See :mod:`efficientai_sdk.simulations`."""
+        from efficientai_sdk.simulations.api import SimulationsResource
+
+        return SimulationsResource(self)
+
+    @cached_property
+    def suites(self) -> SuitesResource:
+        """Run an evaluator suite."""
+        from efficientai_sdk.simulations.api import SuitesResource
+
+        return SuitesResource(self)
+
+    @cached_property
+    def evaluators(self) -> EvaluatorsResource:
+        """Run specific evaluators."""
+        from efficientai_sdk.simulations.api import EvaluatorsResource
+
+        return EvaluatorsResource(self)
+
+    @cached_property
+    def results(self) -> ResultsResource:
+        """Read evaluator results."""
+        from efficientai_sdk.simulations.api import ResultsResource
+
+        return ResultsResource(self)
+
     def __enter__(self) -> EfficientAI:
         return self
 
@@ -114,6 +152,34 @@ class AsyncEfficientAI(AsyncAPIClient):
         from efficientai_sdk.tracing.api import AsyncTraceResource
 
         return AsyncTraceResource(self)
+
+    @cached_property
+    def simulations(self) -> AsyncSimulationsResource:
+        """Async form of :attr:`EfficientAI.simulations`."""
+        from efficientai_sdk.simulations.api import AsyncSimulationsResource
+
+        return AsyncSimulationsResource(self)
+
+    @cached_property
+    def suites(self) -> AsyncSuitesResource:
+        """Async form of :attr:`EfficientAI.suites`."""
+        from efficientai_sdk.simulations.api import AsyncSuitesResource
+
+        return AsyncSuitesResource(self)
+
+    @cached_property
+    def evaluators(self) -> AsyncEvaluatorsResource:
+        """Async form of :attr:`EfficientAI.evaluators`."""
+        from efficientai_sdk.simulations.api import AsyncEvaluatorsResource
+
+        return AsyncEvaluatorsResource(self)
+
+    @cached_property
+    def results(self) -> AsyncResultsResource:
+        """Async form of :attr:`EfficientAI.results`."""
+        from efficientai_sdk.simulations.api import AsyncResultsResource
+
+        return AsyncResultsResource(self)
 
     async def __aenter__(self) -> AsyncEfficientAI:
         return self

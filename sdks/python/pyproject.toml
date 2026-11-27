@@ -57,6 +57,9 @@ dev = [
     "mypy>=1.10",
 ]
 
+[project.scripts]
+efficientai = "efficientai_sdk.cli:entry"
+
 [tool.hatch.version]
 path = "src/efficientai_sdk/_version.py"
 
@@ -64,7 +67,7 @@ path = "src/efficientai_sdk/_version.py"
 packages = ["src/efficientai_sdk"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/efficientai_sdk", "tests", "README.md", "CHANGELOG.md", "LICENSE"]
+include = ["src/efficientai_sdk", "tests", "examples", "README.md", "CHANGELOG.md", "LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -26,18 +26,17 @@ def _trace_row_modality(trace: Any) -> Optional[str]:
         has_voice = any(k in agg for k in ("stt_ttfb_ms", "tts_ttfb_ms", "s2s_ttfb_ms"))
         if has_voice:
             return "voice"
+        if agg.get("llm_ttfb_ms"):
+            return "chat"
     transport = (getattr(trace, "transport", None) or "").lower()
     if transport in ("phone", "webrtc", "sip"):
         return "voice"
-    if isinstance(agg, dict) and agg.get("llm_ttfb_ms") and not has_voice:
-        if transport == "custom":
-            return "chat"
-        if transport == "websocket" and agg.get("session_modality") == "chat":
-            return "chat"
     if transport in ("custom", "websocket"):
         stored = agg.get("session_modality") if isinstance(agg, dict) else None
         if stored in ("chat", "voice"):
             return stored
+        if isinstance(agg, dict) and bool(agg.get("llm_ttfb_ms")) and not has_voice:
+            return "chat"
     return None
 
 

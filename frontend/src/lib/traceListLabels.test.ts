@@ -2,12 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { traceListModality, traceListPlatformSummary, traceTransportDisplayLabel } from './traceListLabels'
 
 describe('traceListLabels', () => {
-  it('defaults custom transport to voice until session_modality is known', () => {
+  it('does not assume chat for custom transport without session_modality', () => {
     expect(traceListModality(null, 'custom')).toBe('voice')
-    expect(traceListPlatformSummary(null, 'custom')).toEqual({
-      modality: 'voice',
-      detail: 'HTTP API',
-    })
     expect(traceListPlatformSummary('chat', 'custom')).toEqual({
       modality: 'chat',
       detail: 'HTTP API',

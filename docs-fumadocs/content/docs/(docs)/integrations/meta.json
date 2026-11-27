@@ -3,6 +3,9 @@
   "pages": [
     "index",
     "python-sdk",
+    "python-sdk-tracing",
+    "python-sdk-simulations",
+    "simulations-ci",
     "retell",
     "elevenlabs",
     "vapi",

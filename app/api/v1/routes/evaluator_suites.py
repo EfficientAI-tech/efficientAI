@@ -224,7 +224,12 @@ def run_suite(
         raise HTTPException(status_code=400, detail="Suite has no scenario combinations")
 
     combination_ids = [c.id for c in combinations]
-    expanded = expand_suite_runs(combination_ids, request.runs_per_combination)
+    runs_per_combination = (
+        request.runs_per_combination
+        if request.runs_per_combination is not None
+        else (suite.default_runs_per_combination or 1)
+    )
+    expanded = expand_suite_runs(combination_ids, runs_per_combination)
     strategy = _resolve_run_strategy(agent)
 
     task_ids: List[str] = []

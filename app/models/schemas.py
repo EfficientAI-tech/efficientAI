@@ -2768,6 +2768,8 @@ class EvaluatorResultResponse(BaseModel):
     metric_scores: Optional[Dict[str, Any]]
     celery_task_id: Optional[str]
     error_message: Optional[str]
+    # Set for simulation trials. None on suite runs that only record a status.
+    passed: Optional[bool] = None
     
     # Call tracking fields (for voice AI integrations)
     call_event: Optional[str] = None

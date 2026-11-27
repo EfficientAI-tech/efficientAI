@@ -1,0 +1,72 @@
+---
+title: Link traces to a simulation
+icon: Link
+description: Pass the Call ID EfficientAI sends during a simulation so the trace sits on the same result.
+---
+
+# Link traces to a simulation
+
+A simulation already has a Call ID. EfficientAI sends that ID to your agent. Pass it into the trace session so the spans land on the same result you see in **Results**, under the same Call ID in **Observability → Calls**.
+
+If you open a session without that ID, the SDK starts a new call. That trace is not linked to the simulation.
+
+Record the call the same way as in [Trace a call](/docs/integrations/python-sdk-tracing/). Only the way you open the session changes.
+
+## What to pass
+
+| How the simulation talks to your agent | What you receive | What to pass |
+|---|---|---|
+| HTTP API | `X-EfficientAI-Call-Short-Id` and `X-EfficientAI-Run-Id` on each request | `from_request(headers)` or `headers=` |
+| WebSocket | `X-EfficientAI-*` on connect; optional first `efficientai_trace_handshake` only when `efficientai_trace_handshake_enabled` is on | `from_request(ws_headers)` by default, or `from_handshake(message)` |
+| Web call (Retell, Vapi, ElevenLabs) | The handshake inside the web-call metadata | `from_handshake(message)` |
+| Phone (Vobiz or Plivo) | SIP headers on the outbound call | `from_sip_headers(sip_headers)` |
+
+### HTTP API
+
+```python
+async with efficientai.trace.from_request(request.headers, channel="chat") as call:
+    with call.turn():
+        call.user_message(user_text)
+        with call.llm(model="gpt-4o", provider="openai") as llm:
+            llm.set_output(reply)
+```
+
+### WebSocket or web call
+
+Use the connection headers by default:
+
+```python
+async with efficientai.trace.from_request(ws_headers, channel="chat") as call:
+    ...
+```
+
+If the agent enables `efficientai_trace_handshake_enabled`, you may read the optional first `efficientai_trace_handshake` message:
+
+```python
+first_message = await websocket.receive_json()
+async with efficientai.trace.from_handshake(first_message, channel="chat") as call:
+    ...
+```
+
+For a voice web call, omit `channel="chat"`.
+
+### Phone
+
+```python
+from efficientai_sdk import EfficientAI
+
+with EfficientAI() as efficientai, efficientai.trace.from_sip_headers(sip_headers) as call:
+    ...
+```
+
+You should see the same Call ID in three places: the header or handshake your agent received, the simulation **Results** row, and **Observability → Calls**. Chat simulations use the **Chat** filter. Phone and web-call simulations use **Voice**.
+
+## What is not linked for you
+
+These simulations still produce a transcript in **Results**. EfficientAI does not send a Call ID on them, so a trace is linked only if your agent already has that ID and passes it into the session:
+
+- Chat on an existing platform (Retell, Vapi, ElevenLabs, or Smallest text APIs)
+- WhatsApp or SMS
+- Phone simulations that dial out through Exotel
+
+ClickHouse must be running or span ingest returns an error and **Calls** stays empty even when the simulation transcript is fine.

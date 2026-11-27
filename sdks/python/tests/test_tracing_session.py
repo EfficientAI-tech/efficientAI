@@ -184,6 +184,17 @@ def test_otlp_endpoint_refuses_https_to_http_downgrade(monkeypatch: pytest.Monke
     )
 
 
+def test_otlp_endpoint_http_vpc_uses_server_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EFFICIENTAI_BASE_URL", "http://efficientai.internal:8000")
+    hint = "http://efficientai.internal:8000/api/v1/observability/traces"
+    assert resolve_otlp_endpoint(hint) == hint
+
+
+def test_otlp_endpoint_http_vpc_default_canonical(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EFFICIENTAI_BASE_URL", "http://efficientai.internal:8000")
+    assert resolve_otlp_endpoint() == "http://efficientai.internal:8000/api/v1/observability/traces"
+
+
 def test_resolve_trace_transport(monkeypatch: pytest.MonkeyPatch) -> None:
     class Args:
         transport = "Phone"
