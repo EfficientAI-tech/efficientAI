@@ -603,20 +603,15 @@ def link_trace_to_evaluator_result(
         )
 
     _require_pg_trace_storage(db)
-    trace = (
-        db.query(SyntheticCallTrace)
-        .filter(
-            SyntheticCallTrace.organization_id == organization_id,
-            SyntheticCallTrace.call_short_id == call_short_id,
-        )
-        .order_by(SyntheticCallTrace.created_at.desc())
-        .first()
+    trace_query = db.query(SyntheticCallTrace).filter(
+        SyntheticCallTrace.organization_id == organization_id,
+        SyntheticCallTrace.call_short_id == call_short_id,
     )
+    if workspace_id is not None:
+        trace_query = trace_query.filter(SyntheticCallTrace.workspace_id == workspace_id)
+    trace = trace_query.order_by(SyntheticCallTrace.created_at.desc()).first()
     if not trace:
         return None
-    trace.evaluator_result_id = evaluator_result_id
-    if call_recording_id:
-        trace.call_recording_id = call_recording_id
     result = (
         db.query(EvaluatorResult)
         .filter(
@@ -625,8 +620,14 @@ def link_trace_to_evaluator_result(
         )
         .first()
     )
-    if result:
-        result.synthetic_call_trace_id = trace.id
+    if not result:
+        return trace
+    if trace.workspace_id and result.workspace_id != trace.workspace_id:
+        raise ValueError("Evaluator result workspace does not match trace workspace")
+    trace.evaluator_result_id = evaluator_result_id
+    if call_recording_id:
+        trace.call_recording_id = call_recording_id
+    result.synthetic_call_trace_id = trace.id
     db.commit()
     db.refresh(trace)
     return trace

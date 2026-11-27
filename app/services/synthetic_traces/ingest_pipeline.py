@@ -573,6 +573,7 @@ def resolve_trace_uuid_for_s3_ingest(
     workspace_id: UUID,
     header_evaluator_result_id: Optional[str] = None,
     header_call_short_id: Optional[str] = None,
+    default_trace_uuid: Optional[UUID] = None,
 ) -> UUID:
     from app.services.synthetic_traces.clickhouse_store import (
         claim_call_short_id_trace_uuid,
@@ -647,10 +648,13 @@ def resolve_trace_uuid_for_s3_ingest(
                 .first()
             )
             if result and result.synthetic_call_trace_id:
-                return result.synthetic_call_trace_id
+                if workspace_id is None or result.workspace_id == workspace_id:
+                    return result.synthetic_call_trace_id
         except ValueError:
             pass
 
+    if default_trace_uuid is not None:
+        return default_trace_uuid
     return mint_trace_uuid()
 
 
@@ -871,6 +875,8 @@ def correlate_batch_ch(
                 if result:
                     if workspace_id is not None and result.workspace_id != workspace_id:
                         result = None
+                    if result and trace.workspace_id and result.workspace_id != trace.workspace_id:
+                        result = None
                 if result:
                     trace.agent_id = result.agent_id
                     trace.persona_id = result.persona_id
@@ -948,12 +954,15 @@ def process_s3_otlp_batch(
             group_evaluator_result_id = group_correlation.get("evaluator_result_id")
             if group_evaluator_result_id is None and len(groups) == 1:
                 group_evaluator_result_id = header_evaluator_result_id
+            group_call = group_call_short_id or header_call_short_id
+            use_batch_trace_uuid = not (group_call or group_evaluator_result_id)
             group_trace_uuid = resolve_trace_uuid_for_s3_ingest(
                 session,
                 organization_id=organization_id,
                 workspace_id=workspace_id,
                 header_evaluator_result_id=group_evaluator_result_id,
-                header_call_short_id=group_call_short_id or header_call_short_id,
+                header_call_short_id=group_call,
+                default_trace_uuid=trace_uuid if use_batch_trace_uuid else None,
             )
             trace, _correlated = correlate_batch_ch(
                 session,

@@ -16,8 +16,8 @@ export function traceListModality(
   if (sessionModality === 'chat') return 'chat'
   if (sessionModality === 'voice') return 'voice'
   const t = (transport ?? '').toLowerCase()
-  if (t === 'custom') return 'chat'
   if (t === 'phone' || t === 'webrtc' || t === 'sip') return 'voice'
+  if (t === 'custom') return 'voice'
   if (t === 'websocket') return 'voice'
   return 'voice'
 }

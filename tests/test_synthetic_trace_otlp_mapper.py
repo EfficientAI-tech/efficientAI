@@ -417,6 +417,13 @@ def test_extract_correlation_ids_validates_call_short_id():
     assert ids["call_short_id"] == "482931"
 
 
+def test_extract_correlation_ids_run_only_without_call_short_id():
+  spans = [{"attributes": {"efficientai.evaluator_result_id": "run-only"}}]
+  ids = extract_correlation_ids(spans)
+  assert ids.get("call_short_id") is None
+  assert ids["evaluator_result_id"] == "run-only"
+
+
 def test_extract_correlation_ids_pairs_call_short_id_with_run_id():
     spans = [
         {
