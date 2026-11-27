@@ -173,6 +173,8 @@ class ResultBatchData(APIModel):
             return False
         if len(self.results) < planned:
             return False
+        if any(result.status not in TERMINAL_RESULT_STATUSES for result in self.results):
+            return False
         if any(result.status == "failed" for result in self.results):
             return False
         return self.pass_rate >= threshold

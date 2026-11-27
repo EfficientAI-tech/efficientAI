@@ -132,7 +132,7 @@ class AsyncResultBatch(ResultBatchData):
 
 
 def _batch_done(batch: ResultBatchData) -> bool:
-    planned = max(batch.total_runs, len(batch.task_ids))
+    planned = batch._planned_run_count()
     if planned and len(batch.results) < planned:
         return False
     if not batch.results:
