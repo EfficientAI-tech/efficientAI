@@ -23,7 +23,7 @@ with EfficientAI() as client:
     assert suite.meets(0.8), suite.pass_rate
 ```
 
-`wait()` polls each evaluator result until it is completed or failed. `pass_rate` is the share of results that completed successfully. A result counts as successful when its status is `completed` and it was not marked `passed: false`. `meets(0.8)` is false when any result errored or the pass rate is under 0.8.
+`wait()` polls each evaluator result until it is completed or failed. `pass_rate` is the share of results that `succeeded`: status `completed` plus an explicit pass from `passed`, `metric_scores`, or `call_data.call_analysis`. `meets(0.8)` is false while any result is still queued, any result failed, or the pass rate is under 0.8.
 
 To run one agent against chosen scenarios and personas instead of a suite:
 
