@@ -453,6 +453,10 @@ async def list_calls_hub(
     status: Optional[str] = Query(None, description="Trace status filter: open, closed, or omit for all"),
     search: Optional[str] = Query(None),
     event: str = Query("all", description="Telephony event filter"),
+    modality: str = Query(
+        "all",
+        description="Filter traces by modality: all, voice, or chat (telephony rows count as voice)",
+    ),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
@@ -472,6 +476,7 @@ async def list_calls_hub(
         trace_status=status,
         search=search,
         event_filter=event,
+        modality_filter=modality,
         serialize_obs_call=_serialize_call_recording,
     )
     page = (skip // limit) + 1 if limit else 1

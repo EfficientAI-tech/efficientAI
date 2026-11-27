@@ -16,6 +16,46 @@ from app.services.synthetic_traces.trace_service import (
     list_traces,
 )
 
+def _trace_row_modality(trace: Any) -> Optional[str]:
+    agg = getattr(trace, "component_aggregates", None) or {}
+    has_voice = False
+    if isinstance(agg, dict):
+        stored = agg.get("session_modality")
+        if stored in ("chat", "voice"):
+            return stored
+        has_voice = any(k in agg for k in ("stt_ttfb_ms", "tts_ttfb_ms", "s2s_ttfb_ms"))
+        if has_voice:
+            return "voice"
+    transport = (getattr(trace, "transport", None) or "").lower()
+    if transport in ("phone", "webrtc", "sip"):
+        return "voice"
+    if isinstance(agg, dict) and agg.get("llm_ttfb_ms") and not has_voice:
+        if transport == "custom":
+            return "chat"
+        if transport == "websocket" and agg.get("session_modality") == "chat":
+            return "chat"
+    if transport in ("custom", "websocket"):
+        stored = agg.get("session_modality") if isinstance(agg, dict) else None
+        if stored in ("chat", "voice"):
+            return stored
+    return None
+
+
+def _merged_row_matches_modality(kind: str, payload: Any, modality_filter: Optional[str]) -> bool:
+    if not modality_filter or modality_filter == "all":
+        return True
+    if modality_filter == "voice":
+        if kind == "obs":
+            return True
+        mod = _trace_row_modality(payload)
+        return mod != "chat"
+    if modality_filter == "chat":
+        if kind == "obs":
+            return False
+        return _trace_row_modality(payload) == "chat"
+    return True
+
+
 _LIVE_CALL_EVENTS = frozenset(
     {
         "outbound_initiated",
@@ -133,6 +173,7 @@ def list_calls_hub_page(
     trace_status: Optional[str] = None,
     search: Optional[str] = None,
     event_filter: str = "all",
+    modality_filter: str = "all",
     serialize_obs_call,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, int], int]:
     """
@@ -141,7 +182,7 @@ def list_calls_hub_page(
     Each item: {"kind": "obs"|"trace", "sort_at": iso, "obs"?: dict, "trace"?: dict}
     """
     since = default_trace_list_since()
-    window = skip + limit
+    modality_active = bool(modality_filter and modality_filter != "all")
 
     obs_query = _obs_base_query(db, organization_id=organization_id, workspace_id=workspace_id)
     obs_query = _apply_obs_event_filter(obs_query, event_filter)
@@ -155,6 +196,18 @@ def list_calls_hub_page(
     obs_other = max(0, int(obs_event_total) - int(obs_ended) - int(obs_started))
 
     trace_list_status = None if not trace_status or trace_status == "all" else trace_status
+    traces_all = _count_traces(db, organization_id, workspace_id, status=None)
+    traces_open = _count_traces(db, organization_id, workspace_id, status="open")
+    traces_closed = _count_traces(db, organization_id, workspace_id, status="closed")
+
+    unfiltered_cap = max(int(obs_total or 0) + int(traces_all or 0), skip + limit)
+    window = unfiltered_cap if modality_active else skip + limit
+    merged: List[Tuple[datetime, str, Any]] = []
+    filtered_merge_total = 0
+    obs_rows: List[CallRecording] = []
+    agents_by_id: Dict[UUID, Agent] = {}
+    trace_total = 0
+
     trace_rows_window, trace_filtered_total, _, _ = list_traces(
         db,
         organization_id=organization_id,
@@ -171,28 +224,29 @@ def list_calls_hub_page(
     if search and search.strip():
         trace_total = len(trace_rows_window)
 
-    traces_all = _count_traces(db, organization_id, workspace_id, status=None)
-    traces_open = _count_traces(db, organization_id, workspace_id, status="open")
-    traces_closed = _count_traces(db, organization_id, workspace_id, status="closed")
-
-    obs_rows = (
-        obs_query.order_by(CallRecording.created_at.desc()).limit(window).all()
-    )
+    obs_rows = obs_query.order_by(CallRecording.created_at.desc()).limit(window).all()
     from app.services.live_entity_storage import hydrate_call_recordings
 
     hydrate_call_recordings(obs_rows)
     agent_ids = [cr.agent_id for cr in obs_rows if cr.agent_id]
-    agents_by_id: Dict[UUID, Agent] = {}
+    agents_by_id = {}
     if agent_ids:
         agents_by_id = {a.id: a for a in db.query(Agent).filter(Agent.id.in_(agent_ids)).all()}
 
-    merged: List[Tuple[datetime, str, Any]] = []
+    merged = []
     for cr in obs_rows:
         merged.append((_obs_sort_key(cr), "obs", cr))
     for tr in trace_rows_window:
         merged.append((_trace_sort_key(tr), "trace", tr))
-
     merged.sort(key=lambda row: row[0], reverse=True)
+    if modality_active:
+        merged = [
+            row
+            for row in merged
+            if _merged_row_matches_modality(row[1], row[2], modality_filter)
+        ]
+    filtered_merge_total = len(merged)
+
     page_slice = merged[skip : skip + limit]
 
     trace_rows_for_enrich = [row[2] for row in page_slice if row[1] == "trace"]
@@ -225,9 +279,16 @@ def list_calls_hub_page(
                     "span_count": getattr(payload, "span_count", 0),
                     "derive_pending": getattr(payload, "derive_pending", False),
                 }
+            if isinstance(trace_payload, dict) and not trace_payload.get("session_modality"):
+                inferred = _trace_row_modality(payload)
+                if inferred:
+                    trace_payload = dict(trace_payload)
+                    trace_payload["session_modality"] = inferred
             items.append({"kind": "trace", "sort_at": sort_iso, "trace": trace_payload})
 
-    if trace_list_status == "open":
+    if modality_filter and modality_filter != "all":
+        filtered_total = filtered_merge_total
+    elif trace_list_status == "open":
         filtered_total = int(obs_total) + int(traces_open)
     elif trace_list_status == "closed":
         filtered_total = int(obs_total) + int(traces_closed)

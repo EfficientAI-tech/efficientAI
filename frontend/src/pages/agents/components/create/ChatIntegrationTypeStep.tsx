@@ -62,7 +62,11 @@ export default function ChatIntegrationTypeStep({
   )
 
   return (
-    <div className={embedded ? 'w-full' : 'w-full max-w-3xl mx-auto space-y-6'}>
+    <div
+      className={
+        embedded ? 'w-full' : `w-full mx-auto space-y-6 ${compact ? 'max-w-none' : 'max-w-3xl'}`
+      }
+    >
       {!embedded ? (
         <WizardStepHeader
           title="Chat connection"
@@ -70,7 +74,17 @@ export default function ChatIntegrationTypeStep({
           prominence={compact ? 'entry' : 'default'}
         />
       ) : null}
-      <div className={`${gridClass}${compact ? '' : ' max-w-4xl'}`}>
+      <div
+        className={
+          options.length >= 4
+            ? `grid w-full ${
+                compact
+                  ? 'mt-4 grid-cols-1 gap-3.5 min-[640px]:grid-cols-4'
+                  : 'mt-6 grid-cols-1 gap-3 min-[640px]:grid-cols-4'
+              }`
+            : `${gridClass}${compact ? '' : ' max-w-4xl'}`
+        }
+      >
         {options.map((option) => {
           const Icon = ICONS[option.id]
           const shortDesc = option.description.split('.')[0]

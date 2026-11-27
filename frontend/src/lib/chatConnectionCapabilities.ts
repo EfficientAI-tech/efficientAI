@@ -39,7 +39,7 @@ export const CHAT_CONNECTION_CAPABILITIES: ChatConnectionCapability[] = [
     label: 'HTTP API',
     description: 'POST each turn to your REST API.',
     pattern: 'live_production_plus_customer_llm',
-    offeredInCreateWizard: false,
+    offeredInCreateWizard: true,
   },
   {
     id: 'customer_websocket',

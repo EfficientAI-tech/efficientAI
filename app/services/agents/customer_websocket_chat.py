@@ -23,10 +23,13 @@ class CustomerWebSocketChatSession:
         url: str,
         *,
         extra_headers: Optional[dict[str, str]] = None,
+        handshake: Optional[dict[str, Any]] = None,
         open_timeout: float = 30.0,
     ) -> None:
         self._url = url.strip()
         self._extra_headers = extra_headers or {}
+        self._handshake = handshake
+        self._handshake_sent = False
         self._open_timeout = open_timeout
         self._ws: Any = None
 
@@ -62,6 +65,9 @@ class CustomerWebSocketChatSession:
 
         self._connect()
         assert self._ws is not None
+        if self._handshake and not self._handshake_sent:
+            self._ws.send(json.dumps(self._handshake))
+            self._handshake_sent = True
         body = customer_api_request_body(
             config,
             openai_messages=_openai_style_messages(transcript),
@@ -85,12 +91,17 @@ def _session_from_state(state: ProviderChatState) -> Optional[CustomerWebSocketC
     return session if isinstance(session, CustomerWebSocketChatSession) else None
 
 
-def _build_headers(config: dict[str, Any]) -> dict[str, str]:
+def _build_headers(
+    config: dict[str, Any],
+    extra_headers: Optional[dict[str, str]] = None,
+) -> dict[str, str]:
     headers: dict[str, str] = {}
     auth_header = (config.get("websocket_auth_header") or "").strip()
     auth_value = (config.get("websocket_auth_value") or "").strip()
     if auth_header and auth_value:
         headers[auth_header] = auth_value
+    if extra_headers:
+        headers.update(extra_headers)
     return headers
 
 
@@ -101,6 +112,8 @@ def call_customer_websocket_chat(
     agent_name: str,
     language: str,
     state: ProviderChatState,
+    extra_headers: Optional[dict[str, str]] = None,
+    handshake: Optional[dict[str, Any]] = None,
 ) -> str:
     url = (config.get("websocket_url") or "").strip()
     if not url:
@@ -111,7 +124,11 @@ def call_customer_websocket_chat(
 
     session = _session_from_state(state)
     if session is None:
-        session = CustomerWebSocketChatSession(url, extra_headers=_build_headers(config))
+        session = CustomerWebSocketChatSession(
+            url,
+            extra_headers=_build_headers(config, extra_headers),
+            handshake=handshake,
+        )
         state.extra[_WS_SESSION_KEY] = session
 
     timeout = float(config.get("timeout_secs") or DEFAULT_TIMEOUT_SECS)

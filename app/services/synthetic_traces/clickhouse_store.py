@@ -673,8 +673,10 @@ def list_idle_open_traces(cutoff: datetime, limit: int = 200) -> List[TraceRecor
         SELECT {', '.join(_TRACE_COLUMNS)}
         FROM call_traces FINAL
         WHERE status = 'open'
-          AND last_span_at IS NOT NULL
-          AND last_span_at < {{cutoff:DateTime64(3)}}
+          AND (
+            (last_span_at IS NOT NULL AND last_span_at < {{cutoff:DateTime64(3)}})
+            OR (last_span_at IS NULL AND started_at < {{cutoff:DateTime64(3)}})
+          )
         ORDER BY last_span_at ASC
         LIMIT {limit}
         """,

@@ -47,6 +47,7 @@ def call_customer_chat_api(
     transcript: list[dict[str, str]],
     agent_name: str,
     language: str,
+    extra_headers: Optional[dict[str, str]] = None,
 ) -> str:
     base = (config.get("api_base_url") or "").strip().rstrip("/")
     if not base:
@@ -58,20 +59,24 @@ def call_customer_chat_api(
     if not path.startswith("/"):
         path = f"/{path}"
 
+    from app.config import settings
     from app.services.agents.chat_connection_config_store import chat_connection_config_for_runtime
     from app.services.agents.chat_outbound_urls import assert_chat_connection_urls_safe
 
-    assert_chat_connection_urls_safe(config)
+    allow_loopback = bool(settings.DEBUG)
+    assert_chat_connection_urls_safe(config, allow_loopback=allow_loopback)
     url = urljoin(f"{base}/", path.lstrip("/"))
     from app.services.telephony.recording_download import assert_outbound_http_url_safe
 
-    assert_outbound_http_url_safe(url)
+    assert_outbound_http_url_safe(url, allow_loopback=allow_loopback)
     cfg = chat_connection_config_for_runtime(config)
     headers: dict[str, str] = {"Content-Type": "application/json"}
     auth_header = (cfg.get("api_auth_header") or config.get("api_auth_header") or "").strip()
     auth_value = (cfg.get("api_auth_value") or "").strip()
     if auth_header and auth_value:
         headers[auth_header] = auth_value
+    if extra_headers:
+        headers.update(extra_headers)
 
     from app.services.agents.chat_outbound_payload import customer_api_request_body
 

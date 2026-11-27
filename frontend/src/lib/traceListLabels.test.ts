@@ -8,6 +8,10 @@ describe('traceListLabels', () => {
       modality: 'voice',
       detail: 'HTTP API',
     })
+    expect(traceListPlatformSummary('chat', 'custom')).toEqual({
+      modality: 'chat',
+      detail: 'HTTP API',
+    })
   })
 
   it('uses session_modality when present', () => {

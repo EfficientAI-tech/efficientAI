@@ -245,6 +245,25 @@ function spanKind(span: OtelSpan): SpanStageKind {
   return null
 }
 
+function sessionModalityFromSpans(spans: OtelSpan[]): 'chat' | 'voice' | null {
+  let hasVoice = false
+  let hasChat = false
+  for (const span of spans) {
+    const op = attrStr(span.attributes, 'gen_ai.operation.name')?.toLowerCase()
+    const name = span.name.toLowerCase()
+    const channel = attrStr(span.attributes, 'efficientai.channel')?.toLowerCase()
+    if (op === 'stt' || op === 'tts' || op === 's2s' || name === 'stt' || name === 'tts' || name === 's2s') {
+      hasVoice = true
+    }
+    if (op === 'user_message' || name === 'user_message' || channel === 'chat') {
+      hasChat = true
+    }
+  }
+  if (hasVoice) return 'voice'
+  if (hasChat) return 'chat'
+  return null
+}
+
 const SPAN_STAGE_LABELS: Record<NonNullable<SpanStageKind>, string> = {
   stt: 'STT',
   llm: 'LLM',
@@ -726,12 +745,13 @@ export default function SyntheticCallTracePanel({
   const isDrawer = Boolean(onClose)
   const isOpen = trace.status === 'open'
   const transport = (trace.transport ?? 'webrtc').toLowerCase()
-  const storedModality = (trace.component_aggregates as { session_modality?: string } | undefined)
+  const aggregateModality = (trace.component_aggregates as { session_modality?: string } | undefined)
     ?.session_modality
-  const listModality = traceListModality(
-    storedModality === 'chat' || storedModality === 'voice' ? storedModality : null,
-    trace.transport,
-  )
+  const resolvedModality: 'chat' | 'voice' | null =
+    aggregateModality === 'chat' || aggregateModality === 'voice'
+      ? aggregateModality
+      : sessionModalityFromSpans(otelSpans)
+  const listModality = traceListModality(resolvedModality, trace.transport)
   const transportDetail = traceTransportDisplayLabel(trace.transport)
   const showPhonePipelineHint = transport === 'phone' && otelSpans.length === 0 && !isOpen
 

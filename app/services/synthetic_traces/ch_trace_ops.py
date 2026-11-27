@@ -69,6 +69,8 @@ def _link_evaluator_result(
         query = query.filter(EvaluatorResult.organization_id == organization_id)
     result = query.first()
     if result:
+        if trace.workspace_id and result.workspace_id != trace.workspace_id:
+            return
         result.synthetic_call_trace_id = trace.id
         db.commit()
 
@@ -174,7 +176,7 @@ def open_trace_session_ch(
             scenario_id = result.scenario_id
             evaluator_id = result.evaluator_id
 
-    return open_trace_ch(
+    trace = open_trace_ch(
         db,
         organization_id=organization_id,
         workspace_id=workspace_id,
@@ -188,6 +190,16 @@ def open_trace_session_ch(
         provider_platform=provider_platform,
         tier="component",
     )
+    modality: Optional[str] = None
+    if transport in ("phone", "webrtc", "sip"):
+        modality = "voice"
+    if modality:
+        aggs = dict(trace.component_aggregates or {})
+        if aggs.get("session_modality") not in ("chat", "voice"):
+            aggs["session_modality"] = modality
+            trace.component_aggregates = aggs
+            upsert_trace_header(trace)
+    return trace
 
 
 def _derive_turns_for_trace(trace: TraceRecord, spans: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

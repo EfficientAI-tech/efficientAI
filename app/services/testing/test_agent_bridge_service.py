@@ -226,16 +226,32 @@ class TestAgentBridgeService:
         logger.info(f"[Bridge] Step 1: Creating web call to {platform_value} agent {agent.voice_ai_agent_id}")
         try:
             logger.info("[Bridge] Calling provider.create_web_call()...")
+            from app.models.database import EvaluatorResult
+            from app.services.synthetic_traces.simulation_outbound import (
+                ensure_simulation_correlation,
+                trace_handshake_message,
+            )
+
+            result_row = (
+                db.query(EvaluatorResult).filter(EvaluatorResult.id == evaluator_result_id).first()
+            )
+            correlation = ensure_simulation_correlation(
+                db, result_row, transport="webrtc"
+            ) if result_row else None
+            metadata = {
+                "evaluator_id": str(evaluator.id),
+                "evaluator_result_id": str(evaluator_result_id),
+                "organization_id": str(organization_id),
+                "test_agent_mode": True,
+                "persona_id": str(persona.id),
+                "scenario_id": str(scenario.id),
+            }
+            if correlation:
+                metadata["efficientai_call_short_id"] = correlation["call_short_id"]
+                metadata["efficientai_trace_handshake"] = trace_handshake_message(correlation)
             web_call_response = provider.create_web_call(
                 agent_id=agent.voice_ai_agent_id,
-                metadata={
-                    "evaluator_id": str(evaluator.id),
-                    "evaluator_result_id": str(evaluator_result_id),
-                    "organization_id": str(organization_id),
-                    "test_agent_mode": True,
-                    "persona_id": str(persona.id),
-                    "scenario_id": str(scenario.id),
-                },
+                metadata=metadata,
             )
             logger.info(f"[Bridge] provider.create_web_call() returned: {list(web_call_response.keys()) if web_call_response else 'None'}")
 
@@ -299,6 +315,7 @@ class TestAgentBridgeService:
                     provider_platform=platform_value,
                     evaluator_result_id=evaluator_result_id,
                     voice_bundle_id=agent.voice_bundle_id,
+                    bridge_metadata=metadata,
                     db=db,
                 )
             )
@@ -392,6 +409,7 @@ class TestAgentBridgeService:
         evaluator_result_id: UUID,
         voice_bundle_id: UUID,
         db,
+        bridge_metadata: Optional[Dict[str, Any]] = None,
     ):
         """
         Connect test agent and bridge to Retell/Vapi (WebRTC) or ElevenLabs (WebSocket).
@@ -478,6 +496,7 @@ class TestAgentBridgeService:
                 webrtc_bridge = ElevenLabsWSBridge(
                     signed_url=signed_url,
                     sample_rate=sample_rate,
+                    dynamic_variables=bridge_metadata or {},
                 )
                 webrtc_bridge.on_call_ended = on_call_ended
 

@@ -1,5 +1,7 @@
 """Unit tests for call recording helpers."""
 
+from contextlib import nullcontext
+
 import pytest
 from fastapi import HTTPException
 
@@ -25,6 +27,9 @@ class _FakeDB:
 
     def query(self, _model):
         return _FakeQuery(self._existing_ids)
+
+    def begin_nested(self):
+        return nullcontext()
 
 
 def test_generate_unique_call_short_id_returns_first_available(monkeypatch):

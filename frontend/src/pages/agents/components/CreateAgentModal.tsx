@@ -883,7 +883,7 @@ export default function CreateAgentModal({
     wizardPhase === 'entry_medium'
       ? 'w-[min(94vw,64rem)]'
       : agentMedium === 'chat'
-        ? 'w-[min(92vw,48rem)]'
+        ? 'w-[min(94vw,64rem)]'
         : 'w-[min(92vw,38rem)]'
 
   const renderStepContent = () => {

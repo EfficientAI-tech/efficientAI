@@ -30,6 +30,25 @@ def test_merge_window_slices_by_global_time_order():
     assert kinds == ["obs", "trace", "obs"]
 
 
+def test_merged_row_modality_filter():
+    from app.services.observability.calls_hub import _merged_row_matches_modality
+
+    class Trace:
+        component_aggregates = {"session_modality": "chat"}
+        transport = "custom"
+
+    class VoiceTrace:
+        component_aggregates = {"stt_ttfb_ms": {"count": 1}}
+        transport = "webrtc"
+
+    obs = CallRecording()
+    assert _merged_row_matches_modality("obs", obs, "chat") is False
+    assert _merged_row_matches_modality("obs", obs, "voice") is True
+    assert _merged_row_matches_modality("trace", Trace(), "chat") is True
+    assert _merged_row_matches_modality("trace", VoiceTrace(), "chat") is False
+    assert _merged_row_matches_modality("trace", VoiceTrace(), "voice") is True
+
+
 def test_infer_session_modality_from_turns():
     from app.services.synthetic_traces.otlp_mapper import infer_session_modality_from_turns
 

@@ -10,10 +10,12 @@ import TraceDetailDrawer from '../../components/call-recordings/TraceDetailDrawe
 import { CallAgentLink } from '../observability/CallAgentLink'
 import type { ObservabilityCallAgent } from '../../types/api'
 import { CallSourceBadge, EventBadge, PlatformBadge } from '../observability/observabilityCallUi'
+import { TraceListPlatformCell } from '../observability/TraceListPlatformCell'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import { itemsOf } from '../../lib/safeData'
 type StatusFilter = 'all' | 'open' | 'closed'
 type EventFilter = 'all' | 'call_ended' | 'call_started' | 'other'
+type ModalityFilter = 'all' | 'voice' | 'chat'
 
 const PAGE_SIZE = 15
 
@@ -35,6 +37,7 @@ type SyntheticTraceRow = {
   id: string
   call_short_id?: string
   transport?: string
+  session_modality?: 'voice' | 'chat' | null
   status: string
   turn_count: number
   span_count?: number
@@ -48,7 +51,8 @@ const callsHubQueryKey = (
   status: StatusFilter,
   event: EventFilter,
   search: string,
-) => ['calls-hub', workspaceId, page, status, event, search] as const
+  modality: ModalityFilter,
+) => ['calls-hub', workspaceId, page, status, event, search, modality] as const
 
 function formatWhen(iso: string): string {
   return new Date(iso).toLocaleString()
@@ -93,6 +97,7 @@ export default function TestInsights() {
   const [callsPage, setCallsPage] = useState(1)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [eventFilter, setEventFilter] = useState<EventFilter>('all')
+  const [modalityFilter, setModalityFilter] = useState<ModalityFilter>('all')
   const [searchQuery, setSearchQuery] = useState('')
   const prevWorkspaceRef = useRef<string | null>(null)
 
@@ -114,6 +119,7 @@ export default function TestInsights() {
       statusFilter,
       eventFilter,
       searchQuery.trim(),
+      modalityFilter,
     ),
     queryFn: () =>
       apiClient.listCallsHub({
@@ -122,6 +128,7 @@ export default function TestInsights() {
         status: apiStatus,
         search: searchQuery.trim() || undefined,
         event: eventFilter,
+        modality: modalityFilter,
       }),
     enabled: Boolean(activeWorkspaceId),
     retry: false,
@@ -277,7 +284,7 @@ export default function TestInsights() {
 
   useEffect(() => {
     setCallsPage(1)
-  }, [statusFilter, eventFilter, searchQuery, activeWorkspaceId])
+  }, [statusFilter, eventFilter, modalityFilter, searchQuery, activeWorkspaceId])
 
   const isListLoading = loadingHub && hubItems.length === 0
   const isListRefreshing = fetchingHub && hubItems.length > 0
@@ -370,6 +377,31 @@ export default function TestInsights() {
                       className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
                         statusFilter === key
                           ? 'border-gray-300 bg-gray-200 text-gray-800'
+                          : 'border-transparent text-gray-600 hover:bg-gray-100'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex items-center gap-1">
+                  {(
+                    [
+                      { key: 'all' as const, label: 'All types' },
+                      { key: 'voice' as const, label: 'Voice' },
+                      { key: 'chat' as const, label: 'Chat' },
+                    ] as const
+                  ).map(({ key, label }) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => {
+                        setModalityFilter(key)
+                        setCallsPage(1)
+                      }}
+                      className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+                        modalityFilter === key
+                          ? 'border-sky-300 bg-sky-50 text-sky-900'
                           : 'border-transparent text-gray-600 hover:bg-gray-100'
                       }`}
                     >
@@ -558,8 +590,11 @@ export default function TestInsights() {
                           <td className="px-6 py-4 whitespace-nowrap">
                             <StatusLabel status={trace.status} />
                           </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700 capitalize">
-                            {trace.transport ?? 'webrtc'}
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <TraceListPlatformCell
+                              sessionModality={trace.session_modality}
+                              transport={trace.transport}
+                            />
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700 tabular-nums">
                             {trace.status === 'open' &&
@@ -624,6 +659,7 @@ export default function TestInsights() {
                     setSearchQuery('')
                     setStatusFilter('all')
                     setEventFilter('all')
+                    setModalityFilter('all')
                   }}
                   className="text-primary-600 font-medium"
                 >
