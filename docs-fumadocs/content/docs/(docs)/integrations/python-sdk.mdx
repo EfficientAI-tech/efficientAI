@@ -35,14 +35,21 @@ EfficientAI is self-hosted, so point the SDK at your deployment. Set environment
 Example `.env` or shell values:
 
 ```bash
+# Public hostname with TLS
 EFFICIENTAI_BASE_URL=https://efficientai.your-company.com
+
+# Private VPC (HTTP only inside the network)
+# EFFICIENTAI_BASE_URL=http://efficientai.internal:8000
+
 EFFICIENTAI_API_KEY=...
 EFFICIENTAI_WORKSPACE_ID=...
 ```
 
-`EFFICIENTAI_BASE_URL` defaults to `http://localhost:8000` when you omit it. Use `https://` for production deployments on your own domain.
+`EFFICIENTAI_BASE_URL` defaults to `http://localhost:8000` when you omit it. Match whatever URL agents can reach: **`https://`** when the platform is on the internet or sits behind TLS termination; **`http://`** is normal for self-hosted installs on a private VPC or LAN where TLS ends at a load balancer or is not used at all.
 
 The API key is sent only to that host. Do not pass absolute URLs to another origin, and avoid turning HTTP client libraries (for example `httpx` or `httpcore`) to debug logging in production—that can print request headers.
+
+OTLP span export uses the same scheme as your base URL (`http://…/api/v1/observability/traces` on a private HTTP deployment). The SDK does not require HTTPS for ingest. The only automatic override is when **base URL is `https://`** but the platform handshake returns an **`http://`** OTLP hint—in that case the client keeps HTTPS so the API key is not sent over plain HTTP.
 
 You can also download a filled-in block from your deployment:
 
@@ -73,7 +80,7 @@ EfficientAI().verify()  # True, or raises AuthenticationError
 
 | Variable | Purpose |
 |---|---|
-| `EFFICIENTAI_BASE_URL` | Your EfficientAI deployment (default `http://localhost:8000`) |
+| `EFFICIENTAI_BASE_URL` | Reachable base URL (`https://…` or `http://…` on a private network; default `http://localhost:8000`) |
 | `EFFICIENTAI_API_KEY` | API key from Settings → API keys |
 | `EFFICIENTAI_WORKSPACE_ID` | Workspace that receives the traces |
 | `EFFICIENTAI_OTLP_ENDPOINT` | Override the span ingest URL (default `<base URL>/api/v1/observability/traces`) |
