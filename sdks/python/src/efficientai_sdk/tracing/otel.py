@@ -445,6 +445,8 @@ def setup_efficientai_tracing(
         transport=transport,
         export_endpoint=resolved_endpoint,
     )
+    # Tag the current task before any exporter/processor setup that might emit spans.
+    set_call_attributes(attrs)
 
     with _state_lock:
         if _mutable_exporter is not None and (
@@ -499,9 +501,6 @@ def setup_efficientai_tracing(
 
         if isinstance(provider, TracerProvider):
             _attach_correlation_processor(provider, attrs)
-    # Tag spans from this task/thread with this call even when other calls run
-    # concurrently in the same process (the processor default is only a fallback).
-    set_call_attributes(attrs)
     return True
 
 

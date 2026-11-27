@@ -672,8 +672,8 @@ class TraceResource(_TraceResourceBase):
                     raise _as_session_error(exc) from exc
                 logger.warning("EfficientAI trace session failed, tracing disabled: %s", exc)
                 return _disabled(str(exc), transport)
-        self._start_export(call, hint)
         call._enter_context()
+        self._start_export(call, hint)
         return call
 
     def end_session(self, call: CallTrace, *, close: Optional[bool] = None) -> None:
@@ -793,8 +793,8 @@ class AsyncTraceResource(_TraceResourceBase):
                     raise _as_session_error(exc) from exc
                 logger.warning("EfficientAI trace session failed, tracing disabled: %s", exc)
                 return _disabled(str(exc), transport)
-        self._start_export(call, hint)
         call._enter_context()
+        self._start_export(call, hint)
         return call
 
     async def end_session(self, call: CallTrace, *, close: Optional[bool] = None) -> None:
