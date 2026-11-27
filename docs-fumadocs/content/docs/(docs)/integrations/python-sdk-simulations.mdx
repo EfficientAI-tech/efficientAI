@@ -17,7 +17,7 @@ Record the call the same way as in [Trace a call](/docs/integrations/python-sdk-
 | How the simulation talks to your agent | What you receive | What to pass |
 |---|---|---|
 | HTTP API | `X-EfficientAI-Call-Short-Id` and `X-EfficientAI-Run-Id` on each request | `from_request(headers)` or `headers=` |
-| WebSocket | The same headers on connect, plus an optional first message `efficientai_trace_handshake` | `from_handshake(message)` or `handshake=` |
+| WebSocket | `X-EfficientAI-*` on connect; optional first `efficientai_trace_handshake` only when `efficientai_trace_handshake_enabled` is on | `from_request(ws_headers)` by default, or `from_handshake(message)` |
 | Web call (Retell, Vapi, ElevenLabs) | The handshake inside the web-call metadata | `from_handshake(message)` |
 | Phone (Vobiz or Plivo) | SIP headers on the outbound call | `from_sip_headers(sip_headers)` |
 
@@ -53,7 +53,9 @@ For a voice web call, omit `channel="chat"`.
 ### Phone
 
 ```python
-with efficientai.trace.from_sip_headers(sip_headers) as call:
+from efficientai_sdk import EfficientAI
+
+with EfficientAI() as efficientai, efficientai.trace.from_sip_headers(sip_headers) as call:
     ...
 ```
 
