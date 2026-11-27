@@ -1756,6 +1756,7 @@ def extract_correlation_ids(spans: List[Dict[str, Any]]) -> Dict[str, Optional[s
 
     calls: Counter[str] = Counter()
     runs: Counter[str] = Counter()
+    pairs: Counter[tuple[str, str]] = Counter()
     agents: Counter[str] = Counter()
     transports: Counter[str] = Counter()
     workspaces: Counter[str] = Counter()
@@ -1763,13 +1764,18 @@ def extract_correlation_ids(spans: List[Dict[str, Any]]) -> Dict[str, Optional[s
     for span in spans:
         attrs = span.get("attributes") or {}
         result_id = attrs.get("efficientai.evaluator_result_id") or attrs.get("efficientai.run_id")
-        if result_id:
-            runs[str(result_id)] += 1
+        call_short: Optional[str] = None
         call_short_raw = attrs.get("efficientai.call_short_id")
         if call_short_raw:
-            call_short = str(call_short_raw).strip()
-            if _CALL_SHORT_ID_RE.match(call_short):
-                calls[call_short] += 1
+            candidate = str(call_short_raw).strip()
+            if _CALL_SHORT_ID_RE.match(candidate):
+                call_short = candidate
+                calls[candidate] += 1
+        if result_id:
+            run_key = str(result_id)
+            runs[run_key] += 1
+            if call_short:
+                pairs[(call_short, run_key)] += 1
         agent_id = attrs.get("efficientai.agent_id")
         if agent_id:
             agents[str(agent_id)] += 1
@@ -1787,8 +1793,11 @@ def extract_correlation_ids(spans: List[Dict[str, Any]]) -> Dict[str, Optional[s
             return None
         return counter.most_common(1)[0][0]
 
-    call_short = _pick(calls)
-    result_id = _pick(runs)
+    if pairs:
+        (call_short, result_id), _ = pairs.most_common(1)[0]
+    else:
+        call_short = _pick(calls)
+        result_id = _pick(runs)
     if not (call_short or result_id or agents or transports or workspaces):
         return {}
     return {
