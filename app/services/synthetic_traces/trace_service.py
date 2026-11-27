@@ -181,15 +181,13 @@ def enrich_trace_summaries(
             ):
                 session_modality = "voice"
             elif trace.component_aggregates.get("llm_ttfb_ms"):
-                if transport == "custom":
+                if transport in ("custom", "websocket"):
                     session_modality = "chat"
-                elif transport in ("phone", "webrtc", "sip", "websocket"):
+                elif transport in ("phone", "webrtc", "sip"):
                     session_modality = "voice"
-                else:
-                    session_modality = "chat"
         if session_modality is None and transport in ("phone", "webrtc", "sip"):
             session_modality = "voice"
-        elif session_modality is None and transport == "custom":
+        elif session_modality is None and transport in ("custom", "websocket"):
             session_modality = "chat"
         base = {
             "id": trace.id,
@@ -368,7 +366,7 @@ def open_trace_for_call_recording(
 
 
 def _session_modality_for_transport(transport: str) -> Optional[str]:
-    if transport in ("websocket", "custom"):
+    if transport == "custom":
         return "chat"
     if transport in ("phone", "webrtc", "sip"):
         return "voice"
@@ -445,6 +443,8 @@ def open_trace_session(
         tier="component",
     )
     modality = _session_modality_for_transport(transport)
+    if modality is None and transport == "websocket":
+        modality = "chat"
     if modality and not (trace.component_aggregates or {}).get("session_modality"):
         trace.component_aggregates = {**(trace.component_aggregates or {}), "session_modality": modality}
         db.commit()

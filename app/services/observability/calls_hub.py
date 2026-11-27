@@ -31,11 +31,14 @@ def _trace_row_modality(trace: Any) -> Optional[str]:
     transport = (getattr(trace, "transport", None) or "").lower()
     if transport in ("phone", "webrtc", "sip"):
         return "voice"
-    if transport == "custom":
-        return "chat"
-    if transport == "websocket":
-        has_chat = isinstance(agg, dict) and bool(agg.get("llm_ttfb_ms")) and not has_voice
-        return "chat" if has_chat else None
+    if transport in ("custom", "websocket"):
+        stored = agg.get("session_modality") if isinstance(agg, dict) else None
+        if stored in ("chat", "voice"):
+            return stored
+        if isinstance(agg, dict) and bool(agg.get("llm_ttfb_ms")) and not has_voice:
+            return "chat"
+        if transport == "custom":
+            return "chat"
     return None
 
 
