@@ -378,11 +378,12 @@ def ensure_export_pipeline(
                 endpoint=key[0],
                 headers=otlp_export_headers(api_key=api_key, workspace_id=workspace_id),
             )
-            exporter = _DestinationFilteredExporter(key[0], base_exporter)
+            filtered_exporter = _DestinationFilteredExporter(key[0], base_exporter)
+            pipeline_exporter: Any = filtered_exporter
             provider = trace.get_tracer_provider()
             if not isinstance(provider, TracerProvider):
                 if not setup_tracer_provider(
-                    service_name, exporter=exporter, console_export=console_export
+                    service_name, exporter=filtered_exporter, console_export=console_export
                 ):
                     return False
                 _exporter_attached = True
@@ -392,14 +393,14 @@ def ensure_export_pipeline(
                     _mutable_exporter.endpoint.rstrip("/") == key[0].rstrip("/")
                     and _mutable_exporter._api_key == api_key
                 ):
-                    exporter = _mutable_exporter
+                    pipeline_exporter = _mutable_exporter
                     _exporter_attached = True
                 else:
-                    provider.add_span_processor(BatchSpanProcessor(exporter))
+                    provider.add_span_processor(BatchSpanProcessor(filtered_exporter))
                     _exporter_attached = True
             if isinstance(provider, TracerProvider):
                 _attach_correlation_processor_unlocked(provider, None)
-            _pipelines[key] = exporter
+            _pipelines[key] = pipeline_exporter
         except Exception:
             logger.exception("Failed to set up EfficientAI span export")
             return False
